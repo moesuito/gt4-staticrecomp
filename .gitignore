@@ -17,6 +17,3 @@ CORE.GT4
 CMakeUserPresets.json
 __pycache__/
 *.pyc
-
-
-docs/lessons
