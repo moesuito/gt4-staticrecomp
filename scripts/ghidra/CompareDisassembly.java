@@ -54,6 +54,14 @@ public class CompareDisassembly extends GhidraScript {
         if (name.equals("b") && operands.size() == 1 && (word >>> 26) == 4) {
             return "beq zero,zero," + operands.get(0);
         }
+        // clear rd is Ghidra's alias for daddu rd,zero,zero (funct 0x2d).
+        if (name.equals("clear") && operands.size() == 1 && (word & 0x3f) == 0x2d) {
+            return "daddu " + operands.get(0) + ",zero,zero";
+        }
+        // jalr rs omits the default link register; expand when the encoding has rd = ra.
+        if (name.equals("jalr") && operands.size() == 1 && ((word >>> 11) & 0x1f) == 31) {
+            return "jalr ra," + operands.get(0);
+        }
         return instruction.toString();
     }
 

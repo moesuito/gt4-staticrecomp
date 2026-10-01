@@ -58,3 +58,16 @@ Created ignored `private/tooling-venv/` using the existing Python 3.14.3 and
 installed pycdlib 1.20.0 there for ISO observation. The package is pinned in
 `scripts/requirements.txt`. This does not change global Python or the C++ build.
 12 standalone Python tests and real-disc manifest verification passed.
+
+## M6 decoder re-verification tooling — 2026-10-01
+
+Decoder coverage was expanded on this machine and independently re-verified.
+Ghidra 12.1.3 (official asset `ghidra_12.1.3_PUBLIC_20260817.zip`, SHA-256
+`93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54`, matching
+the published checksum) and Eclipse Temurin JDK 21.0.12.1+1 (Ghidra 12.1's
+minimum is JDK 21) were extracted as ignored local tooling under
+`private/tooling/`; no machine-wide installation or PATH change was made.
+`JAVA_HOME` is set per command. The comparison landed at
+`M6_COMPARISON matched=417 non_nop=352 unsupported=71 mismatched=0`. The first
+run reported nine mismatches, all Ghidra aliases; the two missing explicit
+expansions (clear, one-operand jalr) are now documented in the M6 evidence doc.

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <iterator>
 #include <string_view>
 
 using namespace gt4recomp::ee;
@@ -38,6 +39,11 @@ int main() {
         {0x00000000, Operation::Sll, "sll", 0, 0, 0, 0, 0},
         {0x00094102, Operation::Srl, "srl", 0, 9, 8, 4, 2},
         {0x001fffc2, Operation::Srl, "srl", 0, 31, 31, 31, 2},
+        {0x012a402a, Operation::Slt, "slt", 9, 10, 8, 0, 0x2a},
+        {0x012a402b, Operation::Sltu, "sltu", 9, 10, 8, 0, 0x2b},
+        {0x012a402d, Operation::Daddu, "daddu", 9, 10, 8, 0, 0x2d},
+        {0x0040f809, Operation::Jalr, "jalr", 2, 0, 31, 0, 0x09},
+        {0x0000000c, Operation::Syscall, "syscall", 0, 0, 0, 0, 0x0c},
     };
     for (const auto& expected : register_cases) {
         const auto actual = decode(expected.word);
@@ -79,6 +85,22 @@ int main() {
         {0x1109fffe, Operation::Beq, "beq", 4, 8, 9, 0xfffe, -2},
         {0x15090003, Operation::Bne, "bne", 5, 8, 9, 0x0003, 3},
         {0x1509fffe, Operation::Bne, "bne", 5, 8, 9, 0xfffe, -2},
+        {0x8603000c, Operation::Lh, "lh", 33, 16, 3, 0x000c, 12},
+        {0xa0400000, Operation::Sb, "sb", 40, 2, 0, 0x0000, 0},
+        {0xdfb00000, Operation::Ld, "ld", 55, 29, 16, 0x0000, 0},
+        {0xffbf0000, Operation::Sd, "sd", 63, 29, 31, 0x0000, 0},
+        {0x50400004, Operation::Beql, "beql", 20, 2, 0, 0x0004, 4},
+        {0x54600005, Operation::Bnel, "bnel", 21, 3, 0, 0x0005, 5},
+        {0x1840000c, Operation::Blez, "blez", 6, 2, 0, 0x000c, 12},
+        {0x1d200004, Operation::Bgtz, "bgtz", 7, 9, 0, 0x0004, 4},
+        {0x06000009, Operation::Bltz, "bltz", 1, 16, 0, 0x0009, 9},
+        {0x05210004, Operation::Bgez, "bgez", 1, 9, 1, 0x0004, 4},
+        {0x05220004, Operation::Bltzl, "bltzl", 1, 9, 2, 0x0004, 4},
+        {0x0603fffc, Operation::Bgezl, "bgezl", 1, 16, 3, 0xfffc, -4},
+        {0x05300004, Operation::Bltzal, "bltzal", 1, 9, 16, 0x0004, 4},
+        {0x05310004, Operation::Bgezal, "bgezal", 1, 9, 17, 0x0004, 4},
+        {0x05320004, Operation::Bltzall, "bltzall", 1, 9, 18, 0x0004, 4},
+        {0x05330004, Operation::Bgezall, "bgezall", 1, 9, 19, 0x0004, 4},
     };
     for (const auto& expected : immediate_cases) {
         const auto actual = decode(expected.word);
@@ -116,10 +138,10 @@ int main() {
     // Outside the implemented subset, plus nonzero fixed fields. Unsupported
     // is our policy; it makes no claim about a hardware reserved-instruction trap.
     const std::uint32_t unsupported[] = {
-        0xffffffff, 0x70000000, 0x46000000, 0x38081234, 0x0000000c,
+        0x0000000d, 0x70000000, 0x46000000, 0x38081234, 0x04190000,
         0x00294100, 0x00294102, 0x03e10008, 0x03e00808, 0x03e00048,
         0x012a4061, 0x012a4063, 0x012a4064, 0x012a4065, 0x012a4066,
-        0x3c281234,
+        0x3c281234, 0x19280004, 0x1d280004, 0x0120f849,
     };
     for (const auto word : unsupported) {
         const auto actual = decode(word);
@@ -135,6 +157,8 @@ int main() {
     if (failures != 0) {
         return 1;
     }
-    std::cout << "37 hand-selected instructions, 16 unsupported encodings, endian checks passed\n";
+    std::cout << std::size(register_cases) + std::size(immediate_cases) + std::size(jump_cases)
+              << " hand-selected instructions, " << std::size(unsupported)
+              << " unsupported encodings, endian checks passed\n";
     return 0;
 }

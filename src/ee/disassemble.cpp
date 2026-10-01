@@ -34,6 +34,15 @@ std::string signed_hex(std::int32_t value) {
     return "0x" + hex_value(static_cast<std::uint32_t>(value));
 }
 
+// Branch targets use PC+4 plus a signed offset scaled by four. The
+// multiplication avoids shifting a negative signed value, and the final
+// conversion back to uint32_t deliberately wraps the guest address.
+std::string relative_branch_target(std::uint32_t pc, const DecodedInstruction& instruction) {
+    const std::int64_t target = static_cast<std::int64_t>(pc) + 4
+        + static_cast<std::int64_t>(instruction.signed_immediate()) * 4;
+    return "0x" + hex_value(static_cast<std::uint32_t>(target), 8);
+}
+
 std::string unsupported_family(const DecodedInstruction& instruction) {
     std::string family = "opcode=0x" + hex_value(instruction.primary_opcode, 2);
     if (instruction.primary_opcode == 0 || instruction.primary_opcode == 0x1c) {
@@ -61,6 +70,9 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::And:
     case Operation::Or:
     case Operation::Xor:
+    case Operation::Slt:
+    case Operation::Sltu:
+    case Operation::Daddu:
         output << ' ' << rd << ", " << rs << ", " << rt;
         break;
     case Operation::Addiu:
@@ -73,20 +85,32 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Ori:
         output << ' ' << rt << ", " << rs << ", 0x" << hex_value(instruction.immediate);
         break;
+    case Operation::Lh:
     case Operation::Lw:
     case Operation::Sw:
+    case Operation::Ld:
+    case Operation::Sd:
+    case Operation::Sb:
         output << ' ' << rt << ", " << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
     case Operation::Beq:
-    case Operation::Bne: {
-        // Multiplication, not a left shift of a negative signed integer.
-        // Conversion back to uint32_t explicitly wraps the guest address.
-        const std::int64_t target = static_cast<std::int64_t>(pc) + 4
-            + static_cast<std::int64_t>(instruction.signed_immediate()) * 4;
-        output << ' ' << rs << ", " << rt << ", 0x"
-               << hex_value(static_cast<std::uint32_t>(target), 8);
+    case Operation::Bne:
+    case Operation::Beql:
+    case Operation::Bnel:
+        output << ' ' << rs << ", " << rt << ", " << relative_branch_target(pc, instruction);
         break;
-    }
+    case Operation::Blez:
+    case Operation::Bgtz:
+    case Operation::Bltz:
+    case Operation::Bgez:
+    case Operation::Bltzl:
+    case Operation::Bgezl:
+    case Operation::Bltzal:
+    case Operation::Bgezal:
+    case Operation::Bltzall:
+    case Operation::Bgezall:
+        output << ' ' << rs << ", " << relative_branch_target(pc, instruction);
+        break;
     case Operation::J:
     case Operation::Jal: {
         const std::uint32_t next_pc = pc + std::uint32_t{4};
@@ -97,6 +121,16 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Jr:
         output << ' ' << rs;
         break;
+    case Operation::Jalr:
+        output << ' ' << rd << ", " << rs;
+        break;
+    case Operation::Syscall: {
+        const std::uint32_t code = (word >> 6) & 0xfffffu;
+        if (code != 0) {
+            output << " 0x" << hex_value(code);
+        }
+        break;
+    }
     case Operation::Sll:
     case Operation::Srl:
         output << ' ' << rd << ", " << rt << ", 0x" << hex_value(instruction.shift_amount);

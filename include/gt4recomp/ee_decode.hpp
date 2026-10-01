@@ -8,8 +8,19 @@ namespace gt4recomp::ee {
 
 enum class Operation {
     Unsupported,
-    Addiu, Addu, Subu, And, Or, Xor, Lui, Lw, Sw,
-    Beq, Bne, J, Jal, Jr, Sll, Srl, Andi, Ori
+    // Register arithmetic and logic.
+    Addu, Subu, And, Or, Xor, Slt, Sltu, Daddu,
+    // Immediates, shifts and upper immediates.
+    Addiu, Andi, Ori, Sll, Srl, Lui,
+    // Memory access.
+    Lh, Lw, Sw, Ld, Sd, Sb,
+    // Relative branches; the REGIMM family compares rs against zero.
+    Beq, Bne, Beql, Bnel, Blez, Bgtz,
+    Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall,
+    // Direct and register jumps.
+    J, Jal, Jr, Jalr,
+    // Exception boundary.
+    Syscall
 };
 
 // These are overlapping views of the encoded bits, not a list of operands.

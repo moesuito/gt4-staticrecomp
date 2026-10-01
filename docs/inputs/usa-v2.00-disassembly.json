@@ -1,5 +1,5 @@
 {
-  "date": "2026-09-20",
+  "date": "2026-10-01",
   "core_sha256": "85d26aa8430154967b2633eede929286694ac39e99762527edcec365fd642ff9",
   "native_elf_sha256": "10f82e2231a51404b95682ed3ea81171100a1af2fefdeed3391943016c7c935c",
   "region_manifest_sha256": "4bc960e69e4762c315080acd747a39b4fdd932906d94add658841231cd009eaa",
@@ -10,37 +10,23 @@
     "method": "PseudoDisassembler; one word at a time; compare mnemonic and operands with explicit assembly-alias normalization"
   },
   "words": 488,
-  "matched": 311,
-  "non_nop_matched": 246,
-  "unsupported": 177,
+  "matched": 417,
+  "non_nop_matched": 352,
+  "unsupported": 71,
   "mismatched": 0,
   "unsupported_families": {
-    "opcode=0x00 function=0x09": 2,
-    "opcode=0x00 function=0x0c": 22,
     "opcode=0x00 function=0x0f": 1,
     "opcode=0x00 function=0x11": 1,
     "opcode=0x00 function=0x13": 1,
-    "opcode=0x00 function=0x2a": 1,
-    "opcode=0x00 function=0x2b": 1,
-    "opcode=0x00 function=0x2d": 27,
-    "opcode=0x01 rt=0x00": 1,
-    "opcode=0x01 rt=0x03": 1,
     "opcode=0x01 rt=0x19": 1,
-    "opcode=0x06": 1,
     "opcode=0x10 rs=0x10": 1,
     "opcode=0x11 rs=0x04": 32,
     "opcode=0x11 rs=0x06": 1,
     "opcode=0x11 rs=0x10": 1,
-    "opcode=0x14": 1,
-    "opcode=0x15": 3,
     "opcode=0x1c function=0x11": 1,
     "opcode=0x1c function=0x13": 1,
     "opcode=0x1c function=0x28": 29,
-    "opcode=0x1f": 1,
-    "opcode=0x21": 2,
-    "opcode=0x28": 2,
-    "opcode=0x37": 17,
-    "opcode=0x3f": 25
+    "opcode=0x1f": 1
   },
   "regions": [
     {
@@ -52,56 +38,56 @@
     {
       "start": "0x0010011c",
       "words": 31,
-      "matched": 28,
-      "unsupported": 3
+      "matched": 30,
+      "unsupported": 1
     },
     {
       "start": "0x00100198",
       "words": 20,
-      "matched": 16,
-      "unsupported": 4
+      "matched": 20,
+      "unsupported": 0
     },
     {
       "start": "0x001001e8",
       "words": 16,
-      "matched": 13,
-      "unsupported": 3
+      "matched": 15,
+      "unsupported": 1
     },
     {
       "start": "0x00100228",
       "words": 32,
-      "matched": 31,
-      "unsupported": 1
+      "matched": 32,
+      "unsupported": 0
     },
     {
       "start": "0x005b7560",
       "words": 64,
-      "matched": 51,
-      "unsupported": 13
+      "matched": 64,
+      "unsupported": 0
     },
     {
       "start": "0x005adf20",
       "words": 64,
-      "matched": 48,
-      "unsupported": 16
+      "matched": 64,
+      "unsupported": 0
     },
     {
       "start": "0x0048ef90",
       "words": 64,
-      "matched": 43,
-      "unsupported": 21
+      "matched": 64,
+      "unsupported": 0
     },
     {
       "start": "0x00107f08",
       "words": 64,
-      "matched": 49,
-      "unsupported": 15
+      "matched": 64,
+      "unsupported": 0
     },
     {
       "start": "0x005a3140",
       "words": 64,
-      "matched": 32,
-      "unsupported": 32
+      "matched": 64,
+      "unsupported": 0
     }
   ],
   "limits": "Manually selected code inspection windows, not proven function boundaries. Unsupported words are counted and byte-checked, not independently accepted as instructions. No guest execution or complete R5900 coverage established."
