@@ -238,10 +238,10 @@ if(BUILD_TESTING)
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target gt4boot)
         set_tests_properties(gt4boot_build PROPERTIES FIXTURES_SETUP gt4boot)
         add_test(NAME gt4boot_services
-            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 600 --compare-interpreter)
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 800 --compare-interpreter)
         set_tests_properties(gt4boot_services PROPERTIES
             FIXTURES_REQUIRED gt4boot
-            PASS_REGULAR_EXPRESSION "services handled 77")
+            PASS_REGULAR_EXPRESSION "services handled 94")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(

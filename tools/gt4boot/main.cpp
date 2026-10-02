@@ -46,17 +46,20 @@ constexpr std::uint32_t junk_margin = 0x100;
 constexpr std::uint32_t ram_size = 0x2000000;  // the EE's 32 MiB
 constexpr std::uint64_t default_step_limit = 200'000'000;
 
-// The device register windows the boot touches so far: the timer block and
-// the DMAC and SIF registers (plain storage; decision 0007).
+// The device register windows the boot touches so far: the timer block, the
+// DMAC and SIF0 channel control, and the SIF register block (all plain
+// storage; decisions 0007/0008).
 struct BootDevices {
     TimerUnit timer;
     RegisterBank dmac{0x1000E000u, 0x100u};
-    RegisterBank sif{0x1000C000u, 0x100u};
+    RegisterBank sif0{0x1000C000u, 0x100u};
+    RegisterBank sif_registers{0x1000F200u, 0x100u};
 
     void map_into(GuestMemory& memory) {
         timer.map_into(memory);
         dmac.map_into(memory);
-        sif.map_into(memory);
+        sif0.map_into(memory);
+        sif_registers.map_into(memory);
     }
 };
 
@@ -162,11 +165,11 @@ struct ReferenceResult {
     std::uint64_t services_handled = 0;
 };
 
-// The differential reference: the interpreter with the same service table
-// and the same service limit as the driver, written separately from the
-// driver's loop on purpose.
+// The differential reference: the interpreter with the same service table,
+// kernel and limits as the driver, written separately from the driver's loop
+// on purpose.
 ReferenceResult run_reference(GuestState& state, ServiceTable& services,
-                              std::uint64_t step_limit,
+                              Kernel& kernel, std::uint64_t step_limit,
                               std::uint64_t service_limit) {
     ReferenceResult result;
     Interpreter interpreter(state);
@@ -179,6 +182,9 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
         if (result.interpreted_steps >= step_limit) {
             result.boundary = Boundary{BoundaryKind::StepLimit, pc, 0, 0};
             return result;
+        }
+        if (!interpreter.pending_transfer() && kernel.start_interrupt(state)) {
+            continue;
         }
         const StepResult step = interpreter.step();
         ++result.interpreted_steps;
@@ -268,6 +274,9 @@ int wmain(int argc, wchar_t* argv[]) {
                       << " at 0x" << std::hex << std::setfill('0') << std::setw(8)
                       << pc << std::dec << std::setfill(' ') << '\n';
         };
+        options.start_interrupt = [&driver_kernel](GuestState& state) {
+            return driver_kernel.start_interrupt(state);
+        };
 
         Driver driver(driver_state, make_boot_module());
         const RunResult result = driver.run(services, options);
@@ -290,7 +299,8 @@ int wmain(int argc, wchar_t* argv[]) {
             Kernel reference_kernel;
             ServiceTable reference_services = make_boot_services(reference_kernel);
             const ReferenceResult reference = run_reference(
-                reference_state, reference_services, default_step_limit, service_limit);
+                reference_state, reference_services, reference_kernel,
+                default_step_limit, service_limit);
             if (reference.boundary.kind != boundary.kind
                 || reference.boundary.pc != boundary.pc
                 || reference.boundary.service != boundary.service) {

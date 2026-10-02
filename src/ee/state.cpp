@@ -84,8 +84,13 @@ bool GuestMemory::segment_alias_enabled() const noexcept {
 }
 
 std::uint32_t GuestMemory::physical_address(std::uint32_t address) const noexcept {
-    if (segment_alias_ && address >= 0x80000000u && address < 0xc0000000u) {
-        return address & 0x1fffffffu;
+    if (segment_alias_) {
+        // KSEG0/KSEG1 (cached/uncached mirrors of the low 512 MiB) and the
+        // KUSEG uncached mirror at 0x20000000.
+        if ((address >= 0x80000000u && address < 0xc0000000u)
+            || (address >= 0x20000000u && address < 0x40000000u)) {
+            return address & 0x1fffffffu;
+        }
     }
     return address;
 }

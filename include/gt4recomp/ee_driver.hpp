@@ -80,6 +80,11 @@ struct RunOptions {
     std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
     // Optional trace hook, called just before a service handler runs.
     std::function<void(std::uint32_t service, std::uint32_t pc)> on_service;
+    // Optional interrupt source: called at unit boundaries (no interpreted
+    // delay slot pending). Returns true when it started a handler; the run
+    // then continues in the handler's context. False when nothing is
+    // pending.
+    std::function<bool(GuestState& state)> start_interrupt;
 };
 
 struct DriverStats {

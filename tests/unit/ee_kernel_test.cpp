@@ -2,6 +2,7 @@
 // the deterministic cooperative scheduler of decision 0005, with no game
 // data. The tests drive the services directly, exactly as the syscall
 // handlers would, and check the register contexts across switches.
+#include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_kernel.hpp"
 
 #include <cstdint>
@@ -356,6 +357,86 @@ int main() {
         check(kernel.remove_intc_handler(state) == ServiceOutcome::Handled
                   && state.read_gpr32(2) == 0xFFFFFFFFu,
               "removing an unknown handler fails");
+    }
+
+    // The SIF layer: the register round trip, the model IOP's SIFCMD init
+    // handshake and the injected DMA interrupt that delivers its reply.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        RegisterBank sif_registers(0x1000F200u, 0x100u);
+        sif_registers.map_into(state.memory());
+        RegisterBank sif0(0x1000C000u, 0x100u);
+        sif0.map_into(state.memory());
+
+        check(kernel.sif_set_d_chain(state) == ServiceOutcome::Handled
+                  && sif0.register_value(0x1000C000u) == 0x184u,
+              "SifSetDChain enables the SIF0 channel");
+        state.write_gpr32(4, 0x80000000u);
+        state.write_gpr32(5, 0x1234u);
+        kernel.sif_set_reg(state);
+        state.write_gpr32(4, 0x80000000u);
+        kernel.sif_get_reg(state);
+        check(state.read_gpr32(2) == 0x1234u,
+              "software SIF registers round-trip");
+        state.write_gpr32(4, 4);  // SMFLG
+        kernel.sif_get_reg(state);
+        check((state.read_gpr32(2) & 0x20000u) != 0,
+              "the model IOP reports CMDINIT");
+        check(kernel.sif_dma_stat(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu,
+              "SifDmaStat reports a completed transfer");
+
+        // An INIT_CMD packet sent to the IOP command buffer.
+        constexpr std::uint32_t packet = 0x00100200;
+        constexpr std::uint32_t descriptors = 0x00100300;
+        constexpr std::uint32_t iop_buffer = 0x00080000;   // the model SMCOM
+        constexpr std::uint32_t ee_buffer = 0x00180000;    // the reply buffer
+        state.memory().write_word(packet + 0, 20);         // psize
+        state.memory().write_word(packet + 4, 0);          // dest
+        state.memory().write_word(packet + 8, 0x80000002u);  // INIT_CMD
+        state.memory().write_word(packet + 12, 0);         // opt
+        state.memory().write_word(packet + 16, ee_buffer); // EE reply buffer
+        state.memory().write_word(descriptors + 0, packet);
+        state.memory().write_word(descriptors + 4, iop_buffer);
+        state.memory().write_word(descriptors + 8, 20);
+        state.memory().write_word(descriptors + 12, 0);
+        state.write_gpr32(4, descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 1,
+              "SifSetDma returns a transfer id");
+        check(state.memory().read_word(iop_buffer + 8) == 0x80000002u,
+              "the command packet reached the IOP buffer");
+        check(state.memory().read_word(ee_buffer + 8) == 0x80000001u
+                  && state.memory().read_word(ee_buffer + 16) == 0
+                  && state.memory().read_word(ee_buffer + 20) == 1,
+              "the IOP stub replied SET_SREG(RPCINIT)");
+        check(kernel.pending_interrupts() == 1,
+              "the reply queued the SIF0 interrupt");
+
+        // The handler is injected with its frame; its return restores the
+        // interrupted context.
+        state.write_gpr32(4, 5);  // DMAC channel 5
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(6, 0xFFFFFFFFu);
+        state.write_gpr32(7, 0);
+        kernel.add_intc_handler(state);
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.start_interrupt(state), "the pending interrupt starts");
+        check(state.pc() == 0x00100400u && state.read_gpr32(4) == 5
+                  && state.read_gpr32(31) == Kernel::patch_return_stub_physical
+                  && (state.read_cp0(12) & 0x10000u) == 0,
+              "the handler frame has the cause, the stub and EIE clear");
+        const ServiceHandler* return_handler =
+            services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr
+                  && (*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc,
+              "the handler return restores the interrupted context");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

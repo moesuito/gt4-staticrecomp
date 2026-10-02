@@ -153,6 +153,11 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
             result.boundary = Boundary{BoundaryKind::StepLimit, state_.pc(), 0, 0};
             return result;
         }
+        // An interrupt can only be delivered at a clean unit boundary.
+        if (!interpreter_.pending_transfer() && options.start_interrupt
+            && options.start_interrupt(state_)) {
+            continue;
+        }
         // Translated code runs only when the pc names a module entry and no
         // interpreted delay slot is in flight; anything else is the bridge's.
         if (!interpreter_.pending_transfer() && module_.has_entry(state_.pc())) {

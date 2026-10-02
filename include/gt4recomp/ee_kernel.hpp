@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace gt4recomp::ee {
@@ -118,6 +119,26 @@ public:
     // (decision 0008).
     ServiceOutcome get_osd_config(GuestState& state);      // 0x4B
     ServiceOutcome set_osd_config(GuestState& state);      // 0x4A
+    // The SIF (IOP interface) services of decision 0009. The register
+    // services map the public register indices onto the SIF register block;
+    // SetDma performs the transfer synchronously and runs the model's IOP
+    // stub for the SIFCMD commands it recognizes.
+    ServiceOutcome sif_set_reg(GuestState& state);         // 0x79
+    ServiceOutcome sif_get_reg(GuestState& state);         // 0x7A
+    ServiceOutcome sif_set_d_chain(GuestState& state);     // 0x78
+    ServiceOutcome sif_stop_dma(GuestState& state);        // 0x6B
+    ServiceOutcome sif_set_dma(GuestState& state);         // 0x77
+    ServiceOutcome sif_dma_stat(GuestState& state);        // 0x76
+
+    // Interrupt injection: the driver calls this at unit boundaries. It
+    // saves the running context, sets up the registered handler's call
+    // frame (a0 = cause, returning through the model's stub), and returns
+    // true while the handler context is live. False when none is pending.
+    [[nodiscard]] bool start_interrupt(GuestState& state);
+
+    // Model introspection for tests and tools.
+    [[nodiscard]] std::uint32_t pending_interrupts() const noexcept;
+    [[nodiscard]] std::uint32_t sif_register_index_address(std::uint32_t index) const noexcept;
     // Interrupt and DMA handler registrations (0x10-0x17 and the negative
     // i* aliases). The model stores them; enable/disable are accepted with
     // no effect because no interrupt is delivered.
@@ -158,6 +179,19 @@ public:
     // returns through EPC; the stub is this model's equivalent.
     static constexpr std::uint32_t patch_return_stub_physical = 0x1600;
     static constexpr std::uint32_t patch_return_service = 0x100;
+    // The SIF register block: hardware indices 1-4 map to
+    // SIF_MSCOM/SMCOM/MSFLG/SMFLG at 0x1000F200 + (index-1)*0x10; the
+    // software system registers (0x80000000+) live in the kernel. The
+    // model's IOP is initialized: SMFLG reports SIFINIT|CMDINIT|BOOTEND and
+    // SMCOM holds a plausible shared command-buffer address.
+    static constexpr std::uint32_t sif_register_physical = 0x1000F200;
+    static constexpr std::uint32_t sif_chcr_physical = 0x1000C000;
+    static constexpr std::uint32_t sif_channel_dmac = 5;
+    static constexpr std::uint32_t sif_mesg_init = 0x70000;  // SIFINIT|CMDINIT|BOOTEND
+    static constexpr std::uint32_t sif_iop_command_buffer = 0x00080000;
+    static constexpr std::uint32_t sif_command_cid_set_sreg = 0x80000001;
+    static constexpr std::uint32_t sif_command_cid_init_cmd = 0x80000002;
+    static constexpr std::uint32_t sif_sreg_rpcinit = 0;
 
 private:
     [[nodiscard]] KernelThread* find_thread(std::uint32_t id) noexcept;
@@ -175,16 +209,29 @@ private:
     bool dispatch(GuestState& state);
     // Dispatches when a ready thread strictly outranks the running one.
     bool preempt_if_outranked(GuestState& state);
-    // The model's private return service: a patched handler returns through
-    // the stub, which issues this number; here the caller's ra and the
-    // instruction after the syscall are restored.
-    ServiceOutcome patch_return(GuestState& state);
+    // The model's private return service: a patched handler or an injected
+    // interrupt handler returns through the stub, which issues this number;
+    // here the saved state is restored.
+    ServiceOutcome deferred_return(GuestState& state);
     // Errors the kernel reports as -1 in v0, like the public ABI's negative
     // error codes.
     static void write_error(GuestState& state);
     // Fills the synthetic syscall table with one token per number the first
     // time it is needed.
     void ensure_syscall_table(GuestState& state);
+    // Seeds the model's initialized-IOP register values the first time a SIF
+    // service runs.
+    void ensure_sif_ready(GuestState& state);
+    // Appends a pending SIF interrupt; the driver delivers it through
+    // start_interrupt at the next unit boundary.
+    void queue_interrupt(std::uint32_t cause);
+    // Byte copy inside the guest memory, used by the synchronous SIF DMA.
+    void copy_guest_bytes(GuestState& state, std::uint32_t source,
+                          std::uint32_t destination, std::uint32_t size);
+    // The model IOP stub: inspects one transferred SIFCMD packet and answers
+    // the commands it recognizes (currently the SIFCMD init handshake).
+    void run_iop_stub(GuestState& state, std::uint32_t command_buffer,
+                      std::uint32_t size);
 
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
@@ -198,15 +245,26 @@ private:
     // japLanguage=1 (non-Japanese), ps1drvConfig=0, version=1 (OSD2),
     // language=1 (English), timezoneOffset=0. See decision 0008.
     std::uint32_t osd_config_ = 0x00012011u;
-    // One entry per patched handler call in flight; nested calls are a
-    // stack, exactly like the handlers' returns.
-    struct PendingPatchCall {
-        std::uint32_t resume_pc = 0;  // the syscall's pc + 4
+    // One entry per deferred guest call in flight (a patched syscall or an
+    // injected interrupt handler); nested calls are a stack, exactly like
+    // the handlers' returns. A patch saves the caller's ra and the resume
+    // address; an interrupt saves the whole interrupted context.
+    struct DeferredCall {
+        enum class Kind { Patch, Interrupt };
+        Kind kind = Kind::Patch;
+        std::uint32_t resume_pc = 0;
         std::uint32_t caller_ra = 0;
+        RegisterContext context;
     };
-    std::vector<PendingPatchCall> patch_calls_;
+    std::vector<DeferredCall> deferred_calls_;
     std::vector<KernelInterruptHandler> interrupt_handlers_;
     std::uint32_t next_handler_id_ = 1;
+    // The SIF layer: software system registers, the model IOP's pending
+    // interrupts and the transfer id handed out by SifSetDma.
+    std::map<std::uint32_t, std::uint32_t> sif_software_registers_;
+    std::vector<std::uint32_t> interrupt_queue_;
+    std::uint32_t next_dma_id_ = 1;
+    bool sif_ready_ = false;
 };
 
 } // namespace gt4recomp::ee

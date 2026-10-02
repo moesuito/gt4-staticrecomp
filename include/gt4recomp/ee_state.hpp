@@ -29,12 +29,13 @@ public:
     [[nodiscard]] bool contains(std::uint32_t address, std::size_t width) const noexcept;
 
     // Segment aliasing: the EE maps KSEG0 (0x80000000) and KSEG1
-    // (0xA0000000) to the low 512 MiB of physical space, and the kernel's
-    // syscall-table search and the timer code read and write through those
-    // segments. When enabled, addresses in [0x80000000, 0xC0000000) access
-    // the same bytes as their physical address (address & 0x1FFFFFFF),
-    // bounded by the region. The default is strict: nothing outside the
-    // region is mapped unless the caller asks for it.
+    // (0xA0000000) to the low 512 MiB of physical space, and the uncached
+    // KUSEG mirror at 0x20000000 does the same for user addresses. The
+    // kernel's syscall-table search and the SIF code read and write through
+    // those aliases. When enabled, addresses in [0x80000000, 0xC0000000) and
+    // [0x20000000, 0x40000000) access the same bytes as their physical
+    // address (address & 0x1FFFFFFF), bounded by the region. The default is
+    // strict: nothing outside the region is mapped unless the caller asks.
     void enable_segment_alias() noexcept;
     [[nodiscard]] bool segment_alias_enabled() const noexcept;
 

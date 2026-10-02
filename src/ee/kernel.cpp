@@ -170,6 +170,15 @@ void Kernel::register_services(ServiceTable& services) {
     add(0x74u, &Kernel::set_syscall);
     add(0x4Au, &Kernel::set_osd_config);
     add(0x4Bu, &Kernel::get_osd_config);
+    add(0x76u, &Kernel::sif_dma_stat);
+    add(static_cast<std::uint32_t>(-0x76), &Kernel::sif_dma_stat);
+    add(0x77u, &Kernel::sif_set_dma);
+    add(static_cast<std::uint32_t>(-0x77), &Kernel::sif_set_dma);
+    add(0x78u, &Kernel::sif_set_d_chain);
+    add(static_cast<std::uint32_t>(-0x78), &Kernel::sif_set_d_chain);
+    add(0x79u, &Kernel::sif_set_reg);
+    add(0x7Au, &Kernel::sif_get_reg);
+    add(0x6Bu, &Kernel::sif_stop_dma);
     add(0x10u, &Kernel::add_intc_handler);
     add(0x11u, &Kernel::remove_intc_handler);
     add(0x12u, &Kernel::add_dmac_handler);
@@ -182,7 +191,7 @@ void Kernel::register_services(ServiceTable& services) {
     add(static_cast<std::uint32_t>(-0x1B), &Kernel::disable_intc);
     add(static_cast<std::uint32_t>(-0x1C), &Kernel::enable_dmac);
     add(static_cast<std::uint32_t>(-0x1D), &Kernel::disable_dmac);
-    add(patch_return_service, &Kernel::patch_return);
+    add(patch_return_service, &Kernel::deferred_return);
 }
 
 std::uint32_t Kernel::current_thread_id() const noexcept {
@@ -737,8 +746,11 @@ ServiceOutcome Kernel::set_syscall(GuestState& state) {
         const std::uint32_t syscall_pc = state.pc();
         state.memory().write_word(patch_return_stub_physical, 0x24030100u);
         state.memory().write_word(patch_return_stub_physical + 4, 0x0000000Cu);
-        patch_calls_.push_back(PendingPatchCall{
-            syscall_pc + 4, static_cast<std::uint32_t>(state.read_gpr64(31))});
+        DeferredCall call;
+        call.kind = DeferredCall::Kind::Patch;
+        call.resume_pc = syscall_pc + 4;
+        call.caller_ra = static_cast<std::uint32_t>(state.read_gpr64(31));
+        deferred_calls_.push_back(call);
         state.write_gpr64(31, patch_return_stub_physical);
         state.set_pc(handler);
         return ServiceOutcome::Jumped;
@@ -747,14 +759,19 @@ ServiceOutcome Kernel::set_syscall(GuestState& state) {
     return ServiceOutcome::Handled;
 }
 
-ServiceOutcome Kernel::patch_return(GuestState& state) {
-    // The stub's private service: put the caller's ra back and continue
-    // after the syscall the handler was called for.
-    if (patch_calls_.empty()) {
+ServiceOutcome Kernel::deferred_return(GuestState& state) {
+    // The stub's private service: restore what the deferred call saved. A
+    // patched syscall gets its caller's ra and resume address back; an
+    // injected interrupt handler gets the whole interrupted context back.
+    if (deferred_calls_.empty()) {
         throw std::logic_error("The patch return stub fired with no call in flight");
     }
-    const PendingPatchCall call = patch_calls_.back();
-    patch_calls_.pop_back();
+    const DeferredCall call = deferred_calls_.back();
+    deferred_calls_.pop_back();
+    if (call.kind == DeferredCall::Kind::Interrupt) {
+        state.restore_registers(call.context);
+        return ServiceOutcome::Jumped;
+    }
     state.write_gpr64(31, call.caller_ra);
     state.set_pc(call.resume_pc);
     return ServiceOutcome::Jumped;
@@ -852,6 +869,206 @@ ServiceOutcome Kernel::enable_dmac(GuestState& state) {
 
 ServiceOutcome Kernel::disable_dmac(GuestState& state) {
     state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+std::uint32_t Kernel::pending_interrupts() const noexcept {
+    return static_cast<std::uint32_t>(interrupt_queue_.size());
+}
+
+std::uint32_t Kernel::sif_register_index_address(std::uint32_t index) const noexcept {
+    // The public indices 1-4 name MSCOM, SMCOM, MSFLG and SMFLG.
+    if (index >= 1 && index <= 4) {
+        return sif_register_physical + (index - 1) * 0x10;
+    }
+    return 0;
+}
+
+void Kernel::ensure_sif_ready(GuestState& state) {
+    if (sif_ready_) {
+        return;
+    }
+    // The model's IOP has completed its SIF and SIFCMD initialization: SMFLG
+    // reports SIFINIT|CMDINIT|BOOTEND and SMCOM holds the IOP's command
+    // buffer address. The addresses live in the SIF register bank the host
+    // maps; an unmapped bank fails loudly instead of pretending.
+    state.memory().write_word(sif_register_index_address(4), sif_mesg_init);
+    state.memory().write_word(sif_register_index_address(2), sif_iop_command_buffer);
+    sif_ready_ = true;
+}
+
+void Kernel::queue_interrupt(std::uint32_t cause) {
+    interrupt_queue_.push_back(cause);
+}
+
+bool Kernel::start_interrupt(GuestState& state) {
+    if (interrupt_queue_.empty()) {
+        return false;
+    }
+    const std::uint32_t cause = interrupt_queue_.front();
+    interrupt_queue_.erase(interrupt_queue_.begin());
+    std::uint32_t handler = 0;
+    for (const KernelInterruptHandler& registration : interrupt_handlers_) {
+        if (registration.cause == cause) {
+            handler = registration.handler;
+            break;
+        }
+    }
+    if (handler == 0) {
+        // No handler registered for the cause: like the hardware, nothing
+        // happens; the interrupt is dropped and the model records nothing.
+        return false;
+    }
+    // The handler returns through the model's stub, like a patched syscall.
+    state.memory().write_word(patch_return_stub_physical, 0x24030100u);
+    state.memory().write_word(patch_return_stub_physical + 4, 0x0000000Cu);
+    const RegisterContext interrupted = state.save_registers();
+    DeferredCall call;
+    call.kind = DeferredCall::Kind::Interrupt;
+    call.context = interrupted;
+    deferred_calls_.push_back(call);
+
+    RegisterContext frame;
+    frame.pc = handler;
+    frame.gpr[4] = cause;                          // a0 = channel
+    frame.gpr[28] = interrupted.gpr[28];           // gp as interrupted
+    frame.gpr[29] = interrupted.gpr[29];           // sp as interrupted
+    frame.gpr[31] = patch_return_stub_physical;
+    frame.cp0 = interrupted.cp0;
+    frame.cp0[12] &= ~0x00010000u;                 // EIE clear while handling
+    state.restore_registers(frame);
+    return true;
+}
+
+void Kernel::copy_guest_bytes(GuestState& state, std::uint32_t source,
+                              std::uint32_t destination, std::uint32_t size) {
+    if (!state.memory().contains(source, size)
+        || !state.memory().contains(destination, size)) {
+        throw std::runtime_error(
+            "A SifSetDma transfer leaves the mapped guest memory");
+    }
+    for (std::uint32_t offset = 0; offset < size; ++offset) {
+        state.memory().write_byte(destination + offset,
+                                  state.memory().read_byte(source + offset));
+    }
+}
+
+void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
+                          std::uint32_t size) {
+    // The outgoing SIFCMD header: psize/dsize, dest, cid, opt. The model IOP
+    // recognizes the SIFCMD init handshake the boot performs: the reply is a
+    // SET_SREG packet that flips the game's RPCINIT software register, sent
+    // back through the EE buffer named in the request and announced by the
+    // SIF0 DMA interrupt. Other commands are transferred without a reply,
+    // exactly as an IOP that does not implement them.
+    if (size < 20) {
+        return;
+    }
+    const std::uint32_t cid = state.memory().read_word(command_buffer + 8);
+    if (cid != sif_command_cid_init_cmd) {
+        return;
+    }
+    const std::uint32_t reply_buffer = state.memory().read_word(command_buffer + 16);
+    if (!state.memory().contains(reply_buffer, 24)) {
+        throw std::runtime_error(
+            "The SIFCMD init reply buffer is outside the mapped guest memory");
+    }
+    state.memory().write_word(reply_buffer + 0, 24);  // psize (dsize remains 0)
+    state.memory().write_word(reply_buffer + 4, 0);   // dest
+    state.memory().write_word(reply_buffer + 8, sif_command_cid_set_sreg);
+    state.memory().write_word(reply_buffer + 12, 0);  // opt
+    state.memory().write_word(reply_buffer + 16, sif_sreg_rpcinit);
+    state.memory().write_word(reply_buffer + 20, 1);
+    queue_interrupt(sif_channel_dmac);
+}
+
+ServiceOutcome Kernel::sif_set_reg(GuestState& state) {
+    ensure_sif_ready(state);
+    const std::uint32_t index = state.read_gpr32(4);
+    const std::uint32_t value = state.read_gpr32(5);
+    if ((index & 0x80000000u) != 0) {
+        sif_software_registers_[index] = value;
+        state.write_gpr64(2, value);  // the verified callers ignore the result
+        return ServiceOutcome::Handled;
+    }
+    const std::uint32_t address = sif_register_index_address(index);
+    if (address == 0) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    state.memory().write_word(address, value);
+    state.write_gpr64(2, value);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::sif_get_reg(GuestState& state) {
+    ensure_sif_ready(state);
+    const std::uint32_t index = state.read_gpr32(4);
+    if ((index & 0x80000000u) != 0) {
+        const auto found = sif_software_registers_.find(index);
+        state.write_gpr64(2, found == sif_software_registers_.end() ? 0 : found->second);
+        return ServiceOutcome::Handled;
+    }
+    const std::uint32_t address = sif_register_index_address(index);
+    if (address == 0) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    state.write_gpr64(2, state.memory().read_word(address));
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::sif_set_d_chain(GuestState& state) {
+    ensure_sif_ready(state);
+    // Enable the SIF0 channel (its CHCR lives at 0x1000C000): STR, TIE and
+    // the chain mode, 0x184, exactly the value the public header documents.
+    state.memory().write_word(sif_chcr_physical, 0x00000184u);
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::sif_stop_dma(GuestState& state) {
+    ensure_sif_ready(state);
+    state.memory().write_word(sif_chcr_physical, 0);
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::sif_dma_stat(GuestState& state) {
+    // Every model transfer completes synchronously, so the status is always
+    // "done": -1, the value the SDK's polling loops expect.
+    state.write_gpr64(2, 0xFFFFFFFFu);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::sif_set_dma(GuestState& state) {
+    ensure_sif_ready(state);
+    const std::uint32_t descriptors = state.read_gpr32(4);
+    const std::uint32_t count = state.read_gpr32(5);
+    if (count == 0 || count > 16) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    const std::uint32_t command_buffer =
+        state.memory().read_word(sif_register_index_address(2));
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const std::uint32_t entry = descriptors + index * 16;  // SifDmaTransfer_t
+        if (!state.memory().contains(entry, 16)) {
+            write_error(state);
+            return ServiceOutcome::Handled;
+        }
+        const std::uint32_t source = state.memory().read_word(entry);
+        const std::uint32_t destination = state.memory().read_word(entry + 4);
+        const std::uint32_t size = state.memory().read_word(entry + 8);
+        if (size == 0) {
+            continue;
+        }
+        copy_guest_bytes(state, source, destination, size);
+        if (destination == command_buffer) {
+            run_iop_stub(state, command_buffer, size);
+        }
+    }
+    state.write_gpr64(2, next_dma_id_++);
     return ServiceOutcome::Handled;
 }
 

@@ -1,10 +1,11 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 6 — the OSD configuration and the device
-register banks: the boot passes the whole init chain and the game's thread
-creation and stops at SifSetDChain, the IOP wall, with the state identical to
-the interpreter. This is the first document to read in a new session; it is
-kept current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 7 — the SIF layer and interrupt injection:
+the boot completes the SIFCMD init handshake, the game's own DMA handler runs
+as an injected interrupt, the RPC layer initializes, and the run stops at a
+clean no-runnable-thread boundary waiting for the IOP's RPC bind reply. This
+is the first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -323,6 +324,23 @@ kept current as work proceeds. Details live in the linked evidence documents.
   Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-osd-and-the-iop-wall.md`,
   `docs/decisions/0008-osd-and-device-banks.md`).
+- M30 slice 7 (2026-10-02): **the SIF layer, the model IOP and interrupt
+  injection** — SifSetReg/GetReg (0x79/0x7A) over the SIF register block and
+  the kernel's software system registers, SifSetDChain (0x78) writing SIF0's
+  CHCR = 0x184, SifStopDma (0x6B), synchronous SifSetDma (0x77) with
+  SifDmaStat (0x76) always done, a model IOP seeded as initialized whose
+  stub answers the SIFCMD INIT_CMD with SET_SREG(RPCINIT), and the driver's
+  **interrupt injection** (the kernel saves the interrupted context and
+  installs the registered handler's frame; the handler returns through the
+  model's stub). The uncached KUSEG mirror (0x20000000) joined the segment
+  alias. **The boot completes the SIFCMD handshake, runs the game's own DMA
+  handler as an injected interrupt for the first time, initializes RPC and
+  stops at a clean `NoRunnableThread` boundary waiting for the IOP's RPC
+  bind reply (pc 0x005ADCE4)** — the interpreter reference at 6,322,280
+  instructions with the full state identical. CTest 32/32; Python 73
+  (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-sif-and-interrupt-injection.md`,
+  `docs/decisions/0009-sif-and-interrupt-injection.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -332,13 +350,12 @@ kept current as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the IOP interface (SIF)** — the boot stops
-  at SifSetDChain (0x78) at 0x005AE084, and the public `sceSifInitCmd` shows
-  the following steps: register the SIF0 DMA handler, then handshake with
-  the IOP through the SIF registers and wait for CMDINIT. The decision must
-  settle how the model represents the IOP side (register semantics, DMA
-  completion, RPC), with the public SIF sources and the live PCSX2 emulator
-  as evidence. Then a ticking timer with interrupt/alarm delivery.
+- Next technical milestone work: **the RPC replies of the model IOP** — the
+  boot completes the SIFCMD init handshake and stops at the RPC bind wait
+  (`WaitSema` at 0x005ADCE4, no-runnable-thread). The model IOP must answer
+  `SIF_CMD_RPC_BIND` (and later calls) using the public `sifrpc.c` protocol
+  and the live PCSX2 emulator as the oracle. Then a ticking timer with
+  interrupt/alarm delivery.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -388,14 +405,14 @@ kept current as work proceeds. Details live in the linked evidence documents.
   step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
-  module entries (correctness first; 17,696 instructions in the boot run).
+  module entries (correctness first; 18,023 instructions in the boot run).
   The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now stops at the IOP wall**: SifSetDChain (0x78) at 0x005AE084,
-  the SIF initialization's channel enable. The OSD configuration and the
-  DMAC/SIF register banks before it are modeled (decision 0008); the public
-  `sceSifInitCmd` shows the following CMDINIT handshake would spin without an
-  IOP model.
+- **The boot now stops at the RPC bind wait**: `WaitSema` at 0x005ADCE4
+  inside `sceSifBindRpc`, a clean no-runnable-thread boundary. The SIF
+  register services, the SIFCMD init handshake, the model IOP's SET_SREG
+  reply and interrupt injection are modeled (decision 0009); the model IOP
+  does **not** answer RPC packets yet, which is the recorded next wall.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence). No timer preemption is modeled (decision 0005);
@@ -410,11 +427,12 @@ kept current as work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 7: **the IOP interface (SIF)** — model the SIF register
-   semantics (handshake flags), SIF DMA submission/completion and the RPC
-   layer the game builds on top, using the public `sifcmd.c`/`sifdma.h`
-   sources and the live PCSX2 emulator as the oracle; the acceptance evidence
-   is `gt4boot --compare-interpreter` past SifSetDChain (0x78).
+1. M30 slice 8: **the RPC layer of the model IOP** — answer
+   `SIF_CMD_RPC_BIND` and `SIF_CMD_RPC_CALL` for the servers the game binds
+   (`sifman`, `fileio`, `cdvd`, …), using the public `sifrpc.c`/`sifcmd.c`
+   protocol and the live PCSX2 emulator as the oracle; the acceptance
+   evidence is `gt4boot --compare-interpreter` past the bind wait
+   (0x005ADCE4).
 2. A ticking timer with interrupt/alarm delivery for code that waits on
    alarms (the timer registers are storage-only today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -463,5 +481,8 @@ kept current as work proceeds. Details live in the linked evidence documents.
   registers and interrupt handlers (the whole `_InitSys` tree and the game's
   thread creation run, the cooperative scheduler is exercised end to end, a
   `jr ra` translator bug is found and fixed, and the run stops at
-  GetOsdConfigParam), and slice 6 is the OSD configuration and the device
-  register banks (the run stops at SifSetDChain, the IOP wall).
+  GetOsdConfigParam), slice 6 is the OSD configuration and the device
+  register banks (the run stops at SifSetDChain, the IOP wall), and slice 7
+  is the SIF layer with the model IOP and interrupt injection (the SIFCMD
+  handshake completes, the game's own DMA handler runs as an injected
+  interrupt, RPC initializes, and the run stops at the RPC bind wait).
