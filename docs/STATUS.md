@@ -1,8 +1,8 @@
 # Project status
 
-Updated 2026-10-01 after M8. This is the first document to read in a new
-session; it is kept current as work proceeds. Details live in the linked
-evidence documents.
+Updated 2026-10-01 after M8 and the M7/M8 lessons. This is the first document
+to read in a new session; it is kept current as work proceeds. Details live in
+the linked evidence documents.
 
 ## Where we are
 
@@ -26,7 +26,8 @@ evidence documents.
   `direct-call` evidence and bounded reachable sets; new `gt4funcs` frontend.
   Real seeded closure: 10 functions, 8 direct calls, `pending=0`
   (`docs/reverse-engineering/m8-function-map.md`).
-- EXPLAIN: `docs/lessons/m6.md` written; lessons for M7/M8 pending.
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); retroactive
+  notes for M2-M5 and tutoring review remain open.
 - Next technical milestone work: M9 — explicit guest state and memory model.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
@@ -49,19 +50,19 @@ evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; M6 has a lesson.
+- Retroactive lesson notes for M2-M5 are not written.
 - 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
   deferred to M15-M17 by the curriculum.
 
 ## Next actions
 
-1. Write the M7 and M8 EXPLAIN lessons (`docs/lessons/m7.md`, `m8.md`).
-2. Start M9: explicit guest state and memory model (registers, addresses,
-  deterministic tests) per the curriculum.
+1. Start M9: explicit guest state and memory model (registers, guest
+   addresses, deterministic tests) per the curriculum.
+2. Retroactive lesson notes for M2-M5 if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
 
 - [2026-10-01](journal/2026-10-01.md) — fork setup, environment validation,
-  decoder expansion, Ghidra verification, working rules, M6 lesson, M7 slices
-  1-2, M8 function map.
+  decoder expansion, Ghidra verification, working rules, M6-M8 lessons, M7
+  slices 1-2, M8 function map.
