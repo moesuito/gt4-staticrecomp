@@ -44,11 +44,12 @@ after `20ba459`.
 | `private/tooling/ghidra_12.1.3_PUBLIC` + `private/tooling/jdk-21` | Ghidra and its JDK, bundled and used with `$env:JAVA_HOME` (no system install). |
 | `private/tooling/downloads/` | Installer caches: Ghidra zip, Temurin JDK zip, and **`zlib-1.3.1.tar.gz`** (hash-pinned, for the offline first CMake configure). |
 | `private/tooling-venv` | Python venv with `pycdlib 1.20.0` and `zstandard 0.25.0`. Works if base Python 3.14.2 is at `C:\Python314`; otherwise recreate (section 4). |
-| `private/pcsx2/`, `private/disassembly/` | Live-RAM dumps and Ghidra listings from earlier milestones (evidence). |
+| `private/pcsx2/` | Live-RAM dumps from M14 and, now, the **PCSX2 savestates** (`private/pcsx2/sstates/`: slot 9 = the PINE/menu state, slot 1 = the owner's, plus a backup) so the folder is self-contained for offline savestate decoding. |
+| `private/disassembly/` | Ghidra listings, comparison TSVs and logs from the M6/M16 verification runs (evidence). |
 | `generated/whole-program.hpp` | The M29 whole-program module: 15,068 functions, 924,991 instructions, 146.4 MB. Regenerable; ignored by git. |
 | `build/` | The previous build tree (0.34 GB). **Recreate it** (section 4): it contains absolute paths from this machine. |
 
-Repository total: **7.38 GB** (with hidden files).
+Repository total: **7.42 GB** (with hidden files, including the savestates).
 
 ## 3. External tools to install on the new machine
 
@@ -60,7 +61,7 @@ Repository total: **7.38 GB** (with hidden files).
 | Ninja | 1.13.2 | On `PATH`. |
 | Git | 2.53.0.windows.1 | For the repo; sign in to GitHub (`moesuito`) to push. |
 | Python 3.14 | 3.14.2 at `C:\Python314` | Only for the Python suite and the copied venv. If installed elsewhere, recreate the venv (section 4). |
-| *(optional)* PCSX2 | 2.9.93 (this machine: `F:\Games\PS2`) | Only for live-observation work (PINE on port 28011). Its savestates live in `%USERPROFILE%\Documents\PCSX2\sstates` and are **not** in this folder; copy them separately if that work continues. |
+| *(optional)* PCSX2 | 2.9.93 (this machine: `F:\Games\PS2`) | Only for live-observation work (PINE on port 28011). The savestates are already copied into `private/pcsx2/sstates/`, so offline savestate decoding works without PCSX2; the emulator itself is only needed for new live captures. |
 
 Nothing else: Java is not needed system-wide (JDK 21 is bundled), Ghidra is
 bundled, ImHex/LLVM are not used.
