@@ -33,9 +33,34 @@ enum class Operation {
     Mult, Multu, Div, Divu, Madd, Maddu, Mult1, Multu1, Div1, Divu1, Madd1, Maddu1,
     // CP0: system-coprocessor moves and the interrupt-enable pair.
     Mfc0, Mtc0, Ei, Di, Eret,
-    // COP2: VU0 macro-mode moves, the quad memory accesses and the reference
-    // no-operation. The arithmetic tables land in later slices.
-    Qmfc2, Qmtc2, Cfc2, Ctc2, Lqc2, Sqc2, Vnop,
+    // COP2: VU0 macro-mode moves, the quad memory accesses and the VU macro
+    // instruction set. The macro table mirrors the reference's two dispatch
+    // tables one-to-one: functions 0x00-0x3B index the first, the packed
+    // index (word & 3) | ((word >> 4) & 0x7C) the second. The write mask for
+    // the floating-point forms is the low four bits of rs.
+    Qmfc2, Qmtc2, Cfc2, Ctc2, Lqc2, Sqc2,
+    // VU macro, standard table (functions 0x00-0x3B): the element and
+    // broadcast arithmetic that writes fd, then the accumulator forms.
+    Vaddx, Vaddy, Vaddz, Vaddw, Vsubx, Vsuby, Vsubz, Vsubw,
+    Vmaddx, Vmaddy, Vmaddz, Vmaddw, Vmsubx, Vmsuby, Vmsubz, Vmsubw,
+    Vmaxx, Vmaxy, Vmaxz, Vmaxw, Vminix, Vminiy, Vminiz, Vminiw,
+    Vmulx, Vmuly, Vmulz, Vmulw, Vmulq, Vmaxi, Vmuli, Vminii,
+    Vaddq, Vmaddq, Vaddi, Vmaddi, Vsubq, Vmsubq, Vsubi, Vmsubi,
+    Vadd, Vmadd, Vmul, Vmax, Vsub, Vmsub, Vopmsub, Vmini,
+    Viadd, Visub, Viaddi, Viand, Vior,
+    // VU macro, packed table: the accumulator and conversion forms, the
+    // outer product, moves, the division unit and the random generator.
+    Vaddax, Vadday, Vaddaz, Vaddaw, Vsubax, Vsubay, Vsubaz, Vsubaw,
+    Vmaddax, Vmadday, Vmaddaz, Vmaddaw, Vmsubax, Vmsubay, Vmsubaz, Vmsubaw,
+    Vitof0, Vitof4, Vitof12, Vitof15, Vftoi0, Vftoi4, Vftoi12, Vftoi15,
+    Vmulax, Vmulay, Vmulaz, Vmulaw, Vmulaq, Vabs, Vmulai, Vclipw,
+    Vaddaq, Vmaddaq, Vaddai, Vmaddai, Vsubaq, Vmsubaq, Vsubai, Vmsubai,
+    Vadda, Vmadda, Vmula, Vsuba, Vmsuba, Vopmula,
+    Vmove, Vmr32,
+    Vdiv, Vsqrt, Vrsqrt, Vwaitq, Vmtir, Vmfir,
+    Vrnext, Vrget, Vrinit, Vrxor,
+    // VU macro, the reference's full no-operation.
+    Vnop,
     // COP1: register moves, FPU memory access, single-precision arithmetic,
     // accumulator forms, comparisons, conversions and conditional branches.
     Mfc1, Cfc1, Mtc1, Ctc1, Lwc1, Swc1,

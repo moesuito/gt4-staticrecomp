@@ -323,6 +323,36 @@ void GuestState::set_vu0_clip_flag(std::uint32_t value) noexcept {
     vu0_clip_flag_ = value;
 }
 
+std::uint32_t GuestState::read_acc_lane(std::uint8_t lane) const {
+    if (lane >= 4) {
+        throw std::runtime_error("VU0 accumulator lane index out of range");
+    }
+    return vu0_acc_[lane];
+}
+
+void GuestState::write_acc_lane(std::uint8_t lane, std::uint32_t value) {
+    if (lane >= 4) {
+        throw std::runtime_error("VU0 accumulator lane index out of range");
+    }
+    vu0_acc_[lane] = value;
+}
+
+std::uint32_t GuestState::vu0_mac_flag() const noexcept {
+    return vu0_mac_flag_;
+}
+
+void GuestState::set_vu0_mac_flag(std::uint32_t value) noexcept {
+    vu0_mac_flag_ = value;
+}
+
+std::uint32_t GuestState::vu0_status_flag() const noexcept {
+    return vu0_status_flag_;
+}
+
+void GuestState::set_vu0_status_flag(std::uint32_t value) noexcept {
+    vu0_status_flag_ = value;
+}
+
 void GuestState::reset_vu0_registers() noexcept {
     // VF0 stays the constant through the accessors; the storage clears.
     for (auto& vector : vu0_vf_) {
@@ -330,6 +360,9 @@ void GuestState::reset_vu0_registers() noexcept {
     }
     vu0_vi_.fill(0);
     vu0_clip_flag_ = 0;
+    vu0_acc_.fill(0);
+    vu0_mac_flag_ = 0;
+    vu0_status_flag_ = 0;
 }
 
 std::uint32_t GuestState::pc() const noexcept {

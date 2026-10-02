@@ -123,6 +123,14 @@ public:
     void write_vi(std::uint8_t index, std::uint32_t value);
     [[nodiscard]] std::uint32_t vu0_clip_flag() const noexcept;
     void set_vu0_clip_flag(std::uint32_t value) noexcept;
+    // The accumulator and the two flag registers the macro arithmetic writes
+    // and the control moves read back through the integer file.
+    [[nodiscard]] std::uint32_t read_acc_lane(std::uint8_t lane) const;
+    void write_acc_lane(std::uint8_t lane, std::uint32_t value);
+    [[nodiscard]] std::uint32_t vu0_mac_flag() const noexcept;
+    void set_vu0_mac_flag(std::uint32_t value) noexcept;
+    [[nodiscard]] std::uint32_t vu0_status_flag() const noexcept;
+    void set_vu0_status_flag(std::uint32_t value) noexcept;
     // The FBRST reset bit clears the whole VU0 register file.
     void reset_vu0_registers() noexcept;
 
@@ -144,6 +152,9 @@ private:
     std::array<std::array<std::uint32_t, 4>, 32> vu0_vf_{};
     std::array<std::uint32_t, 32> vu0_vi_{};
     std::uint32_t vu0_clip_flag_ = 0;
+    std::array<std::uint32_t, 4> vu0_acc_{};
+    std::uint32_t vu0_mac_flag_ = 0;
+    std::uint32_t vu0_status_flag_ = 0;
     std::uint32_t pc_ = 0;
     GuestMemory memory_;
 };

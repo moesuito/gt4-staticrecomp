@@ -226,20 +226,61 @@ Operation decode_cop0(const DecodedInstruction& instruction) {
     }
 }
 
+// The VU macro dispatch tables mirror the reference's two tables one-to-one.
+// Functions 0x00-0x3B index the standard table; 0x3C-0x3F index the packed
+// table with the index the reference computes from the function's low two
+// bits and the destination field: (word & 3) | ((word >> 4) & 0x7C). Slots
+// the model does not execute stay Unsupported: VCALLMS/VCALLMSR run VU0 micro
+// code and the quad memory forms (VLQI/VSQI/VLQD/VSQD) with VILWR/VISWR touch
+// the VU0 data memory, neither of which this model has.
+constexpr Operation kCop2Special1[0x3c] = {
+    Operation::Vaddx, Operation::Vaddy, Operation::Vaddz, Operation::Vaddw,
+    Operation::Vsubx, Operation::Vsuby, Operation::Vsubz, Operation::Vsubw,
+    Operation::Vmaddx, Operation::Vmaddy, Operation::Vmaddz, Operation::Vmaddw,
+    Operation::Vmsubx, Operation::Vmsuby, Operation::Vmsubz, Operation::Vmsubw,
+    Operation::Vmaxx, Operation::Vmaxy, Operation::Vmaxz, Operation::Vmaxw,
+    Operation::Vminix, Operation::Vminiy, Operation::Vminiz, Operation::Vminiw,
+    Operation::Vmulx, Operation::Vmuly, Operation::Vmulz, Operation::Vmulw,
+    Operation::Vmulq, Operation::Vmaxi, Operation::Vmuli, Operation::Vminii,
+    Operation::Vaddq, Operation::Vmaddq, Operation::Vaddi, Operation::Vmaddi,
+    Operation::Vsubq, Operation::Vmsubq, Operation::Vsubi, Operation::Vmsubi,
+    Operation::Vadd, Operation::Vmadd, Operation::Vmul, Operation::Vmax,
+    Operation::Vsub, Operation::Vmsub, Operation::Vopmsub, Operation::Vmini,
+    Operation::Viadd, Operation::Visub, Operation::Viaddi, Operation::Unsupported,
+    Operation::Viand, Operation::Vior, Operation::Unsupported, Operation::Unsupported,
+    Operation::Unsupported, Operation::Unsupported, Operation::Unsupported,
+    Operation::Unsupported,
+};
+
+constexpr Operation kCop2Special2[128] = {
+    Operation::Vaddax, Operation::Vadday, Operation::Vaddaz, Operation::Vaddaw,
+    Operation::Vsubax, Operation::Vsubay, Operation::Vsubaz, Operation::Vsubaw,
+    Operation::Vmaddax, Operation::Vmadday, Operation::Vmaddaz, Operation::Vmaddaw,
+    Operation::Vmsubax, Operation::Vmsubay, Operation::Vmsubaz, Operation::Vmsubaw,
+    Operation::Vitof0, Operation::Vitof4, Operation::Vitof12, Operation::Vitof15,
+    Operation::Vftoi0, Operation::Vftoi4, Operation::Vftoi12, Operation::Vftoi15,
+    Operation::Vmulax, Operation::Vmulay, Operation::Vmulaz, Operation::Vmulaw,
+    Operation::Vmulaq, Operation::Vabs, Operation::Vmulai, Operation::Vclipw,
+    Operation::Vaddaq, Operation::Vmaddaq, Operation::Vaddai, Operation::Vmaddai,
+    Operation::Vsubaq, Operation::Vmsubaq, Operation::Vsubai, Operation::Vmsubai,
+    Operation::Vadda, Operation::Vmadda, Operation::Vmula, Operation::Unsupported,
+    Operation::Vsuba, Operation::Vmsuba, Operation::Vopmula, Operation::Vnop,
+    Operation::Vmove, Operation::Vmr32, Operation::Unsupported, Operation::Unsupported,
+    Operation::Unsupported, Operation::Unsupported, Operation::Unsupported,
+    Operation::Unsupported,
+    Operation::Vdiv, Operation::Vsqrt, Operation::Vrsqrt, Operation::Vwaitq,
+    Operation::Vmtir, Operation::Vmfir, Operation::Unsupported, Operation::Unsupported,
+    Operation::Vrnext, Operation::Vrget, Operation::Vrinit, Operation::Vrxor,
+    // The remaining slots decode as Unsupported (the table's unknowns).
+};
+
 Operation decode_cop2_special(const DecodedInstruction& instruction) {
-    // The VU macro encoding: functions 0x00-0x3B dispatch through the
-    // standard table (the arithmetic land in later slices); 0x3C-0x3F go
-    // through the packed secondary index the reference computes from bits
-    // 1-0 and 9-4 of the word.
     if (instruction.function < 0x3c) {
-        return Operation::Unsupported;
+        return kCop2Special1[instruction.function];
     }
     const std::uint32_t index =
         (instruction.word & 0x3u) | ((instruction.word >> 4) & 0x7cu);
-    if (index == 47) {
-        return Operation::Vnop;  // the table's full no-operation
-    }
-    return Operation::Unsupported;
+    return kCop2Special2[index];
 }
 
 Operation decode_cop2(const DecodedInstruction& instruction) {
@@ -540,6 +581,117 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Ctc2: return "ctc2";
     case Operation::Lqc2: return "lqc2";
     case Operation::Sqc2: return "sqc2";
+    case Operation::Vaddx: return "vaddx";
+    case Operation::Vaddy: return "vaddy";
+    case Operation::Vaddz: return "vaddz";
+    case Operation::Vaddw: return "vaddw";
+    case Operation::Vsubx: return "vsubx";
+    case Operation::Vsuby: return "vsuby";
+    case Operation::Vsubz: return "vsubz";
+    case Operation::Vsubw: return "vsubw";
+    case Operation::Vmaddx: return "vmaddx";
+    case Operation::Vmaddy: return "vmaddy";
+    case Operation::Vmaddz: return "vmaddz";
+    case Operation::Vmaddw: return "vmaddw";
+    case Operation::Vmsubx: return "vmsubx";
+    case Operation::Vmsuby: return "vmsuby";
+    case Operation::Vmsubz: return "vmsubz";
+    case Operation::Vmsubw: return "vmsubw";
+    case Operation::Vmaxx: return "vmaxx";
+    case Operation::Vmaxy: return "vmaxy";
+    case Operation::Vmaxz: return "vmaxz";
+    case Operation::Vmaxw: return "vmaxw";
+    case Operation::Vminix: return "vminix";
+    case Operation::Vminiy: return "vminiy";
+    case Operation::Vminiz: return "vminiz";
+    case Operation::Vminiw: return "vminiw";
+    case Operation::Vmulx: return "vmulx";
+    case Operation::Vmuly: return "vmuly";
+    case Operation::Vmulz: return "vmulz";
+    case Operation::Vmulw: return "vmulw";
+    case Operation::Vmulq: return "vmulq";
+    case Operation::Vmaxi: return "vmaxi";
+    case Operation::Vmuli: return "vmuli";
+    case Operation::Vminii: return "vminii";
+    case Operation::Vaddq: return "vaddq";
+    case Operation::Vmaddq: return "vmaddq";
+    case Operation::Vaddi: return "vaddi";
+    case Operation::Vmaddi: return "vmaddi";
+    case Operation::Vsubq: return "vsubq";
+    case Operation::Vmsubq: return "vmsubq";
+    case Operation::Vsubi: return "vsubi";
+    case Operation::Vmsubi: return "vmsubi";
+    case Operation::Vadd: return "vadd";
+    case Operation::Vmadd: return "vmadd";
+    case Operation::Vmul: return "vmul";
+    case Operation::Vmax: return "vmax";
+    case Operation::Vsub: return "vsub";
+    case Operation::Vmsub: return "vmsub";
+    case Operation::Vopmsub: return "vopmsub";
+    case Operation::Vmini: return "vmini";
+    case Operation::Viadd: return "viadd";
+    case Operation::Visub: return "visub";
+    case Operation::Viaddi: return "viaddi";
+    case Operation::Viand: return "viand";
+    case Operation::Vior: return "vior";
+    case Operation::Vaddax: return "vaddax";
+    case Operation::Vadday: return "vadday";
+    case Operation::Vaddaz: return "vaddaz";
+    case Operation::Vaddaw: return "vaddaw";
+    case Operation::Vsubax: return "vsubax";
+    case Operation::Vsubay: return "vsubay";
+    case Operation::Vsubaz: return "vsubaz";
+    case Operation::Vsubaw: return "vsubaw";
+    case Operation::Vmaddax: return "vmaddax";
+    case Operation::Vmadday: return "vmadday";
+    case Operation::Vmaddaz: return "vmaddaz";
+    case Operation::Vmaddaw: return "vmaddaw";
+    case Operation::Vmsubax: return "vmsubax";
+    case Operation::Vmsubay: return "vmsubay";
+    case Operation::Vmsubaz: return "vmsubaz";
+    case Operation::Vmsubaw: return "vmsubaw";
+    case Operation::Vitof0: return "vitof0";
+    case Operation::Vitof4: return "vitof4";
+    case Operation::Vitof12: return "vitof12";
+    case Operation::Vitof15: return "vitof15";
+    case Operation::Vftoi0: return "vftoi0";
+    case Operation::Vftoi4: return "vftoi4";
+    case Operation::Vftoi12: return "vftoi12";
+    case Operation::Vftoi15: return "vftoi15";
+    case Operation::Vmulax: return "vmulax";
+    case Operation::Vmulay: return "vmulay";
+    case Operation::Vmulaz: return "vmulaz";
+    case Operation::Vmulaw: return "vmulaw";
+    case Operation::Vmulaq: return "vmulaq";
+    case Operation::Vabs: return "vabs";
+    case Operation::Vmulai: return "vmulai";
+    case Operation::Vclipw: return "vclipw";
+    case Operation::Vaddaq: return "vaddaq";
+    case Operation::Vmaddaq: return "vmaddaq";
+    case Operation::Vaddai: return "vaddai";
+    case Operation::Vmaddai: return "vmaddai";
+    case Operation::Vsubaq: return "vsubaq";
+    case Operation::Vmsubaq: return "vmsubaq";
+    case Operation::Vsubai: return "vsubai";
+    case Operation::Vmsubai: return "vmsubai";
+    case Operation::Vadda: return "vadda";
+    case Operation::Vmadda: return "vmadda";
+    case Operation::Vmula: return "vmula";
+    case Operation::Vsuba: return "vsuba";
+    case Operation::Vmsuba: return "vmsuba";
+    case Operation::Vopmula: return "vopmula";
+    case Operation::Vmove: return "vmove";
+    case Operation::Vmr32: return "vmr32";
+    case Operation::Vdiv: return "vdiv";
+    case Operation::Vsqrt: return "vsqrt";
+    case Operation::Vrsqrt: return "vrsqrt";
+    case Operation::Vwaitq: return "vwaitq";
+    case Operation::Vmtir: return "vmtir";
+    case Operation::Vmfir: return "vmfir";
+    case Operation::Vrnext: return "vrnext";
+    case Operation::Vrget: return "vrget";
+    case Operation::Vrinit: return "vrinit";
+    case Operation::Vrxor: return "vrxor";
     case Operation::Vnop: return "vnop";
     case Operation::Mfhi: return "mfhi";
     case Operation::Mthi: return "mthi";

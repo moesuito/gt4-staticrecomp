@@ -25,6 +25,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/functions.cpp
     src/ee/state.cpp
     src/ee/interpreter.cpp
+    src/ee/vu_macro.cpp
 )
 target_include_directories(gt4recomp_decode PUBLIC include)
 target_compile_features(gt4recomp_decode PUBLIC cxx_std_20)

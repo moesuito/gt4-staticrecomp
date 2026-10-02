@@ -1,5 +1,6 @@
 #include "gt4recomp/ee_interpreter.hpp"
 
+#include <bit>
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
@@ -715,6 +716,71 @@ int run_tests() {
         check(state.read_gpr64(13) == 0ull
                   && state.read_gpr_high64(13) == 0x3F80000000000000ull,
               "vf0 reads as the constant (0, 0, 0, 1.0)");
+    }
+
+    // VU0 macro arithmetic: the element and broadcast forms write their
+    // destinations through the reference's MAC/status flag model, the
+    // accumulator forms chain through ACC, the conversion and move forms
+    // cover the packed table, the division unit publishes Q, and the integer
+    // forms reach the low halves of the integer file.
+    {
+        auto state = make_state();
+        // vf1 = (1.0, 2.0, 3.0, 4.0); vf2 = (0.5, 1.5, 2.5, 3.5);
+        // vf3 = (10.0, 20.0, 30.0, 40.0)
+        state.write_vf_lane(1, 0, 0x3F800000u);
+        state.write_vf_lane(1, 1, 0x40000000u);
+        state.write_vf_lane(1, 2, 0x40400000u);
+        state.write_vf_lane(1, 3, 0x40800000u);
+        state.write_vf_lane(2, 0, 0x3F000000u);
+        state.write_vf_lane(2, 1, 0x3FC00000u);
+        state.write_vf_lane(2, 2, 0x40200000u);
+        state.write_vf_lane(2, 3, 0x40600000u);
+        state.write_vf_lane(3, 0, 0x41200000u);
+        state.write_vf_lane(3, 1, 0x41A00000u);
+        state.write_vf_lane(3, 2, 0x41F00000u);
+        state.write_vf_lane(3, 3, 0x42200000u);
+        state.write_vi(1, 5);
+        state.write_vi(2, 7);
+        load_program(state.memory(), base,
+                     {0x4BE1112C,    // vsub vf4, vf2, vf1: -0.5 in every lane
+                      0x4BE20928,    // vadd vf4, vf1, vf2: 1.5, 3.5, 5.5, 7.5
+                      0x4BE311BC,    // vmulax acc, vf2, vf3 (vf3.x = 10.0 broadcast)
+                      0x4BE3094B,    // vmaddw vf5, vf1, vf3 (vf3.w = 40.0 broadcast)
+                      0x4BE6297D,    // vftoi4 vf6, vf5 (scale by sixteen)
+                      0x4BE7333C,    // vmove vf7, vf6
+                      0x4BE20BBC,    // vdiv Q, vf1.w, vf2.w (4.0 / 3.5)
+                      0x4A0003BF,    // vwaitq
+                      0x4BE110F0,    // viadd vi3, vi2, vi1
+                      0x4BE31432});  // viaddi vi3, vi2, -0x10
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.read_vf_lane(4, 0) == 0xBF000000u, "vsub wrote the negative lane");
+        // The four negative results left the sign bits in the MAC flag (bits
+        // 7-4) and the "some lane negative" bit in the status flag, mirrored
+        // into the register's low and high halves.
+        check(state.read_vi(17) == 0xF0u, "the MAC flag holds the four sign bits");
+        check(state.read_vi(16) == 0x82u, "the status flag mirrors the low four bits");
+        run_steps(interpreter, 1);
+        check(state.read_vf_lane(4, 0) == 0x3FC00000u
+                  && state.read_vf_lane(4, 3) == 0x40F00000u,
+              "vadd wrote the lane sums");
+        check(state.read_vi(16) == 0x80u && state.read_vi(17) == 0u,
+              "the positive results cleared the MAC flag; the status register "
+              "keeps its earlier mirrored high bits, like the reference");
+        run_steps(interpreter, 8);
+        check(state.read_acc_lane(0) == 0x40A00000u
+                  && state.read_acc_lane(3) == 0x420C0000u,
+              "vmulax filled the accumulator");
+        check(state.read_vf_lane(5, 0) == 0x42340000u
+                  && state.read_vf_lane(5, 3) == 0x43430000u,
+              "vmaddw accumulated the products");
+        check(state.read_vf_lane(6, 0) == 720u && state.read_vf_lane(6, 3) == 3120u,
+              "vftoi4 scaled by sixteen and truncated");
+        check(state.read_vf_lane(7, 3) == 3120u, "vmove copied the vector");
+        check(state.read_vi(22) == std::bit_cast<std::uint32_t>(8.0f / 7.0f),
+              "vdiv published the quotient through Q");
+        check(state.read_vi(3) == 0x0000FFF7u, "viaddi wrapped the negative sum");
     }
 
     // Fetching outside the mapped region propagates the memory error.
