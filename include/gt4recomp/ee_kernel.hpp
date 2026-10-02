@@ -215,7 +215,7 @@ public:
     // consecutive idle interrupts without a runnable thread.
     static constexpr std::uint32_t vblank_cause = 2;
     static constexpr std::uint32_t intc_stat_physical = 0x1000F000;
-    static constexpr std::uint32_t idle_interrupt_budget = 6000;
+    static constexpr std::uint32_t idle_interrupt_budget = 200000;
     // The EE timers: four register blocks at 0x10000000 + index * 0x800,
     // COUNT at +0x00, MODE at +0x10, COMP at +0x20. The model stores what
     // the guest writes (TimerUnit) and, at each idle frame, advances an
@@ -417,7 +417,9 @@ private:
     // the model IOP's reboot completes there (see answer_sif_reset).
     bool sif_reboot_pending_ = false;
     // Consecutive idle interrupts without a runnable thread (progress
-    // resets the count).
+    // resets the count). The budget only bounds a truly stuck machine; idle
+    // interrupts are cheap, so it allows long waits (about an hour of
+    // virtual frames) before the driver reports the boundary.
     std::uint32_t idle_interrupts_ = 0;
 };
 

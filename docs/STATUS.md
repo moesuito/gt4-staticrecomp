@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 10 — semaphore handle bits and the delay
-library: tracing the delay helper's callback path showed the game's own code
-manipulates the low bits of kernel semaphore handles, so the model now hands
-out ids 3, 7, 11, ... and the boot advances from 3,645 to 9,765 services
-(672,586 interpreted steps) with the differential still passing. The
-remaining frontier is the timer library's node processing. This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 11 — the timer library's nodes: the delay
+callbacks are scheduled and active (both nodes in the library's active list
+with flags 3 and their descriptors), but the TIM2 handler's due condition
+never passes for any node, so the waits persist. The idle budget rose to
+200,000 (about an hour of virtual frames); the differential still passes at
+3,000 services (7,508,945 interpreter instructions) and a 30,000-service run
+takes about four seconds. This is the first document to read in a new
+session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -387,6 +388,18 @@ Details live in the linked evidence documents.
   delay descriptors are not active. CTest 32/32; Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-slice10-semaphore-handles-and-the-delay-library.md`,
   `docs/decisions/0012-semaphore-handle-bits.md`).
+- M30 slice 11 (2026-10-02): **the timer library's nodes and the due
+  condition** — model instrumentation at the delay helper's `WaitSema` block
+  showed the library's two node types (0x10-byte descriptors at the
+  0x0088C340 free list; 0x40-byte timer nodes at 0x006592F0+0x14) and that
+  **the delay nodes are scheduled and active** (flags 3, descriptors
+  0x0088BF40/0x0088BF50). The remaining wall is the TIM2 handler's due
+  condition: every active node keeps `accumulated = 0` and `flags = 3`, so
+  the dispatcher is never reached; a longer virtual time does not change it.
+  The idle budget rose to 200,000. CTest 32/32; the differential passes at
+  3,000 services (interpreter 7,508,945 instructions, state identical); a
+  30,000-service run takes about four seconds
+  (`docs/reverse-engineering/m30-slice11-timer-library-nodes.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -396,14 +409,14 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the timer library's node processing** —
-  the delay callback is 0x005AEF58 (`iSignalSema`) and the handle shape is
-  fixed (decision 0012), but at the stop the active list (0x006592F0+0x18)
-  holds only two nodes (handler fields 5 and 7) and the delay descriptors
-  are not active. The next experiment is to log the guest writes to the
-  active-list head as the delay schedules and to see whether the TIM2
-  handler's dispatch condition is reached for those nodes. Then the first
-  RPC call whose reply the game acts on.
+- Next technical milestone work: **the TIM2 handler's due condition** — the
+  delay nodes are active (slice 11) but the handler never treats any node as
+  due. The next experiment is to instrument the handler's intermediate
+  values for one active node (its target and current at 0x005B822C) and to
+  test whether the model's TIM2 overflow counter and the `<< (CLKS * 4)`
+  scaling match the library's time base (the library's fixed epoch
+  0x23730000 and the handler's overflow handling are the two candidates).
+  Then the first RPC call whose reply the game acts on.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -487,11 +500,12 @@ Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 11: **the timer library's node processing** — watch the guest
-   writes to the active-list head (0x006592F0+0x18) as the delay schedules
-   and check whether the TIM2 handler's dispatch is reached for the delay
-   nodes; the acceptance evidence is `gt4boot --compare-interpreter` past
-   the current waits (semaphores 143/147/11) with the state identical.
+1. M30 slice 12: **the TIM2 handler's due condition** — instrument the
+   handler's intermediate values for one active node and settle the time
+   base (the overflow counter and the `<< (CLKS * 4)` scaling against the
+   library's epoch); the acceptance evidence is `gt4boot
+   --compare-interpreter` past the current waits (semaphores 143/147/11)
+   with the state identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -553,4 +567,6 @@ Details live in the linked evidence documents.
   complete; the differential passes at 3,000 services with the interpreter
   reference at 7,508,945 instructions), and slice 10 is the semaphore
   handle bits and the delay library (ids 3, 7, 11, ... carry the long run
-  from 3,645 to 9,765 services).
+  from 3,645 to 9,765 services), and slice 11 is the timer library's nodes
+  (the delay nodes are scheduled and active; the TIM2 handler's due
+  condition never passes; the idle budget rose to 200,000).
