@@ -85,6 +85,10 @@ struct RunOptions {
     // then continues in the handler's context. False when nothing is
     // pending.
     std::function<bool(GuestState& state)> start_interrupt;
+    // Optional idle interrupt source: called when a service reports that no
+    // thread can run. Returns true when it injected an interrupt (the run
+    // continues in the handler's context); false when the model is stuck.
+    std::function<bool(GuestState& state)> start_idle_interrupt;
 };
 
 struct DriverStats {

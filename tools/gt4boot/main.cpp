@@ -47,19 +47,52 @@ constexpr std::uint32_t ram_size = 0x2000000;  // the EE's 32 MiB
 constexpr std::uint64_t default_step_limit = 200'000'000;
 
 // The device register windows the boot touches so far: the timer block, the
-// DMAC and SIF0 channel control, and the SIF register block (all plain
-// storage; decisions 0007/0008).
+// DMAC and SIF0 channel control, the SIF register block, the GS register
+// block (a memory region), and the GIF/VIF0/VIF1 register and FIFO windows
+// (all plain storage; decisions 0007/0008 and this slice). No transfer
+// engine, FIFO behavior or display is modeled; reads return what was last
+// written, or zero.
 struct BootDevices {
     TimerUnit timer;
     RegisterBank dmac{0x1000E000u, 0x100u};
     RegisterBank sif0{0x1000C000u, 0x100u};
     RegisterBank sif_registers{0x1000F200u, 0x100u};
+    RegisterBank gif{0x10003000u, 0x800u};
+    RegisterBank vif0{0x10003800u, 0x400u};
+    RegisterBank vif1{0x10003C00u, 0x400u};
+    RegisterBank vif0_fifo{0x10004000u, 0x1000u};
+    RegisterBank vif1_fifo{0x10005000u, 0x1000u};
+    RegisterBank gif_fifo{0x10006000u, 0x1000u};
+    RegisterBank ipu{0x10002000u, 0x1000u};
+    RegisterBank ipu_fifo{0x10007000u, 0x1000u};
+    RegisterBank vif0_dma{0x10008000u, 0x1000u};
+    RegisterBank vif1_dma{0x10009000u, 0x1000u};
+    RegisterBank gif_dma{0x1000A000u, 0x1000u};
+    RegisterBank ipu_port{0x1000B000u, 0x1000u};
+    RegisterBank spr_dma{0x1000D000u, 0x1000u};
+    RegisterBank intc{0x1000F000u, 0x100u};
+    RegisterBank sio{0x1000F100u, 0x100u};
 
     void map_into(GuestMemory& memory) {
         timer.map_into(memory);
         dmac.map_into(memory);
         sif0.map_into(memory);
         sif_registers.map_into(memory);
+        gif.map_into(memory);
+        vif0.map_into(memory);
+        vif1.map_into(memory);
+        vif0_fifo.map_into(memory);
+        vif1_fifo.map_into(memory);
+        gif_fifo.map_into(memory);
+        ipu.map_into(memory);
+        ipu_fifo.map_into(memory);
+        vif0_dma.map_into(memory);
+        vif1_dma.map_into(memory);
+        gif_dma.map_into(memory);
+        ipu_port.map_into(memory);
+        spr_dma.map_into(memory);
+        intc.map_into(memory);
+        sio.map_into(memory);
     }
 };
 
@@ -67,10 +100,17 @@ struct BootDevices {
 // addresses and the junk pre-fill around .bss the startup tests use. The
 // segment alias is on because the SDK's kernel search reads the low 512 KiB
 // through KSEG0/KSEG1 (0x80000000/0xA0000000, both mapping physical 0), and
-// the device windows are mapped so the init can read and write them.
+// the device windows are mapped so the init can read and write them. The
+// EE's 16 KiB scratchpad lives at 0x70000000 as its own memory region, and
+// the GS register block (8 KiB at 0x12000000) is modeled as storage: the
+// model stores what the guest writes, including the 64-bit register writes
+// the 32-bit register banks cannot hold, and returns it on reads. No GS
+// behavior (drawing, register masks, read-back semantics) is emulated.
 GuestState make_boot_state(const ExecutableImage& image, BootDevices& devices) {
     GuestMemory memory(0, ram_size);
     memory.enable_segment_alias();
+    memory.map_region(0x70000000u, 0x4000u);
+    memory.map_region(0x12000000u, 0x2000u);
     devices.map_into(memory);
     memory.write_bytes(image.text.guest_address, image.text.bytes);
     memory.write_bytes(image.data.guest_address, image.data.bytes);
@@ -210,6 +250,9 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
                 }
                 if (outcome == ServiceOutcome::NoRunnableThread) {
                     ++result.services_handled;
+                    if (kernel.deliver_idle_interrupt(state)) {
+                        continue;
+                    }
                     result.boundary = boundary_from_step(step, state);
                     result.boundary.kind = BoundaryKind::NoRunnableThread;
                     return result;
@@ -276,6 +319,9 @@ int wmain(int argc, wchar_t* argv[]) {
         };
         options.start_interrupt = [&driver_kernel](GuestState& state) {
             return driver_kernel.start_interrupt(state);
+        };
+        options.start_idle_interrupt = [&driver_kernel](GuestState& state) {
+            return driver_kernel.deliver_idle_interrupt(state);
         };
 
         Driver driver(driver_state, make_boot_module());

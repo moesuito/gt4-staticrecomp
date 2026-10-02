@@ -1,11 +1,12 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 7 — the SIF layer and interrupt injection:
-the boot completes the SIFCMD init handshake, the game's own DMA handler runs
-as an injected interrupt, the RPC layer initializes, and the run stops at a
-clean no-runnable-thread boundary waiting for the IOP's RPC bind reply. This
-is the first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 8 — the model IOP's RPC layer, the
+peripheral windows and idle VBlank delivery: the boot answers the RPC binds
+and calls, survives the IOP reset, wakes its threads under a VBlank source,
+and reaches the game's running state (3,000 services handled) with the state
+identical to the interpreter at 7,515,389 instructions. This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -341,6 +342,23 @@ proceeds. Details live in the linked evidence documents.
   (67 run, 6 skip)
   (`docs/reverse-engineering/m30-sif-and-interrupt-injection.md`,
   `docs/decisions/0009-sif-and-interrupt-injection.md`).
+- M30 slice 8 (2026-10-02): **the model IOP's RPC layer, the peripheral
+  windows and idle VBlank delivery** — RPC bind/call replies with the packet
+  layouts confirmed against the live transfers, the version query answered
+  with the game's own compatibility constant (0x00275520), the IOP reset
+  completing the BOOTEND handshake, Get/SetOsdConfigParam2 (0x6E/0x6F) with
+  the four-byte Config2Param, GsGetIMR/GsPutIMR (0x70/0x71), SetGsCrt (0x02),
+  the EE scratchpad (0x70000000) and GS block (0x12000000, storage) as
+  memory regions, the GIF/VIF/FIFO/IPU/DMA/INTC/SIO windows as storage
+  banks, PCCR (CP0 25) as storage, the VU1 FBRST bits recorded instead of
+  fatal, and the **idle VBlank source** (INTC cause 2 with the status bit,
+  every registered handler chained in registration order, re-dispatch on
+  return, a 60-interrupt budget). **The boot now reaches the game's running
+  state: 3,000 services handled, the interpreter reference at 7,515,389
+  instructions, full state identical.** CTest 32/32; Python 73 (67 run,
+  6 skip)
+  (`docs/reverse-engineering/m30-slice8-rpc-and-vblank.md`,
+  `docs/decisions/0010-rpc-vblank-and-device-windows.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -350,12 +368,13 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the RPC replies of the model IOP** — the
-  boot completes the SIFCMD init handshake and stops at the RPC bind wait
-  (`WaitSema` at 0x005ADCE4, no-runnable-thread). The model IOP must answer
-  `SIF_CMD_RPC_BIND` (and later calls) using the public `sifrpc.c` protocol
-  and the live PCSX2 emulator as the oracle. Then a ticking timer with
-  interrupt/alarm delivery.
+- Next technical milestone work: **the game's first real IOP service call** —
+  the boot now runs the game's runtime under VBlank-driven wakeups; the
+  model IOP answers the version query and empty results for everything else.
+  The next wall is the first RPC call whose reply the game acts on (its file
+  or disc loading path), which needs per-function evidence from the game's
+  client code and the live emulator. Then a periodic tick that can interrupt
+  long-running computation, not only idle waits.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -405,19 +424,24 @@ proceeds. Details live in the linked evidence documents.
   step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
-  module entries (correctness first; 18,023 instructions in the boot run).
+  module entries (correctness first; 285,290 instructions in the boot run).
   The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now stops at the RPC bind wait**: `WaitSema` at 0x005ADCE4
-  inside `sceSifBindRpc`, a clean no-runnable-thread boundary. The SIF
-  register services, the SIFCMD init handshake, the model IOP's SET_SREG
-  reply and interrupt injection are modeled (decision 0009); the model IOP
-  does **not** answer RPC packets yet, which is the recorded next wall.
+- **The boot now reaches the game's running state**: the model IOP answers
+  the RPC binds and calls (version query with the game's compatibility
+  constant; empty results otherwise), survives the IOP reset, and the
+  **idle VBlank source** (decision 0010) wakes the game's threads. The run
+  hits the 3,000-service limit inside the runtime (WaitSema/SleepThread/
+  handler-return cycles) with the state identical to the interpreter at
+  7,515,389 instructions. The recorded next wall is the first RPC call whose
+  reply the game acts on.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
-  WaitSema sequence). No timer preemption is modeled (decision 0005);
-  equal-priority dispatch is creation order, not the kernel's rotation; no
-  timer tick or alarm callback is delivered yet.
+  WaitSema sequence) and now runs three threads under VBlank wakeups. No
+  timer preemption is modeled (decision 0005); equal-priority dispatch is
+  creation order, not the kernel's rotation; interrupts are delivered only
+  when every thread waits, never during a long-running computation, and the
+  60-interrupt idle budget is a guard rather than a modeled frequency.
 - The `jr ra` fall-through bug found in the fifth slice shows the limit of
   hand-picked differential modules: widen the verified surface
   (`gt4boot --compare-interpreter`) when new control-flow shapes appear.
@@ -427,14 +451,14 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 8: **the RPC layer of the model IOP** — answer
-   `SIF_CMD_RPC_BIND` and `SIF_CMD_RPC_CALL` for the servers the game binds
-   (`sifman`, `fileio`, `cdvd`, …), using the public `sifrpc.c`/`sifcmd.c`
-   protocol and the live PCSX2 emulator as the oracle; the acceptance
-   evidence is `gt4boot --compare-interpreter` past the bind wait
-   (0x005ADCE4).
-2. A ticking timer with interrupt/alarm delivery for code that waits on
-   alarms (the timer registers are storage-only today).
+1. M30 slice 9: **the game's first real IOP service call** — identify the
+   RPC function the game's loading path calls next, and answer it from
+   evidence (the game's client code at the call site plus the live PCSX2
+   emulator as the oracle); the acceptance evidence is
+   `gt4boot --compare-interpreter` past the new frontier (the 3,000-service
+   limit is raised with the same comparison).
+2. A periodic tick that can interrupt long-running computation, not only
+   idle waits (the VBlank source is idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 4. The M9-M30 lessons and retroactive M2-M5 notes if useful.
@@ -482,7 +506,11 @@ proceeds. Details live in the linked evidence documents.
   thread creation run, the cooperative scheduler is exercised end to end, a
   `jr ra` translator bug is found and fixed, and the run stops at
   GetOsdConfigParam), slice 6 is the OSD configuration and the device
-  register banks (the run stops at SifSetDChain, the IOP wall), and slice 7
+  register banks (the run stops at SifSetDChain, the IOP wall), slice 7
   is the SIF layer with the model IOP and interrupt injection (the SIFCMD
   handshake completes, the game's own DMA handler runs as an injected
-  interrupt, RPC initializes, and the run stops at the RPC bind wait).
+  interrupt, RPC initializes, and the run stops at the RPC bind wait), and
+  slice 8 is the model IOP's RPC layer with the peripheral windows and idle
+  VBlank delivery (the boot reaches the game's running state; 3,000
+  services handled with the state identical to the interpreter at 7,515,389
+  instructions).

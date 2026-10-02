@@ -616,9 +616,10 @@ bool execute_special_register(const DecodedInstruction& instruction, GuestState&
         std::uint32_t value = state.read_cp0(cp0_register);
         if (cp0_register == 12) {
             value &= 0xf0c79c1fu;  // only the readable Status bits appear
-        } else if (cp0_register == 25) {
-            throw std::runtime_error("mfc0 from the performance counters is not modeled");
         }
+        // PCCR (25), the performance counter control register, is storage:
+        // the model does not count cycles, like the timer policy of
+        // decision 0007, so the game's frame-time sums stay zero.
         state.write_gpr32(instruction.rt, value);
         break;
     }
@@ -635,7 +636,9 @@ bool execute_special_register(const DecodedInstruction& instruction, GuestState&
             // reference does not store it either.
             break;
         case 25:
-            throw std::runtime_error("mtc0 to the performance counters is not modeled");
+            // PCCR stores like any other register; nothing counts cycles.
+            state.write_cp0(cp0_register, value);
+            break;
         default:
             state.write_cp0(cp0_register, value);
             break;
@@ -961,10 +964,13 @@ bool execute_cop2(const DecodedInstruction& instruction, GuestState& state) {
             state.write_vi(20, (value & 0x7fffffu) | 0x3f800000u);
             break;
         case 28: {
+            // FBRST (VI28): the model stores the writable bits. The VU0
+            // reset bit clears the whole VU0 register file. The VU1 control
+            // bits (0x100/0x200) are recorded but have no target state: the
+            // model does not execute VU1 microcode, so "resetting VU1" is a
+            // no-op by construction (a documented model choice, recorded in
+            // the eighth slice's evidence; it replaces the earlier stop).
             state.write_vi(28, value & 0x0c0cu);
-            if ((value & 0x00000100u) != 0 || (value & 0x00000200u) != 0) {
-                throw std::runtime_error("ctc2 FBRST: VU1 control is not modeled");
-            }
             if ((value & 0x00000002u) != 0) {
                 state.reset_vu0_registers();
             }

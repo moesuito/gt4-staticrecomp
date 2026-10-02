@@ -107,6 +107,26 @@ int main() {
               "the alias is bounded by the region");
     }
 
+    // A second RAM region (the EE scratchpad) is independent of the first.
+    {
+        GuestMemory with_scratchpad = make_memory();
+        with_scratchpad.map_region(0x70000000u, 0x4000u);
+        with_scratchpad.write_doubleword(0x70002000u, 0x1122334455667788ull);
+        check(with_scratchpad.read_doubleword(0x70002000u) == 0x1122334455667788ull
+                  && with_scratchpad.contains(0x70002000u, 8),
+              "a second RAM region is addressable");
+        check(!with_scratchpad.contains(0x70004000u, 1)
+                  && throws([&] { (void)with_scratchpad.read_byte(0x70004000u); }),
+              "the second region is bounded");
+        check(with_scratchpad.contains(base, 4)
+                  && with_scratchpad.read_word(base) == 0,
+              "the main region still works beside the second");
+        check(throws([&] { with_scratchpad.map_region(0x70000000u, 0x10u); }),
+              "overlapping regions rejected");
+        check(throws([&] { with_scratchpad.map_region(0x00100080u, 0x10u); }),
+              "a region overlapping the main one is rejected");
+    }
+
     // Register file semantics.
     GuestState state(make_memory());
     check(state.read_gpr64(0) == 0 && state.read_gpr64(31) == 0 && state.pc() == 0,

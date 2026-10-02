@@ -89,6 +89,7 @@ bool Kernel::dispatch(GuestState& state) {
     }
     current_thread_id_ = next->id;
     next->status = (next->status & ~ThreadReady) | ThreadRun;
+    idle_interrupts_ = 0;  // a runnable thread appeared: progress
     state.restore_registers(next->context);
     return true;
 }
@@ -179,6 +180,13 @@ void Kernel::register_services(ServiceTable& services) {
     add(0x79u, &Kernel::sif_set_reg);
     add(0x7Au, &Kernel::sif_get_reg);
     add(0x6Bu, &Kernel::sif_stop_dma);
+    add(0x02u, &Kernel::set_gs_crt);
+    add(0x6Eu, &Kernel::set_osd_config2);
+    add(0x6Fu, &Kernel::get_osd_config2);
+    add(0x70u, &Kernel::gs_get_imr);
+    add(static_cast<std::uint32_t>(-0x70), &Kernel::gs_get_imr);
+    add(0x71u, &Kernel::gs_put_imr);
+    add(static_cast<std::uint32_t>(-0x71), &Kernel::gs_put_imr);
     add(0x10u, &Kernel::add_intc_handler);
     add(0x11u, &Kernel::remove_intc_handler);
     add(0x12u, &Kernel::add_dmac_handler);
@@ -762,18 +770,47 @@ ServiceOutcome Kernel::set_syscall(GuestState& state) {
 ServiceOutcome Kernel::deferred_return(GuestState& state) {
     // The stub's private service: restore what the deferred call saved. A
     // patched syscall gets its caller's ra and resume address back; an
-    // injected interrupt handler gets the whole interrupted context back.
+    // injected interrupt handler gets the whole interrupted context back
+    // once its chain of handlers has run.
     if (deferred_calls_.empty()) {
         throw std::logic_error("The patch return stub fired with no call in flight");
     }
-    const DeferredCall call = deferred_calls_.back();
+    DeferredCall& pending = deferred_calls_.back();
+    if (pending.kind == DeferredCall::Kind::Patch) {
+        const DeferredCall call = pending;
+        deferred_calls_.pop_back();
+        state.write_gpr64(31, call.caller_ra);
+        state.set_pc(call.resume_pc);
+        return ServiceOutcome::Jumped;
+    }
+    // Interrupt: every handler registered for the cause runs in turn.
+    if (pending.next_handler + 1 < pending.handlers.size()) {
+        ++pending.next_handler;
+        install_handler_frame(state, pending.cause,
+                              pending.handlers[pending.next_handler],
+                              pending.context);
+        return ServiceOutcome::Jumped;
+    }
+    const DeferredCall call = pending;
     deferred_calls_.pop_back();
-    if (call.kind == DeferredCall::Kind::Interrupt) {
+    KernelThread* interrupted = find_thread(call.thread_id);
+    if (interrupted == nullptr) {
+        // No thread context to account for (tests inject without a running
+        // thread): restore the interrupted context.
         state.restore_registers(call.context);
         return ServiceOutcome::Jumped;
     }
-    state.write_gpr64(31, call.caller_ra);
-    state.set_pc(call.resume_pc);
+    if (interrupted->status != ThreadRun) {
+        // The interrupted thread is not running (the interrupt was injected
+        // while it waited): the handlers may have woken a thread, so the
+        // scheduler picks the best ready one. When they woke nothing, the
+        // model is still stuck and says so.
+        if (dispatch(state)) {
+            return ServiceOutcome::Jumped;
+        }
+        return ServiceOutcome::NoRunnableThread;
+    }
+    state.restore_registers(call.context);
     return ServiceOutcome::Jumped;
 }
 
@@ -800,6 +837,69 @@ ServiceOutcome Kernel::set_osd_config(GuestState& state) {
         return ServiceOutcome::Handled;
     }
     osd_config_ = state.memory().read_word(address);
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::get_osd_config2(GuestState& state) {
+    // GetOsdConfigParam2(buffer, size, offset). The game reads one byte at
+    // offset 1 (the daylight-savings, clock and date-format bits).
+    const std::uint32_t address = state.read_gpr32(4);
+    const std::uint32_t size = state.read_gpr32(5);
+    const std::uint32_t offset = state.read_gpr32(6);
+    if (!state.memory().contains(address, size)) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    for (std::uint32_t index = 0; index < size; ++index) {
+        const std::uint32_t position = offset + index;
+        const std::uint8_t byte = position < osd_config2_.size()
+            ? osd_config2_[position] : 0u;
+        state.memory().write_byte(address + index, byte);
+    }
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::set_gs_crt(GuestState& state) {
+    // SetGsCrt(interlace, video, field): no display is modeled, so the call
+    // is accepted and reports success.
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::gs_get_imr(GuestState& state) {
+    // GsGetIMR: the stored 64-bit interrupt mask, in one GPR.
+    state.write_gpr64(2, gs_imr_);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::gs_put_imr(GuestState& state) {
+    // GsPutIMR: store the mask and return the previous value.
+    const std::uint64_t value = state.read_gpr64(4);
+    const std::uint64_t previous = gs_imr_;
+    gs_imr_ = value;
+    state.write_gpr64(2, previous);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::set_osd_config2(GuestState& state) {
+    // SetOsdConfigParam2(buffer, size, offset): retain what the caller
+    // writes inside the block; bytes past it are dropped like the
+    // reference emulator drops them.
+    const std::uint32_t address = state.read_gpr32(4);
+    const std::uint32_t size = state.read_gpr32(5);
+    const std::uint32_t offset = state.read_gpr32(6);
+    if (!state.memory().contains(address, size)) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    for (std::uint32_t index = 0; index < size; ++index) {
+        const std::uint32_t position = offset + index;
+        if (position < osd_config2_.size()) {
+            osd_config2_[position] = state.memory().read_byte(address + index);
+        }
+    }
     state.write_gpr64(2, 0);
     return ServiceOutcome::Handled;
 }
@@ -884,6 +984,10 @@ std::uint32_t Kernel::sif_register_index_address(std::uint32_t index) const noex
     return 0;
 }
 
+const std::string& Kernel::sif_iop_image() const noexcept {
+    return sif_iop_image_;
+}
+
 void Kernel::ensure_sif_ready(GuestState& state) {
     if (sif_ready_) {
         return;
@@ -907,37 +1011,79 @@ bool Kernel::start_interrupt(GuestState& state) {
     }
     const std::uint32_t cause = interrupt_queue_.front();
     interrupt_queue_.erase(interrupt_queue_.begin());
-    std::uint32_t handler = 0;
+    std::vector<std::uint32_t> handlers;
     for (const KernelInterruptHandler& registration : interrupt_handlers_) {
         if (registration.cause == cause) {
-            handler = registration.handler;
-            break;
+            handlers.push_back(registration.handler);
         }
     }
-    if (handler == 0) {
+    if (handlers.empty()) {
         // No handler registered for the cause: like the hardware, nothing
         // happens; the interrupt is dropped and the model records nothing.
         return false;
     }
-    // The handler returns through the model's stub, like a patched syscall.
-    state.memory().write_word(patch_return_stub_physical, 0x24030100u);
-    state.memory().write_word(patch_return_stub_physical + 4, 0x0000000Cu);
+    return inject_interrupt(state, cause, std::move(handlers));
+}
+
+bool Kernel::deliver_idle_interrupt(GuestState& state) {
+    if (idle_interrupts_ >= idle_interrupt_budget) {
+        // The budget bounds consecutive idle interrupts that changed
+        // nothing; the driver reports the no-runnable-thread boundary.
+        return false;
+    }
+    std::vector<std::uint32_t> handlers;
+    for (const KernelInterruptHandler& registration : interrupt_handlers_) {
+        if (registration.cause == vblank_cause) {
+            handlers.push_back(registration.handler);
+        }
+    }
+    if (handlers.empty()) {
+        return false;
+    }
+    ++idle_interrupts_;
+    // The INTC status register holds the pending cause bits; the handler
+    // reads it to tell the sources apart and clears it by writing back.
+    if (state.memory().contains(intc_stat_physical, 4)) {
+        state.memory().write_word(
+            intc_stat_physical,
+            state.memory().read_word(intc_stat_physical) | (1u << vblank_cause));
+    }
+    return inject_interrupt(state, vblank_cause, std::move(handlers));
+}
+
+bool Kernel::inject_interrupt(GuestState& state, std::uint32_t cause,
+                              std::vector<std::uint32_t> handlers) {
+    if (handlers.empty()) {
+        return false;
+    }
     const RegisterContext interrupted = state.save_registers();
     DeferredCall call;
     call.kind = DeferredCall::Kind::Interrupt;
+    call.thread_id = current_thread_id_;
+    call.cause = cause;
+    call.handlers = std::move(handlers);
+    call.next_handler = 0;
     call.context = interrupted;
     deferred_calls_.push_back(call);
+    install_handler_frame(state, cause, call.handlers[0], interrupted);
+    return true;
+}
 
+void Kernel::install_handler_frame(GuestState& state, std::uint32_t cause,
+                                   std::uint32_t handler,
+                                   const RegisterContext& interrupted) {
+    // The handler returns through the model's stub, like a patched syscall.
+    state.memory().write_word(patch_return_stub_physical, 0x24030100u);
+    state.memory().write_word(patch_return_stub_physical + 4, 0x0000000Cu);
     RegisterContext frame;
     frame.pc = handler;
-    frame.gpr[4] = cause;                          // a0 = channel
+    frame.gpr[4] = cause;                          // a0 = cause
     frame.gpr[28] = interrupted.gpr[28];           // gp as interrupted
     frame.gpr[29] = interrupted.gpr[29];           // sp as interrupted
     frame.gpr[31] = patch_return_stub_physical;
     frame.cp0 = interrupted.cp0;
     frame.cp0[12] &= ~0x00010000u;                 // EIE clear while handling
     state.restore_registers(frame);
-    return true;
 }
 
 void Kernel::copy_guest_bytes(GuestState& state, std::uint32_t source,
@@ -966,6 +1112,13 @@ void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
     }
     const std::uint32_t cid = state.memory().read_word(command_buffer + 8);
     if (cid != sif_command_cid_init_cmd) {
+        if (cid == sif_command_cid_rpc_bind) {
+            answer_sif_rpc_bind(state, command_buffer, size);
+        } else if (cid == sif_command_cid_rpc_call) {
+            answer_sif_rpc_call(state, command_buffer, size);
+        } else if (cid == sif_command_cid_reset_cmd) {
+            answer_sif_reset(state, command_buffer, size);
+        }
         return;
     }
     const std::uint32_t reply_buffer = state.memory().read_word(command_buffer + 16);
@@ -973,6 +1126,8 @@ void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
         throw std::runtime_error(
             "The SIFCMD init reply buffer is outside the mapped guest memory");
     }
+    // The EE's receive buffer for every IOP command reply.
+    ee_command_buffer_ = reply_buffer;
     state.memory().write_word(reply_buffer + 0, 24);  // psize (dsize remains 0)
     state.memory().write_word(reply_buffer + 4, 0);   // dest
     state.memory().write_word(reply_buffer + 8, sif_command_cid_set_sreg);
@@ -980,6 +1135,181 @@ void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
     state.memory().write_word(reply_buffer + 16, sif_sreg_rpcinit);
     state.memory().write_word(reply_buffer + 20, 1);
     queue_interrupt(sif_channel_dmac);
+}
+
+Kernel::SifRpcServer& Kernel::find_or_create_sif_server(std::uint32_t sid) {
+    const auto found = sif_rpc_servers_.find(sid);
+    if (found != sif_rpc_servers_.end()) {
+        return found->second;
+    }
+    const std::uint32_t slot = static_cast<std::uint32_t>(sif_rpc_servers_.size());
+    if (slot >= sif_iop_server_capacity) {
+        throw std::runtime_error("The model IOP ran out of RPC server slots");
+    }
+    SifRpcServer server;
+    server.sid = sid;
+    server.handle = sif_iop_server_handles + slot * 0x40;
+    server.buffer = sif_iop_server_buffers + slot * sif_iop_server_stride;
+    server.connection_buffer = sif_iop_server_connections + slot * sif_iop_server_stride;
+    const auto inserted = sif_rpc_servers_.emplace(sid, server);
+    return inserted.first->second;
+}
+
+const Kernel::SifRpcServer* Kernel::find_sif_server_by_handle(
+    std::uint32_t handle) const noexcept {
+    for (const auto& entry : sif_rpc_servers_) {
+        if (entry.second.handle == handle) {
+            return &entry.second;
+        }
+    }
+    return nullptr;
+}
+
+void Kernel::answer_sif_rpc_bind(GuestState& state, std::uint32_t command_buffer,
+                                 std::uint32_t size) {
+    // The request is a SifRpcBindPkt_t; the layout matched the public header
+    // in the live packet dump (sid at +32, cd at +28, pkt_addr at +20).
+    if (size < 36) {
+        return;
+    }
+    if (ee_command_buffer_ == 0) {
+        throw std::runtime_error(
+            "The game sent an RPC bind before the SIFCMD init handshake");
+    }
+    const std::uint32_t rec_id = state.memory().read_word(command_buffer + 16);
+    const std::uint32_t pkt_addr = state.memory().read_word(command_buffer + 20);
+    const std::uint32_t rpc_id = state.memory().read_word(command_buffer + 24);
+    const std::uint32_t cd = state.memory().read_word(command_buffer + 28);
+    const std::uint32_t sid = state.memory().read_word(command_buffer + 32);
+    const SifRpcServer& server = find_or_create_sif_server(sid);
+    if (!state.memory().contains(ee_command_buffer_, 64)) {
+        throw std::runtime_error(
+            "The EE command buffer is outside the mapped guest memory");
+    }
+    // Answer with the SIFRPC end packet (SifRpcRendPkt_t, 64 bytes) the
+    // client's bind wait is waiting for: its own handles echoed back plus a
+    // non-null server handle and the model server's buffers.
+    state.memory().write_word(ee_command_buffer_ + 0, 64);   // psize
+    state.memory().write_word(ee_command_buffer_ + 4, 0);    // dest
+    state.memory().write_word(ee_command_buffer_ + 8, sif_command_cid_rpc_end);
+    state.memory().write_word(ee_command_buffer_ + 12, 0);   // opt
+    state.memory().write_word(ee_command_buffer_ + 16, rec_id);
+    state.memory().write_word(ee_command_buffer_ + 20, pkt_addr);
+    state.memory().write_word(ee_command_buffer_ + 24, rpc_id);
+    state.memory().write_word(ee_command_buffer_ + 28, cd);
+    state.memory().write_word(ee_command_buffer_ + 32, sif_command_cid_rpc_bind);
+    state.memory().write_word(ee_command_buffer_ + 36, server.handle);
+    state.memory().write_word(ee_command_buffer_ + 40, server.buffer);
+    state.memory().write_word(ee_command_buffer_ + 44, server.connection_buffer);
+    for (std::uint32_t offset = 48; offset < 64; offset += 4) {
+        state.memory().write_word(ee_command_buffer_ + offset, 0);
+    }
+    queue_interrupt(sif_channel_dmac);
+}
+
+void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer,
+                                 std::uint32_t size) {
+    // The request is a SifRpcCallPkt_t (layout confirmed in the live packet
+    // dump: rpc_number at +32, recvbuf at +40, recv_size at +44, sd at +52).
+    if (size < 56) {
+        return;
+    }
+    if (ee_command_buffer_ == 0) {
+        throw std::runtime_error(
+            "The game sent an RPC call before the SIFCMD init handshake");
+    }
+    const std::uint32_t rec_id = state.memory().read_word(command_buffer + 16);
+    const std::uint32_t pkt_addr = state.memory().read_word(command_buffer + 20);
+    const std::uint32_t rpc_id = state.memory().read_word(command_buffer + 24);
+    const std::uint32_t cd = state.memory().read_word(command_buffer + 28);
+    const std::uint32_t rpc_number = state.memory().read_word(command_buffer + 32);
+    const std::uint32_t recvbuf = state.memory().read_word(command_buffer + 40);
+    const std::uint32_t recv_size = state.memory().read_word(command_buffer + 44);
+    const std::uint32_t sd = state.memory().read_word(command_buffer + 52);
+    const SifRpcServer* server = find_sif_server_by_handle(sd);
+    const std::uint32_t sid = server == nullptr ? 0 : server->sid;
+    std::uint8_t result[64] = {};
+    const std::uint32_t result_size = sif_rpc_result(sid, rpc_number, result,
+                                                     sizeof result);
+    if (recv_size > 0) {
+        if (!state.memory().contains(recvbuf, recv_size)) {
+            throw std::runtime_error(
+                "An RPC call receive buffer is outside the mapped guest memory");
+        }
+        for (std::uint32_t offset = 0; offset < recv_size; ++offset) {
+            const std::uint8_t byte = offset < result_size ? result[offset] : 0;
+            state.memory().write_byte(recvbuf + offset, byte);
+        }
+    }
+    // The SIFRPC end packet, exactly like a bind reply but with the call's
+    // cid, plus the result bytes transferred above.
+    state.memory().write_word(ee_command_buffer_ + 0, 64);
+    state.memory().write_word(ee_command_buffer_ + 4, 0);
+    state.memory().write_word(ee_command_buffer_ + 8, sif_command_cid_rpc_end);
+    state.memory().write_word(ee_command_buffer_ + 12, 0);
+    state.memory().write_word(ee_command_buffer_ + 16, rec_id);
+    state.memory().write_word(ee_command_buffer_ + 20, pkt_addr);
+    state.memory().write_word(ee_command_buffer_ + 24, rpc_id);
+    state.memory().write_word(ee_command_buffer_ + 28, cd);
+    state.memory().write_word(ee_command_buffer_ + 32, sif_command_cid_rpc_call);
+    state.memory().write_word(ee_command_buffer_ + 36, server == nullptr ? 0 : sd);
+    state.memory().write_word(ee_command_buffer_ + 40,
+                              server == nullptr ? 0 : server->buffer);
+    state.memory().write_word(ee_command_buffer_ + 44,
+                              server == nullptr ? 0 : server->connection_buffer);
+    for (std::uint32_t offset = 48; offset < 64; offset += 4) {
+        state.memory().write_word(ee_command_buffer_ + offset, 0);
+    }
+    queue_interrupt(sif_channel_dmac);
+}
+
+void Kernel::answer_sif_reset(GuestState& state, std::uint32_t command_buffer,
+                              std::uint32_t size) {
+    // The reset command carries the image to boot (arg length at +16, mode
+    // at +20, the string at +24); the game's own call names
+    // "rom0:UDNL cdrom0:\IOPRP300.IMG;1". The model does not execute IOP
+    // code: it records the path and completes the reboot by announcing the
+    // fully booted flag set, which is the observable handshake the game's
+    // `SifIopSync` poll waits for (SMFLAG & BOOTEND).
+    sif_iop_image_.clear();
+    if (size >= 24) {
+        const std::uint32_t argument_length =
+            state.memory().read_word(command_buffer + 16);
+        for (std::uint32_t index = 0; index < argument_length; ++index) {
+            if (24 + index >= size) {
+                break;
+            }
+            const char character = static_cast<char>(
+                state.memory().read_byte(command_buffer + 24 + index));
+            if (character == '\0') {
+                break;
+            }
+            sif_iop_image_.push_back(character);
+        }
+    }
+    sif_reboot_pending_ = true;
+}
+
+std::uint32_t Kernel::sif_rpc_result(std::uint32_t sid, std::uint32_t rpc_number,
+                                     std::uint8_t* result,
+                                     std::uint32_t capacity) {
+    // The model IOP's function table. One behavior is evidenced so far: the
+    // version query (RPC number 0xFF) of the first server the game binds.
+    // Its reply is 8 bytes; the game's client checks that the second word is
+    // 2 and keeps the first word as the manager's version. See the seventh
+    // slice's evidence document for the disassembly trail.
+    (void)sid;
+    if (rpc_number != 0xFFu || capacity < 8) {
+        return 0;
+    }
+    const std::uint32_t words[2] = {0x00000000u, 2u};
+    for (std::uint32_t index = 0; index < 2; ++index) {
+        result[index * 4 + 0] = static_cast<std::uint8_t>(words[index]);
+        result[index * 4 + 1] = static_cast<std::uint8_t>(words[index] >> 8);
+        result[index * 4 + 2] = static_cast<std::uint8_t>(words[index] >> 16);
+        result[index * 4 + 3] = static_cast<std::uint8_t>(words[index] >> 24);
+    }
+    return 8;
 }
 
 ServiceOutcome Kernel::sif_set_reg(GuestState& state) {
@@ -1003,6 +1333,12 @@ ServiceOutcome Kernel::sif_set_reg(GuestState& state) {
 
 ServiceOutcome Kernel::sif_get_reg(GuestState& state) {
     ensure_sif_ready(state);
+    if (sif_reboot_pending_) {
+        // The modeled IOP finished rebooting: announce the fully booted
+        // state before answering the read the game's wait polls.
+        sif_reboot_pending_ = false;
+        state.memory().write_word(sif_register_index_address(4), sif_mesg_init);
+    }
     const std::uint32_t index = state.read_gpr32(4);
     if ((index & 0x80000000u) != 0) {
         const auto found = sif_software_registers_.find(index);

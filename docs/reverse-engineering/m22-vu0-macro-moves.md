@@ -59,3 +59,8 @@ slice.
   modeled yet; those words stop with context. VCALLMS (running VU0 micro
   code) and the VU1 controls stop the same way. The translator does not emit
   the COP2 operations yet — its next targets will say when they matter.
+- **Superseded 2026-10-02 (M30 slice 8):** the VU1 control bits of FBRST
+  (`ctc2` to VI28 with bits 0x100/0x200) no longer stop. GT4 resets VU1 as
+  part of its display setup, and since the model executes no VU1 microcode
+  the reset has no target state: the bits are recorded and execution
+  continues (decision 0010).

@@ -331,6 +331,111 @@ int main() {
               "an unmapped OSD address is rejected");
     }
 
+    // GetOsdConfigParam2/SetOsdConfigParam2 move the four-byte extended
+    // block with the caller's size and offset; reads past it are zeros.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        constexpr std::uint32_t buffer = 0x00100200;
+        state.write_gpr32(4, buffer);
+        state.write_gpr32(5, 1);   // size
+        state.write_gpr32(6, 1);   // offset: the clock/date flags byte
+        check(kernel.get_osd_config2(state) == ServiceOutcome::Handled
+                  && state.memory().read_byte(buffer) == 0x00,
+              "the extended OSD block reports no daylight savings");
+        state.memory().write_byte(buffer + 0x10, 0x10);  // daylight savings
+        state.write_gpr32(4, buffer + 0x10);
+        state.write_gpr32(5, 1);
+        state.write_gpr32(6, 1);
+        check(kernel.set_osd_config2(state) == ServiceOutcome::Handled,
+              "SetOsdConfigParam2 stores the caller's byte");
+        state.write_gpr32(4, buffer + 0x20);
+        state.write_gpr32(5, 2);
+        state.write_gpr32(6, 0);
+        check(kernel.get_osd_config2(state) == ServiceOutcome::Handled
+                  && state.memory().read_byte(buffer + 0x20) == 0x00
+                  && state.memory().read_byte(buffer + 0x21) == 0x10,
+              "the stored flags byte survives a full-block read");
+        state.write_gpr32(4, buffer + 0x30);
+        state.write_gpr32(5, 2);
+        state.write_gpr32(6, 3);
+        check(kernel.get_osd_config2(state) == ServiceOutcome::Handled
+                  && state.memory().read_byte(buffer + 0x30) == 0x01
+                  && state.memory().read_byte(buffer + 0x31) == 0x00,
+              "reads past the four-byte block are zeros");
+    }
+
+    // The GS interrupt mask round-trips; GsPutIMR returns the previous value.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        state.write_gpr64(4, 0xff00ull);
+        check(kernel.gs_put_imr(state) == ServiceOutcome::Handled
+                  && state.read_gpr64(2) == 0,
+              "GsPutIMR returns the previous mask");
+        check(kernel.gs_get_imr(state) == ServiceOutcome::Handled
+                  && state.read_gpr64(2) == 0xff00ull,
+              "GsGetIMR returns the stored mask");
+        state.write_gpr64(4, 0x1122334455667788ull);
+        check(kernel.gs_put_imr(state) == ServiceOutcome::Handled
+                  && state.read_gpr64(2) == 0xff00ull,
+              "GsPutIMR returns the replaced value");
+    }
+
+    // SetGsCrt is accepted; the model has no display.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        check(kernel.set_gs_crt(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0,
+              "SetGsCrt is accepted");
+    }
+
+    // The idle interrupt source: when no thread can run, the model raises a
+    // VBlank, records it in INTC_STAT, runs its handler chain and restores
+    // the interrupted context; the budget bounds deliveries that change
+    // nothing.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        RegisterBank intc(0x1000F000u, 0x100u);
+        intc.map_into(state.memory());
+        state.write_gpr32(4, 2);  // the VBlank cause
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(6, 0xFFFFFFFFu);
+        state.write_gpr32(7, 0);
+        kernel.add_intc_handler(state);
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.deliver_idle_interrupt(state),
+              "the idle source starts the VBlank handler");
+        check(state.pc() == 0x00100400u && state.read_gpr32(4) == 2
+                  && (state.memory().read_word(0x1000F000u) & 4u) != 0,
+              "the VBlank frame carries the cause and the status bit");
+        const ServiceHandler* return_handler =
+            services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr
+                  && (*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc,
+              "the VBlank return restores the context without a thread");
+        bool delivered = true;
+        std::uint32_t deliveries = 1;  // the one delivered above
+        while (delivered && deliveries <= Kernel::idle_interrupt_budget) {
+            delivered = kernel.deliver_idle_interrupt(state);
+            if (delivered) {
+                ++deliveries;
+            }
+        }
+        check(!delivered && deliveries == Kernel::idle_interrupt_budget,
+              "the idle budget bounds deliveries that change nothing");
+    }
+
     // Interrupt and DMA handler registrations are stored and removable;
     // enabling and disabling are accepted without delivering anything.
     {
@@ -417,10 +522,16 @@ int main() {
         check(kernel.pending_interrupts() == 1,
               "the reply queued the SIF0 interrupt");
 
-        // The handler is injected with its frame; its return restores the
-        // interrupted context.
+        // The handlers are injected with their frames; each return runs the
+        // next registered handler for the cause, and the last one restores
+        // the interrupted context.
         state.write_gpr32(4, 5);  // DMAC channel 5
         state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(6, 0xFFFFFFFFu);
+        state.write_gpr32(7, 0);
+        kernel.add_intc_handler(state);
+        state.write_gpr32(4, 5);
+        state.write_gpr32(5, 0x00100480u);
         state.write_gpr32(6, 0xFFFFFFFFu);
         state.write_gpr32(7, 0);
         kernel.add_intc_handler(state);
@@ -430,13 +541,70 @@ int main() {
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 5
                   && state.read_gpr32(31) == Kernel::patch_return_stub_physical
                   && (state.read_cp0(12) & 0x10000u) == 0,
-              "the handler frame has the cause, the stub and EIE clear");
+              "the first handler frame has the cause, the stub and EIE clear");
         const ServiceHandler* return_handler =
             services.find(Kernel::patch_return_service);
         check(return_handler != nullptr
                   && (*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == 0x00100480u,
+              "the first handler return chains to the second handler");
+        check((*return_handler)(state) == ServiceOutcome::Jumped
                   && state.pc() == interrupted_pc,
-              "the handler return restores the interrupted context");
+              "the last handler return restores the interrupted context");
+
+        // An RPC bind gets the SIFRPC end reply that unblocks the client.
+        state.memory().write_word(packet + 0, 64);           // psize
+        state.memory().write_word(packet + 8, 0x80000009u);  // RPC_BIND
+        state.memory().write_word(packet + 16, 5);           // rec_id
+        state.memory().write_word(packet + 20, 0x00100500u); // pkt_addr
+        state.memory().write_word(packet + 24, 2);           // rpc_id
+        state.memory().write_word(packet + 28, 0x00100600u); // cd
+        state.memory().write_word(packet + 32, 0x80000001u); // sid
+        state.memory().write_word(descriptors + 8, 64);      // size
+        state.write_gpr32(4, descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 2,
+              "SifSetDma returns the next transfer id");
+        check(state.memory().read_word(ee_buffer + 8) == 0x80000008u
+                  && state.memory().read_word(ee_buffer + 16) == 5
+                  && state.memory().read_word(ee_buffer + 20) == 0x00100500u
+                  && state.memory().read_word(ee_buffer + 28) == 0x00100600u
+                  && state.memory().read_word(ee_buffer + 32) == 0x80000009u
+                  && state.memory().read_word(ee_buffer + 36) != 0
+                  && state.memory().read_word(ee_buffer + 40) != 0
+                  && state.memory().read_word(ee_buffer + 44) != 0,
+              "the model IOP answered the RPC bind");
+        check(kernel.pending_interrupts() == 1,
+              "the bind reply queued its SIF0 interrupt");
+
+        // A reset command records the image and completes the modeled
+        // reboot by announcing the fully booted flag set.
+        const std::string image = "rom0:UDNL cdrom0:\\IOPRP300.IMG;1";
+        state.memory().write_word(0x1000F230u,
+                                  0x00020000u);  // as the game's reset leaves it
+        state.memory().write_word(packet + 0, 104);          // psize
+        state.memory().write_word(packet + 8, 0x80000003u);  // RESET_CMD
+        state.memory().write_word(packet + 16, image.size());
+        state.memory().write_word(packet + 20, 0);           // mode
+        for (std::uint32_t index = 0; index < image.size(); ++index) {
+            state.memory().write_byte(packet + 24 + index,
+                                      static_cast<std::uint8_t>(image[index]));
+        }
+        state.memory().write_word(descriptors + 8, 104);
+        state.write_gpr32(4, descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled,
+              "a reset command transfers");
+        check(kernel.sif_iop_image() == image,
+              "the model IOP records the requested image");
+        state.write_gpr32(4, 4);  // SMFLAG, the register the game polls
+        check(kernel.sif_get_reg(state) == ServiceOutcome::Handled
+                  && (state.read_gpr32(2) & 0x70000u) == 0x70000u,
+              "the reboot completes before the first register read after it");
+        check(kernel.sif_get_reg(state) == ServiceOutcome::Handled
+                  && (state.read_gpr32(2) & 0x70000u) == 0x70000u,
+              "the announced boot state persists");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

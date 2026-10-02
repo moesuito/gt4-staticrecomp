@@ -178,6 +178,10 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
                     continue;
                 }
                 if (outcome == ServiceOutcome::NoRunnableThread) {
+                    if (options.start_idle_interrupt
+                        && options.start_idle_interrupt(state_)) {
+                        continue;
+                    }
                     result.boundary = Boundary{BoundaryKind::NoRunnableThread,
                                                boundary.pc, boundary.word,
                                                boundary.service};
@@ -230,6 +234,10 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
                 continue;
             }
             if (outcome == ServiceOutcome::NoRunnableThread) {
+                if (options.start_idle_interrupt
+                    && options.start_idle_interrupt(state_)) {
+                    continue;
+                }
                 result.boundary = boundary_from_step(step, state_);
                 result.boundary.kind = BoundaryKind::NoRunnableThread;
                 return result;

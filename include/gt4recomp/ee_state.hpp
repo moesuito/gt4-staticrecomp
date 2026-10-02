@@ -24,6 +24,12 @@ public:
     // guest address space.
     GuestMemory(std::uint32_t base, std::size_t size_bytes);
 
+    // Adds a second byte-addressable RAM region (for example the EE's 16 KiB
+    // scratchpad at 0x70000000), independent of the main region. Regions
+    // must not overlap each other or an MMIO window; the main region is
+    // regions_.front() and keeps base()/size().
+    void map_region(std::uint32_t base, std::size_t size_bytes);
+
     [[nodiscard]] std::uint32_t base() const noexcept;
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] bool contains(std::uint32_t address, std::size_t width) const noexcept;
@@ -72,14 +78,27 @@ private:
         MmioWrite write;
     };
 
+    struct Region {
+        std::uint32_t base = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+
     void require_alignment(std::uint32_t address, std::size_t width) const;
-    [[nodiscard]] std::size_t range_offset(std::uint32_t address, std::size_t width) const;
+    // The region containing the whole access, or null. The address is
+    // already physical.
+    [[nodiscard]] const Region* find_region(std::uint32_t physical,
+                                            std::size_t width) const noexcept;
+    [[nodiscard]] Region* find_region(std::uint32_t physical,
+                                      std::size_t width) noexcept;
+    // The region containing the access, or a bounded failure.
+    [[nodiscard]] const Region& require_region(std::uint32_t address,
+                                               std::size_t width) const;
+    [[nodiscard]] Region& require_region(std::uint32_t address, std::size_t width);
     [[nodiscard]] std::uint32_t physical_address(std::uint32_t address) const noexcept;
     [[nodiscard]] const MmioWindow* find_mmio(std::uint32_t address,
                                               std::size_t width) const noexcept;
 
-    std::uint32_t base_ = 0;
-    std::vector<std::uint8_t> bytes_;
+    std::vector<Region> regions_;
     bool segment_alias_ = false;
     std::vector<MmioWindow> mmio_windows_;
 };

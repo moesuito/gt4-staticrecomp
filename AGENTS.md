@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 7 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 8 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -114,17 +114,21 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   boundary driver executes translated modules as programs; the BIOS service
   layer models SetupThread, SetupHeap, FlushCache, the thread/semaphore
   scheduler, kernel patches, the timer registers, the OSD configuration, the
-  DMAC/SIF register banks and the SIF services with a model IOP that answers
-  the SIFCMD init handshake (the driver injects its DMA interrupt into guest
-  code); the step-by-step interpreter bridges the boundaries a module cannot
-  pass. `gt4boot` runs the whole game as one module from the ELF entry
-  through the whole init chain, the game's thread creation, the SIFCMD
-  handshake and the RPC initialization (the cooperative scheduler and the
-  first injected interrupt both exercised end to end) with the state
-  identical to the interpreter (6,322,280 instructions), stopping at the
-  RPC bind wait — the IOP RPC wall (pc 0x005ADCE4).
-- Next: M30 slice 8 — the model IOP's RPC replies (bind and call), then a
-  ticking timer with interrupt/alarm delivery.
+  DMAC/SIF register banks, the SIF services with a model IOP that answers
+  the SIFCMD init handshake, the RPC bind/call/version/reset protocol, the
+  GS and extended OSD services, and the peripheral windows; the driver
+  injects interrupts (SIF DMA completions and, at idleness, VBlank with the
+  registered handler chain); the step-by-step interpreter bridges the
+  boundaries a module cannot pass. `gt4boot` runs the whole game as one
+  module from the ELF entry through the whole init chain, the game's thread
+  creation, the SIFCMD handshake, the IOP reset, the RPC initialization and
+  the game's runtime threads (the cooperative scheduler and the injected
+  interrupts exercised end to end) with the state identical to the
+  interpreter (7,515,389 instructions), reaching the 3,000-service limit in
+  the runtime.
+- Next: M30 slice 9 — the first RPC call the game's loading path acts on
+  (per-function evidence from the game's client code and live PCSX2), then a
+  periodic tick that interrupts long-running computation.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

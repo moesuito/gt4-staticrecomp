@@ -19,22 +19,48 @@ std::string access_text(const char* problem, std::uint32_t address, std::size_t 
 
 } // namespace
 
-GuestMemory::GuestMemory(std::uint32_t base, std::size_t size_bytes)
-    : base_(base), bytes_(size_bytes) {
+GuestMemory::GuestMemory(std::uint32_t base, std::size_t size_bytes) {
     if (size_bytes == 0) {
         throw std::runtime_error("Guest memory region must have a nonzero size");
     }
     if (static_cast<std::uint64_t>(base) + size_bytes > 0x100000000ull) {
         throw std::runtime_error("Guest memory region must fit the 32-bit address space");
     }
+    regions_.push_back(Region{base, std::vector<std::uint8_t>(size_bytes)});
+}
+
+void GuestMemory::map_region(std::uint32_t base, std::size_t size_bytes) {
+    if (size_bytes == 0) {
+        throw std::runtime_error("Guest memory region must have a nonzero size");
+    }
+    const std::uint64_t end = static_cast<std::uint64_t>(base) + size_bytes;
+    if (end > 0x100000000ull) {
+        throw std::runtime_error("Guest memory region must fit the 32-bit address space");
+    }
+    for (const Region& region : regions_) {
+        const std::uint64_t region_end =
+            static_cast<std::uint64_t>(region.base) + region.bytes.size();
+        if (base < region_end && region.base < end) {
+            throw std::runtime_error("Guest memory regions must not overlap");
+        }
+    }
+    for (const MmioWindow& window : mmio_windows_) {
+        const std::uint64_t window_end =
+            static_cast<std::uint64_t>(window.base) + window.size;
+        if (base < window_end && window.base < end) {
+            throw std::runtime_error(
+                "A guest memory region must not overlap a device window");
+        }
+    }
+    regions_.push_back(Region{base, std::vector<std::uint8_t>(size_bytes)});
 }
 
 std::uint32_t GuestMemory::base() const noexcept {
-    return base_;
+    return regions_.front().base;
 }
 
 std::size_t GuestMemory::size() const noexcept {
-    return bytes_.size();
+    return regions_.front().bytes.size();
 }
 
 bool GuestMemory::contains(std::uint32_t address, std::size_t width) const noexcept {
@@ -42,9 +68,48 @@ bool GuestMemory::contains(std::uint32_t address, std::size_t width) const noexc
     if (is_mmio(physical, width)) {
         return true;
     }
+    return find_region(physical, width) != nullptr;
+}
+
+const GuestMemory::Region* GuestMemory::find_region(std::uint32_t physical,
+                                                    std::size_t width) const noexcept {
+    return const_cast<GuestMemory*>(this)->find_region(physical, width);
+}
+
+GuestMemory::Region* GuestMemory::find_region(std::uint32_t physical,
+                                              std::size_t width) noexcept {
+    if (width == 0) {
+        return nullptr;
+    }
     const std::uint64_t end = static_cast<std::uint64_t>(physical) + width;
-    return width != 0 && physical >= base_
-        && end <= static_cast<std::uint64_t>(base_) + bytes_.size();
+    for (Region& region : regions_) {
+        const std::uint64_t region_end =
+            static_cast<std::uint64_t>(region.base) + region.bytes.size();
+        if (physical >= region.base && end <= region_end) {
+            return &region;
+        }
+    }
+    return nullptr;
+}
+
+const GuestMemory::Region& GuestMemory::require_region(std::uint32_t address,
+                                                       std::size_t width) const {
+    const Region* region = find_region(physical_address(address), width);
+    if (region == nullptr) {
+        throw std::runtime_error(
+            access_text("is outside the mapped region", address, width));
+    }
+    return *region;
+}
+
+GuestMemory::Region& GuestMemory::require_region(std::uint32_t address,
+                                                 std::size_t width) {
+    Region* region = find_region(physical_address(address), width);
+    if (region == nullptr) {
+        throw std::runtime_error(
+            access_text("is outside the mapped region", address, width));
+    }
+    return *region;
 }
 
 void GuestMemory::map_mmio(std::uint32_t base, std::uint32_t size,
@@ -101,13 +166,6 @@ void GuestMemory::require_alignment(std::uint32_t address, std::size_t width) co
     }
 }
 
-std::size_t GuestMemory::range_offset(std::uint32_t address, std::size_t width) const {
-    if (!contains(address, width)) {
-        throw std::runtime_error(access_text("is outside the mapped region", address, width));
-    }
-    return static_cast<std::size_t>(physical_address(address) - base_);
-}
-
 // All assembly uses explicit unsigned shifts: no host signed overflow and no
 // reinterpretation of the byte buffer as a wider type.
 
@@ -116,7 +174,8 @@ std::uint8_t GuestMemory::read_byte(std::uint32_t address) const {
     if (const MmioWindow* window = find_mmio(physical, 1); window != nullptr) {
         return static_cast<std::uint8_t>(window->read(physical, 1) & 0xffu);
     }
-    return bytes_[range_offset(address, 1)];
+    const Region& region = require_region(address, 1);
+    return region.bytes[physical - region.base];
 }
 
 std::uint16_t GuestMemory::read_halfword(std::uint32_t address) const {
@@ -125,9 +184,10 @@ std::uint16_t GuestMemory::read_halfword(std::uint32_t address) const {
     if (const MmioWindow* window = find_mmio(physical, 2); window != nullptr) {
         return static_cast<std::uint16_t>(window->read(physical, 2) & 0xffffu);
     }
-    const auto offset = range_offset(address, 2);
-    return static_cast<std::uint16_t>(static_cast<std::uint32_t>(bytes_[offset])
-        | (static_cast<std::uint32_t>(bytes_[offset + 1]) << 8));
+    const Region& region = require_region(address, 2);
+    const auto offset = physical - region.base;
+    return static_cast<std::uint16_t>(static_cast<std::uint32_t>(region.bytes[offset])
+        | (static_cast<std::uint32_t>(region.bytes[offset + 1]) << 8));
 }
 
 std::uint32_t GuestMemory::read_word(std::uint32_t address) const {
@@ -136,11 +196,12 @@ std::uint32_t GuestMemory::read_word(std::uint32_t address) const {
     if (const MmioWindow* window = find_mmio(physical, 4); window != nullptr) {
         return window->read(physical, 4);
     }
-    const auto offset = range_offset(address, 4);
-    return static_cast<std::uint32_t>(bytes_[offset])
-        | (static_cast<std::uint32_t>(bytes_[offset + 1]) << 8)
-        | (static_cast<std::uint32_t>(bytes_[offset + 2]) << 16)
-        | (static_cast<std::uint32_t>(bytes_[offset + 3]) << 24);
+    const Region& region = require_region(address, 4);
+    const auto offset = physical - region.base;
+    return static_cast<std::uint32_t>(region.bytes[offset])
+        | (static_cast<std::uint32_t>(region.bytes[offset + 1]) << 8)
+        | (static_cast<std::uint32_t>(region.bytes[offset + 2]) << 16)
+        | (static_cast<std::uint32_t>(region.bytes[offset + 3]) << 24);
 }
 
 std::uint64_t GuestMemory::read_doubleword(std::uint32_t address) const {
@@ -150,15 +211,17 @@ std::uint64_t GuestMemory::read_doubleword(std::uint32_t address) const {
                         address, 8));
     }
     require_alignment(address, 8);
-    const auto offset = range_offset(address, 8);
-    return static_cast<std::uint64_t>(bytes_[offset])
-        | (static_cast<std::uint64_t>(bytes_[offset + 1]) << 8)
-        | (static_cast<std::uint64_t>(bytes_[offset + 2]) << 16)
-        | (static_cast<std::uint64_t>(bytes_[offset + 3]) << 24)
-        | (static_cast<std::uint64_t>(bytes_[offset + 4]) << 32)
-        | (static_cast<std::uint64_t>(bytes_[offset + 5]) << 40)
-        | (static_cast<std::uint64_t>(bytes_[offset + 6]) << 48)
-        | (static_cast<std::uint64_t>(bytes_[offset + 7]) << 56);
+    const std::uint32_t physical = physical_address(address);
+    const Region& region = require_region(address, 8);
+    const auto offset = physical - region.base;
+    return static_cast<std::uint64_t>(region.bytes[offset])
+        | (static_cast<std::uint64_t>(region.bytes[offset + 1]) << 8)
+        | (static_cast<std::uint64_t>(region.bytes[offset + 2]) << 16)
+        | (static_cast<std::uint64_t>(region.bytes[offset + 3]) << 24)
+        | (static_cast<std::uint64_t>(region.bytes[offset + 4]) << 32)
+        | (static_cast<std::uint64_t>(region.bytes[offset + 5]) << 40)
+        | (static_cast<std::uint64_t>(region.bytes[offset + 6]) << 48)
+        | (static_cast<std::uint64_t>(region.bytes[offset + 7]) << 56);
 }
 
 void GuestMemory::write_byte(std::uint32_t address, std::uint8_t value) {
@@ -167,7 +230,8 @@ void GuestMemory::write_byte(std::uint32_t address, std::uint8_t value) {
         window->write(physical, 1, value);
         return;
     }
-    bytes_[range_offset(address, 1)] = value;
+    Region& region = require_region(address, 1);
+    region.bytes[physical - region.base] = value;
 }
 
 void GuestMemory::write_halfword(std::uint32_t address, std::uint16_t value) {
@@ -177,9 +241,10 @@ void GuestMemory::write_halfword(std::uint32_t address, std::uint16_t value) {
         window->write(physical, 2, value);
         return;
     }
-    const auto offset = range_offset(address, 2);
-    bytes_[offset] = static_cast<std::uint8_t>(value & 0xff);
-    bytes_[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+    Region& region = require_region(address, 2);
+    const auto offset = physical - region.base;
+    region.bytes[offset] = static_cast<std::uint8_t>(value & 0xff);
+    region.bytes[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
 }
 
 void GuestMemory::write_word(std::uint32_t address, std::uint32_t value) {
@@ -189,11 +254,12 @@ void GuestMemory::write_word(std::uint32_t address, std::uint32_t value) {
         window->write(physical, 4, value);
         return;
     }
-    const auto offset = range_offset(address, 4);
-    bytes_[offset] = static_cast<std::uint8_t>(value & 0xff);
-    bytes_[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
-    bytes_[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
-    bytes_[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
+    Region& region = require_region(address, 4);
+    const auto offset = physical - region.base;
+    region.bytes[offset] = static_cast<std::uint8_t>(value & 0xff);
+    region.bytes[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+    region.bytes[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
+    region.bytes[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
 }
 
 void GuestMemory::write_doubleword(std::uint32_t address, std::uint64_t value) {
@@ -203,9 +269,12 @@ void GuestMemory::write_doubleword(std::uint32_t address, std::uint64_t value) {
                         address, 8));
     }
     require_alignment(address, 8);
-    const auto offset = range_offset(address, 8);
+    const std::uint32_t physical = physical_address(address);
+    Region& region = require_region(address, 8);
+    const auto offset = physical - region.base;
     for (std::size_t index = 0; index < 8; ++index) {
-        bytes_[offset + index] = static_cast<std::uint8_t>((value >> (8 * index)) & 0xff);
+        region.bytes[offset + index] =
+            static_cast<std::uint8_t>((value >> (8 * index)) & 0xff);
     }
 }
 
@@ -217,9 +286,11 @@ void GuestMemory::write_bytes(std::uint32_t address, std::span<const std::uint8_
         throw std::runtime_error(
             "A bulk write into the device window is not modeled");
     }
-    const auto offset = range_offset(address, source.size());
+    const std::uint32_t physical = physical_address(address);
+    Region& region = require_region(address, source.size());
+    const auto offset = physical - region.base;
     std::copy(source.begin(), source.end(),
-              bytes_.begin() + static_cast<std::ptrdiff_t>(offset));
+              region.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
 GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {
