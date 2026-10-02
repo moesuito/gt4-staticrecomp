@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 27 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 28 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -184,16 +184,20 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   slice 27 then reconstructs the stream's content (13-byte records, the
   first three identical and the fourth different) and shows the assign
   formats its source through 0x0044D740 (arena allocated) before copying —
-  the records are formatted objects, not names; `--threads`
+  the records are formatted objects, not names; slice 28 then maps every
+  writer by call site (the assign chain plus the SDK string code reached
+  through the patched syscall stubs, 148 writes from pc 0x00100008) and
+  records that the watch's argument registers are stale for inner calls;
+  `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 28 — what the formatter produces: the sound library's
-  assign formats each source through 0x0044D740 (arena allocated) before
-  copying it into the stream, so the 13-byte records are formatted objects,
-  not names; identify the formatter's output for the sound bank names and
-  why 39 bytes precede the fault in the model against the console's 32 (an
-  instrument that also reports the call site and source pointer, or a watch
-  on the formatter's arena).
+- Next: M30 slice 29 — the formatter's output, seen properly: the stream's
+  writers are mapped (the assign chain plus the SDK string code through the
+  patched syscall stubs), but the watch's argument registers read stale for
+  inner calls; read the guest arguments at a boundary where the register
+  file is current or watch the formatter's arena (0x0044D740's result) to
+  identify each copied record and why 39 bytes precede the fault against
+  the console's 32.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
