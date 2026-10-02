@@ -46,11 +46,11 @@ class TranslateCliTests(unittest.TestCase):
         self.assertIn("ERROR:", result.stderr)
         self.assertIn("unsupported", result.stderr)
 
-    def test_rejects_internal_transfers(self):
-        result = self.run_tool("0x5a3140")  # reaches a beq after the prologue
+    def test_rejects_transfers_that_leave_the_function(self):
+        result = self.run_tool("0x5a3140")  # jumps from 0x5a31cc into startup code below the entry
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
-        self.assertIn("Only a final 'jr ra' transfer is supported", result.stderr)
+        self.assertIn("leaves the function", result.stderr)
 
 
 if __name__ == "__main__":

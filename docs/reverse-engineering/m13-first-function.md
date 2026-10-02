@@ -80,7 +80,43 @@ and unsupported families need the next translator slices. The interpreter
 remains the oracle, and both sides share the same specification — the next
 external observation step is what breaks that shared-speculation risk.
 
+## Translator slice 2 — conditional control flow (2026-10-01)
+
+The translator now handles one function with internal control flow:
+conditional branches (normal and likely, including link forms), unconditional
+in-function jumps (loops) and multiple `jr ra` returns. The reachable blocks
+from the M7 CFG walker define the function's extent, so trailing unrelated
+words are never translated; a transfer that leaves the extent — calls,
+indirect jumps, tail jumps, jumps below the entry — is rejected with the
+offending instruction and address.
+
+Emission rules:
+
+- normal branch: evaluate the condition first (`const bool taken_...`), then
+  the delay-slot statement, then `if (taken) goto ...`;
+- likely branch: the delay slot lives inside the taken path (nullification);
+- link forms write `ra = pc + 8` on the taken path before the delay slot;
+- jumps: delay slot then `goto`; labels mark every transfer target, and a
+  target inside a delay slot is rejected.
+
+### Verified on a second real function
+
+`0x005c11a8` is a lazy initializer: it loads a guard word from `0x006599b8`;
+when zero it stores two constants there and returns, otherwise it returns
+immediately (the `bne`'s delay slot runs in both paths). The test runs 6 input
+states — three cold (guard zero, initialization path) and three warm (guard
+nonzero, skip path), with varied `ra` and junk registers — and compares the
+translated C++ against the interpreter: all 32 registers, the full 6 MiB
+region word by word, and the continuation.
+
+```text
+translated 0x005c11a8 matches the interpreter on 6 input states
+```
+
+The M13 starter function re-translates with the new emitter and still matches;
+14/14 CTest.
+
 ## Next
 
 - M14 direction: automate observation/snapshots toward PCSX2 comparison, and
-  extend the translator along the M7 CFG shapes (branches first).
+  keep extending the translator (calls next).

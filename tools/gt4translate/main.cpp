@@ -5,31 +5,21 @@
 #include "parse_number.hpp"
 #include "verified_core.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 using namespace gt4recomp;
 using namespace gt4recomp::ee;
 using gt4recomp::tools::hex_value;
 
 namespace {
-
-struct InstructionLine {
-    std::uint32_t pc = 0;
-    std::uint32_t word = 0;
-    std::string assembly;
-    std::string statement;
-};
-
-bool is_return_to_ra(const DecodedInstruction& instruction) {
-    return instruction.operation == Operation::Jr && instruction.rs == 31;
-}
 
 // One C++ statement reproducing the instruction's effect on GuestState. The
 // expressions mirror the interpreter's execution rules exactly.
@@ -131,13 +121,60 @@ std::string statement_for(const DecodedInstruction& instruction) {
     return code.str();
 }
 
+// The branch condition, evaluated exactly like the interpreter does.
+std::string condition_for(const DecodedInstruction& instruction) {
+    std::ostringstream code;
+    const auto rs = static_cast<unsigned>(instruction.rs);
+    const auto rt = static_cast<unsigned>(instruction.rt);
+    switch (instruction.operation) {
+    case Operation::Beq:
+    case Operation::Beql:
+        code << "(state.read_gpr64(" << rs << ") == state.read_gpr64(" << rt << "))";
+        break;
+    case Operation::Bne:
+    case Operation::Bnel:
+        code << "(state.read_gpr64(" << rs << ") != state.read_gpr64(" << rt << "))";
+        break;
+    case Operation::Blez:
+        code << "((state.read_gpr64(" << rs
+             << ") & 0x8000000000000000ull) != 0 || state.read_gpr64(" << rs << ") == 0)";
+        break;
+    case Operation::Bgtz:
+        code << "((state.read_gpr64(" << rs
+             << ") & 0x8000000000000000ull) == 0 && state.read_gpr64(" << rs << ") != 0)";
+        break;
+    case Operation::Bltz:
+    case Operation::Bltzl:
+    case Operation::Bltzal:
+    case Operation::Bltzall:
+        code << "((state.read_gpr64(" << rs << ") & 0x8000000000000000ull) != 0)";
+        break;
+    case Operation::Bgez:
+    case Operation::Bgezl:
+    case Operation::Bgezal:
+    case Operation::Bgezall:
+        code << "((state.read_gpr64(" << rs << ") & 0x8000000000000000ull) == 0)";
+        break;
+    default:
+        throw std::logic_error("no condition for this branch operation");
+    }
+    return code.str();
+}
+
+std::string label_for(std::uint32_t address) {
+    return "label_" + hex_value(address, 8);
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
     if (argc != 4 && argc != 5) {
         std::cerr << "Usage: gt4translate CORE.GT4 start-address max-instructions [output-file]\n"
-                     "Translates one straight-line leaf function ending in 'jr ra' into a C++\n"
-                     "header. Without an output file the header is printed to stdout.\n";
+                     "Translates one function into a C++ header: plain instructions,\n"
+                     "conditional branches (including likely and link forms), in-function\n"
+                     "jumps and multiple 'jr ra' returns. Calls, indirect transfers and\n"
+                     "unsupported words are rejected with context. Without an output file\n"
+                     "the header is printed to stdout.\n";
         return 2;
     }
     try {
@@ -160,56 +197,171 @@ int wmain(int argc, wchar_t* argv[]) {
             return read_instruction_word(bytes);
         };
 
-        std::vector<InstructionLine> lines;
-        std::uint32_t pc = start;
-        bool returned = false;
-        for (std::uint32_t index = 0; index < max_instructions; ++index) {
-            if (static_cast<std::uint64_t>(pc) + 4 > text_end) {
-                break;
-            }
-            const auto word = word_at(pc);
-            const auto instruction = decode(word);
-            const auto flow = classify(instruction, pc);
-            if (is_return_to_ra(instruction)) {
-                // The delay slot executes before the return; it must be plain.
-                const auto delay_pc = pc + 4;
-                if (static_cast<std::uint64_t>(delay_pc) + 4 > text_end) {
-                    throw std::runtime_error("'jr ra' has no delay slot inside the text");
-                }
-                const auto delay_word = word_at(delay_pc);
-                const auto delay = decode(delay_word);
-                if (classify(delay, delay_pc).kind != FlowKind::FallThrough) {
-                    throw std::runtime_error("The 'jr ra' delay slot at 0x"
-                                             + hex_value(delay_pc, 8)
-                                             + " is not a plain instruction");
-                }
-                lines.push_back({delay_pc, delay_word, format_instruction(delay_word, delay_pc),
-                                 statement_for(delay)});
-                lines.push_back(
-                    {pc, word,
-                     format_instruction(word, pc) + " (the delay slot above runs first)",
-                     "state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));"
-                     " // return to ra"});
-                returned = true;
-                break;
-            }
-            if (flow.kind != FlowKind::FallThrough) {
-                throw std::runtime_error("Only a final 'jr ra' transfer is supported; found "
-                                         + format_instruction(word, pc) + " at 0x"
-                                         + hex_value(pc, 8));
-            }
-            lines.push_back({pc, word, format_instruction(word, pc), statement_for(instruction)});
-            pc += 4;
+        // The reachable blocks define the function's extent, so trailing
+        // unrelated words are never translated.
+        const std::uint32_t seeds[] = {start};
+        const auto graph = build_control_flow_graph(text, seeds, max_instructions);
+        if (graph.limited) {
+            throw std::runtime_error("Function control flow exceeds the instruction limit");
         }
-        if (!returned) {
-            throw std::runtime_error("No returning 'jr ra' found within the instruction limit");
+        std::set<std::uint32_t> reachable;
+        std::uint32_t extent_end = start;
+        for (const auto& node : graph.nodes) {
+            for (std::uint32_t address = node.block.start;
+                 address < node.block.end_exclusive; address += 4) {
+                reachable.insert(address);
+            }
+            extent_end = std::max(extent_end, node.block.end_exclusive);
+        }
+        if (reachable.size() > max_instructions) {
+            throw std::runtime_error("Function exceeds the instruction limit");
+        }
+        if (reachable.empty() || *reachable.begin() < start) {
+            throw std::runtime_error("A transfer leaves the function below its entry");
+        }
+
+        // Validation: every reachable instruction must be translatable, and
+        // every transfer target must stay inside the reachable set.
+        std::set<std::uint32_t> labels;
+        for (const auto address : reachable) {
+            const auto word = word_at(address);
+            const auto instruction = decode(word);
+            const auto flow = classify(instruction, address);
+            const auto reject = [&](const char* reason) {
+                throw std::runtime_error(std::string(reason) + ": "
+                                         + format_instruction(word, address) + " at 0x"
+                                         + hex_value(address, 8));
+            };
+            switch (flow.kind) {
+            case FlowKind::FallThrough:
+                break;
+            case FlowKind::Return:
+                if (!reachable.contains(address + 4)) {
+                    throw std::runtime_error("A return has no reachable delay slot at 0x"
+                                             + hex_value(address, 8));
+                }
+                break;
+            case FlowKind::Branch:
+            case FlowKind::Jump:
+                if (!reachable.contains(flow.target)) {
+                    throw std::runtime_error("A transfer leaves the function: "
+                                             + format_instruction(word, address) + " at 0x"
+                                             + hex_value(address, 8) + " targets 0x"
+                                             + hex_value(flow.target, 8));
+                }
+                labels.insert(flow.target);
+                if (!reachable.contains(address + 4)) {
+                    throw std::runtime_error("A transfer has no reachable delay slot at 0x"
+                                             + hex_value(address, 8));
+                }
+                break;
+            default:
+                reject("Not supported by this translator slice");
+            }
+        }
+        // A label inside a delay slot cannot be represented safely.
+        for (const auto address : reachable) {
+            const auto instruction = decode(word_at(address));
+            const auto flow = classify(instruction, address);
+            if ((flow.kind == FlowKind::Branch || flow.kind == FlowKind::Jump
+                 || flow.kind == FlowKind::Return)
+                && labels.contains(address + 4)) {
+                throw std::runtime_error("A branch targets a delay slot at 0x"
+                                         + hex_value(address + 4, 8));
+            }
+        }
+
+        std::ostringstream body;
+        std::set<std::uint32_t> consumed_delay_slots;
+        for (std::uint32_t address = start; address < extent_end; address += 4) {
+            const auto word = word_at(address);
+            const auto instruction = decode(word);
+            const auto flow = classify(instruction, address);
+
+            if (!reachable.contains(address)) {
+                body << "    // unreachable word 0x" << hex_value(address, 8) << ": "
+                     << hex_value(word, 8) << " (not translated)\n\n";
+                continue;
+            }
+            if (labels.contains(address)) {
+                body << label_for(address) << ":;\n";
+            }
+            const auto comment = [&](std::uint32_t at, std::uint32_t comment_word,
+                                     const char* indent = "    ") {
+                body << indent << "// 0x" << hex_value(at, 8) << ": "
+                     << hex_value(comment_word, 8) << "  "
+                     << format_instruction(comment_word, at) << "\n";
+            };
+            if (consumed_delay_slots.contains(address)) {
+                body << "    // 0x" << hex_value(address, 8) << ": " << hex_value(word, 8)
+                     << "  delay slot handled above\n\n";
+                continue;
+            }
+
+            switch (flow.kind) {
+            case FlowKind::FallThrough:
+                comment(address, word);
+                body << "    " << statement_for(instruction) << "\n\n";
+                break;
+            case FlowKind::Branch: {
+                const auto delay_instruction = decode(word_at(address + 4));
+                const auto taken = "taken_" + hex_value(address, 8);
+                comment(address, word);
+                body << "    const bool " << taken << " = " << condition_for(instruction)
+                     << ";\n";
+                if (is_likely_branch(instruction.operation)) {
+                    body << "    if (" << taken << ") {\n";
+                    if (writes_link_register(instruction.operation)) {
+                        body << "        state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
+                             << "u);\n";
+                    }
+                    comment(address + 4, word_at(address + 4), "        ");
+                    body << "        " << statement_for(delay_instruction)
+                         << " // delay slot (runs only when taken)\n";
+                    body << "        goto " << label_for(flow.target) << ";\n";
+                    body << "    }\n\n";
+                } else {
+                    if (writes_link_register(instruction.operation)) {
+                        body << "    if (" << taken << ") { state.write_gpr64(31, 0x"
+                             << hex_value(address + 8, 8) << "u); }\n";
+                    }
+                    comment(address + 4, word_at(address + 4));
+                    body << "    " << statement_for(delay_instruction)
+                         << " // delay slot (always executes)\n";
+                    body << "    if (" << taken << ") goto " << label_for(flow.target)
+                         << ";\n\n";
+                }
+                consumed_delay_slots.insert(address + 4);
+                break;
+            }
+            case FlowKind::Jump: {
+                comment(address, word);
+                comment(address + 4, word_at(address + 4));
+                body << "    " << statement_for(decode(word_at(address + 4)))
+                     << " // delay slot (always executes)\n";
+                body << "    goto " << label_for(flow.target) << ";\n\n";
+                consumed_delay_slots.insert(address + 4);
+                break;
+            }
+            case FlowKind::Return:
+                comment(address, word);
+                comment(address + 4, word_at(address + 4));
+                body << "    " << statement_for(decode(word_at(address + 4)))
+                     << " // delay slot (always executes)\n";
+                body << "    state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));"
+                     << " // return to ra\n\n";
+                consumed_delay_slots.insert(address + 4);
+                break;
+            default:
+                throw std::logic_error("unexpected flow kind during emission");
+            }
         }
 
         std::ostringstream output;
         output << "#pragma once\n\n"
                << "// Generated by gt4translate from the pinned Gran Turismo 4 (USA) v2.00\n"
-               << "// CORE. Entry 0x" << hex_value(start, 8) << ", " << lines.size()
-               << " instructions.\n"
+               << "// CORE. Entry 0x" << hex_value(start, 8) << ", " << reachable.size()
+               << " reachable instructions.\n"
                << "// This file is derived from game code: keep it in ignored directories\n"
                << "// and never commit it.\n\n"
                << "#include \"gt4recomp/ee_state.hpp\"\n\n"
@@ -227,13 +379,9 @@ int wmain(int argc, wchar_t* argv[]) {
                << "    return (value & 0x8000u) != 0 ? (0xffff0000u | value) : value;\n"
                << "}\n\n"
                << "} // namespace detail\n\n"
-               << "inline void function_" << hex_value(start, 8) << "(ee::GuestState& state) {\n";
-        for (const auto& line : lines) {
-            output << "    // 0x" << hex_value(line.pc, 8) << ": " << hex_value(line.word, 8)
-                   << "  " << line.assembly << "\n"
-                   << "    " << line.statement << "\n\n";
-        }
-        output << "}\n\n} // namespace gt4recomp::translated\n";
+               << "inline void function_" << hex_value(start, 8) << "(ee::GuestState& state) {\n"
+               << body.str()
+               << "}\n\n} // namespace gt4recomp::translated\n";
 
         if (argc == 5) {
             std::ofstream file(argv[4], std::ios::binary);

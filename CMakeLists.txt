@@ -120,5 +120,18 @@ if(BUILD_TESTING)
         target_include_directories(ee_translation_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
         target_link_libraries(ee_translation_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_translation COMMAND ee_translation_tests "${GT4_LOCAL_CORE}")
+
+        set(GT4_TRANSLATED_BRANCH_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-005c11a8.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_BRANCH_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x5c11a8 300 "${GT4_TRANSLATED_BRANCH_HEADER}"
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_branch_tests
+            tests/unit/ee_translation_branch_test.cpp
+            "${GT4_TRANSLATED_BRANCH_HEADER}")
+        target_include_directories(ee_translation_branch_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_branch_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation_branch COMMAND ee_translation_branch_tests "${GT4_LOCAL_CORE}")
     endif()
 endif()
