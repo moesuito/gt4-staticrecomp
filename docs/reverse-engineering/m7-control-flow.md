@@ -1,6 +1,6 @@
 # M7 control-flow evidence — slice 1: classification and basic blocks
 
-2026-10-01: BUILD/VERIFY passed for this slice. EXPLAIN lesson pending.
+2026-10-01: BUILD/VERIFY passed for slices 1 and 2. EXPLAIN lesson pending.
 
 ## Scope
 
@@ -82,6 +82,52 @@ Twelve instructions, one control transfer, no guesses.
   `0x5a3140` (12 instructions ending at `0x5a3170`, target `0x5a31b0`) and the
   unsupported single-word block at `0x00100008`.
 
+## Slice 2 — CFG traversal over static successors
+
+`build_control_flow_graph` performs a deterministic breadth-first traversal:
+
+- Seeds are visited in order; branches and jumps enqueue their target and
+  fall-through successors (target first).
+- Direct call targets are recorded in `call_targets` but not followed; the walk
+  continues at the return address (pc+8). Register calls (JALR) have no static
+  target and only contribute their continuation.
+- Returns, indirect jumps, exceptions and unsupported words end a path; their
+  blocks appear with no followed successor.
+- Static successors outside file-backed text are counted, never followed, so a
+  garbage target cannot make the walk read outside the image (or throw mid-run).
+- A block cap bounds the total work; reaching it with queued work sets
+  `limited`. Within one traversal a linear run is bounded by the text extents,
+  so fall-through truncation only happens at the physical end of the text.
+
+### Real evidence
+
+```powershell
+.\build\gt4cfg.exe private/fingerprint-check/CORE.GT4 0x5a3140 200
+```
+
+```text
+cfg blocks=15 instructions=71 edges=20 call_targets=1 open_ends=1 outside_text=0 limited=0
+```
+
+The traversal follows the seeded flow across region boundaries — a real
+reminder that static analysis cannot assume addresses stay local. The block at
+`0x5a31cc` jumps to `0x00100220` (the startup area), which jumps to `0x005b7960`;
+that path reaches a direct call at `0x005b78a0` (recorded, not followed) and ends
+in the `syscall` exception block at `0x005ad8c0`. Three calls in this function
+(`0x5a3184`, `0x5a3190`, `0x5a31c0`) go through registers (JALR), so they have
+no static target: the function map must treat register calls as separate
+evidence instead of chasing guesses.
+
+### Verification
+
+- Unit fixtures: three-node graph with an overlapping fall-through block, call
+  continuation versus recorded callee, outside-text counting, cap/limited
+  behavior, duplicate and empty seeds, zero-cap and malformed-seed rejection.
+- Optional Python CLI checks assert the first block, the summary line and the
+  single unsupported block at `0x00100008` on the real image.
+- No decoder output changed in this slice, so the M6 Ghidra comparison remains
+  valid as-is (`matched=417 non_nop=352 unsupported=71 mismatched=0`).
+
 ## Limits
 
 Static block boundaries describe the encoding, not observed executions. A
@@ -89,6 +135,5 @@ branch target may hold data; a block may cross a return into neighboring code.
 The CFG pass must not assume that every reachable address is a function entry.
 Nothing here executes guest code.
 
-Next: CFG traversal over successors with uniqueness and counts, then the
-evidence-backed function map; the M7 lesson follows once the slice set is
-stable.
+Next: the evidence-backed function map (M8); the M7 lesson follows once the
+slice set is stable.

@@ -19,6 +19,9 @@ evidence documents.
 - M7 slice 1 (2026-10-01): flow classification and delay-slot-aware basic
   blocks; new `gt4blocks` frontend; Ghidra re-run identical after the shared
   target-helper refactor (`docs/reverse-engineering/m7-control-flow.md`).
+- M7 slice 2 (2026-10-01): deterministic CFG traversal over static successors
+  with recorded direct call targets and bounded work; new `gt4cfg` frontend.
+  Real seeded run: 15 blocks, 71 instructions, 20 edges, 1 open end.
 - EXPLAIN: `docs/lessons/m6.md` written; lesson for M7 pending after its
   remaining slices.
 - Next technical milestone work: M7 slice 2 — CFG traversal over block
@@ -28,7 +31,7 @@ evidence documents.
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 6/6 CTest; Python suite 31 collected (25 run, 6 skip without the M3
+- Tests: 7/7 CTest; Python suite 34 collected (28 run, 6 skip without the M3
   reference ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -50,8 +53,9 @@ evidence documents.
 
 ## Next actions
 
-1. M7 slice 2: CFG traversal over block successors with uniqueness and counts.
-2. Evidence-backed function map (M8), then the M7 lesson.
+1. Evidence-backed function map (M8): seed traversal from recorded call
+   targets and known entry points, then classify the discovered regions.
+2. M7 lesson after the slice set stabilizes.
 3. Keep the journal and this file current after every working session.
 
 ## Journal

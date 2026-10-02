@@ -1,24 +1,15 @@
 #include "gt4recomp/ee_disassemble.hpp"
 #include "gt4recomp/ee_flow.hpp"
+#include "hex_value.hpp"
 #include "parse_number.hpp"
 #include "verified_core.hpp"
 
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <span>
 #include <stdexcept>
 #include <string>
 
-namespace {
-
-std::string hex_value(std::uint32_t value, int width) {
-    std::ostringstream output;
-    output << std::hex << std::setfill('0') << std::setw(width) << value;
-    return output.str();
-}
-
-} // namespace
+using gt4recomp::tools::hex_value;
 
 int wmain(int argc, wchar_t* argv[]) {
     if (argc != 4) {
