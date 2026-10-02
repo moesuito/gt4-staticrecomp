@@ -129,7 +129,12 @@ void GuestMemory::write_bytes(std::uint32_t address, std::span<const std::uint8_
               bytes_.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
-GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {}
+GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {
+    // The live observation (M14) recorded the running game's Status as
+    // 0x40000000 (CU2 usable); the model starts there rather than at a cold
+    // reset value, because the code under test comes from a running game.
+    cp0_[12] = 0x40000000u;
+}
 
 void GuestState::require_gpr_index(std::uint8_t index) {
     if (index >= 32) {
@@ -256,6 +261,20 @@ std::uint32_t GuestState::shift_amount_cache() const noexcept {
 
 void GuestState::set_shift_amount_cache(std::uint32_t value) noexcept {
     shift_amount_cache_ = value;
+}
+
+std::uint32_t GuestState::read_cp0(std::uint8_t index) const {
+    if (index >= 32) {
+        throw std::runtime_error("CP0 register index must be below 32");
+    }
+    return cp0_[index];
+}
+
+void GuestState::write_cp0(std::uint8_t index, std::uint32_t value) {
+    if (index >= 32) {
+        throw std::runtime_error("CP0 register index must be below 32");
+    }
+    cp0_[index] = value;
 }
 
 std::uint32_t GuestState::pc() const noexcept {

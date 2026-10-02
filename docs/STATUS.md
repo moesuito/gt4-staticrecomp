@@ -13,7 +13,7 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 189 operations (line-filtered count; earlier documents
+  - The decoder covers 206 operations (line-filtered count; earlier documents
     cited 175, which counted comment fragments). Ghidra verification: the M6
     ten-region run matched 417 with 0 mismatches; the M16 listing (startup
     regions, candidates and the unaligned-access neighborhoods) matched 594
@@ -96,6 +96,18 @@ work proceeds. Details live in the linked evidence documents.
   (`ee_translation_cacheflush`). The 0x58ce48 call tree now stops at COP0
   `mfc0` (Status) in 0x005b72f8
   (`docs/reverse-engineering/m18-critical-edges.md`).
+- M19 COP0/BREAK/shifts: the CP0 register file joins the state (from the
+  live-observed Status 0x40000000): `mfc0`/`mtc0` with the reference's masks
+  and protections, gated `ei`/`di` toggling Status.EIE, `break` trapping like
+  a syscall (an automatic halt in translated code), and the 12-operation
+  64-bit/variable shift family (206 operations). Hand-computed fixtures cover
+  the masks, the supervisor-mode gate, Config protection and the shift sign
+  fills; the translator emits the CP0 operations with mirroring helpers. The
+  CLI tests moved their unsupported-word example to `ldl` at 0x001041f4 (a
+  scan found 655 unsupported words in the first 200k, concentrated in the
+  unaligned 64-bit family). Next recorded gaps: the `beql …; break` trap in a
+  likely delay slot (0x005baea4) and `ldl`/`ldr`/`sdl`/`sdr`
+  (`docs/reverse-engineering/m19-cop0-and-shifts.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -148,10 +160,12 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M19 next: COP0 (`mfc0`/`mtc0`, the Status register with the observed
-   0x40000000 default, EI/DI) and BREAK; the MMI parallel multiply family;
-   indirect-call dispatch for jr-based tables; differential execution needs
-   step control (open).
+1. M20 next: the `beql …; break` trap in a likely delay slot (emit
+   `if (taken) { set_pc(delay); return; }` with no inline statement) and the
+   unaligned 64-bit family `ldl`/`ldr`/`sdl`/`sdr` (655 unsupported words in
+   the first 200k of text); the MMI parallel multiply family; indirect-call
+   dispatch for jr-based tables; differential execution needs step control
+   (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -167,4 +181,5 @@ work proceeds. Details live in the linked evidence documents.
   unaligned access, multiply/divide and PLZCW with a fifth verified function,
   M17 tail thunks and syscall boundaries (the thunk 0x005b27f8 verified
   stopping at service 0x42) and the cache hint, M18 critical edges (a branch
-  targeting a delay slot, verified with the 0x005b0f78 cache-flush loop).
+  targeting a delay slot, verified with the 0x005b0f78 cache-flush loop),
+  M19 COP0/BREAK and the 64-bit shift family.

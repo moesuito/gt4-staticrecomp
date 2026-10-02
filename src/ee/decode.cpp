@@ -11,6 +11,18 @@ Operation decode_special(const DecodedInstruction& instruction) {
         return instruction.rs == 0 ? Operation::Srl : Operation::Unsupported;
     case 0x03:
         return instruction.rs == 0 ? Operation::Sra : Operation::Unsupported;
+    case 0x38:
+        return instruction.rs == 0 ? Operation::Dsll : Operation::Unsupported;
+    case 0x3a:
+        return instruction.rs == 0 ? Operation::Dsrl : Operation::Unsupported;
+    case 0x3b:
+        return instruction.rs == 0 ? Operation::Dsra : Operation::Unsupported;
+    case 0x3c:
+        return instruction.rs == 0 ? Operation::Dsll32 : Operation::Unsupported;
+    case 0x3e:
+        return instruction.rs == 0 ? Operation::Dsrl32 : Operation::Unsupported;
+    case 0x3f:
+        return instruction.rs == 0 ? Operation::Dsra32 : Operation::Unsupported;
     case 0x08:
         if (instruction.rt == 0 && instruction.rd == 0 && instruction.shift_amount == 0) {
             return Operation::Jr;
@@ -25,6 +37,10 @@ Operation decode_special(const DecodedInstruction& instruction) {
     case 0x0c:
         // The 20-bit SYSCALL code occupies bits 25-6, so no zero-shift rule.
         return Operation::Syscall;
+    case 0x0d:
+        // BREAK carries a code the same way; it traps like SYSCALL and the
+        // handler is not modeled.
+        return Operation::Break;
     case 0x0f:
         // SYNC is the pipeline barrier; its completion code in bits 10-6 does
         // not change the modeled effect, which is a no-op without caches or
@@ -44,8 +60,14 @@ Operation decode_special(const DecodedInstruction& instruction) {
         return Operation::Unsupported;
     }
     switch (instruction.function) {
+    case 0x04: return Operation::Sllv;
+    case 0x06: return Operation::Srlv;
+    case 0x07: return Operation::Srav;
     case 0x0a: return Operation::Movz;
     case 0x0b: return Operation::Movn;
+    case 0x14: return Operation::Dsllv;
+    case 0x16: return Operation::Dsrlv;
+    case 0x17: return Operation::Dsrav;
     case 0x18: return Operation::Mult;
     case 0x19: return Operation::Multu;
     case 0x1a: return Operation::Div;
@@ -185,6 +207,22 @@ Operation decode_mmi(const DecodedInstruction& instruction) {
     }
 }
 
+Operation decode_cop0(const DecodedInstruction& instruction) {
+    switch (instruction.rs) {
+    case 0x00: return Operation::Mfc0;
+    case 0x04: return Operation::Mtc0;
+    case 0x10:
+        // The C0 function field holds the control operations.
+        switch (instruction.function) {
+        case 0x38: return Operation::Ei;
+        case 0x39: return Operation::Di;
+        default: return Operation::Unsupported;
+        }
+    default:
+        return Operation::Unsupported;
+    }
+}
+
 Operation decode_cop1(const DecodedInstruction& instruction) {
     switch (instruction.rs) {
     case 0x00: return Operation::Mfc1;
@@ -321,6 +359,7 @@ DecodedInstruction decode(std::uint32_t word) {
         }
         break;
     case 0x11: result.operation = decode_cop1(result); break;
+    case 0x10: result.operation = decode_cop0(result); break;
     case 0x1c: result.operation = decode_mmi(result); break;
     case 0x1e: result.operation = Operation::Lq; break;
     case 0x1f: result.operation = Operation::Sq; break;
@@ -370,6 +409,18 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Sll: return "sll";
     case Operation::Srl: return "srl";
     case Operation::Sra: return "sra";
+    case Operation::Sllv: return "sllv";
+    case Operation::Srlv: return "srlv";
+    case Operation::Srav: return "srav";
+    case Operation::Dsll: return "dsll";
+    case Operation::Dsrl: return "dsrl";
+    case Operation::Dsra: return "dsra";
+    case Operation::Dsll32: return "dsll32";
+    case Operation::Dsrl32: return "dsrl32";
+    case Operation::Dsra32: return "dsra32";
+    case Operation::Dsllv: return "dsllv";
+    case Operation::Dsrlv: return "dsrlv";
+    case Operation::Dsrav: return "dsrav";
     case Operation::Slt: return "slt";
     case Operation::Sltu: return "sltu";
     case Operation::Slti: return "slti";
@@ -421,6 +472,11 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Bgezall: return "bgezall";
     case Operation::Jalr: return "jalr";
     case Operation::Syscall: return "syscall";
+    case Operation::Break: return "break";
+    case Operation::Mfc0: return "mfc0";
+    case Operation::Mtc0: return "mtc0";
+    case Operation::Ei: return "ei";
+    case Operation::Di: return "di";
     case Operation::Mfhi: return "mfhi";
     case Operation::Mthi: return "mthi";
     case Operation::Mflo: return "mflo";

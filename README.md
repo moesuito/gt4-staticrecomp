@@ -13,7 +13,8 @@ decoder expansion and Ghidra re-verification, 417 of 488 words match Ghidra
 operations, including the REGIMM branch family, JALR/SYSCALL, LD/SD/SB/LH and
 SLT/SLTU/DADDU. Later expansions added LB/LBU/SRA/SLTI/SLTIU/XORI, corrected
 SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics, added the COP1/MMI
-extensions and the unaligned-access and multiply/divide families (189
+extensions, the unaligned-access and multiply/divide families, COP0 with the
+break boundary and the 64-bit shift family (206
 operations in total, with PCSX2 used as the semantic reference; CACHE decodes
 as the no-op hint it is). The game's startup executes in the interpreter from
 its ELF entry to the first BIOS syscall — and, through `gt4translate`, as a

@@ -40,12 +40,14 @@ class TranslateCliTests(unittest.TestCase):
                              self.run_tool("0x577878").stdout)
 
     def test_rejects_unsupported_words(self):
-        # 0x001001f8 is an `ei` (COP0) word: outside the translated subset.
-        result = self.run_tool("0x1001f8")
+        # 0x001041f4 is an `ldl` (unaligned 64-bit load): outside the
+        # translated subset.
+        result = self.run_tool("0x1041f4")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertIn("ERROR:", result.stderr)
         self.assertIn("unsupported", result.stderr)
+        self.assertIn("0x001041f4", result.stderr)
 
     def test_calls_translate_the_direct_call_tree(self):
         result = self.run_tool("0x10c0c0", 2000)

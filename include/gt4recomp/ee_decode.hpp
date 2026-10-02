@@ -12,6 +12,7 @@ enum class Operation {
     Addu, Subu, And, Or, Xor, Slt, Sltu, Daddu, Movz, Movn,
     // Immediates, shifts and upper immediates.
     Addiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
+    Sllv, Srlv, Srav, Dsll, Dsrl, Dsra, Dsll32, Dsrl32, Dsra32, Dsllv, Dsrlv, Dsrav,
     // Memory access.
     Lb, Lbu, Lh, Lhu, Lw, Lwu, Sw, Sh, Ld, Sd, Sb, Lq, Sq,
     Lwl, Lwr, Swl, Swr,
@@ -24,12 +25,14 @@ enum class Operation {
     // Direct and register jumps.
     J, Jal, Jr, Jalr,
     // Exception boundary.
-    Syscall,
+    Syscall, Break,
     // Special register moves, synchronization and the MMI shift cache.
     Mfhi, Mthi, Mflo, Mtlo, Sync, Mfhi1, Mthi1, Mflo1, Mtlo1, Mtsa, Mtsab, Mtsah,
     // Multiply and divide, including the second HI/LO bank used by the MMI
     // compact forms and the accumulate variants.
     Mult, Multu, Div, Divu, Madd, Maddu, Mult1, Multu1, Div1, Divu1, Madd1, Maddu1,
+    // CP0: system-coprocessor moves and the interrupt-enable pair.
+    Mfc0, Mtc0, Ei, Di,
     // COP1: register moves, FPU memory access, single-precision arithmetic,
     // accumulator forms, comparisons, conversions and conditional branches.
     Mfc1, Cfc1, Mtc1, Ctc1, Lwc1, Swc1,

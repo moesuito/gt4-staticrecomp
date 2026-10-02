@@ -63,6 +63,11 @@ InstructionFlow classify(const DecodedInstruction& instruction, std::uint32_t pc
         // Control leaves through the exception handler; SYSCALL has no delay slot.
         flow.kind = FlowKind::Exception;
         break;
+    case Operation::Break:
+        // BREAK traps the same way; names the breakpoint handler the model
+        // does not have.
+        flow.kind = FlowKind::Exception;
+        break;
     case Operation::Unsupported:
         flow.kind = FlowKind::Unsupported;
         break;
