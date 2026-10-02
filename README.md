@@ -107,6 +107,17 @@ and never writes it; only the explicit `save-state`/`load-state` commands
 change emulator state. See the
 [M14 evidence](docs/reverse-engineering/m14-live-observation.md).
 
+## Read a PCSX2 savestate
+
+```powershell
+& 'private\tooling-venv\Scripts\python.exe' scripts/pcsx2_savestate.py registers "$env:USERPROFILE\Documents\PCSX2\sstates\SCUS-97328 (77E61C8A).09.p2s" --with-memory
+```
+
+Savestates are ZIP containers; this reads the CPU registers (pc, all 32 GPRs,
+HI/LO, key CP0 registers) from the raw internal freeze stream and can extract
+any entry (for example `eeMemory.bin`, the full 32 MiB EE RAM) — fully offline.
+See the [M14 evidence](docs/reverse-engineering/m14-live-observation.md).
+
 ## Discover an evidence-backed function map
 
 ```powershell

@@ -47,7 +47,10 @@ After M13: automate snapshots (M14) — started 2026-10-01: live PCSX2
 observation over PINE; the reconstructed text image matched live RAM
 byte-for-byte (5,339,668 bytes, 0 differences, equal hashes) and reginfo
 24/24, with the data record differing only where the game had written at
-runtime; expand COP1/MMI/VU0 (M15-M17);
+runtime; savestate parsing followed the same day (raw freeze stream decoded:
+pc, all 32 GPRs, HI/LO and key CP0 registers offline; the savestate's own
+eeMemory.bin matched the text image with 0 differences); expand COP1/MMI/VU0
+(M15-M17);
 continuous execution and observed OS/file/scheduling/IOP services (M18-M23);
 Adhoc inspection/execution lessons (M24-M25); DMA/VIF/VU/GIF/GS and verified
 pixels (M26-M34); input/audio/menu/car/track/race milestones (M35-M41).

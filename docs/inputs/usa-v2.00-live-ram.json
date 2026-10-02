@@ -41,5 +41,20 @@
     "size_bytes": 13453263,
     "state": "main menu"
   },
+  "savestate": {
+    "format": "ZIP container; Zstandard entries; internal freeze stream is a raw struct copy",
+    "emulator_version_string": "v2.9.93",
+    "cpu": {
+      "pc": "0x00568b94",
+      "word_at_pc": "0x1520004a",
+      "note": "bne with t1 = 0; ra 0x00568acc in text; sp 0x0113fa90 in RAM; gp/fp/s0/s1 in the data window; a1 = 0x70000000 scratchpad"
+    },
+    "text_check": {
+      "size": 5339668,
+      "matching": 5339668,
+      "differing": 0,
+      "note": "eeMemory.bin from the savestate compared offline against the reconstructed image"
+    }
+  },
   "limits": "Metadata only; the live RAM dump itself stays in ignored private/. Register-level comparison needs savestate parsing beyond this slice."
 }

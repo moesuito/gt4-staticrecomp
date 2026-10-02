@@ -1,8 +1,8 @@
 # Project status
 
-Updated 2026-10-01 after M14 slice 1 — live observation. This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-01 after M14 slice 2 — live observation and savestate parsing.
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -43,22 +43,25 @@ Details live in the linked evidence documents.
   direct call trees translated into one module (verified as a 5-function
   chain, `0x0010c0c0`, on 6 states)
   (`docs/reverse-engineering/m13-first-function.md`).
-- M14 slice 1 (2026-10-01): live observation through PCSX2 PINE — the
-  reconstructed text image matches live GT4 RAM byte-for-byte (5,339,668
-  bytes, equal hashes), reginfo 24/24; data-record differences are runtime
-  writes. Savestate anchors (main menu): our PINE slot 9 and the owner's
-  slot 1 (`docs/reverse-engineering/m14-live-observation.md`).
+- M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
+  text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
+  hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
+  decodes the menu savestate offline: pc, all 32 GPRs, HI/LO and key CP0
+  registers (the savestate's own eeMemory re-verifies the text image with 0
+  differences). Savestate anchors: PINE slot 9 and the owner's slot 1
+  (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M14
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: M14 next slices — savestate parsing for CPU
-  registers and broader decoding (COP1/MMI) toward differential execution.
+- Next technical milestone work: M14 continuation — broader decoding
+  (COP1/MMI) so the interpreter can run real code; differential execution
+  needs step control (open question).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
 - Tests: 15/15 CTest (the translation tests exist only where the local CORE
-  does); Python suite 64 collected (58 run, 6 skip without the M3 reference
+  does); Python suite 70 collected (64 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -71,9 +74,11 @@ Details live in the linked evidence documents.
 - PCSX2 nightly 2.9.93 at `F:\Games\PS2` with BIOS dumps; PINE enabled on
   port 28011 (`EnablePINE = true`; the original ini is kept as
   `.bak-gt4recomp`). Savestates in `Documents/PCSX2/sstates`: slot 9 (PINE,
-  ours) and slot 1 (owner) hold the main menu.
-- Live RAM dump (ignored): `private/pcsx2/text-ram.bin`; distributable
-  metadata in `docs/inputs/usa-v2.00-live-ram.json`.
+  ours) and slot 1 (owner) hold the main menu; `scripts/pcsx2_savestate.py`
+  decodes their CPU state offline.
+- Live RAM dump (ignored): `private/pcsx2/text-ram.bin` and
+  `private/pcsx2/menu-eeMemory.bin`; distributable metadata in
+  `docs/inputs/usa-v2.00-live-ram.json`.
 
 ## Open items
 
@@ -84,14 +89,14 @@ Details live in the linked evidence documents.
   pending.
 - 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
   deferred to M15-M17 by the curriculum.
-- PINE exposes no CPU registers: register-level observation needs savestate
-  parsing (version-specific `.p2s` format) or the debugger.
+- Live single-stepping is unsolved (savestate parsing covers offline
+  snapshots); the freeze layout is coupled to the emulator build.
 
 ## Next actions
 
-1. M14 next slices: savestate parsing for CPU registers and broader decoding
-   (COP1/MMI) toward differential execution on live RAM; translator: indirect
-   calls via a runtime dispatch.
+1. M14 next: broader decoding (COP1/MMI) so the interpreter can run real
+   code; translator: indirect-call dispatch; differential execution needs
+   step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -101,4 +106,4 @@ Details live in the linked evidence documents.
   decoder expansion, Ghidra verification, working rules, M6-M8 lessons, M7
   slices 1-2, M8 function map, M9 state model, M10 interpreter, M11/M12
   synthetic suites, M13 first natively compiled function, M14 live PCSX2
-  observation.
+  observation and savestate register decoding.
