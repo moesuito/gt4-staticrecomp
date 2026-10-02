@@ -1,9 +1,9 @@
 # Project status
 
-Updated 2026-10-02 after M24 — the trapping arithmetic and the parallel
-multiply/divide family; only 4 unsupported words remain in the code region.
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M25 — the translator reaches the VU0 macro and
+trapping operations through the verified runtime executor. This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -180,6 +180,16 @@ work proceeds. Details live in the linked evidence documents.
   **4 words**: two BC0F that need a DMA model for their condition, and two
   words at unassigned function 0x28 in the exception handler. CTest 23/23;
   Python 71 (`docs/reverse-engineering/m24-trapping-and-parallel-multiply.md`).
+- M25 (2026-10-02): `ee::execute_plain_effect` exposes the verified executor
+  and the translator falls back to it for every decoded plain operation
+  without an inline form — the whole VU0 macro table, the COP2 moves and
+  quad accesses, the remaining MMI forms and the trapping arithmetic (whose
+  statement stops the module at the instruction's address when the overflow
+  fires). **A new verified module, 0x0056DF58 (133 instructions, 32
+  runtime-executed)**, a vector convert/scale loop, matches the interpreter
+  on 3 input states with all registers, both HI/LO banks, the pc and the
+  whole scratch window compared. CTest 24/24; Python 71
+  (`docs/reverse-engineering/m25-translator-runtime-fallback.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -197,7 +207,7 @@ work proceeds. Details live in the linked evidence documents.
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 23/23 CTest (the translation tests exist only where the local CORE
+- Tests: 24/24 CTest (the translation tests exist only where the local CORE
   does); Python suite 71 collected (65 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
@@ -234,10 +244,10 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M25 next: translate the VU0 macro operations and the trapping forms into
-   C++ so the translator can cover functions that use them; indirect-call
-   dispatch for jr-based tables remains open; differential execution needs
-   step control (open).
+1. M26 next: push translator coverage across the code — a whole-text
+   translation survey (which functions translate today, what blocks the
+   rest) and then the blockers it names; indirect-call dispatch for jr-based
+   tables remains open; differential execution needs step control (open).
 2. The M9-M24 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -259,6 +269,8 @@ work proceeds. Details live in the linked evidence documents.
   ERET and the largest verified module (57 functions, 2,588 instructions).
 - [2026-10-02](journal/2026-10-02.md) — M20, M21, M22 (the VU0 macro state,
   its moves and the quad memory accesses), M23 (the full VU0 macro
-  instruction set; the text's trailing data table discovered) and M24 (the
+  instruction set; the text's trailing data table discovered), M24 (the
   trapping arithmetic and the parallel multiply/divide family; only 4
-  unsupported words left in real code), plus the scan correction trail.
+  unsupported words left in real code) and M25 (the translator reaches the
+  macro and trapping operations; the 0x0056df58 module verified), plus the
+  scan correction trail.

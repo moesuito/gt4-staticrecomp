@@ -624,11 +624,24 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         // Emitting one instruction with the address attached to any failure,
         // so rejections name the exact word.
         const auto statement_at = [&](std::uint32_t at) {
+            const auto instruction = decode(word_at(text, at));
             try {
-                return statement_for(decode(word_at(text, at)));
+                return statement_for(instruction);
             } catch (const std::logic_error&) {
+                // No inline form: fall back to the verified runtime executor,
+                // which mirrors the interpreter for every decoded plain
+                // operation (the VU0 macro table, the COP2 moves, the
+                // remaining MMI forms). The checked form stops at this
+                // instruction's address when a trapping overflow fires,
+                // exactly where the interpreter stops; other operations
+                // always complete.
+                if (instruction.operation != Operation::Unsupported) {
+                    return std::string("if (!ee::execute_plain_effect(state, ee::decode(0x")
+                        + hex_value(instruction.word, 8) + "u))) { state.set_pc(0x"
+                        + hex_value(at, 8) + "u); return; }";
+                }
                 throw std::runtime_error("No C++ statement for "
-                    + format_instruction(word_at(text, at), at) + " at 0x"
+                    + format_instruction(instruction.word, at) + " at 0x"
                     + hex_value(at, 8));
             }
         };
@@ -936,7 +949,7 @@ int wmain(int argc, wchar_t* argv[]) {
                << " function(s), " << total_instructions << " instructions.\n"
                << "// This file is derived from game code: keep it in ignored directories\n"
                << "// and never commit it.\n\n"
-               << "#include \"gt4recomp/ee_state.hpp\"\n\n"
+               << "#include \"gt4recomp/ee_interpreter.hpp\"\n\n"
                << "#include <bit>\n"
                << "#include <cstdint>\n"
                << "#include <stdexcept>\n\n"
