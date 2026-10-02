@@ -89,6 +89,8 @@ int main() {
         GuestState state = make_state();
         check(setup_root(kernel, state), "SetupThread created the root thread");
         check(state.read_gpr32(2) == 0x00101000u, "SetupThread returned the stack top");
+        check((state.read_cp0(12) & 1u) != 0,
+              "the root thread runs with interrupts enabled");
         check(kernel.threads().size() == 1
                   && kernel.threads()[0].status == ThreadRun
                   && kernel.threads()[0].initial_priority == 0,
@@ -289,6 +291,43 @@ int main() {
                   && state.memory().read_word(Kernel::syscall_table_physical + 0x5A * 4)
                       == 0x5B7390u,
               "a second patch lands in the table");
+
+        // Re-installing the number's own token is how the SDK restores the
+        // kernel's handler after reading it back: the patch is dropped.
+        state.write_gpr32(4, 0x5A);
+        state.write_gpr32(5, Kernel::syscall_token_base + 0x5A * 4);
+        kernel.set_syscall(state);
+        check(kernel.patched_handler(0x5Au) == 0
+                  && services.find(0x5Au) == nullptr,
+              "re-installing a model token removes the patch");
+    }
+
+    // Interrupt and DMA handler registrations are stored and removable;
+    // enabling and disabling are accepted without delivering anything.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        state.write_gpr32(4, 11);  // cause: INTC_TIM2
+        state.write_gpr32(5, 0x005B1234);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 1
+                  && kernel.interrupt_handlers().size() == 1
+                  && kernel.interrupt_handlers()[0].cause == 11
+                  && kernel.interrupt_handlers()[0].handler == 0x005B1234u,
+              "AddIntcHandler stores the registration");
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0,
+              "EnableIntc is accepted");
+        state.write_gpr32(5, 1);
+        check(kernel.remove_intc_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0
+                  && kernel.interrupt_handlers().empty(),
+              "RemoveIntcHandler removes the registration");
+        check(kernel.remove_intc_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu,
+              "removing an unknown handler fails");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

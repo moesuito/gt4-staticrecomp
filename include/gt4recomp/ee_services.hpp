@@ -32,6 +32,8 @@ using ServiceHandler = std::function<ServiceOutcome(GuestState& state)>;
 class ServiceTable {
 public:
     void add(std::uint32_t number, ServiceHandler handler);
+    // Drops the handler for the number; the syscall becomes a boundary again.
+    void remove(std::uint32_t number) noexcept;
     [[nodiscard]] const ServiceHandler* find(std::uint32_t number) const noexcept;
 
 private:

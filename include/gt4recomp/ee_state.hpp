@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -27,13 +28,26 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] bool contains(std::uint32_t address, std::size_t width) const noexcept;
 
-    // KSEG0 aliasing: the EE maps 0x80000000 to physical 0, and the kernel's
-    // syscall-table search reads through that segment. When enabled, guest
-    // addresses at 0x80000000 + physical access the same bytes as physical
-    // (bounded by the region). The default is strict: nothing outside the
+    // Segment aliasing: the EE maps KSEG0 (0x80000000) and KSEG1
+    // (0xA0000000) to the low 512 MiB of physical space, and the kernel's
+    // syscall-table search and the timer code read and write through those
+    // segments. When enabled, addresses in [0x80000000, 0xC0000000) access
+    // the same bytes as their physical address (address & 0x1FFFFFFF),
+    // bounded by the region. The default is strict: nothing outside the
     // region is mapped unless the caller asks for it.
-    void enable_kseg0_alias() noexcept;
-    [[nodiscard]] bool kseg0_alias_enabled() const noexcept;
+    void enable_segment_alias() noexcept;
+    [[nodiscard]] bool segment_alias_enabled() const noexcept;
+
+    // Memory-mapped I/O: accesses inside [base, base+size) are routed to the
+    // callbacks instead of the byte array. The model has one device window
+    // (the EE's hardware registers at 0x10000000); the callbacks must handle
+    // every access width the guest uses and live at least as long as the
+    // memory. Bytes outside the window stay strictly bounded RAM.
+    using MmioRead = std::function<std::uint32_t(std::uint32_t address, std::size_t width)>;
+    using MmioWrite = std::function<void(std::uint32_t address, std::size_t width,
+                                         std::uint32_t value)>;
+    void map_mmio(std::uint32_t base, std::uint32_t size, MmioRead read, MmioWrite write);
+    [[nodiscard]] bool is_mmio(std::uint32_t address, std::size_t width) const noexcept;
 
     [[nodiscard]] std::uint8_t read_byte(std::uint32_t address) const;
     [[nodiscard]] std::uint16_t read_halfword(std::uint32_t address) const;
@@ -55,7 +69,11 @@ private:
 
     std::uint32_t base_ = 0;
     std::vector<std::uint8_t> bytes_;
-    bool kseg0_alias_ = false;
+    bool segment_alias_ = false;
+    std::uint32_t mmio_base_ = 0;
+    std::uint32_t mmio_size_ = 0;
+    MmioRead mmio_read_;
+    MmioWrite mmio_write_;
 };
 
 // The whole per-thread register state a context switch must carry: the
@@ -147,8 +165,9 @@ public:
 
     // CP0: the system coprocessor's register file (Status, Cause, EPC and the
     // rest). The model starts from the live menu state the M14 observation
-    // captured: Status reads 0x40000000 (CU2 usable) and everything else is
-    // zero, because the code we run was captured from a running game.
+    // captured: Status reads 0x70030c11 (IE and EIE set, the interrupt mask
+    // and CU2 usable) and everything else is zero, because the code we run
+    // was captured from a running game.
     [[nodiscard]] std::uint32_t read_cp0(std::uint8_t index) const;
     void write_cp0(std::uint8_t index, std::uint32_t value);
 

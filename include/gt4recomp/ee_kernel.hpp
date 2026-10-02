@@ -33,6 +33,16 @@ enum ThreadWaitType : std::uint32_t {
     ThreadWaitSema = 2
 };
 
+// One registered interrupt or DMA handler. The model records the
+// registration so removal and re-registration behave; no interrupt is ever
+// delivered (documented in docs/decisions/0007-timer-registers.md).
+struct KernelInterruptHandler {
+    std::uint32_t id = 0;
+    std::uint32_t cause = 0;
+    std::uint32_t handler = 0;
+    std::uint32_t argument = 0;
+};
+
 // One semaphore. The kernel is the only writer of count and wait_threads,
 // matching the public ee_sema_t contract.
 struct KernelSemaphore {
@@ -101,11 +111,23 @@ public:
     ServiceOutcome poll_sema(GuestState& state);           // 0x45
     ServiceOutcome refer_sema_status(GuestState& state);   // 0x47
     ServiceOutcome set_syscall(GuestState& state);         // 0x74
+    // Interrupt and DMA handler registrations (0x10-0x17 and the negative
+    // i* aliases). The model stores them; enable/disable are accepted with
+    // no effect because no interrupt is delivered.
+    ServiceOutcome add_intc_handler(GuestState& state);     // 0x10
+    ServiceOutcome remove_intc_handler(GuestState& state);  // 0x11
+    ServiceOutcome add_dmac_handler(GuestState& state);     // 0x12
+    ServiceOutcome remove_dmac_handler(GuestState& state);  // 0x13
+    ServiceOutcome enable_intc(GuestState& state);          // 0x14
+    ServiceOutcome disable_intc(GuestState& state);         // 0x15
+    ServiceOutcome enable_dmac(GuestState& state);          // 0x16
+    ServiceOutcome disable_dmac(GuestState& state);         // 0x17
 
     // Model introspection for tests and tools.
     [[nodiscard]] std::uint32_t current_thread_id() const noexcept;
     [[nodiscard]] const std::vector<KernelThread>& threads() const noexcept;
     [[nodiscard]] const std::vector<KernelSemaphore>& semaphores() const noexcept;
+    [[nodiscard]] const std::vector<KernelInterruptHandler>& interrupt_handlers() const noexcept;
     // The guest handler a SetSyscall installed for the number, or zero.
     [[nodiscard]] std::uint32_t patched_handler(std::uint32_t number) const noexcept;
 
@@ -116,6 +138,11 @@ public:
     // the two the boot patches before searching.
     static constexpr std::uint32_t syscall_table_physical = 0x1000;
     static constexpr std::uint32_t syscall_table_entries = 256;
+    // Every entry starts as one opaque token in the kernel segment. The
+    // boot's GetEntryAddress re-installs what it read; a handler equal to
+    // the number's own token means "the model's own entry" and drops any
+    // patch instead of jumping to a token address.
+    static constexpr std::uint32_t syscall_token_base = 0x80010000;
     // A patched handler returns through this stub: it issues the model's
     // private return service, which restores the caller's ra and the
     // instruction after the syscall. On real hardware the kernel dispatcher
@@ -165,6 +192,8 @@ private:
         std::uint32_t caller_ra = 0;
     };
     std::vector<PendingPatchCall> patch_calls_;
+    std::vector<KernelInterruptHandler> interrupt_handlers_;
+    std::uint32_t next_handler_id_ = 1;
 };
 
 } // namespace gt4recomp::ee

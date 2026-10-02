@@ -14,6 +14,7 @@
 #include "gt4recomp/ee_interpreter.hpp"
 #include "gt4recomp/ee_kernel.hpp"
 #include "gt4recomp/ee_services.hpp"
+#include "gt4recomp/ee_timer.hpp"
 #include "gt4recomp/executable_image.hpp"
 #include "verified_core.hpp"
 
@@ -46,11 +47,14 @@ constexpr std::uint64_t default_step_limit = 200'000'000;
 
 // The full EE RAM as one flat zero-filled window with the image's own
 // addresses and the junk pre-fill around .bss the startup tests use. The
-// KSEG0 alias is on because the SDK's kernel search reads the low 512 KiB
-// through 0x80000000 (the EE maps that segment to physical 0).
-GuestState make_boot_state(const ExecutableImage& image) {
+// segment alias is on because the SDK's kernel search reads the low 512 KiB
+// through KSEG0/KSEG1 (0x80000000/0xA0000000, both mapping physical 0), and
+// the timer unit's register window is mapped so InitAlarm/InitTimer can read
+// and write it.
+GuestState make_boot_state(const ExecutableImage& image, TimerUnit& timer) {
     GuestMemory memory(0, ram_size);
-    memory.enable_kseg0_alias();
+    memory.enable_segment_alias();
+    timer.map_into(memory);
     memory.write_bytes(image.text.guest_address, image.text.bytes);
     memory.write_bytes(image.data.guest_address, image.data.bytes);
     std::vector<std::uint8_t> junk(bss_end - bss_start + 2 * junk_margin, 0xAA);
@@ -240,6 +244,8 @@ int wmain(int argc, wchar_t* argv[]) {
 
         Kernel driver_kernel;
         ServiceTable services = make_boot_services(driver_kernel);
+        TimerUnit driver_timer;
+        auto driver_state = make_boot_state(image, driver_timer);
         RunOptions options;
         options.step_limit = default_step_limit;
         options.service_limit = service_limit;
@@ -249,7 +255,6 @@ int wmain(int argc, wchar_t* argv[]) {
                       << pc << std::dec << std::setfill(' ') << '\n';
         };
 
-        auto driver_state = make_boot_state(image);
         Driver driver(driver_state, make_boot_module());
         const RunResult result = driver.run(services, options);
         const Boundary& boundary = result.boundary;
@@ -266,7 +271,8 @@ int wmain(int argc, wchar_t* argv[]) {
                   << ", services handled " << result.stats.services_handled << '\n';
 
         if (compare_interpreter) {
-            auto reference_state = make_boot_state(image);
+            TimerUnit reference_timer;
+            auto reference_state = make_boot_state(image, reference_timer);
             Kernel reference_kernel;
             ServiceTable reference_services = make_boot_services(reference_kernel);
             const ReferenceResult reference = run_reference(

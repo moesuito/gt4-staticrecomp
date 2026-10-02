@@ -168,6 +168,18 @@ void Kernel::register_services(ServiceTable& services) {
     add(0x47u, &Kernel::refer_sema_status);
     add(static_cast<std::uint32_t>(-0x48), &Kernel::refer_sema_status);
     add(0x74u, &Kernel::set_syscall);
+    add(0x10u, &Kernel::add_intc_handler);
+    add(0x11u, &Kernel::remove_intc_handler);
+    add(0x12u, &Kernel::add_dmac_handler);
+    add(0x13u, &Kernel::remove_dmac_handler);
+    add(0x14u, &Kernel::enable_intc);
+    add(0x15u, &Kernel::disable_intc);
+    add(0x16u, &Kernel::enable_dmac);
+    add(0x17u, &Kernel::disable_dmac);
+    add(static_cast<std::uint32_t>(-0x1A), &Kernel::enable_intc);
+    add(static_cast<std::uint32_t>(-0x1B), &Kernel::disable_intc);
+    add(static_cast<std::uint32_t>(-0x1C), &Kernel::enable_dmac);
+    add(static_cast<std::uint32_t>(-0x1D), &Kernel::disable_dmac);
     add(patch_return_service, &Kernel::patch_return);
 }
 
@@ -189,10 +201,9 @@ void Kernel::ensure_syscall_table(GuestState& state) {
     // One opaque token per number: values in the kernel segment so a guest
     // that range-checks them sees kernel addresses, distinct from the two
     // game handler addresses the boot patches in before searching.
-    constexpr std::uint32_t token_base = 0x80010000u;
     for (std::uint32_t index = 0; index < syscall_table_entries; ++index) {
         state.memory().write_word(syscall_table_physical + index * 4,
-                                  token_base + index * 4);
+                                  syscall_token_base + index * 4);
     }
     syscall_table_ready_ = true;
 }
@@ -203,6 +214,10 @@ const std::vector<KernelThread>& Kernel::threads() const noexcept {
 
 const std::vector<KernelSemaphore>& Kernel::semaphores() const noexcept {
     return semaphores_;
+}
+
+const std::vector<KernelInterruptHandler>& Kernel::interrupt_handlers() const noexcept {
+    return interrupt_handlers_;
 }
 
 ServiceOutcome Kernel::setup_thread(GuestState& state) {
@@ -693,6 +708,15 @@ ServiceOutcome Kernel::set_syscall(GuestState& state) {
         return ServiceOutcome::Handled;
     }
     ensure_syscall_table(state);
+    if (handler == syscall_token_base + number * 4) {
+        // The SDK's GetEntryAddress returned this number's own model entry
+        // and the caller re-installed it: drop any patch, keep the token.
+        patched_handlers_[number] = 0;
+        state.memory().write_word(syscall_table_physical + number * 4, handler);
+        service_table_->remove(number);
+        state.write_gpr64(2, 0);
+        return ServiceOutcome::Handled;
+    }
     // The synthetic table is the guest-visible view of the patch: the SDK
     // locates it by searching for the handler values it just installed, then
     // reads the other entries through it.
@@ -728,6 +752,74 @@ ServiceOutcome Kernel::patch_return(GuestState& state) {
     state.write_gpr64(31, call.caller_ra);
     state.set_pc(call.resume_pc);
     return ServiceOutcome::Jumped;
+}
+
+ServiceOutcome Kernel::add_intc_handler(GuestState& state) {
+    const std::uint32_t cause = state.read_gpr32(4);
+    const std::uint32_t handler = state.read_gpr32(5);
+    // AddIntcHandler2 passes a fourth argument; the three-argument form
+    // leaves a3 as the caller had it, which the registration copies anyway
+    // because nothing consults it without an interrupt.
+    const std::uint32_t argument = state.read_gpr32(7);
+    if (handler == 0) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    KernelInterruptHandler registration;
+    registration.id = next_handler_id_++;
+    registration.cause = cause;
+    registration.handler = handler;
+    registration.argument = argument;
+    interrupt_handlers_.push_back(registration);
+    state.write_gpr64(2, registration.id);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::add_dmac_handler(GuestState& state) {
+    // AddDmacHandler has the same shape as AddIntcHandler; the model keeps
+    // both registrations in one list because neither can fire.
+    return add_intc_handler(state);
+}
+
+ServiceOutcome Kernel::remove_intc_handler(GuestState& state) {
+    const std::uint32_t cause = state.read_gpr32(4);
+    const std::uint32_t id = state.read_gpr32(5);
+    for (auto entry = interrupt_handlers_.begin();
+         entry != interrupt_handlers_.end(); ++entry) {
+        if (entry->id == id && entry->cause == cause) {
+            interrupt_handlers_.erase(entry);
+            state.write_gpr64(2, 0);
+            return ServiceOutcome::Handled;
+        }
+    }
+    write_error(state);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::remove_dmac_handler(GuestState& state) {
+    return remove_intc_handler(state);
+}
+
+ServiceOutcome Kernel::enable_intc(GuestState& state) {
+    // The registration is the observable part; no interrupt is delivered,
+    // so enabling and disabling are accepted with no effect.
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::disable_intc(GuestState& state) {
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::enable_dmac(GuestState& state) {
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::disable_dmac(GuestState& state) {
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
 }
 
 } // namespace gt4recomp::ee

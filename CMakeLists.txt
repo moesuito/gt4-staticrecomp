@@ -28,6 +28,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/driver.cpp
     src/ee/services.cpp
     src/ee/kernel.cpp
+    src/ee/timer.cpp
     src/ee/vu_macro.cpp
 )
 target_include_directories(gt4recomp_decode PUBLIC include)
@@ -95,6 +96,9 @@ if(BUILD_TESTING)
     add_executable(ee_kernel_tests tests/unit/ee_kernel_test.cpp)
     target_link_libraries(ee_kernel_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_kernel COMMAND ee_kernel_tests)
+    add_executable(ee_timer_tests tests/unit/ee_timer_test.cpp)
+    target_link_libraries(ee_timer_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_timer COMMAND ee_timer_tests)
     add_executable(ee_synth_tests tests/unit/ee_synth_test.cpp)
     target_link_libraries(ee_synth_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_synth COMMAND ee_synth_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/synth-straight.txt")
@@ -197,6 +201,21 @@ if(BUILD_TESTING)
         set_tests_properties(gt4run_startup PROPERTIES
             PASS_REGULAR_EXPRESSION "boundary: syscall 0x001001c8 service 0x3c")
 
+        # Regression for the "jr ra" emission: DIntr returns in the middle of
+        # its extent, followed by the taken-path block.
+        set(GT4_TRANSLATED_5B72A8_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-005b72a8.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_5B72A8_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x5b72a8 64 "${GT4_TRANSLATED_5B72A8_HEADER}"
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_5b72a8_tests
+            tests/unit/ee_translation_5b72a8_test.cpp
+            "${GT4_TRANSLATED_5B72A8_HEADER}")
+        target_include_directories(ee_translation_5b72a8_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_5b72a8_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation_5b72a8 COMMAND ee_translation_5b72a8_tests "${GT4_LOCAL_CORE}")
+
         # The whole game as one module under the driver. Generating it takes
         # minutes and the object is ~100 MB, so gt4boot is excluded from the
         # default build; the gt4boot_build fixture builds it on demand the
@@ -218,10 +237,10 @@ if(BUILD_TESTING)
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target gt4boot)
         set_tests_properties(gt4boot_build PROPERTIES FIXTURES_SETUP gt4boot)
         add_test(NAME gt4boot_services
-            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 9 --compare-interpreter)
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 400 --compare-interpreter)
         set_tests_properties(gt4boot_services PROPERTIES
             FIXTURES_REQUIRED gt4boot
-            PASS_REGULAR_EXPRESSION "services handled 9")
+            PASS_REGULAR_EXPRESSION "services handled 45")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(

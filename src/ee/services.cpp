@@ -39,6 +39,15 @@ void ServiceTable::add(std::uint32_t number, ServiceHandler handler) {
     entries_.push_back(Entry{number, std::move(handler)});
 }
 
+void ServiceTable::remove(std::uint32_t number) noexcept {
+    for (auto entry = entries_.begin(); entry != entries_.end(); ++entry) {
+        if (entry->number == number) {
+            entries_.erase(entry);
+            return;
+        }
+    }
+}
+
 const ServiceHandler* ServiceTable::find(std::uint32_t number) const noexcept {
     for (const Entry& entry : entries_) {
         if (entry.number == number) {

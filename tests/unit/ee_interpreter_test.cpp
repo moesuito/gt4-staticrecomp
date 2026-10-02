@@ -508,9 +508,10 @@ int run_tests() {
     }
 
     // COP0 with hand-computed values: the Status register starts at the
-    // live-observed 0x40000000, mfc0 applies the readable-bits mask, mtc0
-    // writes through, ei/di toggle EIE in kernel mode only, the Config write
-    // protects the cache-size bits, and break stops at the trap boundary.
+    // M14 menu capture's 0x70030c11 (IE and EIE set), mfc0 applies the
+    // readable-bits mask, mtc0 writes through, ei/di toggle EIE in kernel
+    // mode only, the Config write protects the cache-size bits, and break
+    // stops at the trap boundary.
     {
         auto state = make_state();
         load_program(state.memory(), base,
@@ -523,15 +524,15 @@ int run_tests() {
         state.set_pc(base);
         Interpreter interpreter(state);
         run_steps(interpreter, 1);
-        check(state.read_gpr64(8) == 0x40000000ull, "mfc0 reads the masked Status");
+        check(state.read_gpr64(8) == 0x70030c11ull, "mfc0 reads the masked Status");
         run_steps(interpreter, 1);
-        check(state.read_cp0(12) == 0x40000000u, "mtc0 wrote the value back");
+        check(state.read_cp0(12) == 0x70030c11u, "mtc0 wrote the value back");
         run_steps(interpreter, 1);
-        check(state.read_cp0(12) == 0x40010000u, "ei set EIE in kernel mode");
+        check(state.read_cp0(12) == 0x70030c11u, "ei keeps EIE set in kernel mode");
         run_steps(interpreter, 1);
-        check(state.read_cp0(12) == 0x40000000u, "di cleared EIE again");
+        check(state.read_cp0(12) == 0x70020c11u, "di cleared EIE again");
         run_steps(interpreter, 1);
-        check(state.read_gpr64(2) == 0x40000000ull, "the toggled status reads back");
+        check(state.read_gpr64(2) == 0x70020c11ull, "the toggled status reads back");
         const auto stopped = interpreter.step();
         check(stopped.outcome == StepOutcome::Exception && stopped.pc == base + 20
                   && stopped.operation == Operation::Break,

@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 4 — the kernel-patch services: the boot
-patches FindAddress and Copy, locates the synthetic syscall table through the
-game's own search, and stops at the EE timer hardware (TIM3_MODE), with the
-state identical to the interpreter. This is the first document to read in a
-new session; it is kept current as work proceeds. Details live in the linked
-evidence documents.
+Updated 2026-10-02 after M30 slice 5 — timer registers and interrupt handlers:
+the boot runs the whole `_InitSys` tree and the game's thread creation, with
+the cooperative scheduler exercised end to end for the first time, and stops
+at GetOsdConfigParam; a translator bug in `jr ra` emission was found and
+fixed. This is the first document to read in a new session; it is kept current
+as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -268,8 +268,8 @@ evidence documents.
   and both CreateSema calls and stops at the kernel-patch wall: SetSyscall
   (0x74) at 0x005B7554, with the full state identical to the interpreter
   after 942,761 instructions.** The scheduler is unit-verified (`ee_kernel`,
-  no game data) and not yet exercised by the boot run: the game's thread
-  creation comes after the walls (now the EE timer hardware). CTest 30/30;
+  no game data); the fifth slice exercised it end to end on the game's own
+  thread creation. CTest 32/32;
   Python 73 (67 run,
   6 skip) (`docs/reverse-engineering/m30-thread-scheduler.md`,
   `docs/decisions/0005-thread-scheduler.md`).
@@ -289,6 +289,26 @@ evidence documents.
   the timer/alarm subsystem needs its own decision. CTest 30/30; Python 73
   (67 run, 6 skip) (`docs/reverse-engineering/m30-kernel-patches.md`,
   `docs/decisions/0006-kernel-patches.md`).
+- M30 slice 5 (2026-10-02): **timer registers, interrupt handlers — and a
+  translator bug fixed**. An explicit MMIO device window plus a KSEG0/KSEG1
+  segment alias carry `ee::TimerUnit` (the four timers' 32-bit registers;
+  untouched reads as "not started"; no ticking and no interrupts, decision
+  0007) and the kernel stores AddIntc/AddDmac handler registrations
+  (0x10-0x17 and the `i*` aliases) with enable/disable accepted. The CP0
+  Status baseline is corrected to the M14 live capture 0x70030c11 (IE/EIE
+  set), which the SDK's own thread setup checks. **The wider run exposed a
+  real translator bug: a `jr ra` followed by more code emitted no `return;`
+  and fell through into the next block (DIntr 0x005B72A8 executed both
+  return paths); the emitter now returns after every `jr ra`, with the
+  differential regression `ee_translation_5b72a8` (two states).** The boot
+  now runs the whole `_InitSys` tree and **the game's thread creation end to
+  end** — CreateSema, CreateThread, ReferThreadStatus, StartThread,
+  GetThreadId, ChangeThreadPriority, WaitSema — **the cooperative scheduler
+  switches to the new thread and back**, and the run stops at
+  GetOsdConfigParam (0x4B, pc 0x005ADD54) with the full state identical to the
+  interpreter after 961,937 instructions. CTest 32/32; Python 73 (67 run,
+  6 skip) (`docs/reverse-engineering/m30-timer-and-interrupts.md`,
+  `docs/decisions/0007-timer-registers.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -298,18 +318,18 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the EE timer and alarm subsystem** — the
-  boot stops at 0x005B7A40 reading TIM3_MODE (0x10001810); the model maps no
-  hardware registers. The decision must settle register storage, counting
-  (or a deterministic tick policy), SetAlarm (0x18/0xFC), and the alarm
-  callback path; after that the boot reaches the game's thread creation
-  (0x005AEA78) and exercises the cooperative scheduler end to end.
+- Next technical milestone work: **the OSD configuration** — the boot stops
+  at GetOsdConfigParam (0x4B) at 0x005ADD54, called from 0x005B7620 (which
+  also calls SetOsdConfigParam 0x4A); the layout and plausible values
+  (region/language/aspect/TV mode) need their own small decision, with the
+  pinned USA BIOS and the live savestate as evidence. Then a ticking timer
+  and interrupt delivery for code that waits on alarms.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 30/30 CTest (the translation tests, `gt4run` and `gt4boot` exist
+- Tests: 32/32 CTest (the translation tests, `gt4run` and `gt4boot` exist
   only where the local CORE does; `gt4boot_build` builds the whole-program
   module on demand, 140 s); Python suite 73 collected (67 run, 6 skip without
   the M3 reference ELF; the savestate test finds the repository copy first).
@@ -353,34 +373,38 @@ evidence documents.
   step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
-  module entries (correctness first; 24 instructions in the boot run). The
-  two performance alternatives (resume entries per halt address, inline
+  module entries (correctness first; 15,699 instructions in the boot run).
+  The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now stops at the EE timer hardware**: 0x005B7A40 reads
-  TIM3_MODE (0x10001810) and the model maps no hardware registers, so the
-  access fails with the explicit fault (pc and address named). The
-  kernel-patch mechanism before it is verified. FlushCache is still
-  registered but unreached.
-- The cooperative scheduler is unit-verified but still **not yet exercised
-  by the boot run**: the game's thread creation (0x005AEA78) comes after
-  the timer wall. No timer preemption is modeled (decision 0005).
-  Equal-priority dispatch is creation order, not the kernel's rotation.
+- **The boot now stops at the OSD configuration**: GetOsdConfigParam (0x4B)
+  at 0x005ADD54, called from 0x005B7620 while the init reads the console's
+  settings. The timer windows before it are modeled (decision 0007) and the
+  kernel-patch mechanism is verified. FlushCache is registered but still
+  unreached.
+- The cooperative scheduler was **exercised end to end by the boot run** in
+  the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
+  WaitSema sequence). No timer preemption is modeled (decision 0005);
+  equal-priority dispatch is creation order, not the kernel's rotation; no
+  timer tick or alarm callback is delivered yet.
+- The `jr ra` fall-through bug found in the fifth slice shows the limit of
+  hand-picked differential modules: widen the verified surface
+  (`gt4boot --compare-interpreter`) when new control-flow shapes appear.
 - A module call runs to its own boundary and cannot be interrupted; the work
   budget counts interpreted instructions and module calls, so a loop inside a
   module is not bounded by it. No such loop has been hit before a boundary.
 
 ## Next actions
 
-1. M30 slice 5: **the EE timer and alarm subsystem** — model the TIM3
-   registers 0x005B7A40 touches (storage plus a deterministic counting
-   policy), SetAlarm (0x18/0xFC), and the callback path; the acceptance
-   evidence is `gt4boot --compare-interpreter` past the timer init,
-   reaching the game's thread creation and exercising the cooperative
-   scheduler.
-2. Performance: resume entries or inline syscall calls to shrink the
+1. M30 slice 6: **the OSD configuration** — model GetOsdConfigParam (0x4B)
+   and SetOsdConfigParam (0x4A) with the documented block layout and values
+   evidenced by the pinned USA BIOS and the savestate RAM; the acceptance
+   evidence is `gt4boot --compare-interpreter` past 0x005ADD54.
+2. A ticking timer with interrupt/alarm delivery for code that waits on
+   alarms (the timer registers are storage-only today).
+3. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
-3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
-4. Keep the journal and this file current after every working session.
+4. The M9-M30 lessons and retroactive M2-M5 notes if useful.
+5. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -419,4 +443,8 @@ evidence documents.
   the kernel-patch wall, SetSyscall), and slice 4 is the kernel-patch
   services (SetSyscall, the synthetic table and the stub return; the boot
   patches FindAddress/Copy, runs the SDK's search through the game's own
-  helper, and stops at the EE timer hardware).
+  helper, and stops at the EE timer hardware), and slice 5 is the timer
+  registers and interrupt handlers (the whole `_InitSys` tree and the game's
+  thread creation run, the cooperative scheduler is exercised end to end, a
+  `jr ra` translator bug is found and fixed, and the run stops at
+  GetOsdConfigParam).

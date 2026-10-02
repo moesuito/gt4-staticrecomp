@@ -39,22 +39,46 @@ std::size_t GuestMemory::size() const noexcept {
 
 bool GuestMemory::contains(std::uint32_t address, std::size_t width) const noexcept {
     const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, width)) {
+        return true;
+    }
     const std::uint64_t end = static_cast<std::uint64_t>(physical) + width;
     return width != 0 && physical >= base_
         && end <= static_cast<std::uint64_t>(base_) + bytes_.size();
 }
 
-void GuestMemory::enable_kseg0_alias() noexcept {
-    kseg0_alias_ = true;
+void GuestMemory::map_mmio(std::uint32_t base, std::uint32_t size,
+                           MmioRead read, MmioWrite write) {
+    if (size == 0 || !read || !write) {
+        throw std::runtime_error(
+            "An MMIO window needs a nonzero size and both callbacks");
+    }
+    mmio_base_ = base;
+    mmio_size_ = size;
+    mmio_read_ = std::move(read);
+    mmio_write_ = std::move(write);
 }
 
-bool GuestMemory::kseg0_alias_enabled() const noexcept {
-    return kseg0_alias_;
+bool GuestMemory::is_mmio(std::uint32_t address, std::size_t width) const noexcept {
+    if (mmio_size_ == 0 || width == 0) {
+        return false;
+    }
+    const std::uint64_t end = static_cast<std::uint64_t>(address) + width;
+    return address >= mmio_base_
+        && end <= static_cast<std::uint64_t>(mmio_base_) + mmio_size_;
+}
+
+void GuestMemory::enable_segment_alias() noexcept {
+    segment_alias_ = true;
+}
+
+bool GuestMemory::segment_alias_enabled() const noexcept {
+    return segment_alias_;
 }
 
 std::uint32_t GuestMemory::physical_address(std::uint32_t address) const noexcept {
-    if (kseg0_alias_ && address >= 0x80000000u) {
-        return address - 0x80000000u;
+    if (segment_alias_ && address >= 0x80000000u && address < 0xc0000000u) {
+        return address & 0x1fffffffu;
     }
     return address;
 }
@@ -76,11 +100,19 @@ std::size_t GuestMemory::range_offset(std::uint32_t address, std::size_t width) 
 // reinterpretation of the byte buffer as a wider type.
 
 std::uint8_t GuestMemory::read_byte(std::uint32_t address) const {
+    const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, 1)) {
+        return static_cast<std::uint8_t>(mmio_read_(physical, 1) & 0xffu);
+    }
     return bytes_[range_offset(address, 1)];
 }
 
 std::uint16_t GuestMemory::read_halfword(std::uint32_t address) const {
     require_alignment(address, 2);
+    const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, 2)) {
+        return static_cast<std::uint16_t>(mmio_read_(physical, 2) & 0xffffu);
+    }
     const auto offset = range_offset(address, 2);
     return static_cast<std::uint16_t>(static_cast<std::uint32_t>(bytes_[offset])
         | (static_cast<std::uint32_t>(bytes_[offset + 1]) << 8));
@@ -88,6 +120,10 @@ std::uint16_t GuestMemory::read_halfword(std::uint32_t address) const {
 
 std::uint32_t GuestMemory::read_word(std::uint32_t address) const {
     require_alignment(address, 4);
+    const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, 4)) {
+        return mmio_read_(physical, 4);
+    }
     const auto offset = range_offset(address, 4);
     return static_cast<std::uint32_t>(bytes_[offset])
         | (static_cast<std::uint32_t>(bytes_[offset + 1]) << 8)
@@ -96,6 +132,11 @@ std::uint32_t GuestMemory::read_word(std::uint32_t address) const {
 }
 
 std::uint64_t GuestMemory::read_doubleword(std::uint32_t address) const {
+    if (is_mmio(physical_address(address), 8)) {
+        throw std::runtime_error(
+            access_text("is in the device window; wide register reads are not modeled",
+                        address, 8));
+    }
     require_alignment(address, 8);
     const auto offset = range_offset(address, 8);
     return static_cast<std::uint64_t>(bytes_[offset])
@@ -109,11 +150,21 @@ std::uint64_t GuestMemory::read_doubleword(std::uint32_t address) const {
 }
 
 void GuestMemory::write_byte(std::uint32_t address, std::uint8_t value) {
+    const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, 1)) {
+        mmio_write_(physical, 1, value);
+        return;
+    }
     bytes_[range_offset(address, 1)] = value;
 }
 
 void GuestMemory::write_halfword(std::uint32_t address, std::uint16_t value) {
     require_alignment(address, 2);
+    const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, 2)) {
+        mmio_write_(physical, 2, value);
+        return;
+    }
     const auto offset = range_offset(address, 2);
     bytes_[offset] = static_cast<std::uint8_t>(value & 0xff);
     bytes_[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
@@ -121,6 +172,11 @@ void GuestMemory::write_halfword(std::uint32_t address, std::uint16_t value) {
 
 void GuestMemory::write_word(std::uint32_t address, std::uint32_t value) {
     require_alignment(address, 4);
+    const std::uint32_t physical = physical_address(address);
+    if (is_mmio(physical, 4)) {
+        mmio_write_(physical, 4, value);
+        return;
+    }
     const auto offset = range_offset(address, 4);
     bytes_[offset] = static_cast<std::uint8_t>(value & 0xff);
     bytes_[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
@@ -129,6 +185,11 @@ void GuestMemory::write_word(std::uint32_t address, std::uint32_t value) {
 }
 
 void GuestMemory::write_doubleword(std::uint32_t address, std::uint64_t value) {
+    if (is_mmio(physical_address(address), 8)) {
+        throw std::runtime_error(
+            access_text("is in the device window; wide register writes are not modeled",
+                        address, 8));
+    }
     require_alignment(address, 8);
     const auto offset = range_offset(address, 8);
     for (std::size_t index = 0; index < 8; ++index) {
@@ -140,16 +201,21 @@ void GuestMemory::write_bytes(std::uint32_t address, std::span<const std::uint8_
     if (source.empty()) {
         return;
     }
+    if (is_mmio(physical_address(address), source.size())) {
+        throw std::runtime_error(
+            "A bulk write into the device window is not modeled");
+    }
     const auto offset = range_offset(address, source.size());
     std::copy(source.begin(), source.end(),
               bytes_.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
 GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {
-    // The live observation (M14) recorded the running game's Status as
-    // 0x40000000 (CU2 usable); the model starts there rather than at a cold
-    // reset value, because the code under test comes from a running game.
-    cp0_[12] = 0x40000000u;
+    // The M14 menu capture (private/pcsx2/menu-registers.txt) shows the
+    // running game's Status as 0x70030c11: IE and EIE set, the interrupt
+    // mask and CU2 usable. The boot model starts there because the game's
+    // own thread setup checks IE and EIE before the crt0 reaches its ei.
+    cp0_[12] = 0x70030c11u;
 }
 
 RegisterContext GuestState::save_registers() const noexcept {

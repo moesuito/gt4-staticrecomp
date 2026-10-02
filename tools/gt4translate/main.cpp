@@ -821,7 +821,8 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n";
             body << "    state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));"
-                 << " // return to ra\n\n";
+                 << " // return to ra\n"
+                 << "    return;\n\n";
             consumed_delay_slots.insert(address + 4);
             break;
         default:
