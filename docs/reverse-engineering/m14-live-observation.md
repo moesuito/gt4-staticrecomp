@@ -71,13 +71,48 @@ that later milestones use for differential work.
 
 ## Limits
 
-- This validates the loaded image, not our execution semantics.
-- PINE exposes no CPU registers; register-level comparison needs savestate
-  parsing (13.4 MB `.p2s`, version-specific format) or the debugger — a future
-  slice.
+- This validates the loaded image and the register channel; it is not
+  execution-proof of our semantics.
+- Savestate parsing is offline and precise (see slice 2); live single-stepping
+  remains unsolved.
 - Our interpreter still stops at COP1/MMI words, so differential execution
   over real code needs broader decoding first.
 
 Artifacts stay local: `private/pcsx2/text-ram.bin` (dump),
 `private/pcsx2/ram-text-comparison.txt`; distributable metadata only in
 `docs/inputs/usa-v2.00-live-ram.json`.
+
+## Slice 2 — CPU state from savestates (2026-10-01)
+
+A savestate turned out to be a ZIP container: a version entry, memory blobs
+(`eeMemory.bin` is the full 32 MiB EE RAM) and `PCSX2 Internal
+Structures.dat`, the raw freeze stream. `Freeze()` copies values verbatim, so
+the stream contains host structs: the `cpuRegs` block follows a 32-byte
+zero-padded tag and holds `struct cpuRegisters` — GPR[32] in 16-byte slots
+(first 8 bytes are the 64-bit value), HI, LO, CP0 (32 words), then `pc` at
+offset 680. New tool `scripts/pcsx2_savestate.py` reads it (`info`,
+`registers`, `extract`); Python 3.14's zipfile reads the Zstandard entries
+natively.
+
+Real evidence from the menu savestate (slot 9):
+
+- `pc = 0x00568b94`, word at pc `0x1520004a` (a `bne t1, zero, +0x4a` with
+  t1 = 0), `ra = 0x00568acc` — both inside the loaded text;
+- `sp = 0x0113fa90` inside RAM, `gp/fp/s0/s1` inside the data window
+  (0x65xxxx-0x6ddxxx), `a1 = 0x70000000` (the hardware scratchpad);
+- `cp0.status = 0x70030c11` (kernel mode, interrupts enabled).
+
+Every value is consistent with a running game — the register channel works.
+The savestate's own `eeMemory.bin` re-verified the text image offline:
+5,339,668 bytes, 0 differing.
+
+A fixture incident is recorded: the synthetic savestate fixtures initially
+used a 31-byte tag (7 + 24 instead of 7 + 25 zeros), shifting every decoded
+field by one byte; the synthetic tests caught it, the parser was correct (real
+tags are 32 bytes), and the fixtures now mirror the real layout exactly
+(biosdesc, tag offsets 0 and 322).
+
+Limits: one snapshot; no instruction stepping (the emulator cannot be told to
+advance exactly N instructions); the freeze layout is coupled to the emulator
+build and must be re-verified per PCSX2 update; TLBs and the rest of CP0 are
+not decoded yet.
