@@ -45,6 +45,10 @@ struct TranslationUnit {
     // Trap words inside a likely branch's delay slot: the taken path stops
     // there instead of running an inline statement.
     std::set<std::uint32_t> trap_slots;
+    // Instructions the model does not execute in a transfer's delay slot: the
+    // module stops at the slot, exactly where the interpreter stops, after
+    // any state the transfer itself writes.
+    std::set<std::uint32_t> unsupported_slots;
 };
 
 std::uint32_t word_at(const ImageRecord& text, std::uint32_t address) {
@@ -657,6 +661,27 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         // past this copy), while the edge path executes the copy and then
         // continues at the next word.
 
+        if (unit.unsupported_slots.contains(address + 4)) {
+            // The delay slot is an instruction the model does not run: the
+            // transfer's state effects happen, then the module stops at the
+            // slot, exactly where the interpreter stops.
+            comment(address, word);
+            if (flow.kind == FlowKind::Call) {
+                body << "    state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
+                     << "u); // link\n";
+            } else if (flow.kind == FlowKind::Branch
+                       && writes_link_register(instruction.operation)) {
+                body << "    if (" << condition_for(instruction) << ") { state.write_gpr64(31, 0x"
+                     << hex_value(address + 8, 8) << "u); }\n";
+            }
+            comment(address + 4, word_at(text, address + 4), "    ");
+            body << "    // the delay slot is unmodeled: the module stops there\n"
+                 << "    state.set_pc(0x" << hex_value(address + 4, 8) << "u);\n"
+                 << "    return;\n\n";
+            consumed_delay_slots.insert(address + 4);
+            continue;
+        }
+
         switch (flow.kind) {
         case FlowKind::FallThrough:
             comment(address, word);
@@ -674,7 +699,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                 }
                 comment(address + 4, word_at(text, address + 4), "        ");
                 if (unit.trap_slots.contains(address + 4)) {
-                    body << "        // the delay slot traps: the taken path stops\n"
+                    body << "        // the delay slot traps or is unmodeled: the taken path stops\n"
                          << "        state.set_pc(0x" << hex_value(address + 4, 8) << "u);\n"
                          << "        return;\n";
                 } else {
@@ -794,15 +819,64 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
                 const std::uint32_t trap_address = node.block.end_exclusive - 4;
                 unit.reachable.erase(trap_address);
                 unit.trap_slots.insert(trap_address);
-            } else if (node.block.ending == FlowKind::IndirectJump) {
-                // The exception return leaves the enclosing flow: record a
-                // boundary the module stops at (the emission derives the
-                // pc from CP0). Other computed jumps stay rejected.
-                const std::uint32_t eret_address = node.block.end_exclusive - 4;
-                if (decode(word_at(text, eret_address)).operation == Operation::Eret) {
-                    unit.reachable.erase(eret_address);
-                    unit.halts.insert(eret_address);
+            } else if (node.block.delay_slot_unsupported) {
+                // The delay slot is an instruction the model does not run.
+                // The interpreter stops at the slot; the module does too. A
+                // likely branch skips its slot when not taken, which the
+                // trap-slot emission already expresses.
+                const std::uint32_t slot_address = node.block.end_exclusive - 4;
+                const std::uint32_t transfer_address = node.block.end_exclusive - 8;
+                unit.reachable.erase(slot_address);
+                if (node.block.ending == FlowKind::Branch
+                    && is_likely_branch(decode(word_at(text, transfer_address)).operation)) {
+                    unit.trap_slots.insert(slot_address);
+                } else {
+                    unit.unsupported_slots.insert(slot_address);
                 }
+            } else if (node.block.ending == FlowKind::IndirectJump) {
+                const std::uint32_t last = node.block.end_exclusive - 4;
+                if (decode(word_at(text, last)).operation == Operation::Eret) {
+                    // The exception return leaves the enclosing flow: record a
+                    // boundary the module stops at (the emission derives the
+                    // pc from CP0).
+                    unit.reachable.erase(last);
+                    unit.halts.insert(last);
+                } else {
+                    // A computed jump (jr through another register): the target
+                    // is a runtime value. The module stops before the transfer
+                    // and a driver resolves it; the delay slot belongs to the
+                    // transfer, so it is a boundary word too.
+                    const std::uint32_t jump_address = node.block.end_exclusive - 8;
+                    if (classify(decode(word_at(text, jump_address)), jump_address).kind
+                        != FlowKind::IndirectJump) {
+                        throw std::runtime_error("A computed jump at the text edge is not modeled");
+                    }
+                    unit.reachable.erase(jump_address);
+                    unit.reachable.erase(jump_address + 4);
+                    unit.halts.insert(jump_address);
+                }
+            } else if (node.block.ending == FlowKind::Call && !node.block.target_known) {
+                // An indirect call (jalr): the target is a runtime value. The
+                // module stops before the call, exactly like the other
+                // boundaries, and the delay slot is a boundary word as well.
+                const std::uint32_t call_address = node.block.end_exclusive - 8;
+                if (classify(decode(word_at(text, call_address)), call_address).kind
+                    != FlowKind::Call) {
+                    throw std::runtime_error("An indirect call at the text edge is not modeled");
+                }
+                unit.reachable.erase(call_address);
+                unit.reachable.erase(call_address + 4);
+                unit.halts.insert(call_address);
+            } else if (node.block.ending == FlowKind::Unsupported
+                       && node.block.stop_reason == "unsupported") {
+                // An instruction the model does not execute (VCALLMS, the
+                // unassigned encodings): the interpreter stops at it, so the
+                // module stops there too with the pc at the word. Blocks
+                // marked for a transfer inside a delay slot keep rejecting:
+                // that shape is architecturally undefined.
+                const std::uint32_t word_address = node.block.end_exclusive - 4;
+                unit.reachable.erase(word_address);
+                unit.halts.insert(word_address);
             }
         }
         if (halt_address != 0 && unit.reachable.contains(halt_address)) {
@@ -823,10 +897,18 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
             halt_seen = true;
         }
         if (unit.reachable.empty()) {
-            throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
-                                     + ": no reachable instructions");
+            // A function whose first instruction is already a boundary (a
+            // trap-only stub, an indirect transfer at the entry): the module
+            // stops there, exactly like the interpreter, with nothing else to
+            // translate.
+            if (!unit.halts.contains(unit.entry)) {
+                throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
+                                         + ": no reachable instructions");
+            }
+            unit.scan_start = unit.entry;
+        } else {
+            unit.scan_start = std::min(unit.entry, *unit.reachable.begin());
         }
-        unit.scan_start = std::min(unit.entry, *unit.reachable.begin());
         if (unit.scan_start < unit.entry) {
             // The walk went below the entry (a tail thunk's target): the
             // emission must still begin execution at the entry address.
@@ -852,7 +934,8 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
             case FlowKind::FallThrough:
                 break;
             case FlowKind::Return:
-                if (!unit.reachable.contains(address + 4)) {
+                if (!unit.reachable.contains(address + 4)
+                    && !unit.unsupported_slots.contains(address + 4)) {
                     reject("A return has no reachable delay slot");
                 }
                 break;
@@ -864,7 +947,8 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
                 }
                 unit.labels.insert(flow.target);
                 if (!unit.reachable.contains(address + 4)
-                    && !unit.trap_slots.contains(address + 4)) {
+                    && !unit.trap_slots.contains(address + 4)
+                    && !unit.unsupported_slots.contains(address + 4)) {
                     reject("A transfer has no reachable delay slot");
                 }
                 break;
@@ -872,7 +956,8 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
                 if (instruction.operation != Operation::Jal) {
                     reject("Indirect calls are not supported");
                 }
-                if (!unit.reachable.contains(address + 4)) {
+                if (!unit.reachable.contains(address + 4)
+                    && !unit.unsupported_slots.contains(address + 4)) {
                     reject("A call has no reachable delay slot");
                 }
                 calls.push_back(flow.target);
@@ -927,6 +1012,7 @@ void run_survey(const ImageRecord& text) {
         }
     }
     std::map<std::string, std::size_t> reasons;
+    std::map<std::string, std::string> samples;
     std::set<std::uint32_t> covered;
     std::size_t translated = 0;
     std::size_t functions_in_trees = 0;
@@ -940,12 +1026,16 @@ void run_survey(const ImageRecord& text) {
                 covered.insert(unit.reachable.begin(), unit.reachable.end());
             }
         } catch (const std::exception& error) {
-            std::string reason = error.what();
+            std::string full = error.what();
+            std::string reason = full;
             const auto cut = reason.find(" in function 0x");
             if (cut != std::string::npos) {
                 reason.erase(cut);
             }
             ++reasons[reason];
+            if (!samples.contains(reason)) {
+                samples.emplace(reason, full);
+            }
         }
     }
     std::vector<std::pair<std::size_t, std::string>> ranked;
@@ -959,6 +1049,10 @@ void run_survey(const ImageRecord& text) {
               << text.bytes.size() / 4 << " words in the file-backed text\n";
     for (const auto& [count, reason] : ranked) {
         std::cout << "reason: " << count << " x " << reason << '\n';
+        const auto sample = samples.find(reason);
+        if (sample != samples.end()) {
+            std::cout << "  sample: " << sample->second << '\n';
+        }
     }
 }
 
@@ -986,10 +1080,12 @@ int wmain(int argc, wchar_t* argv[]) {
                      "and multiple 'jr ra' returns. With a halt address the walk stops there\n"
                      "instead of translating further (a syscall or an unsupported word); the\n"
                      "emitted module sets the pc at that address and returns, exactly where\n"
-                     "the interpreter stops. Indirect calls, exceptions and unsupported words\n"
-                     "are rejected with context. max-instructions bounds the whole module.\n"
-                     "Without an output file the header is printed to stdout. --survey tries\n"
-                     "every direct-call target in the text and reports the outcome.\n";
+                     "the interpreter stops. Indirect transfers (jalr and computed jr) stop the\n"
+                     "module the same way, with the pc at the transfer: a driver resolves the\n"
+                     "runtime target. Exceptions and unsupported words stop identically.\n"
+                     "max-instructions bounds the whole module. Without an output file the\n"
+                     "header is printed to stdout. --survey tries every direct-call target in\n"
+                     "the text and reports the outcome.\n";
         return 2;
     }
     try {

@@ -105,14 +105,14 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M26 BUILD/VERIFY complete; decoder covers 349 operations; the only
+- M0-M27 BUILD/VERIFY complete; decoder covers 349 operations; the only
   unsupported words left in the real code region are two DMA-dependent BC0F
   and two unassigned encodings inside the exception handler (the text's
-  trailing 700 words are a data table). The translator handles 62% of the
-  direct-call targets today; indirect control flow blocks the rest.
-- Next: M27 indirect control flow (a dispatch through registered function
-  entries for `jalr`/computed `jr`, stopping with context on unknown
-  targets).
+  trailing 700 words are a data table). The translator handles 99.1% of the
+  direct-call targets; runtime targets (jalr/computed jr, VCALLMS) stop the
+  module at the boundary for a future driver.
+- Next: M28 the boundary driver (resolve the stopped pcs through a registry
+  and the syscall services) and the module-size policy.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
