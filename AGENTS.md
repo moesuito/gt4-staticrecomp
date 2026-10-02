@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 16 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 17 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -141,13 +141,15 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   32,878,366 interpreted steps); the **disc image** of decision 0017 then
   backs the file service, so the boot walks its IOP module list (SIO2MAN,
   MCMAN, MCSERV, SIO2D, DBCMAN, DS2U_D, LIBSD, USBD, ...) with the disc's
-  real sizes (`gt4boot --disc <iso>`); `--threads`
+  real sizes (`gt4boot --disc <iso>`); the archive path's reconnaissance of
+  decision-free slice 17 then shows the boot at its **movie phase**
+  (`/mpeg`) with the game's own PCDV CD path and the GT4.VOL archive's
+  header, XOR-0xFF name table and directory tree documented; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 17 — the game's load-path selection (the engine picks the
-  file-server path or its own PCDV disc path with the load task's flag at
-  [task+0xB0]; the live boot keeps the PCDV structures at zero) or the PCDV
-  file-table protocol itself.
+- Next: M30 slice 18 — the GT4.VOL reader (header, directory tree, XOR-0xFF
+  names) and the PCDV answers (the entry cache and the 2048-byte sector
+  reads) so the movie path the boot reached can load.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

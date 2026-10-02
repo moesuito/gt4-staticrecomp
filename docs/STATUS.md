@@ -1,16 +1,17 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 16 — the disc image backs the file
-service: the model now reads the pinned ISO (an ISO9660 reader with
-file-backed and memory-backed sources) and answers the file server's open
-with the real file size, so the boot walks its IOP module list (SIO2MAN,
-MCMAN, MCSERV, SIO2D, DBCMAN, DS2U_D, LIBSD, USBD, ...) instead of retrying
-one load; a path the disc lacks, or a machine without an image, answers
-handle 0 like a console without a disc (`gt4boot --disc <iso>`). The
+Updated 2026-10-02 after M30 slice 17 — the archive path's reconnaissance:
+the engine runs two file layers (the file server and the game's own PCDV CD
+path) selected by the load task's flag; with the disc in place the boot has
+reached its movie phase (the name `/mpeg`) and the PCDV protocol's shape is
+now documented (its read/poll calls, the entry cache the library resolves
+names against, and the GT4.VOL archive's header, name table — text XOR
+0xFF — and directory tree). No model behavior changed; the next slice
+implements the GT4.VOL reader and uses it to answer the PCDV protocol. The
 differential passes at 3,000 services (interpreter reference at 7,570,583
-instructions, full state identical). This is the first document to read in a
-new session; it is kept current as work proceeds. Details live in the linked
-evidence documents.
+instructions, full state identical). This is the first document to read in
+a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -491,6 +492,29 @@ evidence documents.
   pinned ISO's ELF magic); Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-slice16-disc-image.md`,
   `docs/decisions/0017-disc-image-file-service.md`).
+- M30 slice 17 (2026-10-02): **the archive path's reconnaissance** — the
+  engine carries **two file layers** (the file server and the game's own
+  PCDV CD path), selected by each load task's flag at [task+0xB0]; the
+  object table at 0x0063A078 holds per-object vtables at +0xA8. With the
+  disc in place the boot has reached its **movie phase**: the SDK's load
+  structures name the file **`/mpeg`** (the string at 0x0068BB90). The
+  PCDV protocol's shape is documented: RPC 3 = send 64/recv 64 (the reply
+  lands at 0x0086CC40 and is the library's entry buffer; the scan at
+  0x00548E98 accepts entries whose first byte is 1 and advances by the byte
+  at +0x21), RPC 1 = send 64/recv 0 (the completion poll), the request
+  `{0x10, 0x800, destination}` (a 2048-byte sector read), and the
+  completion flag (bit 1 of the descriptor's +0x19 at 0x005491A0). The
+  game's data volume **GT4.VOL** (2,459,502,592 bytes, extent 105879) is
+  decoded: the header (magic 0xACB990AD, version 0x00020002, the name-table
+  offset 0x0100BA61, 23 root children), entries `{name_offset, count,
+  0x14}` with child offsets, and **names stored as text XOR 0xFF**
+  (NUL-terminated, sorted): the root lists "advertise", "bgm", "car",
+  "character", ... **No model behavior changed**; the next slice implements
+  the GT4.VOL reader and answers the PCDV protocol from it. CTest 33/33;
+  Python 73 (67 run, 6 skip); the differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical
+  (`docs/reverse-engineering/m30-slice17-archive-path.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -500,13 +524,12 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the game's load-path selection** — the
-  boot now loads its IOP modules off the disc (the file-server path); the
-  engine's own CD path (the PCDV file-table protocol, selected by the load
-  task's flag at [task+0xB0]) still answers empty and spins in its retry
-  loop. The next slice finds what selects the path (the live boot's PCDV
-  structures stay zero) and either routes the model to the file-server path
-  or answers the PCDV protocol from the disc.
+- Next technical milestone work: **the GT4.VOL reader and the PCDV
+  answers** — the archive's header, directory tree and XOR-0xFF name table
+  are decoded; the next slice implements the reader over
+  `Iso9660Image::read_file`, verifies it against the pinned volume and a
+  synthetic archive, and uses it to fill the PCDV library's entry cache and
+  serve its sector reads (the movie path the boot has reached).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -608,11 +631,12 @@ evidence documents.
 
 ## Next actions
 
-1. M30 slice 17: **the game's load-path selection** — the engine picks
-   between the file-server path and its own PCDV disc path with the load
-   task's flag at [task+0xB0]; the live boot keeps the PCDV structures at
-   zero, so the next slice finds what selects the path (or answers the PCDV
-   file-table protocol from the disc); the acceptance evidence is
+1. M30 slice 18: **the GT4.VOL reader and the PCDV answers** — implement the
+   archive reader (header, tree, XOR-0xFF names) over the ISO's
+   `read_file`, verify it against the pinned volume (the root's 23 names,
+   `mpeg`/`MpegRoot`) and a synthetic archive, then use it to fill the PCDV
+   library's entry cache and serve its 2048-byte sector reads (the movie
+   path the boot reached); the acceptance evidence is
    `gt4boot --compare-interpreter --disc <iso>` through the loads with the
    state identical.
 2. Performance: resume entries or inline syscall calls to shrink the
@@ -697,4 +721,8 @@ evidence documents.
   disc image backing the file service (the model reads the pinned ISO and
   answers the file server's open with the real sizes, so the boot walks its
   IOP module list: SIO2MAN 6,641; MCMAN 96,181; MCSERV 7,385; SIO2D 11,289;
-  DBCMAN 15,653; DS2U_D 11,821; LIBSD 30,085; USBD 34,993).
+  DBCMAN 15,653; DS2U_D 11,821; LIBSD 30,085; USBD 34,993), and slice 17 is
+  the archive path's reconnaissance (the engine's two file layers, the
+  movie-phase `/mpeg` load, the PCDV protocol's shape and the GT4.VOL
+  header, XOR-0xFF name table and directory tree; no model behavior
+  changed).
