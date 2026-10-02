@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 26 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 27 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -181,14 +181,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   function's own memcpy — the stream holds blobs, not names — and the
   faulting path relocates the destination in place at the odd stream
   position, with 39 bytes copied before it against the console's 32);
-  `--threads`
+  slice 27 then reconstructs the stream's content (13-byte records, the
+  first three identical and the fourth different) and shows the assign
+  formats its source through 0x0044D740 (arena allocated) before copying —
+  the records are formatted objects, not names; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 27 — the sources copied before the fault: the sound
-  library's assign copies blobs (parsed sound data) into the stream at
-  0x008475C0; 39 bytes precede the faulting entry in the model against 32
-  on the console, so identify those blobs (the engine's parse of the sound
-  data it read) and why their total length differs.
+- Next: M30 slice 28 — what the formatter produces: the sound library's
+  assign formats each source through 0x0044D740 (arena allocated) before
+  copying it into the stream, so the 13-byte records are formatted objects,
+  not names; identify the formatter's output for the sound bank names and
+  why 39 bytes precede the fault in the model against the console's 32 (an
+  instrument that also reports the call site and source pointer, or a watch
+  on the formatter's arena).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

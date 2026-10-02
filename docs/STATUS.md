@@ -1,20 +1,19 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 26 — the sound library's assign fills the
-stream: a pc-carrying write watch (temporary, removed) shows **every byte of
-the stream at 0x008475C0 is written by the module entry 0x00462670** (the
-string/blob assign's own memcpy 0x005A4724), and the free-space static
-0x00623A40 advances by the copied sources' lengths (0x1000 → 0xFD9). The
-faulting flag-1 assign relocates the source, memcpys it into the stream's
-position, then relocates the destination in place — that last relocation's
-first read at the odd 0x008475E7 faults. The position is 0x008475C0 + 0x27
-(39 bytes copied before), while the live game's buffer holds 32 bytes before
-its aligned structure: the difference is in the *sources* copied before, not
-the mechanism. No model behavior changed; the next slice identifies those
-sources. The differential passes at 3,000 services (interpreter reference at
-7,570,583 instructions, full state identical). This is the first document to
-read in a new session; it is kept current as work proceeds. Details live in
-the linked evidence documents.
+Updated 2026-10-02 after M30 slice 27 — the stream's content reconstructed:
+replaying the slice-26 write log shows the sound library's stream at
+0x008475C0 holds **13-byte records** `{00 00 00 00 D4 00 00 00 0D 00 00
+00 00}` — the first three byte-identical and the fourth (at the faulting
+0x008475E7) different — and the second stream (0x00847180) holds relocated
+pointers back to 0x008471A0. The assign does not copy the caller's string:
+it formats it through **0x0044D740** (a printf-style formatter allocating
+from the SDK's arena) and then memcpys the formatted object, so the records
+are formatted arena objects, not names. No model behavior changed; the next
+slice identifies what the formatter produces and why 39 bytes precede the
+fault against the console's 32. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -700,6 +699,23 @@ the linked evidence documents.
   differential passes at 3,000 services with the interpreter reference at
   7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice26-assign-fills-the-stream.md`).
+- M30 slice 27 (2026-10-02): **the stream's content reconstructed** —
+  replaying the slice-26 write log shows the sound library's stream at
+  0x008475C0 holds **13-byte records**
+  `{00 00 00 00 D4 00 00 00 0D 00 00 00 00}`: the first three are
+  byte-identical and the **fourth** (at the faulting 0x008475E7) differs
+  (`{00 ×8, 0D, 00 00 00, 40}`), the fault hitting while its relocation
+  runs; the second stream (0x00847180) received the same header shape and
+  then six **relocated pointers** back to 0x008471A0. The assign does not
+  copy the caller's string: it asks the getter 0x00462588 for the
+  destination's data, calls **0x0044D740** (a printf-style formatter that
+  allocates from the SDK's arena 0x004AEFF0/0x004AE1F8) and then memcpys
+  the formatted object through 0x00462670 — so the records are **formatted
+  arena objects**, not the file-name strings the callers pass. No model
+  behavior changed: CTest 34/34; Python 73 (67 run, 6 skip); the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice27-stream-content-reconstructed.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -709,12 +725,13 @@ the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the sources copied before the fault** —
-  the sound library's assign copies blobs (parsed sound data) into the
-  stream at 0x008475C0; 39 bytes precede the faulting entry in the model
-  against 32 on the console, so the next slice identifies those blobs (the
-  engine's parse of the sound data it read) and why their total length
-  differs.
+- Next technical milestone work: **what the formatter produces** — the
+  sound library's assign formats each source through 0x0044D740 (arena
+  allocated) before copying it into the stream, so the 13-byte records are
+  formatted objects, not names; the next slice identifies the formatter's
+  output for the sound bank names and why 39 bytes precede the fault in the
+  model against the console's 32 (an instrument that also reports the call
+  site and source pointer, or a watch on the formatter's arena).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
