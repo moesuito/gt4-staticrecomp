@@ -44,10 +44,23 @@ std::uint32_t sign_extended_16(std::uint16_t value) {
     return (value & 0x8000u) != 0 ? (0xffff0000u | value) : value;
 }
 
-bool less_than_signed_32(std::uint32_t left, std::uint32_t right) {
+std::uint32_t sign_extended_8(std::uint8_t value) {
+    return (value & 0x80u) != 0 ? (0xffffff00u | value) : value;
+}
+
+bool less_than_signed_64(std::uint64_t left, std::uint64_t right) {
     // Flipping the sign bit turns the unsigned comparison into a signed one
     // without relying on conversion semantics.
-    return (left ^ 0x80000000u) < (right ^ 0x80000000u);
+    return (left ^ 0x8000000000000000ull) < (right ^ 0x8000000000000000ull);
+}
+
+std::uint32_t arithmetic_shift_right_32(std::uint32_t value, std::uint8_t shift) {
+    // Explicit sign fill instead of a host-defined arithmetic shift.
+    if (shift == 0) {
+        return value;
+    }
+    const std::uint32_t shifted = value >> shift;
+    return (value & 0x80000000u) != 0 ? (shifted | (0xffffffffu << (32 - shift))) : shifted;
 }
 
 // GPR[rs] + sign-extended immediate, truncated to the 32-bit address model.
@@ -81,13 +94,31 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
                           state.read_gpr64(instruction.rs) ^ state.read_gpr64(instruction.rt));
         break;
     case Operation::Slt:
+        // SLT compares the full 64-bit registers (MIPS64).
         state.write_gpr64(instruction.rd,
-                          less_than_signed_32(state.read_gpr32(instruction.rs),
-                                              state.read_gpr32(instruction.rt)) ? 1 : 0);
+                          less_than_signed_64(state.read_gpr64(instruction.rs),
+                                              state.read_gpr64(instruction.rt)) ? 1 : 0);
         break;
     case Operation::Sltu:
         state.write_gpr64(instruction.rd,
-                          state.read_gpr32(instruction.rs) < state.read_gpr32(instruction.rt) ? 1 : 0);
+                          state.read_gpr64(instruction.rs) < state.read_gpr64(instruction.rt) ? 1 : 0);
+        break;
+    case Operation::Slti:
+        // SLTI compares 64-bit values against the sign-extended immediate.
+        state.write_gpr64(instruction.rt,
+                          less_than_signed_64(
+                              state.read_gpr64(instruction.rs),
+                              static_cast<std::uint64_t>(
+                                  static_cast<std::int64_t>(instruction.signed_immediate()))) ? 1 : 0);
+        break;
+    case Operation::Sltiu:
+        state.write_gpr64(instruction.rt,
+                          state.read_gpr64(instruction.rs)
+                              < static_cast<std::uint64_t>(
+                                  static_cast<std::int64_t>(instruction.signed_immediate())) ? 1 : 0);
+        break;
+    case Operation::Xori:
+        state.write_gpr64(instruction.rt, state.read_gpr64(instruction.rs) ^ instruction.immediate);
         break;
     case Operation::Daddu:
         state.write_gpr64(instruction.rd,
@@ -115,6 +146,11 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
         state.write_gpr32(instruction.rd,
                           state.read_gpr32(instruction.rt) >> instruction.shift_amount);
         break;
+    case Operation::Sra:
+        state.write_gpr32(instruction.rd,
+                          arithmetic_shift_right_32(state.read_gpr32(instruction.rt),
+                                                    instruction.shift_amount));
+        break;
     case Operation::Lw: {
         const auto address = effective_address(state, instruction);
         state.write_gpr32(instruction.rt, state.memory().read_word(address));
@@ -123,6 +159,16 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
     case Operation::Lh: {
         const auto address = effective_address(state, instruction);
         state.write_gpr32(instruction.rt, sign_extended_16(state.memory().read_halfword(address)));
+        break;
+    }
+    case Operation::Lb: {
+        const auto address = effective_address(state, instruction);
+        state.write_gpr32(instruction.rt, sign_extended_8(state.memory().read_byte(address)));
+        break;
+    }
+    case Operation::Lbu: {
+        const auto address = effective_address(state, instruction);
+        state.write_gpr32(instruction.rt, state.memory().read_byte(address));
         break;
     }
     case Operation::Ld: {

@@ -82,6 +82,35 @@ int run_tests() {
         check(state.pc() == base + 20, "straight-line pc advance");
     }
 
+    // 64-bit comparisons and the new integer operations: SLT/SLTIU use the
+    // full registers (a DADDU-built value distinguishes them from the old
+    // 32-bit reading), and SRA fills with the sign.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x3C088000, 0x0108682D, 0x00084903, 0x01A0502A, 0x000D582A, 0x2DAE0001});
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 6);
+        check(state.read_gpr64(13) == 0xffffffff00000000ull, "daddu builds a 64-bit value");
+        check(state.read_gpr64(9) == 0xfffffffff8000000ull, "sra fills with the sign");
+        check(state.read_gpr64(10) == 1, "slt compares 64-bit signed values");
+        check(state.read_gpr64(11) == 0, "slt negative direction");
+        check(state.read_gpr64(14) == 0, "sltiu compares 64-bit unsigned values");
+    }
+
+    // LB and LBU differ in extension: the same byte reads negative or up.
+    {
+        auto state = make_state();
+        state.memory().write_byte(base + 0x40, 0x80);
+        load_program(state.memory(), base, {0x3C080010, 0x81090040, 0x910A0040});
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 3);
+        check(state.read_gpr64(9) == 0xffffffffffffff80ull, "lb sign-extends");
+        check(state.read_gpr64(10) == 0x80ull, "lbu zero-extends");
+    }
+
     // A likely branch that is not taken nullifies its delay slot; the marker
     // instruction after the branch must never execute.
     {

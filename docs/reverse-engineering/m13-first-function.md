@@ -140,6 +140,40 @@ saved-`ra` stack slots, and the continuation.
 translated 0x0010c0c0 (5 functions) matches the interpreter on 6 input states
 ```
 
+## Slice 4 — integer expansion, a 64-bit comparison fix, and a fourth function (2026-10-01)
+
+Observed use drove six new operations into the subset: LB and LBU (sign/zero
+byte loads), SRA (arithmetic shift), SLTI and SLTIU (immediate compares) and
+XORI — the families that were blocking real candidate functions in the
+harvested call trees.
+
+The same cross-check surfaced a real semantics bug: in MIPS64 (and in PCSX2's
+implementation, consulted as an independent source), SLT/SLTU/SLTI/SLTIU
+compare the **full 64-bit registers**, while our interpreter (and the Python
+reference model) compared 32 bits. The shared speculation made M11/M12 pass
+regardless — exactly the risk the charter warns about. Both implementations
+are fixed; the M11/M12 fixtures were regenerated (their expected values
+changed where 64-bit values met the comparisons) and the generators now also
+exercise the six new operations. The decoder fixture set is now 65 words.
+
+Independent verification: an extended Ghidra run over the ten regions plus the
+candidate function ranges:
+`matched=475 non_nop=406 unsupported=73 mismatched=0` — the new operations
+agree with Ghidra instruction by instruction. Incident recorded: the negative
+decode fixture `0x38081234` became a valid XORI; it now serves as positive
+coverage instead (the M6 fixture-invalidation lesson, again).
+
+### Fourth real function verified
+
+`0x00549378` — an eight-instruction leaf built on SRA — translates and matches
+the interpreter on 6 input states (including 0x80000000, where the sign fill
+matters), comparing all 32 registers, the full memory image and the
+continuation:
+
+```text
+translated 0x00549378 matches the interpreter on 6 input states
+```
+
 ## Next
 
 - M14 direction: automate observation/snapshots toward PCSX2 comparison, and

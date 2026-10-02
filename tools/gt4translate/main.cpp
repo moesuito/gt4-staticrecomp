@@ -71,13 +71,27 @@ std::string statement_for(const DecodedInstruction& instruction) {
              << ") ^ state.read_gpr64(" << rt << "));";
         break;
     case Operation::Slt:
-        code << "state.write_gpr64(" << rd << ", ((state.read_gpr32(" << rs
-             << ") ^ 0x80000000u) < (state.read_gpr32(" << rt
-             << ") ^ 0x80000000u)) ? 1ull : 0ull);";
+        code << "state.write_gpr64(" << rd << ", detail::less_than_signed_64(state.read_gpr64("
+             << rs << "), state.read_gpr64(" << rt << ")) ? 1ull : 0ull);";
         break;
     case Operation::Sltu:
-        code << "state.write_gpr64(" << rd << ", (state.read_gpr32(" << rs
-             << ") < state.read_gpr32(" << rt << ")) ? 1ull : 0ull);";
+        code << "state.write_gpr64(" << rd << ", (state.read_gpr64(" << rs
+             << ") < state.read_gpr64(" << rt << ")) ? 1ull : 0ull);";
+        break;
+    case Operation::Slti:
+        code << "state.write_gpr64(" << rt
+             << ", detail::less_than_signed_64(state.read_gpr64(" << rs << "), 0x"
+             << hex_value(static_cast<std::uint64_t>(static_cast<std::int64_t>(displacement)), 16)
+             << "ull) ? 1ull : 0ull);";
+        break;
+    case Operation::Sltiu:
+        code << "state.write_gpr64(" << rt << ", (state.read_gpr64(" << rs << ") < 0x"
+             << hex_value(static_cast<std::uint64_t>(static_cast<std::int64_t>(displacement)), 16)
+             << "ull) ? 1ull : 0ull);";
+        break;
+    case Operation::Xori:
+        code << "state.write_gpr64(" << rt << ", state.read_gpr64(" << rs << ") ^ 0x"
+             << hex_value(instruction.immediate, 4) << "ull);";
         break;
     case Operation::Daddu:
         code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rs
@@ -107,6 +121,11 @@ std::string statement_for(const DecodedInstruction& instruction) {
         code << "state.write_gpr32(" << rd << ", state.read_gpr32(" << rt
              << ") >> " << static_cast<unsigned>(instruction.shift_amount) << ");";
         break;
+    case Operation::Sra:
+        code << "state.write_gpr32(" << rd
+             << ", detail::arithmetic_shift_right_32(state.read_gpr32(" << rt
+             << "), " << static_cast<unsigned>(instruction.shift_amount) << "));";
+        break;
     case Operation::Lw:
         code << "state.write_gpr32(" << rt
              << ", state.memory().read_word(detail::effective_address(state, " << rs
@@ -116,6 +135,16 @@ std::string statement_for(const DecodedInstruction& instruction) {
         code << "state.write_gpr32(" << rt
              << ", detail::sign_extend_16(state.memory().read_halfword("
                 "detail::effective_address(state, " << rs << ", " << displacement << "))));";
+        break;
+    case Operation::Lb:
+        code << "state.write_gpr32(" << rt
+             << ", detail::sign_extend_8(state.memory().read_byte(detail::effective_address(state, "
+             << rs << ", " << displacement << "))));";
+        break;
+    case Operation::Lbu:
+        code << "state.write_gpr32(" << rt
+             << ", state.memory().read_byte(detail::effective_address(state, " << rs
+             << ", " << displacement << ")));";
         break;
     case Operation::Ld:
         code << "state.write_gpr64(" << rt
@@ -446,6 +475,23 @@ int wmain(int argc, wchar_t* argv[]) {
                << "}\n\n"
                << "[[nodiscard]] inline std::uint32_t sign_extend_16(std::uint16_t value) {\n"
                << "    return (value & 0x8000u) != 0 ? (0xffff0000u | value) : value;\n"
+               << "}\n\n"
+               << "[[nodiscard]] inline std::uint32_t sign_extend_8(std::uint8_t value) {\n"
+               << "    return (value & 0x80u) != 0 ? (0xffffff00u | value) : value;\n"
+               << "}\n\n"
+               << "[[nodiscard]] inline bool less_than_signed_64(std::uint64_t left,\n"
+               << "                                              std::uint64_t right) {\n"
+               << "    return (left ^ 0x8000000000000000ull) < (right ^ 0x8000000000000000ull);\n"
+               << "}\n\n"
+               << "[[nodiscard]] inline std::uint32_t arithmetic_shift_right_32(std::uint32_t value,\n"
+               << "                                                              std::uint8_t shift) {\n"
+               << "    if (shift == 0) {\n"
+               << "        return value;\n"
+               << "    }\n"
+               << "    const std::uint32_t shifted = value >> shift;\n"
+               << "    return (value & 0x80000000u) != 0\n"
+               << "               ? (shifted | (0xffffffffu << (32 - shift)))\n"
+               << "               : shifted;\n"
                << "}\n\n"
                << "} // namespace detail\n\n";
         for (const auto& [entry, unit] : units) {

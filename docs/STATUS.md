@@ -13,9 +13,11 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 39 operations. Ghidra re-verification 2026-10-01:
-    417 matched (352 non-NOP), 71 unsupported, 0 mismatches
-    (`docs/reverse-engineering/m6-disassembly.md`).
+  - The decoder covers 45 operations. Ghidra verification: the M6 ten-region
+    run matched 417 with 0 mismatches; the slice-4 extended listing (ten
+    regions plus candidate function ranges) matched 475 with 0 mismatches
+    (`docs/reverse-engineering/m6-disassembly.md`,
+    `docs/reverse-engineering/m13-first-function.md`).
 - M7 (2026-10-01): flow classification, delay-slot-aware basic blocks
   (`gt4blocks`) and deterministic CFG traversal (`gt4cfg`); real seeded run:
   15 blocks, 71 instructions, 20 edges
@@ -41,7 +43,11 @@ work proceeds. Details live in the linked evidence documents.
   image, and the continuation. Translator slices 2 and 3 followed: branches
   (likely/link), loops, multiple returns (verified on `0x005c11a8`), and
   direct call trees translated into one module (verified as a 5-function
-  chain, `0x0010c0c0`, on 6 states)
+  chain, `0x0010c0c0`, on 6 states). Slice 4 followed: six observed integer
+  operations (LB/LBU/SRA/SLTI/SLTIU/XORI) with Ghidra-verified decoding
+  (extended run: 475 matched, 0 mismatches), the SLT/SLTU/SLTI/SLTIU
+  comparison semantics corrected to 64-bit (shared-speculation bug found by
+  cross-checking PCSX2), and a fourth function verified (`0x00549378`)
   (`docs/reverse-engineering/m13-first-function.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
@@ -60,8 +66,8 @@ work proceeds. Details live in the linked evidence documents.
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 15/15 CTest (the translation tests exist only where the local CORE
-  does); Python suite 70 collected (64 run, 6 skip without the M3 reference
+- Tests: 16/16 CTest (the translation tests exist only where the local CORE
+  does); Python suite 71 collected (65 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the

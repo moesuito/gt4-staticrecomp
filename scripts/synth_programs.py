@@ -39,6 +39,11 @@ def sign_extend_16(value):
     return value - 0x10000 if value & 0x8000 else value
 
 
+def sign_extend_8(value):
+    value &= 0xFF
+    return value - 0x100 if value & 0x80 else value
+
+
 def signed_32(value):
     value &= MASK32
     return value - 0x100000000 if value & 0x80000000 else value
@@ -178,13 +183,17 @@ def xor_effect(rs, rt, rd):
     return lambda m: m.write_reg64(rd, m.read_reg64(rs) ^ m.read_reg64(rt))
 
 
+def machine_less_than_signed_64(left, right):
+    return (left ^ SIGN_BIT64) < (right ^ SIGN_BIT64)
+
+
 def slt_word(rs, rt, rd):
     return encode_r(rs, rt, rd, 0, 0x2A)
 
 
 def slt_effect(rs, rt, rd):
     def effect(m):
-        result = 1 if signed_32(m.read_reg32(rs)) < signed_32(m.read_reg32(rt)) else 0
+        result = 1 if machine_less_than_signed_64(m.read_reg64(rs), m.read_reg64(rt)) else 0
         m.write_reg64(rd, result)
     return effect
 
@@ -195,7 +204,7 @@ def sltu_word(rs, rt, rd):
 
 def sltu_effect(rs, rt, rd):
     def effect(m):
-        result = 1 if m.read_reg32(rs) < m.read_reg32(rt) else 0
+        result = 1 if m.read_reg64(rs) < m.read_reg64(rt) else 0
         m.write_reg64(rd, result)
     return effect
 
@@ -314,6 +323,75 @@ def ld_effect(rt, offset):
     def effect(m):
         m.write_reg64(rt, m.read_memory(m.effective_address(BASE_REGISTER, offset), 8))
     return effect
+
+
+def lb_word(rt, offset):
+    return encode_i(0x20, BASE_REGISTER, rt, offset)
+
+
+def lb_effect(rt, offset):
+    def effect(m):
+        byte = m.read_memory(m.effective_address(BASE_REGISTER, offset), 1)
+        m.write_reg32(rt, sign_extend_8(byte))
+    return effect
+
+
+def lbu_word(rt, offset):
+    return encode_i(0x24, BASE_REGISTER, rt, offset)
+
+
+def lbu_effect(rt, offset):
+    def effect(m):
+        m.write_reg32(rt, m.read_memory(m.effective_address(BASE_REGISTER, offset), 1))
+    return effect
+
+
+def sra_word(rt, rd, shift):
+    return encode_r(0, rt, rd, shift, 0x03)
+
+
+def sra_effect(rt, rd, shift):
+    def effect(m):
+        value = m.read_reg32(rt)
+        if shift == 0:
+            result = value
+        else:
+            fill = 0xFFFFFFFF if value & 0x80000000 else 0
+            result = (value >> shift) | (fill & (0xFFFFFFFF << (32 - shift)))
+        m.write_reg32(rd, result)
+    return effect
+
+
+def slti_word(rs, rt, immediate):
+    return encode_i(0x0A, rs, rt, immediate)
+
+
+def slti_effect(rs, rt, immediate):
+    def effect(m):
+        bound = sign_extend_16(immediate) & MASK64
+        result = 1 if machine_less_than_signed_64(m.read_reg64(rs), bound) else 0
+        m.write_reg64(rt, result)
+    return effect
+
+
+def sltiu_word(rs, rt, immediate):
+    return encode_i(0x0B, rs, rt, immediate)
+
+
+def sltiu_effect(rs, rt, immediate):
+    def effect(m):
+        bound = sign_extend_16(immediate) & MASK64
+        result = 1 if m.read_reg64(rs) < bound else 0
+        m.write_reg64(rt, result)
+    return effect
+
+
+def xori_word(rs, rt, immediate):
+    return encode_i(0x0E, rs, rt, immediate)
+
+
+def xori_effect(rs, rt, immediate):
+    return lambda m: m.write_reg64(rt, m.read_reg64(rs) ^ immediate)
 
 
 # Per-operation pickers: choose operands, return (word, effect) without applying.
@@ -435,18 +513,59 @@ def pick_ld(rng):
     return ld_word(rt, offset), ld_effect(rt, offset)
 
 
+def pick_lb(rng):
+    rt = rng.choice(WORKING_REGISTERS)
+    offset = rng.randrange(0, DATA_BYTES)
+    return lb_word(rt, offset), lb_effect(rt, offset)
+
+
+def pick_lbu(rng):
+    rt = rng.choice(WORKING_REGISTERS)
+    offset = rng.randrange(0, DATA_BYTES)
+    return lbu_word(rt, offset), lbu_effect(rt, offset)
+
+
+def pick_sra(rng):
+    shift = rng.randrange(0, 32)
+    rt = rng.choice(WORKING_REGISTERS + (0,))
+    rd = rng.choice(WORKING_REGISTERS)
+    return sra_word(rt, rd, shift), sra_effect(rt, rd, shift)
+
+
+def pick_slti(rng):
+    immediate = rng.choice([rng.randrange(0, 0x10000), 0xFFFF, 0x8000, rng.randrange(0, 0x100)])
+    rs = rng.choice(WORKING_REGISTERS + (0,))
+    rt = rng.choice(WORKING_REGISTERS)
+    return slti_word(rs, rt, immediate), slti_effect(rs, rt, immediate)
+
+
+def pick_sltiu(rng):
+    immediate = rng.choice([rng.randrange(0, 0x10000), 0xFFFF, 0x8000, rng.randrange(0, 0x100)])
+    rs = rng.choice(WORKING_REGISTERS + (0,))
+    rt = rng.choice(WORKING_REGISTERS)
+    return sltiu_word(rs, rt, immediate), sltiu_effect(rs, rt, immediate)
+
+
+def pick_xori(rng):
+    immediate = rng.choice([rng.randrange(0, 0x10000), 0x8000, 0x0001])
+    rs = rng.choice(WORKING_REGISTERS + (0,))
+    rt = rng.choice(WORKING_REGISTERS)
+    return xori_word(rs, rt, immediate), xori_effect(rs, rt, immediate)
+
+
 PICKERS = {
     "addu": pick_addu, "subu": pick_subu, "and": pick_and, "or": pick_or,
     "xor": pick_xor, "slt": pick_slt, "sltu": pick_sltu, "daddu": pick_daddu,
-    "sll": pick_sll, "srl": pick_srl,
-    "addiu": pick_addiu, "andi": pick_andi, "ori": pick_ori, "lui": pick_lui,
-    "sw": pick_sw, "lw": pick_lw, "sb": pick_sb, "lh": pick_lh,
-    "sd": pick_sd, "ld": pick_ld,
+    "sll": pick_sll, "srl": pick_srl, "sra": pick_sra,
+    "addiu": pick_addiu, "andi": pick_andi, "ori": pick_ori, "xori": pick_xori,
+    "slti": pick_slti, "sltiu": pick_sltiu, "lui": pick_lui,
+    "sw": pick_sw, "lw": pick_lw, "sb": pick_sb, "lb": pick_lb,
+    "lbu": pick_lbu, "lh": pick_lh, "sd": pick_sd, "ld": pick_ld,
 }
 REGISTER_OPS = ["addu", "subu", "and", "or", "xor", "slt", "sltu", "daddu"]
-SHIFT_OPS = ["sll", "srl"]
-IMMEDIATE_OPS = ["addiu", "andi", "ori", "lui"]
-MEMORY_OPS = ["sw", "lw", "sb", "lh", "sd", "ld"]
+SHIFT_OPS = ["sll", "srl", "sra"]
+IMMEDIATE_OPS = ["addiu", "andi", "ori", "xori", "slti", "sltiu", "lui"]
+MEMORY_OPS = ["sw", "lw", "sb", "lb", "lbu", "lh", "sd", "ld"]
 BRANCHLESS_OPS = REGISTER_OPS + SHIFT_OPS + IMMEDIATE_OPS
 
 
