@@ -40,7 +40,7 @@ explicitly retains responsibility for all commits.
 | M5 | Small instruction decoder with explicit unsupported results | BUILD/VERIFY passed 2026-09-19: 16 operations, 33 hand-selected words, negative/unsupported cases and independent Ghidra comparisons; EXPLAIN pending |
 | M6 | Native disassembler, ten real regions, independent comparisons and unsupported report | BUILD/VERIFY passed 2026-09-20; decoder expanded and re-verified 2026-10-01: 39 operations, 488 words, 417 Ghidra matches (352 non-NOP), 71 unsupported, zero mismatches; EXPLAIN pending |
 | M7-M8 | Basic blocks, control-flow graph and evidence-backed function map | BUILD/VERIFY passed 2026-10-01: flow classification, delay-slot blocks, CFG traversal and evidence-backed function map (10-function real closure, 8 direct calls); EXPLAIN pending |
-| M9-M12 | Guest state/memory, small test interpreter, generated straight-line and branching synthetic programs | Pending |
+| M9-M12 | Guest state/memory, small test interpreter, generated straight-line and branching synthetic programs | M9 BUILD/VERIFY passed 2026-10-01: explicit register file and memory model with synthetic fixtures; M10-M12 interpreter pending |
 | M13 | One real GT4 function compiled natively; at least five valid input states match relevant registers, touched memory, writes and continuation | First major technical landmark |
 
 After M13: automate snapshots (M14); expand COP1/MMI/VU0 (M15-M17);
