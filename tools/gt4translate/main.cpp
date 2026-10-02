@@ -1563,7 +1563,16 @@ int wmain(int argc, wchar_t* argv[]) {
         output << "    default: state.set_pc(target); return;\n"
                << "    }\n"
                << "}\n\n"
-               << "} // namespace detail\n\n";
+               << "} // namespace detail\n\n"
+               << "// The module's entry table, for a boundary driver: has_entry names\n"
+               << "// every address the module can be entered at, call_entry executes\n"
+               << "// one. An address that is not an entry is never called.\n"
+               << "[[nodiscard]] inline bool has_entry(std::uint32_t target) {\n"
+               << "    return detail::has_entry(target);\n"
+               << "}\n\n"
+               << "inline void call_entry(ee::GuestState& state, std::uint32_t target) {\n"
+               << "    detail::call_entry(state, target);\n"
+               << "}\n\n";
         for (const auto& [entry, unit] : units) {
             output << "inline void function_" << hex_value(entry, 8)
                    << "(ee::GuestState& state) {\n"

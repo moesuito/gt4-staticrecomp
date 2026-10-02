@@ -26,6 +26,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/state.cpp
     src/ee/interpreter.cpp
     src/ee/driver.cpp
+    src/ee/services.cpp
     src/ee/vu_macro.cpp
 )
 target_include_directories(gt4recomp_decode PUBLIC include)
@@ -191,6 +192,32 @@ if(BUILD_TESTING)
         add_test(NAME gt4run_startup COMMAND gt4run "${GT4_LOCAL_CORE}" --compare-interpreter)
         set_tests_properties(gt4run_startup PROPERTIES
             PASS_REGULAR_EXPRESSION "boundary: syscall 0x001001c8 service 0x3c")
+
+        # The whole game as one module under the driver. Generating it takes
+        # minutes and the object is ~100 MB, so gt4boot is excluded from the
+        # default build; the gt4boot_build fixture builds it on demand the
+        # first time the gt4boot_services test runs.
+        set(GT4_WHOLE_PROGRAM_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-whole-program.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_WHOLE_PROGRAM_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" --functions 20000 --all 2000000
+                    "${GT4_WHOLE_PROGRAM_HEADER}"
+            DEPENDS gt4translate
+            COMMENT "Translating the whole program (15k functions, ~150 MB)"
+            VERBATIM)
+        add_executable(gt4boot tools/gt4boot/main.cpp "${GT4_WHOLE_PROGRAM_HEADER}")
+        target_include_directories(gt4boot PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(gt4boot PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        target_compile_options(gt4boot PRIVATE /bigobj)
+        set_target_properties(gt4boot PROPERTIES EXCLUDE_FROM_ALL TRUE)
+        add_test(NAME gt4boot_build
+            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target gt4boot)
+        set_tests_properties(gt4boot_build PROPERTIES FIXTURES_SETUP gt4boot)
+        add_test(NAME gt4boot_services
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 2 --compare-interpreter)
+        set_tests_properties(gt4boot_services PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            PASS_REGULAR_EXPRESSION "services handled 2")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(

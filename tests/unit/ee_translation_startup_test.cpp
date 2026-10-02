@@ -69,8 +69,10 @@ int wmain(int argc, wchar_t* argv[]) {
         const ModuleEntry entries[] = {
             { entry, &translated::function_00100008 },
         };
-        Driver driver(translated_state, ModuleCatalog{entries});
-        const Boundary boundary = driver.run_once();
+        ServiceTable services;  // none registered: the syscall stays a boundary
+        Driver driver(translated_state, module_from_entries(entries));
+        const RunResult run_result = driver.run(services, RunOptions{});
+        const Boundary& boundary = run_result.boundary;
 
         auto interpreted_state = make_startup_state(image);
         Interpreter interpreter(interpreted_state);
@@ -95,6 +97,8 @@ int wmain(int argc, wchar_t* argv[]) {
         check(boundary.kind == BoundaryKind::Syscall && boundary.pc == first_syscall
                   && boundary.service == 0x3Cu,
               "the driver stopped at the first BIOS syscall (service 0x3C)");
+        check(run_result.stats.module_calls == 1 && run_result.stats.interpreted_steps == 0,
+              "the startup ran as translated code, never through the bridge");
         check(translated_state.pc() == first_syscall,
               "the translated run stopped at the same pc");
         bool registers_match = true;

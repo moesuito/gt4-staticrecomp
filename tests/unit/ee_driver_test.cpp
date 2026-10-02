@@ -1,11 +1,11 @@
-// Unit tests for the boundary driver, with no game data: a fake module proves
-// that run_once executes the entry at the current pc exactly once, and
-// classify_boundary names each stop shape the translator emits (syscall,
-// break, eret, an unknown indirect target, an unsupported word, a jr-ra
-// return, a trapping stop at an ordinary word, and an unmapped pc).
+// Unit tests for the boundary driver and its service layer, with no game
+// data: fake modules prove that the driver executes entries, resolves
+// syscalls through the service table, bridges through the interpreter when
+// the module cannot pass a boundary, and reports what nothing can resolve.
 #include "gt4recomp/ee_driver.hpp"
 
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <utility>
 
@@ -16,13 +16,14 @@ namespace {
 constexpr std::uint32_t window_base = 0x00100000;
 constexpr std::size_t window_size = 0x1000;
 
-// The hand-assembled boundary words the tests write into the window.
-constexpr std::uint32_t syscall_word = 0x0000000Cu;   // syscall
-constexpr std::uint32_t break_word = 0x0000000Du;     // break
-constexpr std::uint32_t eret_word = 0x42000018u;      // eret
-constexpr std::uint32_t jalr_word = 0x0320F809u;      // jalr ra, t9
+// The hand-assembled words the tests write into the window.
+constexpr std::uint32_t syscall_word = 0x0000000Cu;      // syscall
+constexpr std::uint32_t break_word = 0x0000000Du;        // break
+constexpr std::uint32_t eret_word = 0x42000018u;         // eret
+constexpr std::uint32_t jalr_word = 0x0320F809u;         // jalr ra, t9
+constexpr std::uint32_t jump_self_word = 0x0804001Cu;    // j 0x00100070
 constexpr std::uint32_t unsupported_word = 0x00200000u;  // sll with rs != 0
-constexpr std::uint32_t ordinary_word = 0x00000000u;  // sll zero, zero, 0
+constexpr std::uint32_t ordinary_word = 0x24080001u;     // addiu t0, zero, 1
 
 GuestState make_state(std::uint32_t pc) {
     GuestMemory memory(window_base, window_size);
@@ -31,20 +32,29 @@ GuestState make_state(std::uint32_t pc) {
     return state;
 }
 
-// Fake module functions: each one behaves like a generated function and
-// leaves the pc where the translator would.
-void write_register_and_stop_at_syscall(GuestState& state) {
-    state.write_gpr64(2, 0x1234u);  // proves the entry executed
-    state.set_pc(0x00100010u);
+void write_words(GuestState& state, std::uint32_t address,
+                 std::initializer_list<std::uint32_t> words) {
+    for (const std::uint32_t word : words) {
+        state.memory().write_word(address, word);
+        address += 4;
+    }
 }
 
+// Fake module functions: each one behaves like a generated function and
+// leaves the pc where the translator would.
+void stop_at_syscall(GuestState& state) { state.set_pc(0x00100010u); }
+void stop_at_jalr(GuestState& state) { state.set_pc(0x00100040u); }
 void stop_at_break(GuestState& state) { state.set_pc(0x00100020u); }
 void stop_at_eret(GuestState& state) { state.set_pc(0x00100030u); }
-void stop_at_jalr(GuestState& state) { state.set_pc(0x00100040u); }
 void stop_at_unsupported(GuestState& state) { state.set_pc(0x00100050u); }
 void stop_at_ordinary(GuestState& state) { state.set_pc(0x00100060u); }
-void stop_at_return_target(GuestState& state) { state.set_pc(0x00100070u); }
 void stop_at_unmapped(GuestState& state) { state.set_pc(0x00200000u); }
+void return_to_loop(GuestState& state) {
+    // A real module stop is a boundary word or a return; the loop then runs
+    // in the bridge until the work budget stops it.
+    state.write_gpr64(31, 0x00100070u);
+    state.set_pc(0x00100070u);
+}
 void return_through_ra(GuestState& state) {
     state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));
 }
@@ -69,6 +79,19 @@ const StopCase stop_cases[] = {
     {"misaligned", 0x00100001u, 0, 0, BoundaryKind::Unmapped},
 };
 
+// A service that records its call and answers in v0.
+struct FakeService {
+    std::uint32_t calls = 0;
+    std::uint32_t answer = 0;
+};
+
+ServiceHandler make_fake_service(FakeService& service) {
+    return [&service](GuestState& state) {
+        ++service.calls;
+        state.write_gpr64(2, service.answer);
+    };
+}
+
 } // namespace
 
 int main() {
@@ -77,41 +100,15 @@ int main() {
         if (!passed) { std::cerr << label << '\n'; ++failures; }
     };
 
-    // ModuleCatalog only reports the addresses it holds.
+    // module_from_entries answers for exactly the listed addresses.
     {
         const ModuleEntry entries[] = {
             {0x00100000u, &stop_at_break},
             {0x00100004u, &stop_at_eret},
         };
-        const ModuleCatalog catalog{entries};
-        check(catalog.find(0x00100000u) != nullptr, "catalog finds an entry");
-        check(catalog.find(0x00100008u) == nullptr, "catalog rejects a missing address");
-    }
-
-    // run_once executes the entry at the current pc and classifies the stop.
-    {
-        GuestState state = make_state(window_base);
-        state.memory().write_word(0x00100010u, syscall_word);
-        state.write_gpr64(3, 0x42u);
-        const ModuleEntry entries[] = {{window_base, &write_register_and_stop_at_syscall}};
-        Driver driver(state, ModuleCatalog{entries});
-        const Boundary boundary = driver.run_once();
-        check(state.read_gpr64(2) == 0x1234u, "run_once executed the module entry");
-        check(boundary.kind == BoundaryKind::Syscall, "run_once classified the syscall");
-        check(boundary.pc == 0x00100010u, "run_once reported the stop pc");
-        check(boundary.word == syscall_word, "run_once reported the boundary word");
-        check(boundary.service == 0x42u, "run_once read the service number from v1");
-    }
-
-    // An address without an entry is a boundary: nothing executes.
-    {
-        GuestState state = make_state(window_base);
-        const ModuleEntry entries[] = {{window_base + 4, &stop_at_break}};
-        Driver driver(state, ModuleCatalog{entries});
-        const Boundary boundary = driver.run_once();
-        check(boundary.kind == BoundaryKind::NoEntry, "no entry is a boundary");
-        check(boundary.pc == window_base && state.pc() == window_base,
-              "no entry leaves the pc untouched");
+        const Module module = module_from_entries(entries);
+        check(module.has_entry(0x00100000u), "module finds an entry");
+        check(!module.has_entry(0x00100008u), "module rejects a missing address");
     }
 
     // Every stop shape classifies as its own kind.
@@ -129,51 +126,152 @@ int main() {
                       << static_cast<int>(boundary.kind) << '\n';
             ++failures;
         }
-        if (mapped && boundary.word != test.word) {
+        if (mapped && boundary.word != test.word
+            && test.expected != BoundaryKind::Returned) {
+            // A return is classified before the word is read; its boundary
+            // carries no word.
             std::cerr << test.label << ": boundary word mismatch\n";
             ++failures;
         }
     }
 
-    // The remaining fake entries prove the run_once classification paths the
-    // fake module functions above can reach.
+    // The service table finds handlers by number and replaces duplicates.
     {
-        const struct {
-            void (*execute)(GuestState&);
-            BoundaryKind expected;
-        } runs[] = {
-            {&stop_at_break, BoundaryKind::Break},
-            {&stop_at_eret, BoundaryKind::ExceptionReturn},
-            {&stop_at_jalr, BoundaryKind::IndirectTransfer},
-            {&stop_at_unsupported, BoundaryKind::UnsupportedWord},
-            {&stop_at_ordinary, BoundaryKind::InstructionStop},
-            {&stop_at_unmapped, BoundaryKind::Unmapped},
-            {&return_through_ra, BoundaryKind::Returned},
-        };
-        for (const auto& run : runs) {
-            GuestState state = make_state(window_base);
-            state.memory().write_word(0x00100020u, break_word);
-            state.memory().write_word(0x00100030u, eret_word);
-            state.memory().write_word(0x00100040u, jalr_word);
-            state.memory().write_word(0x00100050u, unsupported_word);
-            state.memory().write_word(0x00100060u, ordinary_word);
-            state.memory().write_word(0x00100070u, ordinary_word);
-            state.write_gpr64(31, 0x00100070u);
-            const ModuleEntry entries[] = {{window_base, run.execute}};
-            Driver driver(state, ModuleCatalog{entries});
-            const Boundary boundary = driver.run_once();
-            if (boundary.kind != run.expected) {
-                std::cerr << "run_once path: expected kind "
-                          << static_cast<int>(run.expected) << ", got "
-                          << static_cast<int>(boundary.kind) << '\n';
-                ++failures;
-            }
+        ServiceTable services;
+        FakeService first;
+        FakeService second;
+        services.add(0x42u, make_fake_service(first));
+        services.add(0x42u, make_fake_service(second));
+        check(services.find(0x42u) != nullptr, "service table finds a handler");
+        check(services.find(0x43u) == nullptr, "service table rejects a missing number");
+        GuestState state = make_state(window_base);
+        (*services.find(0x42u))(state);
+        check(first.calls == 0 && second.calls == 1,
+              "a duplicate service registration replaces the handler");
+    }
+
+    // A module entry executes and stops at an unhandled syscall.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100010u, {syscall_word});
+        state.write_gpr64(3, 0x42u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_syscall}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 0,
+              "the module entry executed and nothing was interpreted");
+        check(result.boundary.kind == BoundaryKind::Syscall
+                  && result.boundary.pc == 0x00100010u
+                  && result.boundary.service == 0x42u,
+              "the unhandled syscall is the reported boundary");
+    }
+
+    // A registered service is handled inline and the bridge continues from
+    // pc + 4 until the service limit stops the next syscall unhandled.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100010u, {syscall_word, ordinary_word, syscall_word});
+        state.write_gpr64(3, 0x42u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_syscall}};
+        ServiceTable services;
+        FakeService service;
+        service.answer = 0x7u;
+        services.add(0x42u, make_fake_service(service));
+        RunOptions options;
+        options.step_limit = 100;
+        options.service_limit = 1;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, options);
+        check(service.calls == 1 && result.stats.services_handled == 1,
+              "the service ran once");
+        check(state.read_gpr64(2) == 0x7u, "the service effect is in the state");
+        check(result.stats.interpreted_steps == 2,
+              "the bridge interpreted the instruction between syscalls and the stop");
+        check(result.boundary.kind == BoundaryKind::Syscall
+                  && result.boundary.pc == 0x00100018u,
+              "the second syscall is reported once the service limit is reached");
+    }
+
+    // An unknown indirect target is not a stop: the bridge interprets the
+    // transfer and whoever it lands on.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100040u, {jalr_word, ordinary_word, syscall_word, unsupported_word});
+        state.write_gpr64(25, 0x00100048u);  // t9: the jalr target
+        state.write_gpr64(3, 0x42u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_jalr}};
+        ServiceTable services;
+        FakeService service;
+        services.add(0x42u, make_fake_service(service));
+        RunOptions options;
+        options.step_limit = 100;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, options);
+        check(result.stats.module_calls == 1, "the module stopped at the transfer");
+        check(result.stats.interpreted_steps == 4,
+              "the bridge interpreted the jalr, its delay slot, the syscall and the stop");
+        check(result.stats.services_handled == 1, "the reached service was handled");
+        check(result.boundary.kind == BoundaryKind::UnsupportedWord
+                  && result.boundary.pc == 0x0010004Cu,
+              "the run stopped at the unsupported word after the service");
+    }
+
+    // A normal return hands control back to the bridge.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100060u, {unsupported_word});
+        state.write_gpr64(31, 0x00100060u);
+        const ModuleEntry entries[] = {{window_base, &return_through_ra}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 1,
+              "the return was bridged by one interpreted step");
+        check(result.boundary.kind == BoundaryKind::UnsupportedWord,
+              "what the return led to is the reported boundary");
+    }
+
+    // A run that cannot leave the window reports Unmapped without stepping.
+    {
+        GuestState state = make_state(window_base);
+        const ModuleEntry entries[] = {{window_base, &stop_at_unmapped}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.boundary.kind == BoundaryKind::Unmapped
+                  && result.boundary.pc == 0x00200000u,
+              "an unmapped pc is a boundary");
+        check(result.stats.interpreted_steps == 0, "nothing was stepped at an unmapped pc");
+    }
+
+    // The interpreted-side budget bounds a looping bridge.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100070u, {jump_self_word, 0x00000000u});
+        const ModuleEntry entries[] = {{window_base, &return_to_loop}};
+        ServiceTable services;
+        RunOptions options;
+        options.step_limit = 5;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, options);
+        if (result.boundary.kind != BoundaryKind::StepLimit) {
+            std::cerr << "work budget: got kind " << static_cast<int>(result.boundary.kind)
+                      << " at 0x" << std::hex << result.boundary.pc << std::dec << '\n';
         }
+        check(result.boundary.kind == BoundaryKind::StepLimit,
+              "the work budget reports StepLimit");
+        if (result.stats.module_calls != 1 || result.stats.interpreted_steps != 4) {
+            std::cerr << "work budget: module calls " << result.stats.module_calls
+                      << ", interpreted steps " << result.stats.interpreted_steps << '\n';
+        }
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 4,
+              "the budget counts the module call and the interpreted instructions");
     }
 
     if (failures != 0) {
         return 1;
     }
-    std::cout << "driver boundary classification matches every emitted stop shape\n";
+    std::cout << "driver entries, services and bridge behave as specified\n";
     return 0;
 }

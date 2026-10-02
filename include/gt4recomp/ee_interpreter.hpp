@@ -33,6 +33,11 @@ public:
 
     [[nodiscard]] StepResult step();
 
+    // True while the next step executes the delay slot of a transfer that
+    // was already decoded. Callers that switch execution contexts between
+    // steps (the driver's bridge) must not leave a pending transfer behind.
+    [[nodiscard]] bool pending_transfer() const noexcept;
+
 private:
     GuestState& state_;
     bool transfer_pending_ = false;

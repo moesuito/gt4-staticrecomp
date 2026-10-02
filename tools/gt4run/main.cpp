@@ -7,6 +7,7 @@
 // committed: the module lives in the ignored build tree.
 #include "translated-startup.hpp"
 
+#include "boundary_text.hpp"
 #include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
 #include "gt4recomp/executable_image.hpp"
@@ -51,33 +52,6 @@ GuestState make_startup_state(const ExecutableImage& image) {
     GuestState state(std::move(memory));
     state.set_pc(entry);
     return state;
-}
-
-const char* boundary_name(BoundaryKind kind) {
-    switch (kind) {
-    case BoundaryKind::NoEntry: return "no-entry";
-    case BoundaryKind::Syscall: return "syscall";
-    case BoundaryKind::Break: return "break";
-    case BoundaryKind::ExceptionReturn: return "exception-return";
-    case BoundaryKind::UnsupportedWord: return "unsupported-word";
-    case BoundaryKind::IndirectTransfer: return "indirect-transfer";
-    case BoundaryKind::Returned: return "returned";
-    case BoundaryKind::InstructionStop: return "instruction-stop";
-    case BoundaryKind::Unmapped: return "unmapped";
-    }
-    return "unknown";
-}
-
-// The interpreter's stop outcome in the same vocabulary as the driver's
-// boundary, so the comparison reports one agreed stop.
-const char* interpreted_stop_name(StepOutcome outcome) {
-    switch (outcome) {
-    case StepOutcome::Executed: return "still-executing";
-    case StepOutcome::Unsupported: return "unsupported-word";
-    case StepOutcome::Exception: return "exception";
-    case StepOutcome::IllegalDelaySlot: return "illegal-delay-slot";
-    }
-    return "unknown";
 }
 
 // FNV-1a over the whole guest window: a compact digest of every byte the run
@@ -162,10 +136,12 @@ int wmain(int argc, wchar_t* argv[]) {
         const ModuleEntry entries[] = {
             { entry, &translated::function_00100008 },
         };
-        Driver driver(driver_state, ModuleCatalog{entries});
-        const Boundary boundary = driver.run_once();
+        Driver driver(driver_state, module_from_entries(entries));
+        ServiceTable services;  // none yet: the first syscall is the boundary
+        const RunResult result = driver.run(services, RunOptions{});
+        const Boundary boundary = result.boundary;
 
-        std::cout << "boundary: " << boundary_name(boundary.kind) << " 0x"
+        std::cout << "boundary: " << tools::boundary_kind_name(boundary.kind) << " 0x"
                   << std::hex << std::setfill('0') << std::setw(8) << boundary.pc
                   << std::dec << std::setfill(' ');
         if (boundary.kind == BoundaryKind::Syscall) {
@@ -191,7 +167,7 @@ int wmain(int argc, wchar_t* argv[]) {
             }
             if (result.outcome != StepOutcome::Exception || result.pc != boundary.pc) {
                 std::cerr << "interpreter stopped differently: "
-                          << interpreted_stop_name(result.outcome) << " at 0x"
+                          << tools::step_outcome_name(result.outcome) << " at 0x"
                           << std::hex << result.pc << std::dec << '\n';
                 return 1;
             }

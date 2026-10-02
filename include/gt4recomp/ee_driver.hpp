@@ -1,24 +1,28 @@
 #pragma once
 
-// The driver executes a translated module as a program: it calls the module
-// entry that owns the current pc, then reports the boundary where the module
-// returned control. The translator leaves the pc at the stop address (or at
-// ra after a normal return), so the driver classifies the stop from the guest
-// state alone; nothing is guessed past a boundary. This is the first slice:
-// no service layer exists yet, so a syscall boundary is reported, not handled.
+// The driver executes a translated module as a program. It runs the module
+// entry that owns the current pc; when the module stops at a boundary it
+// cannot pass (a syscall, an unknown indirect target, a jr-ra return), the
+// driver resolves it: registered BIOS services run, and the step-by-step
+// interpreter — the reference the module was verified against — fills the
+// gap until the next module entry. A boundary that nothing can resolve is
+// reported, never guessed past.
 
 #include "gt4recomp/ee_decode.hpp"
+#include "gt4recomp/ee_interpreter.hpp"
+#include "gt4recomp/ee_services.hpp"
 #include "gt4recomp/ee_state.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <span>
 
 namespace gt4recomp::ee {
 
-// Why the module returned control. Each kind maps to a stop shape the
-// translator emits (docs/reverse-engineering/m30-driver-first-slice.md).
+// Why the run stopped. Each kind maps to a stop shape the translator emits
+// (docs/reverse-engineering/m30-driver-first-slice.md) or to a driver limit.
 enum class BoundaryKind {
-    NoEntry,           // pc has no module entry; the driver cannot execute it
     Syscall,           // pc at a syscall; the PS2 service number is in v1
     Break,             // pc at a break
     ExceptionReturn,   // eret derived the pc from CP0
@@ -27,12 +31,14 @@ enum class BoundaryKind {
     Returned,          // pc equals ra: the module returned through jr ra
     InstructionStop,   // pc at an ordinary instruction; with the current
                        // translator this is a trapping arithmetic overflow
-    Unmapped           // pc outside the guest memory window or misaligned
+    IllegalDelaySlot,  // a transfer inside a delay slot; stopped before it
+    Unmapped,          // pc outside the guest memory window or misaligned
+    StepLimit          // the work budget ran out
 };
 
 struct Boundary {
-    BoundaryKind kind = BoundaryKind::NoEntry;
-    std::uint32_t pc = 0;       // where the module stopped
+    BoundaryKind kind = BoundaryKind::Unmapped;
+    std::uint32_t pc = 0;       // where the run stopped
     std::uint32_t word = 0;     // the guest word at pc; zero when unmapped
     std::uint32_t service = 0;  // Syscall only: the full v1 value
 };
@@ -43,32 +49,68 @@ struct ModuleEntry {
     void (*execute)(GuestState&);
 };
 
-// The entries of one module. The driver calls an address only when it is
-// present here; anything else comes back as a boundary for the caller.
-struct ModuleCatalog {
-    std::span<const ModuleEntry> entries;
-
-    [[nodiscard]] const ModuleEntry* find(std::uint32_t address) const noexcept;
+// The entry table of a translated module. The generated header provides
+// has_entry/call_entry over every function it contains; small modules and
+// tests adapt a fixed list with module_from_entries.
+struct Module {
+    std::function<bool(std::uint32_t address)> has_entry;
+    std::function<void(GuestState& state, std::uint32_t address)> call_entry;
 };
 
-// Classifies the module's stop from the guest state: the word at the pc and,
-// for a normal return, the link register.
+[[nodiscard]] Module module_from_entries(std::span<const ModuleEntry> entries);
+
+// Classifies a stop from the guest state: the word at the pc and, for a
+// normal return, the link register. This is the module-stop view, where the
+// pc is the only signal; an interpreter stop carries its reason directly and
+// uses boundary_from_step instead.
 [[nodiscard]] Boundary classify_boundary(const GuestState& state);
 
-// Runs one translated module under the driver. A boundary is never guessed
-// past: an address without an entry and an unknown runtime target both come
-// back as described stops.
+// The boundary named by an interpreter stop. The step outcome says why the
+// instruction did not complete, so this is exact where classify_boundary
+// would have to infer (a trapping stop at pc == ra, for example).
+[[nodiscard]] Boundary boundary_from_step(const StepResult& step,
+                                          const GuestState& state);
+
+struct RunOptions {
+    // Interpreted instructions plus module entry calls before StepLimit.
+    std::uint64_t step_limit = 100'000'000;
+    // The driver stops before what would be the (service_limit + 1)-th
+    // handled service; the boundary then still carries the syscall.
+    std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
+    // Optional trace hook, called just before a service handler runs.
+    std::function<void(std::uint32_t service, std::uint32_t pc)> on_service;
+};
+
+struct DriverStats {
+    std::uint64_t module_calls = 0;       // translated entries executed
+    std::uint64_t interpreted_steps = 0;  // bridge instructions interpreted
+    std::uint64_t services_handled = 0;
+};
+
+struct RunResult {
+    Boundary boundary;
+    DriverStats stats;
+};
+
+// Runs the module under a service table. A module entry executes translated
+// code; every other pc is interpreted one instruction at a time, exactly as
+// the differential tests verify. A throwing module or service propagates its
+// error to the caller; the driver never turns one into a silent stop.
 class Driver {
 public:
-    Driver(GuestState& state, ModuleCatalog module);
+    Driver(GuestState& state, Module module);
 
-    // The pc must name a module entry; otherwise the result is NoEntry and
-    // nothing executes. A throwing module propagates its error to the caller.
-    [[nodiscard]] Boundary run_once();
+    [[nodiscard]] RunResult run(ServiceTable& services, const RunOptions& options);
 
 private:
+    // Runs a registered service for the syscall at pc; true when handled.
+    bool handle_syscall(std::uint32_t pc, std::uint32_t service,
+                        ServiceTable& services, const RunOptions& options,
+                        DriverStats& stats);
+
     GuestState& state_;
-    ModuleCatalog module_;
+    Module module_;
+    Interpreter interpreter_;
 };
 
 } // namespace gt4recomp::ee

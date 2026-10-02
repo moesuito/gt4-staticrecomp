@@ -1,5 +1,11 @@
 # M30, first slice — the boundary driver
 
+> Superseded in part by the second slice
+> (`m30-bios-services-and-bridge.md`): `ModuleCatalog` became the module entry
+> table (`Module`, `module_from_entries`) and `NoEntry` disappeared — a pc
+> without an entry is bridged by the interpreter, not stopped. The boundary
+> kinds, the startup run and its evidence stand.
+
 Date: 2026-10-02. Inputs: the pinned CORE. Follow-up to M29: the whole game
 translates, but nothing executed a translated module as a program or named
 the boundary it stops at. This slice builds that runner and verifies the
@@ -38,7 +44,7 @@ interpreter: 942695 instructions, state identical (registers, HI/LO, FPU, shift 
 ```
 
 - The driver executes the translated startup from the ELF entry (0x00100008)
-  to the first BIOS syscall at **0x001001C8**, service **0x3C** (ExecPS2 in
+  to the first BIOS syscall at **0x001001C8**, service **0x3C** (SetupThread in
   the PS2 ABI; the service number travels in v1).
 - The interpreter reaches the same pc with `StepOutcome::Exception` /
   `Operation::Syscall` after **942,695 instructions**.
@@ -100,7 +106,8 @@ interpreter: 942695 instructions, state identical (registers, HI/LO, FPU, shift 
 
 ## Next
 
-1. **BIOS services**: start with service 0x3C (ExecPS2) and the other services
+1. **BIOS services**: start with service 0x3C (SetupThread; the second slice
+   corrected this from the earlier ExecPS2 guess) and the other services
    the startup uses; this requires the resume decision above.
 2. **Jump-table dispatch**: computed `jr` targets that are local blocks (not
    function entries) currently stop as `IndirectTransfer`.

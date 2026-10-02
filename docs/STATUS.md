@@ -1,10 +1,11 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 1 — the boundary driver: the translated
-startup now runs as a program under a runner that names the boundary it stops
-at, reaching the first BIOS syscall with the state identical to the
-interpreter's. This is the first document to read in a new session; it is kept
-current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 2 — the BIOS service layer and the
+interpreter bridge: the whole game runs as one translated module from the ELF
+entry through SetupThread and SetupHeap with the state identical to the
+interpreter, stopping at the thread/semaphore scheduler. This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -232,15 +233,29 @@ current as work proceeds. Details live in the linked evidence documents.
 - M30 slice 1 (2026-10-02): **the boundary driver** — `ee::Driver` executes a
   translated module as a program and classifies where it stops from the guest
   state (syscall with the service in v1, break, eret, unknown indirect
-  target, unsupported word, jr-ra return, trapping stop, unmapped pc, no
-  entry); `gt4run` is the driver as a program. **The translated startup now
-  runs through the driver from the ELF entry to the first BIOS syscall
-  (0x001001C8, service 0x3C = ExecPS2) with the full final state identical to
-  the interpreter after 942,695 instructions** (all GPRs in both halves, FPU
-  file, FCR31, accumulator, HI/LO in both banks, shift cache, CP0, pc, whole
-  guest-window digest). CTest 27/27 (new `ee_driver` unit test and
-  `gt4run_startup` CLI test); Python 73 (67 run, 6 skip)
-  (`docs/reverse-engineering/m30-driver-first-slice.md`,
+  target, unsupported word, jr-ra return, trapping stop, unmapped pc); the
+  translated startup runs through the driver from the ELF entry to the first
+  BIOS syscall (0x001001C8, service 0x3C = SetupThread) with the full final
+  state identical to the interpreter after 942,695 instructions. `gt4run` is
+  the driver as a program. CTest 27/27; Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-driver-first-slice.md`).
+- M30 slice 2 (2026-10-02): **the BIOS service layer and the interpreter
+  bridge** — `ServiceTable` maps the number in v1 to a handler (SetupThread
+  0x3C returns the stack pointer from the public ps2sdk ABI, SetupHeap 0x3D
+  validates the heap request, FlushCache 0x64 is the documented no-op). When
+  the module stops at a jr-ra return, an unknown indirect transfer or an eret,
+  the step-by-step interpreter continues to the next module entry (the
+  reference every module was verified against); a syscall with a handler runs
+  inline; everything else is the reported boundary. The generated modules
+  expose their entry table publicly (`translated::has_entry`/`call_entry`).
+  **`gt4boot` runs the whole game as one module from the ELF entry through
+  SetupThread and SetupHeap with the full state identical to the interpreter
+  after 942,726 instructions — all registers, FPU, VU0, CP0, pc and a digest
+  of the full 32 MiB of RAM — stopping at the next wall: CreateSema (0x40)
+  in the InitThread tree at 0x005ADCA4.** The whole-program module builds on
+  demand (140 s, 84.5 MB). CTest 29/29 (`ee_driver`, `gt4boot_build`
+  fixture, `gt4boot_services`); Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-bios-services-and-bridge.md`,
   `docs/decisions/0004-driver-boundary-classification.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
@@ -251,17 +266,21 @@ current as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: M30 slice 2 — the BIOS services, starting
-  with the resume-past-syscall mechanism (decision 0004); then jump-table
-  dispatch and the whole-program module under the driver.
+- Next technical milestone work: **the EE thread and semaphore scheduler** —
+  the boot stops at CreateSema (0x40) in the InitThread tree, and the public
+  ps2sdk `InitThread` shows the shape (CreateThread/StartThread/
+  ChangeThreadPriority/GetThreadId plus a WaitSema loop), so the next unit is
+  a deterministic cooperative scheduler; then the kernel-patch services
+  (Copy/FindAddress/SetSyscall) and the remaining boundaries.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 27/27 CTest (the translation tests and `gt4run` exist only where the
-  local CORE does); Python suite 73 collected (67 run, 6 skip without the M3
-  reference ELF; the savestate test finds the repository copy first).
+- Tests: 29/29 CTest (the translation tests, `gt4run` and `gt4boot` exist
+  only where the local CORE does; `gt4boot_build` builds the whole-program
+  module on demand, 140 s); Python suite 73 collected (67 run, 6 skip without
+  the M3 reference ELF; the savestate test finds the repository copy first).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
   pinned manifest); `private/reconstructed/SCUS_973.28.elf` (6,123,004 bytes,
@@ -298,24 +317,36 @@ current as work proceeds. Details live in the linked evidence documents.
   snapshots); the freeze layout is coupled to the emulator build.
 - The driver's classification is an inference from the stop pc: a jr-ra
   return is recognized because pc equals ra (a trapping stop at that exact
-  address would be misreported; none observed), and a trapping overflow stops
-  at an ordinary word whose cause the pc alone does not carry. Recorded in
+  address would be misreported; none observed). The interpreter path uses the
+  step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
-- **Resuming past a syscall has no module entry yet**: the translator ends a
-  function at the syscall and does not translate the continuation, so after a
-  service runs there is nowhere to re-enter at pc+4. The resume design (resume
-  entries vs an inline syscall runtime call) must be chosen before the BIOS
-  services slice; decision 0004 lists both options.
+- The interpreter bridge resolves boundaries by interpreting the gaps between
+  module entries (correctness first; nine instructions in the boot run). The
+  two performance alternatives (resume entries per halt address, inline
+  syscall calls in generated code) remain open.
+- **The boot now stops at the thread and semaphore scheduler**: CreateSema
+  (0x40) at 0x005ADCA4, called from the InitThread-equivalent at 0x005B7310.
+  A single-threaded model cannot answer WaitSema, so the next unit needs a
+  deterministic cooperative scheduler; the public ps2sdk `thread.c` documents
+  the shape. FlushCache is registered but was not reached before this stop.
+- A module call runs to its own boundary and cannot be interrupted; the work
+  budget counts interpreted instructions and module calls, so a loop inside a
+  module is not bounded by it. No such loop has been hit before a boundary.
 
 ## Next actions
 
-1. M30 slice 2: **the BIOS services** — first decide and implement the
-   resume-past-syscall mechanism (decision 0004), then handle the services the
-   startup uses, starting with 0x3C (ExecPS2). `gt4run` is the host.
-2. Jump-table dispatch (computed `jr` into local blocks) and the remaining
-   boundary kinds; then the whole-program module under the driver.
-3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
-4. Keep the journal and this file current after every working session.
+1. M30 slice 3: **the EE thread and semaphore scheduler** — CreateSema,
+   CreateThread/StartThread/ExitThread, GetThreadId/ChangeThreadPriority,
+   SignalSema/WaitSema/PollSema, modeled from the public ABI with a
+   deterministic cooperative scheduler; the acceptance evidence is the same
+   differential harness (`gt4boot --compare-interpreter`) extended past
+   0x005ADCA4.
+2. The kernel-patch services (Copy/FindAddress/SetSyscall) and what they mean
+   when the model is the kernel.
+3. Performance: resume entries or inline syscall calls to shrink the
+   interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
+4. The M9-M30 lessons and retroactive M2-M5 notes if useful.
+5. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -343,7 +374,10 @@ current as work proceeds. Details live in the linked evidence documents.
   (indirect control flow became a boundary: 99.1% of the entries translate)
   and M28 (the module dispatches its own indirect targets) and M29 (the
   whole-program build: 15,068 functions, 924,991 instructions, MSVC
-  syntax-checked), plus the scan correction trail. M30 slice 1 followed the
-  same day: the boundary driver runs the translated startup to the first BIOS
-  syscall (service 0x3C) with state identical to the interpreter, and `gt4run`
-  runs it as a program.
+  syntax-checked), plus the scan correction trail. M30 followed the same day:
+  slice 1 is the boundary driver (the translated startup reaches the first
+  BIOS syscall with state identical to the interpreter; `gt4run` runs it as a
+  program), and slice 2 is the BIOS service layer plus the interpreter bridge
+  (`gt4boot` runs the whole game as one module through SetupThread and
+  SetupHeap with state identical to the interpreter, stopping at CreateSema
+  in the thread/semaphore init).

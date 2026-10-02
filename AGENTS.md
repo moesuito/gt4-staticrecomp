@@ -105,19 +105,21 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 1 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 2 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
   direct-call targets, and `--all` generates the whole game as one module
   (15,068 functions, 924,991 instructions, 146 MB, MSVC syntax-checked). The
-  boundary driver executes a translated module as a program: the translated
-  startup reaches the first BIOS syscall (0x001001C8, service 0x3C) with the
-  state identical to the interpreter after 942,695 instructions, and
-  `gt4run` runs it from the command line.
-- Next: M30 slice 2 — the BIOS services (choose the resume-past-syscall
-  mechanism first, decision 0004), then jump-table dispatch and the
-  whole-program module under the driver.
+  boundary driver executes translated modules as programs; the BIOS service
+  layer models SetupThread, SetupHeap and FlushCache, and the step-by-step
+  interpreter bridges the boundaries a module cannot pass. `gt4boot` runs
+  the whole game as one module from the ELF entry through the two setup
+  services with the state identical to the interpreter (942,726
+  instructions), stopping at CreateSema in the thread/semaphore init.
+- Next: M30 slice 3 — the EE thread and semaphore scheduler (CreateSema,
+  CreateThread/StartThread, SignalSema/WaitSema, priorities), then the
+  kernel-patch services and the remaining boundaries.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

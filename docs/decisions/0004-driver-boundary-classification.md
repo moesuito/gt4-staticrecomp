@@ -1,7 +1,8 @@
 # 0004 — The driver classifies module stops from the guest state
 
 Status: implemented for the M30 first slice on 2026-10-02; the resume
-mechanism past a syscall remains open.
+question was resolved by the interpreter bridge in the second slice (see the
+consequences and `docs/reverse-engineering/m30-bios-services-and-bridge.md`).
 
 Decision: a translated module stays a plain function over `GuestState`; the
 driver calls the entry that owns the current pc and classifies the stop from
@@ -30,14 +31,17 @@ Consequences:
   return; no such case exists in the pinned code (recorded in the M30 doc).
 - A stop at an ordinary instruction is reported as `InstructionStop` with the
   word attached; the cause (trapping overflow) is not recoverable from the pc
-  alone.
-- **Open: resuming past a syscall.** The translator ends the enclosing
-  function at the syscall and does not translate the continuation, so there
-  is no module entry at pc+4 after a service runs. The two candidate designs
-  are (a) the translator emits a resume entry for every halt address it can
-  continue past, or (b) the syscall becomes an inline runtime call
-  (`ee::execute_syscall`) that a registered service layer resolves, letting
-  the generated code continue at pc+4. Option (b) keeps one function per
-  entry and matches the interpreter's single-step model; option (a) is a
-  smaller change to the translator. This must be decided before the BIOS
-  services slice, with the differential tests as the acceptance evidence.
+  alone. The interpreter path does not have this limit: it uses the step
+  outcome (`boundary_from_step`).
+- **Resolved in the second slice: the interpreter is the bridge.** The
+  translator still ends the enclosing function at a syscall and does not
+  translate the continuation, so after a service runs there is no module
+  entry at pc+4. The driver now continues through the step-by-step
+  interpreter — the reference the module was verified against — until the
+  next module entry. This composes through calls and returns (a resumed
+  callee returning to its caller needs no entry at the return address) and
+  required no translator change. The two designs that were candidates remain
+  future performance options, not correctness requirements: (a) resume
+  entries for every halt address, (b) an inline syscall runtime call in
+  generated code. Both shrink the interpreted gaps; the bridge stays as the
+  universal fallback for boundaries the module cannot pass.

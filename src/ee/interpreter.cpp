@@ -2511,6 +2511,10 @@ bool execute_plain_effect(GuestState& state, const DecodedInstruction& instructi
 
 Interpreter::Interpreter(GuestState& state) : state_(state) {}
 
+bool Interpreter::pending_transfer() const noexcept {
+    return transfer_pending_;
+}
+
 StepResult Interpreter::step() {
     const auto pc = state_.pc();
     const auto instruction = decode(state_.memory().read_word(pc));
