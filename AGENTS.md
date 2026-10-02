@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 12 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 13 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -126,16 +126,18 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   chain, the game's thread creation, the SIFCMD handshake, the IOP reset,
   the RPC initialization and the game's runtime threads (the cooperative
   scheduler and the injected interrupts exercised end to end) with the state
-  identical to the interpreter (7,554,609 instructions at the 3,000-service
-  comparison point; the injected handlers run with no nesting and no
-  preemption per decision 0013, so the game's timer-driven waits complete
-  and a long run continues past **1,000,000 services** (33,650,798
-  interpreted steps, about 29 seconds) without stalling); `--threads`
+  identical to the interpreter (7,573,241 instructions at the 3,000-service
+  comparison point; injected handlers run with no nesting and no preemption
+  per decision 0013, the version queries answer the game's compatibility
+  constants, Deci2Call is accepted and the model IOP holds 80 RPC servers
+  per decision 0014, so the boot binds the disc subsystem, negotiates the
+  fileio/CDVD versions and runs an **11-thread worker pool to the
+  200,000,000-step limit** inside the 0x0058F000 subsystem init); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 13 — what the library wait/retry loops wait for (the game
-  now lives in the delay helper's cycles and the RPC thread's wakeup
-  checks; likely the model IOP's empty RPC replies on the loading path).
+- Next: M30 slice 14 — the 0x0058F000 subsystem init loop and the
+  string-coded servers it drives (the live PCSX2 emulator is the oracle for
+  the real replies).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

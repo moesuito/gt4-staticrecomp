@@ -1,6 +1,7 @@
 #include "gt4recomp/ee_kernel.hpp"
 
 #include <stdexcept>
+#include <utility>
 
 namespace gt4recomp::ee {
 namespace {
@@ -189,6 +190,7 @@ void Kernel::register_services(ServiceTable& services) {
     add(static_cast<std::uint32_t>(-0x78), &Kernel::sif_set_d_chain);
     add(0x79u, &Kernel::sif_set_reg);
     add(0x7Au, &Kernel::sif_get_reg);
+    add(0x7Cu, &Kernel::deci2_call);
     add(0x6Bu, &Kernel::sif_stop_dma);
     add(0x02u, &Kernel::set_gs_crt);
     add(0x6Eu, &Kernel::set_osd_config2);
@@ -883,6 +885,17 @@ ServiceOutcome Kernel::set_gs_crt(GuestState& state) {
     return ServiceOutcome::Handled;
 }
 
+ServiceOutcome Kernel::deci2_call(GuestState& state) {
+    // Deci2Call(call, address): the DECI2 debug-host interface. No debug
+    // host is attached, so the calls are accepted with the reference
+    // emulator's returns (1 for the defined calls, -1 beyond 0x10); the
+    // game's debug output has no destination, as on a console without a
+    // host.
+    const std::uint32_t call = state.read_gpr32(4);
+    state.write_gpr64(2, call > 0x10u ? 0xFFFFFFFFu : 1u);
+    return ServiceOutcome::Handled;
+}
+
 ServiceOutcome Kernel::gs_get_imr(GuestState& state) {
     // GsGetIMR: the stored 64-bit interrupt mask, in one GPR.
     state.write_gpr64(2, gs_imr_);
@@ -1358,9 +1371,9 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     const std::uint32_t sd = state.memory().read_word(command_buffer + 52);
     const SifRpcServer* server = find_sif_server_by_handle(sd);
     const std::uint32_t sid = server == nullptr ? 0 : server->sid;
-    std::uint8_t result[64] = {};
-    const std::uint32_t result_size = sif_rpc_result(sid, rpc_number, result,
-                                                     sizeof result);
+    std::uint8_t result[160] = {};
+    const std::uint32_t result_size = sif_rpc_result(state, sid, rpc_number,
+                                                     result, sizeof result);
     if (recv_size > 0) {
         if (!state.memory().contains(recvbuf, recv_size)) {
             throw std::runtime_error(
@@ -1420,26 +1433,73 @@ void Kernel::answer_sif_reset(GuestState& state, std::uint32_t command_buffer,
     sif_reboot_pending_ = true;
 }
 
-std::uint32_t Kernel::sif_rpc_result(std::uint32_t sid, std::uint32_t rpc_number,
+std::uint32_t Kernel::sif_rpc_result(GuestState& state, std::uint32_t sid,
+                                     std::uint32_t rpc_number,
                                      std::uint8_t* result,
                                      std::uint32_t capacity) {
-    // The model IOP's function table. One behavior is evidenced so far: the
-    // version query (RPC number 0xFF) of the first server the game binds.
-    // Its reply is 8 bytes; the game's client checks that the second word is
-    // 2 and keeps the first word as the manager's version. See the seventh
-    // slice's evidence document for the disassembly trail.
-    (void)sid;
-    if (rpc_number != 0xFFu || capacity < 8) {
+    // The model IOP's function table. Each entry is shaped by the check in
+    // the game that consumes it (the slice documents hold the trails):
+    //  - the disc subsystem's status query (sid 0x80001300, RPC 0x80001363)
+    //    answers a 144-byte payload whose first word is 0x310, the lowest
+    //    value the game's `(word >> 4) == 0x31` check accepts (0x0058F840);
+    //  - the fileio/CDVD version negotiation (sid 0x80000400, RPC 0xFE)
+    //    answers 12 bytes with the minimum versions its checks accept, the
+    //    second word 0x20A and the third 0x20E (0x0058D674 and 0x0058D694);
+    //  - the version queries (RPC number 0xFF) answer the compatibility
+    //    constant the game's own check expects, read from its data: the SIF
+    //    manager (sid 0x80000001) reports the word at 0x0066829C plus the
+    //    flag 2 its client checks, and the file server (sid 0x80000006)
+    //    reports the four bytes at 0x0065829C ("3000"), which the file
+    //    open's version check compares (0x005B6368).
+    // Anything else answers an empty result.
+    const auto put_word = [result](std::uint32_t offset, std::uint32_t value) {
+        result[offset + 0] = static_cast<std::uint8_t>(value);
+        result[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+        result[offset + 2] = static_cast<std::uint8_t>(value >> 16);
+        result[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+    };
+    const auto clear_result = [result, capacity]() {
+        for (std::uint32_t offset = 0; offset < capacity; ++offset) {
+            result[offset] = 0;
+        }
+    };
+    if (sid == 0x80001300u && rpc_number == 0x80001363u && capacity >= 144) {
+        // The real status structure comes from the game's IOP server, which
+        // the model does not execute; the rest of the payload stays zero.
+        clear_result();
+        put_word(0, 0x310u);
+        return 144;
+    }
+    if (sid == 0x80000400u && rpc_number == 0xFEu && capacity >= 12) {
+        // Answering the minimums makes the game choose the oldest protocol
+        // variant it supports; the real module versions come from the IOP
+        // modules the model does not execute.
+        clear_result();
+        put_word(4, 0x20Au);
+        put_word(8, 0x20Eu);
+        return 12;
+    }
+    if (rpc_number != 0xFFu) {
         return 0;
     }
-    const std::uint32_t words[2] = {0x00000000u, 2u};
-    for (std::uint32_t index = 0; index < 2; ++index) {
-        result[index * 4 + 0] = static_cast<std::uint8_t>(words[index]);
-        result[index * 4 + 1] = static_cast<std::uint8_t>(words[index] >> 8);
-        result[index * 4 + 2] = static_cast<std::uint8_t>(words[index] >> 16);
-        result[index * 4 + 3] = static_cast<std::uint8_t>(words[index] >> 24);
+    if (sid == 0x80000001u && capacity >= 8) {
+        if (!state.memory().contains(0x0066829Cu, 4)) {
+            throw std::runtime_error(
+                "The SIF manager version constant is outside the mapped guest memory");
+        }
+        put_word(0, state.memory().read_word(0x0066829Cu));
+        put_word(4, 2);
+        return 8;
     }
-    return 8;
+    if (sid == 0x80000006u && capacity >= 4) {
+        if (!state.memory().contains(0x0065829Cu, 4)) {
+            throw std::runtime_error(
+                "The file server version constant is outside the mapped guest memory");
+        }
+        put_word(0, state.memory().read_word(0x0065829Cu));
+        return 4;
+    }
+    return 0;
 }
 
 ServiceOutcome Kernel::sif_set_reg(GuestState& state) {

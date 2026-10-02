@@ -14,7 +14,9 @@ using namespace gt4recomp::ee;
 namespace {
 
 constexpr std::uint32_t window_base = 0x00000000;
-constexpr std::size_t window_size = 0x00200000;
+// Large enough for the whole low RAM the kernel model reaches (the game's
+// compatibility constants at 0x0065829C and 0x0066829C live above 6 MiB).
+constexpr std::size_t window_size = 0x00700000;
 
 constexpr std::uint32_t root_stack = 0x00100800;
 constexpr std::uint32_t root_stack_size = 0x800;
@@ -395,6 +397,20 @@ int main() {
               "SetGsCrt is accepted");
     }
 
+    // Deci2Call is accepted: the defined calls answer 1, beyond 0x10 -1.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        state.write_gpr32(4, 3);
+        check(kernel.deci2_call(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 1,
+              "Deci2Call accepts a defined call");
+        state.write_gpr32(4, 0x20);
+        check(kernel.deci2_call(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu,
+              "Deci2Call rejects a call beyond 0x10");
+    }
+
     // The idle source advances an enabled timer by one frame of its clock
     // and raises its compare interrupt.
     {
@@ -652,6 +668,27 @@ int main() {
         check(kernel.sif_get_reg(state) == ServiceOutcome::Handled
                   && (state.read_gpr32(2) & 0x70000u) == 0x70000u,
               "the announced boot state persists");
+
+        // The version queries answer with the game's own compatibility
+        // constants: the SIF manager's version word plus the flag 2, and the
+        // file server's four-byte version.
+        state.memory().write_word(0x0066829Cu, 0x00275520u);
+        state.memory().write_word(0x0065829Cu, 0x30303033u);  // "3000"
+        std::uint8_t answer[64] = {};
+        check(kernel.sif_rpc_result(state, 0x80000001u, 0xFFu, answer, sizeof answer)
+                      == 8
+                  && answer[0] == 0x20 && answer[1] == 0x55 && answer[2] == 0x27
+                  && answer[3] == 0x00 && answer[4] == 2 && answer[5] == 0,
+              "the SIF manager version query answers its constant and flag");
+        std::uint8_t file_answer[64] = {};
+        check(kernel.sif_rpc_result(state, 0x80000006u, 0xFFu, file_answer,
+                                    sizeof file_answer) == 4
+                  && file_answer[0] == 0x33 && file_answer[1] == 0x30
+                  && file_answer[2] == 0x30 && file_answer[3] == 0x30,
+              "the file server version query answers its constant");
+        check(kernel.sif_rpc_result(state, 0x80000006u, 1u, file_answer,
+                                    sizeof file_answer) == 0,
+              "an unknown RPC function answers an empty result");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

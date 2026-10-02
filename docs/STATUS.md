@@ -1,15 +1,16 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 12 — handler execution: injected handlers
-no longer nest and cannot be preempted (decision 0013), which unblocks the
-game's timer library: the TIM2 handler runs to completion, the delay
-callbacks fire, and the boot runs **continuously** (1,000,000 services,
-33,650,798 interpreted steps, about 29 seconds) with the differential
-passing at 3,000 services (interpreter reference at 7,554,609 instructions,
-full state identical). The next frontier is characterizing the library
-wait/retry loops the game now lives in. This is the first document to read
-in a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-02 after M30 slice 13 — the boot's service handshakes: the
+model answers the file server's version query with the game's own
+compatibility constant, accepts Deci2Call, answers the disc subsystem's
+status query and the fileio/CDVD version negotiation, and holds 80 RPC
+servers. The boot now binds the disc subsystem, passes the fileio/CDVD
+negotiation and creates its worker-thread pool (an 11-thread runtime),
+ending at the step limit inside the 0x0058F000 subsystem init; the
+differential passes at 3,000 services (interpreter reference at 7,573,241
+instructions, full state identical). This is the first document to read in a
+new session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -418,6 +419,24 @@ linked evidence documents.
   32/32; Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-slice12-handler-execution.md`,
   `docs/decisions/0013-handler-execution.md`).
+- M30 slice 13 (2026-10-02): **the boot's service handshakes** — the
+  file-open retry loop was traced to the file server's version check
+  (sid 0x80000006 RPC 0xFF against the constant at 0x0065829C, "3000"); the
+  model now answers the version queries with the game's own compatibility
+  constants (also for the SIF manager), accepts **Deci2Call (0x7C)** with
+  the reference emulator's returns, answers the disc subsystem's status
+  query (sid 0x80001300 RPC 0x80001363, first word 0x310 — the lowest value
+  the game's `(word >> 4) == 0x31` check accepts) and the fileio/CDVD
+  version negotiation (sid 0x80000400 RPC 0xFE, minimums 0x20A/0x20E), and
+  grows the RPC server table to **80 slots**. **The boot now binds the disc
+  subsystem, passes the negotiation and creates its worker-thread pool (an
+  11-thread runtime with string-coded servers), ending at the step limit
+  (200,000,000) inside the 0x0058F000 subsystem init**; the differential
+  passes at 3,000 services with the interpreter reference at 7,573,241
+  instructions and the full state identical. CTest 32/32; Python 73 (67
+  run, 6 skip)
+  (`docs/reverse-engineering/m30-slice13-service-handshakes.md`,
+  `docs/decisions/0014-service-handshakes.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -427,13 +446,12 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the library wait/retry loops the game now
-  lives in** — the run is continuous (1,000,000 services) and the service
-  mix at the tail is the delay helper's create/wait/signal/delete cycles
-  plus the RPC thread's wakeup checks, with semaphore ids climbing into the
-  thousands. The next slice characterizes what those loops wait for (most
-  likely the model IOP's empty RPC replies on the loading path) and answers
-  the first RPC call whose reply the game acts on.
+- Next technical milestone work: **the 0x0058F000 subsystem init loop** —
+  the run ends at the step limit inside that init (0x00590A18) driving
+  string-coded servers ("Pusb", "PUPS", "MGBP", ...); the next slice
+  characterizes the loop and answers the first of their calls whose reply
+  the game acts on (with the live PCSX2 emulator as the oracle for the real
+  replies).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -499,9 +517,15 @@ linked evidence documents.
   fix** of decision 0013 (no nested injections, no preemption inside a
   handler) unblocks the delay callbacks: the boot now runs **continuously
   (1,000,000 services, 33,650,798 interpreted steps, about 29 seconds)**.
-  The remaining frontier: the game lives in library wait/retry loops
-  (semaphore ids climb into the thousands; the RPC thread waits on its
-  queue), and the next slice characterizes what they wait for.
+  The **service handshakes** of decision 0014 then unblock the loading path:
+  the version queries answer the game's own compatibility constants, the
+  disc subsystem's status query and the fileio/CDVD negotiation pass, and
+  the boot binds the disc subsystem's server family and creates its
+  worker-thread pool — an **11-thread runtime with string-coded servers**
+  — reaching the **200,000,000-step limit inside the 0x0058F000 subsystem
+  init** (pc 0x00590A18). The remaining frontier: characterize that init
+  loop and the servers it drives, and answer the first of their calls whose
+  reply the game acts on.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs three threads under VBlank and timer
@@ -520,13 +544,12 @@ linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 13: **what the library wait/retry loops wait for** — the game
-   now runs continuously but spends its services in the delay helper's
-   cycles and the RPC thread's wakeup checks; identify the operation being
-   retried (most likely an RPC reply the model IOP answers with an empty
-   result) and answer the first call whose reply the game acts on; the
-   acceptance evidence is `gt4boot --compare-interpreter` past the current
-   service-limit boundaries with the state identical.
+1. M30 slice 14: **the 0x0058F000 subsystem init loop** — characterize the
+   loop around 0x00590A18 and the string-coded servers it drives, and answer
+   the first of their calls whose reply the game acts on (the live PCSX2
+   emulator is the oracle for the real replies); the acceptance evidence is
+   `gt4boot --compare-interpreter` past the current step-limit boundary with
+   the state identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -593,4 +616,9 @@ linked evidence documents.
   condition never passes; the idle budget rose to 200,000), and slice 12 is
   the handler execution fix (no nested injections, no preemption inside a
   handler; the delay callbacks fire and the boot runs continuously —
-  1,000,000 services, 33,650,798 interpreted steps).
+  1,000,000 services, 33,650,798 interpreted steps), and slice 13 is the
+  boot's service handshakes (the version queries answer the game's
+  constants, Deci2Call is accepted, the disc subsystem status and the
+  fileio/CDVD negotiation pass, and the RPC server table holds 80 slots; the
+  boot runs an 11-thread worker pool to the step limit inside the 0x0058F000
+  subsystem init).

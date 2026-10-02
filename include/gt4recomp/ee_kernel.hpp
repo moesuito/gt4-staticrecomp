@@ -140,6 +140,10 @@ public:
     // previous value (both travel in one GPR under the EE's 64-bit ABI).
     ServiceOutcome gs_get_imr(GuestState& state);          // 0x70
     ServiceOutcome gs_put_imr(GuestState& state);          // 0x71
+    // Deci2Call(call, address): the DECI2 debug-host interface. No debug
+    // host is attached; the defined calls are accepted with the reference
+    // emulator's returns.
+    ServiceOutcome deci2_call(GuestState& state);          // 0x7C
     // SetGsCrt(interlace, video, field): the model has no display, so the
     // call is accepted with no state; the game only needs it to return.
     ServiceOutcome set_gs_crt(GuestState& state);          // 0x02
@@ -168,6 +172,15 @@ public:
     [[nodiscard]] std::uint32_t pending_interrupts() const noexcept;
     // The deferred-call stack depth (patched syscalls and active handlers).
     [[nodiscard]] std::size_t deferred_call_count() const noexcept;
+    // The model IOP's function behavior: each known (server, function) pair
+    // answers the bytes the game's own check consumes (the status queries
+    // and version negotiations of decision 0014); anything else answers an
+    // empty result. Exposed for unit tests.
+    [[nodiscard]] std::uint32_t sif_rpc_result(GuestState& state,
+                                               std::uint32_t sid,
+                                               std::uint32_t rpc_number,
+                                               std::uint8_t* result,
+                                               std::uint32_t capacity);
     [[nodiscard]] std::uint32_t sif_register_index_address(std::uint32_t index) const noexcept;
     // The IOP image path named by the last reset command, empty when none.
     [[nodiscard]] const std::string& sif_iop_image() const noexcept;
@@ -255,12 +268,14 @@ public:
     static constexpr std::uint32_t sif_sreg_rpcinit = 0;
     // The model IOP's scratch region for RPC server state. These are model
     // addresses below the game's image (which starts at 0x00100000), inside
-    // the kernel's zero-filled low RAM; the EE never allocates there.
-    static constexpr std::uint32_t sif_iop_server_handles = 0x000A0000;
-    static constexpr std::uint32_t sif_iop_server_buffers = 0x000B0000;
-    static constexpr std::uint32_t sif_iop_server_connections = 0x000C0000;
+    // the kernel's zero-filled low RAM; the EE never allocates there. The
+    // 0x00080000 command-buffer address sits between the buffers and the
+    // connections regions.
+    static constexpr std::uint32_t sif_iop_server_handles = 0x00020000;
+    static constexpr std::uint32_t sif_iop_server_buffers = 0x00030000;
+    static constexpr std::uint32_t sif_iop_server_connections = 0x00090000;
     static constexpr std::uint32_t sif_iop_server_stride = 0x1000;
-    static constexpr std::uint32_t sif_iop_server_capacity = 16;
+    static constexpr std::uint32_t sif_iop_server_capacity = 80;
 
 private:
     [[nodiscard]] KernelThread* find_thread(std::uint32_t id) noexcept;
@@ -346,12 +361,6 @@ private:
     // register read that follows.
     void answer_sif_reset(GuestState& state, std::uint32_t command_buffer,
                           std::uint32_t size);
-    // The model IOP's function behavior. Known pairs get their documented
-    // answer bytes; anything else answers an error-shaped empty result.
-    [[nodiscard]] std::uint32_t sif_rpc_result(std::uint32_t sid,
-                                               std::uint32_t rpc_number,
-                                               std::uint8_t* result,
-                                               std::uint32_t capacity);
 
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
