@@ -39,6 +39,7 @@ set_target_properties(gt4recomp_decode PROPERTIES CXX_EXTENSIONS OFF)
 add_library(gt4recomp_executable STATIC
     src/executable/core_image.cpp
     src/executable/analysis_elf.cpp
+    src/executable/disc_image.cpp
 )
 target_include_directories(gt4recomp_executable PUBLIC include)
 target_include_directories(gt4recomp_executable PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
@@ -117,6 +118,17 @@ if(BUILD_TESTING)
     target_link_libraries(executable_image_tests PRIVATE gt4recomp_executable zlibstatic)
     target_include_directories(executable_image_tests PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
     add_test(NAME executable_image COMMAND executable_image_tests)
+
+    # The disc image readers: always the synthetic image, plus the pinned ISO
+    # when it is present locally.
+    add_executable(disc_image_tests tests/unit/disc_image_test.cpp)
+    target_link_libraries(disc_image_tests PRIVATE gt4recomp_executable)
+    set(GT4_LOCAL_ISO "${CMAKE_CURRENT_SOURCE_DIR}/Gran Turismo 4 (USA) (v2.00).iso")
+    if(EXISTS "${GT4_LOCAL_ISO}")
+        add_test(NAME disc_image COMMAND disc_image_tests "${GT4_LOCAL_ISO}")
+    else()
+        add_test(NAME disc_image COMMAND disc_image_tests)
+    endif()
 
     # The translation test needs the local CORE: the translated header is
     # generated into the ignored build tree and never committed. On machines

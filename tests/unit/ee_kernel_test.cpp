@@ -2,12 +2,16 @@
 // the deterministic cooperative scheduler of decision 0005, with no game
 // data. The tests drive the services directly, exactly as the syscall
 // handlers would, and check the register contexts across switches.
+#include "gt4recomp/disc_image.hpp"
 #include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_kernel.hpp"
 #include "gt4recomp/ee_timer.hpp"
 
 #include <cstdint>
 #include <iostream>
+#include <span>
+#include <stdexcept>
+#include <string_view>
 #include <utility>
 
 using namespace gt4recomp::ee;
@@ -757,6 +761,55 @@ int main() {
         kernel.advance_service_time(state);
         check(kernel.pending_interrupts() == 2,
               "the frame's VBlank joins the queue");
+    }
+
+    // The file server's open answers from the disc image (decision 0017): the
+    // request's path at +8, the reply {handle, size}; a path the disc does
+    // not have, or a machine without a disc, answers handle 0.
+    {
+        class FakeDisc final : public gt4recomp::DiscFiles {
+        public:
+            [[nodiscard]] std::uint64_t file_size(std::string_view path) const override {
+                return path == "cdrom0:\\IRX\\SIO2MAN.IRX;1" ? 6641ull : 0ull;
+            }
+            void read_file(std::string_view, std::uint64_t,
+                           std::span<std::uint8_t>) const override {
+                throw std::runtime_error("the fake disc serves no reads");
+            }
+        };
+
+        Kernel kernel;
+        GuestState state = make_state();
+        FakeDisc disc;
+        constexpr std::uint32_t request = 0x00100700;
+        const auto write_path = [&state](const char* text) {
+            std::uint32_t offset = 8;
+            for (const char* cursor = text; *cursor != '\0'; ++cursor, ++offset) {
+                state.memory().write_byte(request + offset,
+                                          static_cast<std::uint8_t>(*cursor));
+            }
+            state.memory().write_byte(request + offset, 0);
+        };
+        std::uint8_t reply[64] = {};
+        write_path("cdrom0:\\IRX\\SIO2MAN.IRX;1");
+        kernel.set_disc_files(&disc);
+        const std::uint32_t open_length =
+            kernel.answer_file_open(state, request, 512, reply, sizeof reply);
+        check(open_length == 16
+                  && reply[0] != 0 && reply[1] == 0 && reply[2] == 0 && reply[3] == 0
+                  && reply[4] == 0xF1 && reply[5] == 0x19 && reply[6] == 0
+                  && reply[7] == 0,
+              "the file open answers the disc's handle and size");
+        write_path("cdrom0:\\IRX\\NOPE.IRX;1");
+        std::uint8_t missing[64] = {};
+        check(kernel.answer_file_open(state, request, 512, missing, sizeof missing) == 16
+                  && missing[0] == 0 && missing[4] == 0,
+              "a path the disc does not have answers handle 0");
+        kernel.set_disc_files(nullptr);
+        std::uint8_t nodisc[64] = {};
+        check(kernel.answer_file_open(state, request, 512, nodisc, sizeof nodisc) == 16
+                  && nodisc[0] == 0,
+              "a machine without a disc answers handle 0");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

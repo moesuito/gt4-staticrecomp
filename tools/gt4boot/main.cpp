@@ -10,6 +10,7 @@
 #include "translated-whole-program.hpp"
 
 #include "boundary_text.hpp"
+#include "gt4recomp/disc_image.hpp"
 #include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
@@ -274,9 +275,13 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
 }
 
 void usage() {
-    std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--compare-interpreter] [--threads]\n"
+    std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--disc IMAGE] "
+                 "[--compare-interpreter] [--threads]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
+                 "  --disc IMAGE          serve the game's file requests from an ISO9660\n"
+                 "                        disc image (the pinned ISO); without it file\n"
+                 "                        opens answer \"not found\"\n"
                  "  --compare-interpreter repeat the run in the interpreter and require the\n"
                  "                        stop and the full final state to match\n"
                  "  --threads             print the kernel's thread table after the run\n";
@@ -294,12 +299,15 @@ int wmain(int argc, wchar_t* argv[]) {
     std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
     std::filesystem::path core_path;
     bool print_threads = false;
+    std::filesystem::path disc_path;
     for (int index = 1; index < argc; ++index) {
         const std::wstring argument = argv[index];
         if (argument == L"--compare-interpreter") {
             compare_interpreter = true;
         } else if (argument == L"--threads") {
             print_threads = true;
+        } else if (argument == L"--disc" && index + 1 < argc) {
+            disc_path = argv[++index];
         } else if (argument == L"--services" && index + 1 < argc) {
             service_limit = std::stoull(argv[++index]);
         } else if (core_path.empty()) {
@@ -318,7 +326,24 @@ int wmain(int argc, wchar_t* argv[]) {
         const auto core = gt4recomp::tools::read_verified_core(core_path);
         const auto image = reconstruct_core(core);
 
+        // The disc image the file services read from, when the caller named
+        // one. Without it the game's file opens answer "not found", exactly
+        // like a console without a disc.
+        std::unique_ptr<gt4recomp::DiscByteSource> disc_source;
+        std::unique_ptr<gt4recomp::Iso9660Image> disc_image;
+        if (!disc_path.empty()) {
+            disc_source = gt4recomp::open_disc_file(disc_path.string());
+            disc_image = std::make_unique<gt4recomp::Iso9660Image>(
+                std::move(disc_source));
+            std::cout << "disc: " << disc_path.string() << " ("
+                      << disc_image->directory_names("").size()
+                      << " root entries)\n";
+        }
+
         Kernel driver_kernel;
+        if (disc_image != nullptr) {
+            driver_kernel.set_disc_files(disc_image.get());
+        }
         ServiceTable services = make_boot_services(driver_kernel);
         BootDevices driver_devices([&driver_kernel](std::uint32_t cause) {
             driver_kernel.raise_interrupt(cause);
@@ -419,6 +444,9 @@ int wmain(int argc, wchar_t* argv[]) {
 
         if (compare_interpreter) {
             Kernel reference_kernel;
+            if (disc_image != nullptr) {
+                reference_kernel.set_disc_files(disc_image.get());
+            }
             ServiceTable reference_services = make_boot_services(reference_kernel);
             BootDevices reference_devices([&reference_kernel](std::uint32_t cause) {
                 reference_kernel.raise_interrupt(cause);

@@ -1,5 +1,7 @@
 #include "gt4recomp/ee_kernel.hpp"
 
+#include "gt4recomp/disc_image.hpp"
+
 #include <stdexcept>
 #include <utility>
 
@@ -1374,6 +1376,66 @@ void Kernel::answer_sif_set_sreg(GuestState& state, std::uint32_t command_buffer
     queue_dmac_completion(sif_channel_dmac);
 }
 
+void Kernel::set_disc_files(const DiscFiles* files) noexcept {
+    disc_files_ = files;
+    disc_files_by_handle_.clear();
+    next_disc_handle_ = 1;
+}
+
+const DiscFiles* Kernel::disc_files() const noexcept {
+    return disc_files_;
+}
+
+std::uint32_t Kernel::answer_file_open(GuestState& state, std::uint32_t request,
+                                       std::uint32_t request_size,
+                                       std::uint8_t* result,
+                                       std::uint32_t capacity) {
+    // The file server's open (sid 0x80000006, RPC 0). The 512-byte request
+    // carries the path at +8 — the boot's first three were
+    // "cdrom0:\IRX\SIO2MAN.IRX;1", "MCMAN.IRX" and "MCSERV.IRX" — and the
+    // client reads the 16-byte reply as {handle, size}: a zero handle means
+    // "not found" (the check at 0x005B6D6C returns 0xFFFEFFFD for it), any
+    // other handle succeeds and the size is stored beside it. The bytes come
+    // from the pinned disc image when the tool supplied one; without it the
+    // open fails like a console without a disc (decision 0017).
+    constexpr std::uint32_t reply_size = 16;
+    if (capacity < reply_size || request_size < 16) {
+        return 0;
+    }
+    std::string path;
+    for (std::uint32_t offset = 8; offset < request_size && path.size() < 0x100;
+         ++offset) {
+        const char character =
+            static_cast<char>(state.memory().read_byte(request + offset));
+        if (character == '\0') {
+            break;
+        }
+        path.push_back(character);
+    }
+    std::uint32_t handle = 0;
+    std::uint32_t file_size = 0;
+    if (disc_files_ != nullptr && !path.empty()) {
+        const std::uint64_t found = disc_files_->file_size(path);
+        if (found > 0 && found <= 0xFFFFFFFFull) {
+            handle = next_disc_handle_++;
+            file_size = static_cast<std::uint32_t>(found);
+            disc_files_by_handle_[handle] = path;
+        }
+    }
+    for (std::uint32_t offset = 0; offset < reply_size; ++offset) {
+        result[offset] = 0;
+    }
+    const auto put_word = [result](std::uint32_t offset, std::uint32_t value) {
+        result[offset + 0] = static_cast<std::uint8_t>(value);
+        result[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+        result[offset + 2] = static_cast<std::uint8_t>(value >> 16);
+        result[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+    };
+    put_word(0, handle);
+    put_word(4, file_size);
+    return reply_size;
+}
+
 Kernel::SifRpcServer& Kernel::find_or_create_sif_server(std::uint32_t sid) {
     const auto found = sif_rpc_servers_.find(sid);
     if (found != sif_rpc_servers_.end()) {
@@ -1466,8 +1528,15 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     const SifRpcServer* server = find_sif_server_by_handle(sd);
     const std::uint32_t sid = server == nullptr ? 0 : server->sid;
     std::uint8_t result[576] = {};
-    const std::uint32_t result_size = sif_rpc_result(state, sid, rpc_number,
-                                                     result, sizeof result);
+    std::uint32_t result_size = 0;
+    if (sid == 0x80000006u && rpc_number == 0u && server != nullptr) {
+        result_size = answer_file_open(state, server->buffer,
+                                       state.memory().read_word(command_buffer + 36),
+                                       result, sizeof result);
+    } else {
+        result_size = sif_rpc_result(state, sid, rpc_number, result,
+                                     sizeof result);
+    }
     if (recv_size > 0) {
         if (!state.memory().contains(recvbuf, recv_size)) {
             throw std::runtime_error(
@@ -1583,6 +1652,17 @@ std::uint32_t Kernel::sif_rpc_result(GuestState& state, std::uint32_t sid,
         // banner string "liblgdev version 1.11.036" (live memory 0x006C8D40).
         clear_result();
         put_word(4, 0x010B2400u);
+        return 576;
+    }
+    if (sid == 0x046D046Du && rpc_number == 4u && capacity >= 576) {
+        // The device library's command exchange. The loading framework calls
+        // it with command 0x10005 and requires the media signature
+        // 0x046DC298 at the reply's word +0x5C (the comparison at 0x0055585C)
+        // before it arms the read slots through RPC 5; with any other value
+        // the slots stay disarmed and the framework only polls. The model
+        // answers the signature; the rest of the 576-byte reply stays zero.
+        clear_result();
+        put_word(0x5C, 0x046DC298u);
         return 576;
     }
     if (rpc_number != 0xFFu) {

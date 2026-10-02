@@ -1,13 +1,12 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 15 — the service clock: the model's time
-base now advances by one millisecond of BUSCLK ticks per handled service
-(the delay library's unit), with both engines calling the same kernel method
-at their service boundaries so the differential stays exact; timers follow
-their CLKS selector and fire on crossing COMP, and one VBlank joins the
-queue per frame of slices. The delays that starved the main thread now
-expire: the 1,000,000-service run ends at a service boundary with the worker
-threads ready (1,193,971 module calls, 32,878,366 interpreted steps). The
+Updated 2026-10-02 after M30 slice 16 — the disc image backs the file
+service: the model now reads the pinned ISO (an ISO9660 reader with
+file-backed and memory-backed sources) and answers the file server's open
+with the real file size, so the boot walks its IOP module list (SIO2MAN,
+MCMAN, MCSERV, SIO2D, DBCMAN, DS2U_D, LIBSD, USBD, ...) instead of retrying
+one load; a path the disc lacks, or a machine without an image, answers
+handle 0 like a console without a disc (`gt4boot --disc <iso>`). The
 differential passes at 3,000 services (interpreter reference at 7,570,583
 instructions, full state identical). This is the first document to read in a
 new session; it is kept current as work proceeds. Details live in the linked
@@ -475,6 +474,23 @@ evidence documents.
   state identical. CTest 32/32; Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-slice15-service-clock.md`,
   `docs/decisions/0016-service-clock.md`).
+- M30 slice 16 (2026-10-02): **the disc image backs the file service** — the
+  boot's file opens were the game loading its IOP modules by name
+  ("cdrom0:\IRX\SIO2MAN.IRX;1" first) and failing on the model's empty reply
+  (handle 0 -> 0xFFFEFFFD at 0x005B6D6C). The model now reads the **pinned
+  ISO** (a host-side ISO9660 reader: primary descriptor, on-demand directory
+  walk, streamed reads, game path spellings) and answers the open with the
+  real size (SIO2MAN 6,641; MCMAN 96,181; MCSERV 7,385; SIO2D 11,289;
+  DBCMAN 15,653; DS2U_D 11,821; LIBSD 30,085; USBD 34,993); a path the disc
+  lacks — or no image at all — answers handle 0 like a console without a
+  disc; the tool takes `--disc <iso>` and both engines get the same image.
+  **The boot now walks its module list instead of retrying one load**; the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical. CTest **33/33** (the
+  new `disc_image` test: synthetic image, path spellings, read tail, the
+  pinned ISO's ELF magic); Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice16-disc-image.md`,
+  `docs/decisions/0017-disc-image-file-service.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -484,12 +500,13 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the device polling round's replies** — the
-  boot drives the liblgdev RPCs 6, 13 and 15 and the string-coded servers
-  ("Pusb", "PUPS", "MGBP", "PCDV") with a steady polling round; the next
-  slice decides whether the empty replies hold the game back and answers the
-  first of them whose reply the game acts on (with the live PCSX2 emulator
-  as the oracle for the real replies).
+- Next technical milestone work: **the game's load-path selection** — the
+  boot now loads its IOP modules off the disc (the file-server path); the
+  engine's own CD path (the PCDV file-table protocol, selected by the load
+  task's flag at [task+0xB0]) still answers empty and spins in its retry
+  loop. The next slice finds what selects the path (the live boot's PCDV
+  structures stay zero) and either routes the model to the file-server path
+  or answers the PCDV protocol from the disc.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -591,13 +608,13 @@ evidence documents.
 
 ## Next actions
 
-1. M30 slice 16: **the device polling round's replies** — decide whether the
-   steady liblgdev (RPCs 6/13/15) and string-coded server (RPCs 1/3/4/8)
-   round is held back by the model's empty replies, and answer the first of
-   its calls whose reply the game acts on (the live PCSX2 emulator is the
-   oracle for the real replies); the acceptance evidence is
-   `gt4boot --compare-interpreter` through the round with the state
-   identical.
+1. M30 slice 17: **the game's load-path selection** — the engine picks
+   between the file-server path and its own PCDV disc path with the load
+   task's flag at [task+0xB0]; the live boot keeps the PCDV structures at
+   zero, so the next slice finds what selects the path (or answers the PCDV
+   file-table protocol from the disc); the acceptance evidence is
+   `gt4boot --compare-interpreter --disc <iso>` through the loads with the
+   state identical.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
@@ -676,4 +693,8 @@ evidence documents.
   handled service, called identically by both engines; the main thread's
   starved delays expire and the long run ends at a service boundary with the
   worker threads ready — 1,193,971 module calls, 32,878,366 interpreted
-  steps; TIM2 measured at 576.05 ticks per service).
+  steps; TIM2 measured at 576.05 ticks per service), and slice 16 is the
+  disc image backing the file service (the model reads the pinned ISO and
+  answers the file server's open with the real sizes, so the boot walks its
+  IOP module list: SIO2MAN 6,641; MCMAN 96,181; MCSERV 7,385; SIO2D 11,289;
+  DBCMAN 15,653; DS2U_D 11,821; LIBSD 30,085; USBD 34,993).

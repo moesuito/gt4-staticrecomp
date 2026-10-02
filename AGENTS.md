@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 15 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 16 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -138,13 +138,16 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   time base by one millisecond of BUSCLK ticks per handled service (called
   identically by both engines), so the delays expire and the run ends at a
   service boundary with the worker threads ready (1,193,971 module calls,
-  32,878,366 interpreted steps); `--threads`
+  32,878,366 interpreted steps); the **disc image** of decision 0017 then
+  backs the file service, so the boot walks its IOP module list (SIO2MAN,
+  MCMAN, MCSERV, SIO2D, DBCMAN, DS2U_D, LIBSD, USBD, ...) with the disc's
+  real sizes (`gt4boot --disc <iso>`); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 16 — the device polling round's replies (the liblgdev RPCs
-  6/13/15 and the string-coded servers' RPCs 1/3/4/8; do the empty replies
-  hold the game back?) and the real replies the game acts on (the live
-  PCSX2 emulator as the oracle).
+- Next: M30 slice 17 — the game's load-path selection (the engine picks the
+  file-server path or its own PCDV disc path with the load task's flag at
+  [task+0xB0]; the live boot keeps the PCDV structures at zero) or the PCDV
+  file-table protocol itself.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

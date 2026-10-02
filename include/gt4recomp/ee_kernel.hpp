@@ -17,6 +17,11 @@
 #include <string>
 #include <vector>
 
+namespace gt4recomp {
+// The disc image interface the file services read from (disc_image.hpp).
+class DiscFiles;
+} // namespace gt4recomp
+
 namespace gt4recomp::ee {
 
 // Thread status bits, from the public THS_* definitions.
@@ -174,6 +179,12 @@ public:
     // frame-per-interrupt shortcut (decision 0016).
     void advance_service_time(GuestState& state);
 
+    // The disc image the file services read from. A null image means no
+    // disc: file opens answer "not found", exactly like a console without
+    // one (decision 0017). The image must outlive the kernel.
+    void set_disc_files(const DiscFiles* files) noexcept;
+    [[nodiscard]] const DiscFiles* disc_files() const noexcept;
+
     // Model introspection for tests and tools.
     [[nodiscard]] std::uint32_t pending_interrupts() const noexcept;
     // The deferred-call stack depth (patched syscalls and active handlers).
@@ -187,6 +198,14 @@ public:
                                                std::uint32_t rpc_number,
                                                std::uint8_t* result,
                                                std::uint32_t capacity);
+    // Answers the file server's open (sid 0x80000006, RPC 0) from the disc
+    // image: the request's path at +8, the reply {handle, size} (decision
+    // 0017). Returns the reply's length in bytes. Exposed for unit tests.
+    [[nodiscard]] std::uint32_t answer_file_open(GuestState& state,
+                                                 std::uint32_t request,
+                                                 std::uint32_t request_size,
+                                                 std::uint8_t* result,
+                                                 std::uint32_t capacity);
     [[nodiscard]] std::uint32_t sif_register_index_address(std::uint32_t index) const noexcept;
     // The IOP image path named by the last reset command, empty when none.
     [[nodiscard]] const std::string& sif_iop_image() const noexcept;
@@ -458,6 +477,11 @@ private:
     // division (decision 0016).
     std::uint32_t service_ticks_ = 0;
     std::uint32_t service_timer_remainders_[4] = {};
+    // The disc image (null without one) and the files the file server has
+    // handed out: handle -> path. Handle 0 is the "not found" answer.
+    const DiscFiles* disc_files_ = nullptr;
+    std::map<std::uint32_t, std::string> disc_files_by_handle_;
+    std::uint32_t next_disc_handle_ = 1;
 };
 
 } // namespace gt4recomp::ee
