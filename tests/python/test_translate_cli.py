@@ -65,6 +65,15 @@ class TranslateCliTests(unittest.TestCase):
         self.assertIn("Indirect calls are not supported", result.stderr)
         self.assertIn("0x005a3194", result.stderr)  # jumps from 0x5a31cc up into startup code below the entry
 
+    def test_survey_reports_the_translation_outcome(self):
+        result = subprocess.run([str(TOOL), str(CORE), "--survey"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("survey: entries=", result.stdout)
+        self.assertIn("covered instructions:", result.stdout)
+        # The dominant blocker in the pinned text is indirect control flow.
+        self.assertIn("Indirect calls are not supported", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

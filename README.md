@@ -32,7 +32,10 @@ native C++ module verified identical to the interpreter after 942,695
 instructions; tail thunks and syscall boundaries translate too, stopping at
 service calls exactly like the interpreter, and the translator reaches the
 VU0 macro and trapping operations through the verified runtime executor
-(the module 0x0056DF58 verifies that path end to end). The full CTest set
+(the module 0x0056DF58 verifies that path end to end). A whole-text survey
+(`gt4translate --survey`) reports that 62% of the game's 15,067 direct-call
+targets translate today, with indirect control flow as the remaining
+blocker. The full CTest set
 and the Python suite pass locally; 6 optional native Python checks skip
 without the M3 reference ELF. Tutoring remains pending; see the
 [M6 lesson](docs/lessons/m6.md).

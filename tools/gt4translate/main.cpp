@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <set>
@@ -16,6 +17,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace gt4recomp;
@@ -743,13 +745,241 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
     }
     return body.str();
 }
+// Walks one function and its direct call tree, validating every transfer and
+// every call site. Throws std::runtime_error naming the first rejection with
+// its instruction and address; halt_seen reports whether the explicit halt
+// address was reached by some unit.
+std::map<std::uint32_t, TranslationUnit> collect_units(
+    const ImageRecord& text, std::uint32_t start, std::size_t max_instructions,
+    std::uint32_t halt_address, bool& halt_seen) {
+    std::map<std::uint32_t, TranslationUnit> units;
+    std::deque<std::uint32_t> pending;
+    pending.push_back(start);
+    auto budget = static_cast<std::size_t>(max_instructions);
+    while (!pending.empty()) {
+        std::uint32_t entry = pending.front();
+        pending.pop_front();
+        if (units.contains(entry)) {
+            continue;
+        }
+        if (units.size() >= max_module_functions) {
+            throw std::runtime_error("The call tree exceeds the function limit");
+        }
+
+        const auto graph = build_control_flow_graph(
+            text, std::span<const std::uint32_t>(&entry, 1), max_instructions);
+        if (graph.limited) {
+            throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
+                                     + " exceeds the instruction limit");
+        }
+        TranslationUnit unit;
+        unit.entry = entry;
+        for (const auto& node : graph.nodes) {
+            for (std::uint32_t address = node.block.start;
+                 address < node.block.end_exclusive; address += 4) {
+                unit.reachable.insert(address);
+            }
+            unit.extent_end = std::max(unit.extent_end, node.block.end_exclusive);
+            if (node.block.ending == FlowKind::Exception) {
+                // A syscall the walk reached: the module stops there,
+                // exactly like the interpreter, and callers propagate the
+                // stop through the call check. Exception has no delay
+                // slot, so the syscall is the block's last word.
+                const std::uint32_t syscall_address = node.block.end_exclusive - 4;
+                unit.reachable.erase(syscall_address);
+                unit.halts.insert(syscall_address);
+            } else if (node.block.delay_slot_traps) {
+                // A trap word in a likely branch's delay slot: the taken
+                // path stops there; it is not an ordinary instruction.
+                const std::uint32_t trap_address = node.block.end_exclusive - 4;
+                unit.reachable.erase(trap_address);
+                unit.trap_slots.insert(trap_address);
+            } else if (node.block.ending == FlowKind::IndirectJump) {
+                // The exception return leaves the enclosing flow: record a
+                // boundary the module stops at (the emission derives the
+                // pc from CP0). Other computed jumps stay rejected.
+                const std::uint32_t eret_address = node.block.end_exclusive - 4;
+                if (decode(word_at(text, eret_address)).operation == Operation::Eret) {
+                    unit.reachable.erase(eret_address);
+                    unit.halts.insert(eret_address);
+                }
+            }
+        }
+        if (halt_address != 0 && unit.reachable.contains(halt_address)) {
+            // The explicit halt address must be a boundary the interpreter
+            // stops on, and it is not translated either.
+            const auto halt_flow =
+                classify(decode(word_at(text, halt_address)), halt_address);
+            if (halt_flow.kind != FlowKind::Exception
+                && halt_flow.kind != FlowKind::Unsupported) {
+                throw std::runtime_error(
+                    "A halt address must be a syscall or an unsupported word");
+            }
+            unit.reachable.erase(halt_address);
+            unit.halts.insert(halt_address);
+            halt_seen = true;
+        } else if (halt_address != 0 && unit.halts.contains(halt_address)) {
+            // The walk already found this boundary as a syscall.
+            halt_seen = true;
+        }
+        if (unit.reachable.empty()) {
+            throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
+                                     + ": no reachable instructions");
+        }
+        unit.scan_start = std::min(unit.entry, *unit.reachable.begin());
+        if (unit.scan_start < unit.entry) {
+            // The walk went below the entry (a tail thunk's target): the
+            // emission must still begin execution at the entry address.
+            unit.labels.insert(unit.entry);
+        }
+        if (unit.reachable.size() > budget) {
+            throw std::runtime_error("The call tree exceeds the instruction budget");
+        }
+        budget -= unit.reachable.size();
+
+        std::vector<std::uint32_t> calls;
+        for (const auto address : unit.reachable) {
+            const auto word = word_at(text, address);
+            const auto instruction = decode(word);
+            const auto flow = classify(instruction, address);
+            const auto reject = [&](const char* reason) {
+                throw std::runtime_error(std::string(reason) + " in function 0x"
+                                         + hex_value(entry, 8) + ": "
+                                         + format_instruction(word, address) + " at 0x"
+                                         + hex_value(address, 8));
+            };
+            switch (flow.kind) {
+            case FlowKind::FallThrough:
+                break;
+            case FlowKind::Return:
+                if (!unit.reachable.contains(address + 4)) {
+                    reject("A return has no reachable delay slot");
+                }
+                break;
+            case FlowKind::Branch:
+            case FlowKind::Jump:
+                if (!unit.reachable.contains(flow.target)
+                    && !unit.halts.contains(flow.target)) {
+                    reject("A transfer leaves the function");
+                }
+                unit.labels.insert(flow.target);
+                if (!unit.reachable.contains(address + 4)
+                    && !unit.trap_slots.contains(address + 4)) {
+                    reject("A transfer has no reachable delay slot");
+                }
+                break;
+            case FlowKind::Call:
+                if (instruction.operation != Operation::Jal) {
+                    reject("Indirect calls are not supported");
+                }
+                if (!unit.reachable.contains(address + 4)) {
+                    reject("A call has no reachable delay slot");
+                }
+                calls.push_back(flow.target);
+                break;
+            default:
+                reject("Not supported by this translator");
+            }
+        }
+        for (const auto address : unit.reachable) {
+            const auto instruction = decode(word_at(text, address));
+            const auto flow = classify(instruction, address);
+            if (flow.kind == FlowKind::Branch || flow.kind == FlowKind::Call) {
+                if (unit.labels.contains(address + 4)) {
+                    // The delay slot is also a transfer target: it gets a
+                    // standalone copy at its own address, so this transfer
+                    // must jump past that copy on its normal path.
+                    unit.labels.insert(address + 8);
+                }
+            }
+        }
+
+        for (const auto target : calls) {
+            if (!units.contains(target)) {
+                pending.push_back(target);
+            }
+        }
+        units.emplace(entry, std::move(unit));
+    }
+    return units;
+}
+
+// The whole-text translation survey: every direct-call target inside the text
+// is treated as a function entry and translated with the standard walk. The
+// report lists how many trees translate, the rejection reasons grouped, and
+// how many instructions the successful trees reach in total.
+void run_survey(const ImageRecord& text) {
+    constexpr std::size_t survey_budget = 20000;
+    const std::uint64_t text_end =
+        static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
+    std::set<std::uint32_t> entries;
+    for (std::size_t offset = 0; offset + 4 <= text.bytes.size(); offset += 4) {
+        const auto word = read_instruction_word(
+            std::span<const std::uint8_t, 4>(text.bytes.data() + offset, 4));
+        if ((word >> 26) != 3) {
+            continue;  // not a direct call
+        }
+        const auto pc = static_cast<std::uint32_t>(text.guest_address + offset);
+        const auto target = static_cast<std::uint32_t>(
+            ((pc + 4) & 0xf0000000u) | ((word & 0x03ffffffu) << 2));
+        if (target >= text.guest_address && target < text_end) {
+            entries.insert(target);
+        }
+    }
+    std::map<std::string, std::size_t> reasons;
+    std::set<std::uint32_t> covered;
+    std::size_t translated = 0;
+    std::size_t functions_in_trees = 0;
+    for (const auto entry : entries) {
+        bool halt_seen = false;
+        try {
+            const auto units = collect_units(text, entry, survey_budget, 0, halt_seen);
+            ++translated;
+            functions_in_trees += units.size();
+            for (const auto& [address, unit] : units) {
+                covered.insert(unit.reachable.begin(), unit.reachable.end());
+            }
+        } catch (const std::exception& error) {
+            std::string reason = error.what();
+            const auto cut = reason.find(" in function 0x");
+            if (cut != std::string::npos) {
+                reason.erase(cut);
+            }
+            ++reasons[reason];
+        }
+    }
+    std::vector<std::pair<std::size_t, std::string>> ranked;
+    for (const auto& [reason, count] : reasons) {
+        ranked.emplace_back(count, reason);
+    }
+    std::sort(ranked.begin(), ranked.end(), std::greater<>());
+    std::cout << "survey: entries=" << entries.size() << " translated=" << translated
+              << " functions_in_trees=" << functions_in_trees << '\n'
+              << "covered instructions: " << covered.size() << " of "
+              << text.bytes.size() / 4 << " words in the file-backed text\n";
+    for (const auto& [count, reason] : ranked) {
+        std::cout << "reason: " << count << " x " << reason << '\n';
+    }
+}
 
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+    if (argc == 3 && std::wstring_view(argv[2]) == L"--survey") {
+        try {
+            const auto core = gt4recomp::tools::read_verified_core(argv[1]);
+            const auto image = reconstruct_core(core);
+            run_survey(image.text);
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "FAILURE: " << error.what() << '\n';
+            return 1;
+        }
+    }
     if (argc < 4 || argc > 6) {
         std::cerr << "Usage: gt4translate CORE.GT4 start-address max-instructions "
                      "[output-file [halt-address]]\n"
+                     "       gt4translate CORE.GT4 --survey\n"
                      "Translates a function and its direct call tree into a C++ header:\n"
                      "plain instructions, conditional branches (including likely and link\n"
                      "forms), in-function jumps, direct 'jal' calls (translated recursively)\n"
@@ -758,7 +988,8 @@ int wmain(int argc, wchar_t* argv[]) {
                      "emitted module sets the pc at that address and returns, exactly where\n"
                      "the interpreter stops. Indirect calls, exceptions and unsupported words\n"
                      "are rejected with context. max-instructions bounds the whole module.\n"
-                     "Without an output file the header is printed to stdout.\n";
+                     "Without an output file the header is printed to stdout. --survey tries\n"
+                     "every direct-call target in the text and reports the outcome.\n";
         return 2;
     }
     try {
@@ -781,156 +1012,9 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         // Translate the direct call tree, bounded by the instruction budget.
-        std::map<std::uint32_t, TranslationUnit> units;
         bool halt_seen = false;
-        std::deque<std::uint32_t> pending;
-        pending.push_back(start);
-        auto budget = static_cast<std::size_t>(max_instructions);
-        while (!pending.empty()) {
-            std::uint32_t entry = pending.front();
-            pending.pop_front();
-            if (units.contains(entry)) {
-                continue;
-            }
-            if (units.size() >= max_module_functions) {
-                throw std::runtime_error("The call tree exceeds the function limit");
-            }
-
-            const auto graph = build_control_flow_graph(
-                text, std::span<const std::uint32_t>(&entry, 1), max_instructions);
-            if (graph.limited) {
-                throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
-                                         + " exceeds the instruction limit");
-            }
-            TranslationUnit unit;
-            unit.entry = entry;
-            for (const auto& node : graph.nodes) {
-                for (std::uint32_t address = node.block.start;
-                     address < node.block.end_exclusive; address += 4) {
-                    unit.reachable.insert(address);
-                }
-                unit.extent_end = std::max(unit.extent_end, node.block.end_exclusive);
-                if (node.block.ending == FlowKind::Exception) {
-                    // A syscall the walk reached: the module stops there,
-                    // exactly like the interpreter, and callers propagate the
-                    // stop through the call check. Exception has no delay
-                    // slot, so the syscall is the block's last word.
-                    const std::uint32_t syscall_address = node.block.end_exclusive - 4;
-                    unit.reachable.erase(syscall_address);
-                    unit.halts.insert(syscall_address);
-                } else if (node.block.delay_slot_traps) {
-                    // A trap word in a likely branch's delay slot: the taken
-                    // path stops there; it is not an ordinary instruction.
-                    const std::uint32_t trap_address = node.block.end_exclusive - 4;
-                    unit.reachable.erase(trap_address);
-                    unit.trap_slots.insert(trap_address);
-                } else if (node.block.ending == FlowKind::IndirectJump) {
-                    // The exception return leaves the enclosing flow: record a
-                    // boundary the module stops at (the emission derives the
-                    // pc from CP0). Other computed jumps stay rejected.
-                    const std::uint32_t eret_address = node.block.end_exclusive - 4;
-                    if (decode(word_at(text, eret_address)).operation == Operation::Eret) {
-                        unit.reachable.erase(eret_address);
-                        unit.halts.insert(eret_address);
-                    }
-                }
-            }
-            if (halt_address != 0 && unit.reachable.contains(halt_address)) {
-                // The explicit halt address must be a boundary the interpreter
-                // stops on, and it is not translated either.
-                const auto halt_flow =
-                    classify(decode(word_at(text, halt_address)), halt_address);
-                if (halt_flow.kind != FlowKind::Exception
-                    && halt_flow.kind != FlowKind::Unsupported) {
-                    throw std::runtime_error(
-                        "A halt address must be a syscall or an unsupported word");
-                }
-                unit.reachable.erase(halt_address);
-                unit.halts.insert(halt_address);
-                halt_seen = true;
-            } else if (halt_address != 0 && unit.halts.contains(halt_address)) {
-                // The walk already found this boundary as a syscall.
-                halt_seen = true;
-            }
-            if (unit.reachable.empty()) {
-                throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
-                                         + ": no reachable instructions");
-            }
-            unit.scan_start = std::min(unit.entry, *unit.reachable.begin());
-            if (unit.scan_start < unit.entry) {
-                // The walk went below the entry (a tail thunk's target): the
-                // emission must still begin execution at the entry address.
-                unit.labels.insert(unit.entry);
-            }
-            if (unit.reachable.size() > budget) {
-                throw std::runtime_error("The call tree exceeds the instruction budget");
-            }
-            budget -= unit.reachable.size();
-
-            std::vector<std::uint32_t> calls;
-            for (const auto address : unit.reachable) {
-                const auto word = word_at(text, address);
-                const auto instruction = decode(word);
-                const auto flow = classify(instruction, address);
-                const auto reject = [&](const char* reason) {
-                    throw std::runtime_error(std::string(reason) + " in function 0x"
-                                             + hex_value(entry, 8) + ": "
-                                             + format_instruction(word, address) + " at 0x"
-                                             + hex_value(address, 8));
-                };
-                switch (flow.kind) {
-                case FlowKind::FallThrough:
-                    break;
-                case FlowKind::Return:
-                    if (!unit.reachable.contains(address + 4)) {
-                        reject("A return has no reachable delay slot");
-                    }
-                    break;
-                case FlowKind::Branch:
-                case FlowKind::Jump:
-                    if (!unit.reachable.contains(flow.target)
-                        && !unit.halts.contains(flow.target)) {
-                        reject("A transfer leaves the function");
-                    }
-                    unit.labels.insert(flow.target);
-                    if (!unit.reachable.contains(address + 4)
-                        && !unit.trap_slots.contains(address + 4)) {
-                        reject("A transfer has no reachable delay slot");
-                    }
-                    break;
-                case FlowKind::Call:
-                    if (instruction.operation != Operation::Jal) {
-                        reject("Indirect calls are not supported");
-                    }
-                    if (!unit.reachable.contains(address + 4)) {
-                        reject("A call has no reachable delay slot");
-                    }
-                    calls.push_back(flow.target);
-                    break;
-                default:
-                    reject("Not supported by this translator");
-                }
-            }
-            for (const auto address : unit.reachable) {
-                const auto instruction = decode(word_at(text, address));
-                const auto flow = classify(instruction, address);
-                if (flow.kind == FlowKind::Branch || flow.kind == FlowKind::Call) {
-                    if (unit.labels.contains(address + 4)) {
-                        // The delay slot is also a transfer target: it gets a
-                        // standalone copy at its own address, so this transfer
-                        // must jump past that copy on its normal path.
-                        unit.labels.insert(address + 8);
-                    }
-                }
-            }
-
-            for (const auto target : calls) {
-                if (!units.contains(target)) {
-                    pending.push_back(target);
-                }
-            }
-            units.emplace(entry, std::move(unit));
-        }
+        const auto units =
+            collect_units(text, start, max_instructions, halt_address, halt_seen);
 
         if (halt_address != 0 && !halt_seen) {
             throw std::runtime_error("The halt address 0x" + hex_value(halt_address, 8)

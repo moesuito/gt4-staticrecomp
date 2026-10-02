@@ -105,12 +105,14 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M25 BUILD/VERIFY complete; decoder covers 349 operations; the only
+- M0-M26 BUILD/VERIFY complete; decoder covers 349 operations; the only
   unsupported words left in the real code region are two DMA-dependent BC0F
   and two unassigned encodings inside the exception handler (the text's
-  trailing 700 words are a data table).
-- Next: M26 whole-text translation survey (which functions translate today
-  and what blocks the rest).
+  trailing 700 words are a data table). The translator handles 62% of the
+  direct-call targets today; indirect control flow blocks the rest.
+- Next: M27 indirect control flow (a dispatch through registered function
+  entries for `jalr`/computed `jr`, stopping with context on unknown
+  targets).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
