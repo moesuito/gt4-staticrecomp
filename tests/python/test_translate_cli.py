@@ -46,11 +46,19 @@ class TranslateCliTests(unittest.TestCase):
         self.assertIn("ERROR:", result.stderr)
         self.assertIn("unsupported", result.stderr)
 
+    def test_calls_translate_the_direct_call_tree(self):
+        result = self.run_tool("0x10c0c0", 2000)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("inline void function_0010c0c0(ee::GuestState& state);", result.stdout)
+        self.assertIn("inline void function_0044cb58(ee::GuestState& state);", result.stdout)
+        self.assertIn("function_0044cb58(state);", result.stdout)
+        self.assertIn("state.write_gpr64(31, 0x0010c0d0u); // link", result.stdout)
+
     def test_rejects_transfers_that_leave_the_function(self):
         result = self.run_tool("0x5a3140")  # jumps from 0x5a31cc into startup code below the entry
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
-        self.assertIn("leaves the function", result.stderr)
+        self.assertIn("leaves it below its entry", result.stderr)
 
 
 if __name__ == "__main__":

@@ -83,14 +83,15 @@ outside-text edges, limit flag). See the
 .\build\gt4translate.exe private/fingerprint-check/CORE.GT4 0x577878 64
 ```
 
-The translator emits a C++ header for one real function — plain instructions,
-conditional branches (including likely and link forms), in-function jumps and
-multiple `jr ra` returns — statement by statement, with the original assembly
-as comments. Calls, indirect transfers and unsupported words are rejected with
-context. The output is derived from game code: keep it in ignored directories
-and never commit it. The translation tests generate headers into the build
-tree and compare the translated functions against the interpreter on six
-input states each. See the
+The translator emits a C++ header for one real function and its direct call
+tree — plain instructions, conditional branches (including likely and link
+forms), in-function jumps, `jal` calls (translated recursively; forward
+declarations make cycles work) and multiple `jr ra` returns — statement by
+statement, with the original assembly as comments. Indirect calls, exceptions
+and unsupported words are rejected with context. The output is derived from
+game code: keep it in ignored directories and never commit it. The translation
+tests generate headers into the build tree and compare the translated modules
+against the interpreter on six input states each. See the
 [M13 evidence](docs/reverse-engineering/m13-first-function.md).
 
 ## Discover an evidence-backed function map

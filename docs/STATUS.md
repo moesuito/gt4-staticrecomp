@@ -38,9 +38,10 @@ Details live in the linked evidence documents.
   Candidate `0x00577878` (4-instruction `direct-call` leaf, delay-slot store)
   translated by the new `gt4translate` into C++; verified identical to the
   interpreter on **6 input states** — all 32 registers, the entire memory
-  image, and the continuation. Translator slice 2 adds conditional branches,
-  likely/link forms, in-function loops and multiple returns; verified on
-  `0x005c11a8` (a lazy initializer) with 6 states across both branch outcomes
+  image, and the continuation. Translator slices 2 and 3 followed: branches
+  (likely/link), loops, multiple returns (verified on `0x005c11a8`), and
+  direct call trees translated into one module (verified as a 5-function
+  chain, `0x0010c0c0`, on 6 states)
   (`docs/reverse-engineering/m13-first-function.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M13
   lessons and retroactive M2-M5 notes remain open.
@@ -51,9 +52,9 @@ Details live in the linked evidence documents.
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 14/14 CTest (the two translation tests exist only where the local
-  CORE does); Python suite 52 collected (46 run, 6 skip without the M3
-  reference ELF).
+- Tests: 15/15 CTest (the translation tests exist only where the local CORE
+  does); Python suite 53 collected (47 run, 6 skip without the M3 reference
+  ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
   pinned manifest); `private/reconstructed/SCUS_973.28.elf` (6,123,004 bytes,
@@ -76,7 +77,7 @@ Details live in the linked evidence documents.
 ## Next actions
 
 1. M14: automate observation/snapshots toward PCSX2 comparison; extend
-   `gt4translate` further (calls next), each verified the same way as M13.
+   `gt4translate` further (indirect calls via a runtime dispatch).
 2. The M9-M13 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
