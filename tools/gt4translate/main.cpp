@@ -26,7 +26,7 @@ using gt4recomp::tools::hex_value;
 
 namespace {
 
-constexpr std::size_t max_module_functions = 256;
+constexpr std::size_t default_max_module_functions = 256;
 
 // One function of the translated module: its reachable instructions, the
 // labels its transfers need, and the extent used for emission.
@@ -544,6 +544,15 @@ std::string condition_for(const DecodedInstruction& instruction) {
     case Operation::Bgezall:
         code << "((state.read_gpr64(" << rs << ") & 0x8000000000000000ull) == 0)";
         break;
+    case Operation::Bc1f:
+    case Operation::Bc1fl:
+        // The FPU condition bit (FCR31 bit 23), like the interpreter.
+        code << "((state.fpu_control() & 0x00800000u) == 0)";
+        break;
+    case Operation::Bc1t:
+    case Operation::Bc1tl:
+        code << "((state.fpu_control() & 0x00800000u) != 0)";
+        break;
     default:
         throw std::logic_error("no condition for this branch operation");
     }
@@ -821,16 +830,41 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
     }
     return body.str();
 }
-// Walks one function and its direct call tree, validating every transfer and
-// every call site. Throws std::runtime_error naming the first rejection with
-// its instruction and address; halt_seen reports whether the explicit halt
-// address was reached by some unit.
+// Every direct-call target inside the text: the seeds of a whole-program
+// build (and the survey's candidate entries).
+std::set<std::uint32_t> direct_call_targets(const ImageRecord& text) {
+    const std::uint64_t text_end =
+        static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
+    std::set<std::uint32_t> targets;
+    for (std::size_t offset = 0; offset + 4 <= text.bytes.size(); offset += 4) {
+        const auto word = read_instruction_word(
+            std::span<const std::uint8_t, 4>(text.bytes.data() + offset, 4));
+        if ((word >> 26) != 3) {
+            continue;  // not a direct call
+        }
+        const auto pc = static_cast<std::uint32_t>(text.guest_address + offset);
+        const auto target = static_cast<std::uint32_t>(
+            ((pc + 4) & 0xf0000000u) | ((word & 0x03ffffffu) << 2));
+        if (target >= text.guest_address && target < text_end) {
+            targets.insert(target);
+        }
+    }
+    return targets;
+}
+
+// Walks the given function entries and their direct call trees, validating
+// every transfer and every call site. Throws std::runtime_error naming the
+// first rejection with its instruction and address; halt_seen reports whether
+// the explicit halt address was reached by some unit. max_functions bounds
+// the module size.
 std::map<std::uint32_t, TranslationUnit> collect_units(
-    const ImageRecord& text, std::uint32_t start, std::size_t max_instructions,
-    std::uint32_t halt_address, bool& halt_seen) {
+    const ImageRecord& text, std::span<const std::uint32_t> seeds,
+    std::size_t max_instructions, std::uint32_t halt_address,
+    std::size_t max_functions, bool& halt_seen) {
+    const std::uint64_t text_end =
+        static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
     std::map<std::uint32_t, TranslationUnit> units;
-    std::deque<std::uint32_t> pending;
-    pending.push_back(start);
+    std::deque<std::uint32_t> pending(seeds.begin(), seeds.end());
     auto budget = static_cast<std::size_t>(max_instructions);
     while (!pending.empty()) {
         std::uint32_t entry = pending.front();
@@ -838,12 +872,18 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
         if (units.contains(entry)) {
             continue;
         }
-        if (units.size() >= max_module_functions) {
+        if (units.size() >= max_functions) {
             throw std::runtime_error("The call tree exceeds the function limit");
         }
 
-        const auto graph = build_control_flow_graph(
-            text, std::span<const std::uint32_t>(&entry, 1), max_instructions);
+        ControlFlowGraph graph;
+        try {
+            graph = build_control_flow_graph(
+                text, std::span<const std::uint32_t>(&entry, 1), max_instructions);
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string(error.what()) + " in function 0x"
+                                     + hex_value(entry, 8));
+        }
         if (graph.limited) {
             throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
                                      + " exceeds the instruction limit");
@@ -896,6 +936,20 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
                 // A computed jump stays reachable: the emission dispatches it
                 // through the module's entry table at run time and stops at
                 // the transfer when the target is unknown.
+            } else if (node.block.ending == FlowKind::Call && node.block.target_known
+                       && (node.block.target < text.guest_address
+                           || static_cast<std::uint64_t>(node.block.target) + 4 > text_end)) {
+                // A direct call whose target is outside the file-backed text:
+                // the image does not carry that code, so the module stops at
+                // the call like the other unknown-target boundaries.
+                const std::uint32_t call_address = node.block.end_exclusive - 8;
+                const auto call_flow = classify(decode(word_at(text, call_address)), call_address);
+                if (call_flow.kind != FlowKind::Call) {
+                    throw std::runtime_error("A call at the text edge is not modeled");
+                }
+                unit.reachable.erase(call_address);
+                unit.reachable.erase(call_address + 4);
+                unit.halts.insert(call_address);
             } else if (node.block.ending == FlowKind::Unsupported
                        && node.block.stop_reason == "unsupported") {
                 // An instruction the model does not execute (VCALLMS, the
@@ -1031,24 +1085,9 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
 // is treated as a function entry and translated with the standard walk. The
 // report lists how many trees translate, the rejection reasons grouped, and
 // how many instructions the successful trees reach in total.
-void run_survey(const ImageRecord& text) {
+void run_survey(const ImageRecord& text, std::size_t max_functions) {
     constexpr std::size_t survey_budget = 20000;
-    const std::uint64_t text_end =
-        static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
-    std::set<std::uint32_t> entries;
-    for (std::size_t offset = 0; offset + 4 <= text.bytes.size(); offset += 4) {
-        const auto word = read_instruction_word(
-            std::span<const std::uint8_t, 4>(text.bytes.data() + offset, 4));
-        if ((word >> 26) != 3) {
-            continue;  // not a direct call
-        }
-        const auto pc = static_cast<std::uint32_t>(text.guest_address + offset);
-        const auto target = static_cast<std::uint32_t>(
-            ((pc + 4) & 0xf0000000u) | ((word & 0x03ffffffu) << 2));
-        if (target >= text.guest_address && target < text_end) {
-            entries.insert(target);
-        }
-    }
+    std::set<std::uint32_t> entries = direct_call_targets(text);
     std::map<std::string, std::size_t> reasons;
     std::map<std::string, std::string> samples;
     std::set<std::uint32_t> covered;
@@ -1057,7 +1096,10 @@ void run_survey(const ImageRecord& text) {
     for (const auto entry : entries) {
         bool halt_seen = false;
         try {
-            const auto units = collect_units(text, entry, survey_budget, 0, halt_seen);
+            const std::uint32_t seed = entry;
+            const auto units = collect_units(
+                text, std::span<const std::uint32_t>(&seed, 1), survey_budget, 0,
+                max_functions, halt_seen);
             ++translated;
             functions_in_trees += units.size();
             for (const auto& [address, unit] : units) {
@@ -1097,60 +1139,103 @@ void run_survey(const ImageRecord& text) {
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
-    if (argc == 3 && std::wstring_view(argv[2]) == L"--survey") {
-        try {
+    try {
+        std::size_t max_functions = default_max_module_functions;
+        bool whole_program = false;
+        int first = 2;  // the first positional argument after the core path
+        while (argc - first >= 1) {
+            if (std::wstring_view(argv[first]) == L"--functions" && argc - first >= 2) {
+                max_functions = gt4recomp::tools::parse_number(argv[first + 1]);
+                if (max_functions == 0) {
+                    throw std::runtime_error("--functions needs a nonzero count");
+                }
+                first += 2;
+                continue;
+            }
+            if (std::wstring_view(argv[first]) == L"--all") {
+                whole_program = true;
+                ++first;
+                continue;
+            }
+            break;
+        }
+        if (argc - first == 1 && std::wstring_view(argv[first]) == L"--survey") {
             const auto core = gt4recomp::tools::read_verified_core(argv[1]);
             const auto image = reconstruct_core(core);
-            run_survey(image.text);
+            run_survey(image.text, max_functions);
             return 0;
-        } catch (const std::exception& error) {
-            std::cerr << "FAILURE: " << error.what() << '\n';
-            return 1;
         }
-    }
-    if (argc < 4 || argc > 6) {
-        std::cerr << "Usage: gt4translate CORE.GT4 start-address max-instructions "
-                     "[output-file [halt-address]]\n"
-                     "       gt4translate CORE.GT4 --survey\n"
-                     "Translates a function and its direct call tree into a C++ header:\n"
-                     "plain instructions, conditional branches (including likely and link\n"
-                     "forms), in-function jumps, direct 'jal' calls (translated recursively)\n"
-                     "and multiple 'jr ra' returns. With a halt address the walk stops there\n"
-                     "instead of translating further (a syscall or an unsupported word); the\n"
-                     "emitted module sets the pc at that address and returns, exactly where\n"
-                     "the interpreter stops. Indirect transfers (jalr and computed jr) now\n"
-                     "dispatch through the module's own entry table at run time and stop at\n"
-                     "the transfer only when the target is unknown; instructions the model\n"
-                     "does not run stop the module the same way. Exceptions and unsupported\n"
-                     "words stop identically.\n"
-                     "max-instructions bounds the whole module. Without an output file the\n"
-                     "header is printed to stdout. --survey tries every direct-call target in\n"
-                     "the text and reports the outcome.\n";
-        return 2;
-    }
-    try {
-        const auto start = gt4recomp::tools::parse_number(argv[2]);
-        const auto max_instructions = gt4recomp::tools::parse_number(argv[3]);
-        const std::uint32_t halt_address =
-            argc == 6 ? gt4recomp::tools::parse_number(argv[5]) : 0;
-        if (halt_address != 0 && halt_address % 4 != 0) {
-            throw std::runtime_error("Expected an aligned halt address");
+        const int positional = argc - first;
+        const bool positional_ok = whole_program ? (positional == 1 || positional == 2)
+                                                 : (positional >= 2 && positional <= 4);
+        if (!positional_ok) {
+            std::cerr << "Usage: gt4translate CORE.GT4 [--functions N] start-address max-instructions "
+                         "[output-file [halt-address]]\n"
+                         "       gt4translate CORE.GT4 [--functions N] --all max-instructions "
+                         "[output-file]\n"
+                         "       gt4translate CORE.GT4 [--functions N] --survey\n"
+                         "Translates a function and its direct call tree into a C++ header:\n"
+                         "plain instructions, conditional branches (including likely and link\n"
+                         "forms), in-function jumps, direct 'jal' calls (translated recursively)\n"
+                         "and multiple 'jr ra' returns. With a halt address the walk stops there\n"
+                         "instead of translating further (a syscall or an unsupported word); the\n"
+                         "emitted module sets the pc at that address and returns, exactly where\n"
+                         "the interpreter stops. Indirect transfers (jalr and computed jr) now\n"
+                         "dispatch through the module's own entry table at run time and stop at\n"
+                         "the transfer only when the target is unknown; instructions the model\n"
+                         "does not run stop the module the same way. Exceptions and unsupported\n"
+                         "words stop identically.\n"
+                         "max-instructions bounds the whole module; --functions N bounds its\n"
+                         "function count (default 256). --all translates every direct-call\n"
+                         "target in the text (plus the ELF entry) as one whole-program module.\n"
+                         "Without an output file the header is printed to stdout. --survey tries\n"
+                         "every direct-call target in the text and reports the outcome.\n";
+            return 2;
         }
         const auto core = gt4recomp::tools::read_verified_core(argv[1]);
         const auto image = reconstruct_core(core);
         const auto& text = image.text;
         const std::uint64_t text_end =
             static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
+
+        std::vector<std::uint32_t> seeds;
+        std::size_t max_instructions = 0;
+        std::uint32_t halt_address = 0;
+        std::uint32_t start = 0;
+        int output_index = -1;
+        if (whole_program) {
+            max_instructions = gt4recomp::tools::parse_number(argv[first]);
+            const auto targets = direct_call_targets(text);
+            seeds.assign(targets.begin(), targets.end());
+            seeds.push_back(0x00100008);  // the ELF entry, so a driver can start there
+            std::sort(seeds.begin(), seeds.end());
+            seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
+            start = seeds.front();
+            if (positional == 2) {
+                output_index = first + 1;
+            }
+        } else {
+            start = gt4recomp::tools::parse_number(argv[first]);
+            max_instructions = gt4recomp::tools::parse_number(argv[first + 1]);
+            halt_address = positional == 4 ? gt4recomp::tools::parse_number(argv[first + 3]) : 0;
+            seeds.push_back(start);
+            if (positional >= 3) {
+                output_index = first + 2;
+            }
+        }
+        if (halt_address != 0 && halt_address % 4 != 0) {
+            throw std::runtime_error("Expected an aligned halt address");
+        }
         if (max_instructions == 0 || start % 4 != 0 || start < text.guest_address
             || static_cast<std::uint64_t>(start) + 4 > text_end) {
             throw std::runtime_error(
                 "Expected an aligned start inside file-backed text and a nonzero limit");
         }
 
-        // Translate the direct call tree, bounded by the instruction budget.
+        // Translate the direct call tree(s), bounded by the instruction budget.
         bool halt_seen = false;
-        const auto units =
-            collect_units(text, start, max_instructions, halt_address, halt_seen);
+        const auto units = collect_units(
+            text, seeds, max_instructions, halt_address, max_functions, halt_seen);
 
         if (halt_address != 0 && !halt_seen) {
             throw std::runtime_error("The halt address 0x" + hex_value(halt_address, 8)
@@ -1486,8 +1571,8 @@ int wmain(int argc, wchar_t* argv[]) {
         }
         output << "} // namespace gt4recomp::translated\n";
 
-        if (argc >= 5) {
-            std::ofstream file(argv[4], std::ios::binary);
+        if (output_index >= 0) {
+            std::ofstream file(argv[output_index], std::ios::binary);
             if (!file) {
                 throw std::runtime_error("Cannot open the output file");
             }

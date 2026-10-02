@@ -75,6 +75,20 @@ class TranslateCliTests(unittest.TestCase):
         self.assertIn("reason: ", result.stdout)
         self.assertIn("call tree exceeds the function limit", result.stdout)
 
+    def test_functions_option_bounds_the_module(self):
+        # A tiny function limit makes the whole-program mode fail fast with the
+        # policy message; the option parses before both modes.
+        result = subprocess.run([str(TOOL), str(CORE), "--functions", "8", "--all",
+                                 "200000"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("exceeds the function limit", result.stderr)
+
+        # The same option in the normal mode keeps a small translation working.
+        result = subprocess.run([str(TOOL), str(CORE), "--functions", "256", "0x577878", "64"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("inline void function_00577878", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

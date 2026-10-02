@@ -1,9 +1,9 @@
 # Project status
 
-Updated 2026-10-02 after M28 — every module dispatches its own indirect
-targets through a per-module entry table; unknown targets keep the boundary
-stop. This is the first document to read in a new session; it is kept current
-as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M29 — the whole-program build: 15,068 functions,
+924,991 instructions, 146 MB, syntax-checked by MSVC in 27.5 seconds. This is
+the first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -217,6 +217,15 @@ as work proceeds. Details live in the linked evidence documents.
   to 864,507. The 0x00101C28 test verifies the known-target dispatch and the
   unknown-target boundary. CTest 25/25; Python 72
   (`docs/reverse-engineering/m28-module-dispatch.md`).
+- M29 (2026-10-02): **module-size policy and the whole-program build** —
+  `--functions N` and `--all` (every direct-call target plus the ELF entry as
+  one module); direct calls leaving the text stop as boundaries; the COP1
+  branch conditions joined the emitter. **The whole game generates: 15,068
+  functions, 924,991 instructions, 146.4 MB in 136 s, and passes an MSVC
+  syntax check in 27.5 s.** The survey with the policy lifted translates
+  14,991 of 15,067 entries (99.5%), covering 871,317 instructions (65.3%);
+  the remaining rejections are the survey's own per-tree budget. CTest 25/25;
+  Python 73 (`docs/reverse-engineering/m29-whole-program-build.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -224,7 +233,7 @@ as work proceeds. Details live in the linked evidence documents.
   registers (the savestate's own eeMemory re-verifies the text image with 0
   differences). Savestate anchors: PINE slot 9 and the owner's slot 1
   (`docs/reverse-engineering/m14-live-observation.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M21
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M29
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: M22 part 2 — the VU0 macro arithmetic
   (VADD/VMUL/VMADD/VDIV/... with the vector flag semantics); differential
@@ -235,7 +244,7 @@ as work proceeds. Details live in the linked evidence documents.
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
 - Tests: 25/25 CTest (the translation tests exist only where the local CORE
-  does); Python suite 72 collected (66 run, 6 skip without the M3 reference
+  does); Python suite 73 collected (67 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -259,7 +268,7 @@ as work proceeds. Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M27 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M29 lessons are
   pending.
 - Unmodeled words left in the real code region (4): two BC0F (their condition
   is the DMA-derived COP0 line) and two words at unassigned function 0x28
@@ -271,10 +280,11 @@ as work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M29 next: a global entry registry across modules (whole-program builds
-   and the module-size policy) so indirect targets translated elsewhere stop
-   being boundaries; differential execution still needs step control (open).
-2. The M9-M28 lessons and retroactive M2-M5 notes if useful.
+1. M30 next: split or stream the whole-program build and attempt a full
+   code-generation compile (the syntax check passed); then the driver and the
+   BIOS services that turn stopped boundaries into running game code;
+   differential execution still needs step control (open).
+2. The M9-M29 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
@@ -301,5 +311,6 @@ as work proceeds. Details live in the linked evidence documents.
   module verified) and M26 (the whole-text translation survey: 62% of the
   entries translate; indirect control flow blocks the rest) and M27
   (indirect control flow became a boundary: 99.1% of the entries translate)
-  and M28 (the module dispatches its own indirect targets), plus the scan
-  correction trail.
+  and M28 (the module dispatches its own indirect targets) and M29 (the
+  whole-program build: 15,068 functions, 924,991 instructions, MSVC
+  syntax-checked), plus the scan correction trail.
