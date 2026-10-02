@@ -1,14 +1,16 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 23 — the archive-parser fault diagnosed:
-the boot's new fault (an unaligned word access at 0x008475EB after 83,783
-services) is **not a translation divergence** — the reference interpreter
-faults at the same address — it is a **pointer relocation** (0x005595C8)
-called on a structure the engine placed at an **odd** address (0x008475E7)
-inside its static name buffer (base 0x00847580); the live game's dump holds
-the same kind of structure *aligned* at 0x008475E0, so the placement
-depends on data the engine processed (the string that precedes it). No
-model behavior changed; the next slice finds what builds that structure.
+Updated 2026-10-02 after M30 slice 24 — the engine's stream and its static
+object: a write watch (temporary, removed) shows the engine builds a stream
+of **13-byte records** in its static buffer (0x00847580) with a cursor at
+0x00623A40 counting down by 13 per record, and its static object at
+0x00623A50 (the class with vtable 0x00688868) receives **+4 = 0x008475E7**
+(the odd data pointer that later faults in the relocation 0x005595C8) and
+**+0xC = 0xFD9** (the stream's remaining size); the live game's same-class
+object holds an **even** pointer (0x008483C0) and size 0x200, and its
+buffer's structure sits aligned at 0x008475E0. The file server sees no
+reads before the fault, so the stream is built from data the engine already
+has. No model behavior changed; the next slice finds the stream's builder.
 The differential passes at 3,000 services (interpreter reference at
 7,570,583 instructions, full state identical). This is the first document
 to read in a new session; it is kept current as work proceeds. Details live
@@ -641,6 +643,25 @@ in the linked evidence documents.
   skip); the differential passes at 3,000 services with the interpreter
   reference at 7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice23-archive-parser-fault-diagnosed.md`).
+- M30 slice 24 (2026-10-02): **the engine's stream and its static object** —
+  a temporary write watch over the engine's static buffer (0x00847580) and
+  its static object (0x00623A50) shows: the buffer is cleared first, then
+  **byte** writes build a stream of **13-byte records** from 0x008475CA
+  (0xD4 at +1 and 0x0D at +5 of each record), while the cursor at
+  0x00623A40 counts down by 13 per record (0x1000 → 0xFF3 → 0xFE6 →
+  0xFD9); the static object (the class whose vtable 0x00688868 is built at
+  0x004628C8/0x0046132C/0x00604D58) receives **+4 = 0x008475E7** (the odd
+  data pointer) and **+0xC = 0xFD9** (4057, the stream's remaining size).
+  The live game's same-class object holds an **even** pointer (0x008483C0),
+  size 0x200 and extra fields (0x60, 0x8B060, 0x1A7D0), and its buffer's
+  structure sits aligned at 0x008475E0; the live memory never contains
+  0x008475E7. The file-server trace shows only the version query (RPC 0xFF)
+  before the fault — **no reads** — so the stream is built from data the
+  engine already has. No model behavior changed: CTest 34/34; Python 73
+  (67 run, 6 skip); the differential passes at 3,000 services with the
+  interpreter reference at 7,570,583 instructions and the full state
+  identical
+  (`docs/reverse-engineering/m30-slice24-engine-stream-and-static-object.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -650,13 +671,12 @@ in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the odd structure in the engine's name
-  buffer** — the fault is a pointer relocation (0x005595C8) called on a
-  structure at 0x008475E7 (odd) inside the static buffer at 0x00847580;
-  the next slice finds which code builds that structure and from which
-  data (the string before it, the inner archives just read, or a service
-  answer that sizes them), and why the console's copy is aligned at
-  0x008475E0.
+- Next technical milestone work: **the stream's builder** — the engine
+  builds a 13-byte-record stream in its static buffer (cursor at 0x623A40
+  counting down by 13) and points the static object at 0x623A50 into it at
+  an odd offset (0x8475E7), which later faults in the relocation 0x5595C8;
+  the next slice finds the builder (a pc-carrying watch or a static scan
+  for the 13-byte stride) and why the console's object ends up even.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

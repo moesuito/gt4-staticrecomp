@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 23 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 24 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -169,15 +169,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   parsing them; slice 23 then diagnoses that fault (the reference
   interpreter faults at the same address, so it is guest data, not
   translation: a pointer relocation called on a structure at an odd address
-  in the engine's static name buffer); `--threads`
+  in the engine's static name buffer); slice 24 then finds what the engine
+  was building there (a stream of 13-byte records with a cursor counting
+  down by 13, whose odd position leaves the static object's data pointer
+  odd; the console's same-class object is even, and no file read precedes
+  it); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 24 — the odd structure in the engine's name buffer: the
-  fault is a pointer relocation (0x005595C8) called on a structure at
-  0x008475E7 (odd) inside the static buffer at 0x00847580; find which code
-  builds that structure and from which data (the string before it, the
-  inner archives just read, or a service answer that sizes them), and why
-  the console's copy is aligned at 0x008475E0.
+- Next: M30 slice 25 — the stream's builder: the engine builds a 13-byte
+  record stream in its static buffer (0x00847580) with the cursor at
+  0x00623A40 counting down by 13, and points the static object at
+  0x00623A50 into it at an odd offset (0x008475E7); find the builder (a
+  pc-carrying watch or a static scan for the 13-byte stride) and why the
+  console's object ends up even.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
