@@ -676,6 +676,47 @@ int run_tests() {
         check(state.read_cp0(12) == 0u, "eret cleared EXL");
     }
 
+    // VU0 macro moves: qmtc2/qmfc2 round-trip the full 128 bits through both
+    // GPR halves, cfc2 sign-extends the control values, lqc2/sqc2 move a quad
+    // through memory, vf0 reads as the hardwired constant, and vnop is the
+    // reference no-operation.
+    {
+        auto state = make_state();
+        state.memory().write_word(base + 0x200, 0x11111111);
+        state.memory().write_word(base + 0x204, 0x22222222);
+        state.memory().write_word(base + 0x208, 0x33333333);
+        state.memory().write_word(base + 0x20C, 0x44444444);
+        state.write_gpr64(8, 0x1122334455667788ull);
+        state.write_gpr_high64(8, 0xAABBCCDDEEFF0011ull);
+        state.write_gpr64(12, 0xFFFFFFFFFFFFFFFFull);
+        load_program(state.memory(), base,
+                     {0x48A80800,    // qmtc2 t0, vf1
+                      0x48290800,    // qmfc2 t1, vf1
+                      0x3C020010,    // lui v0, 0x10
+                      0x24420200,    // addiu v0, v0, 0x200
+                      0xD8420000,    // lqc2 vf2, 0x0(v0)
+                      0xF8410010,    // sqc2 vf1, 0x10(v0)
+                      0x48CCB000,    // ctc2 t4, vi22
+                      0x484BB000,    // cfc2 t3, vi22
+                      0x482D0000,    // qmfc2 t5, vf0
+                      0x4A0002FF});  // vnop
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 10);
+        check(state.read_gpr64(9) == 0x1122334455667788ull, "the low half round-tripped");
+        check(state.read_gpr_high64(9) == 0xAABBCCDDEEFF0011ull, "the high half round-tripped");
+        check(state.read_vf_lane(2, 0) == 0x11111111u && state.read_vf_lane(2, 3) == 0x44444444u,
+              "lqc2 loaded the quad into the vector register");
+        check(state.memory().read_word(base + 0x210) == 0x55667788u
+                  && state.memory().read_word(base + 0x218) == 0xEEFF0011u,
+              "sqc2 stored the vector register");
+        check(state.read_gpr64(11) == 0xFFFFFFFFFFFFFFFFull,
+              "cfc2 sign-extended the control value");
+        check(state.read_gpr64(13) == 0ull
+                  && state.read_gpr_high64(13) == 0x3F80000000000000ull,
+              "vf0 reads as the constant (0, 0, 0, 1.0)");
+    }
+
     // Fetching outside the mapped region propagates the memory error.
     {
         auto state = make_state();

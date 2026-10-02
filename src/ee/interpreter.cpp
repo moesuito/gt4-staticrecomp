@@ -810,6 +810,128 @@ bool execute_cop1(const DecodedInstruction& instruction, GuestState& state) {
     return true;
 }
 
+// Returns true when the operation belongs to COP2, the VU0 macro interface
+// used from the EE side: 128-bit moves, control-register moves, the quad
+// memory accesses and the reference no-operation.
+bool execute_cop2(const DecodedInstruction& instruction, GuestState& state) {
+    switch (instruction.operation) {
+    case Operation::Qmfc2: {
+        // The full 128 bits move into both GPR halves.
+        const std::uint8_t vector = instruction.rd;
+        const std::uint64_t low =
+            static_cast<std::uint64_t>(state.read_vf_lane(vector, 0))
+            | (static_cast<std::uint64_t>(state.read_vf_lane(vector, 1)) << 32);
+        const std::uint64_t high =
+            static_cast<std::uint64_t>(state.read_vf_lane(vector, 2))
+            | (static_cast<std::uint64_t>(state.read_vf_lane(vector, 3)) << 32);
+        state.write_gpr64(instruction.rt, low);
+        state.write_gpr_high64(instruction.rt, high);
+        break;
+    }
+    case Operation::Qmtc2: {
+        const std::uint8_t vector = instruction.rd;
+        // The constant register ignores writes (the model's accessor also
+        // protects it).
+        const std::uint64_t low = state.read_gpr64(instruction.rt);
+        const std::uint64_t high = state.read_gpr_high64(instruction.rt);
+        state.write_vf_lane(vector, 0, static_cast<std::uint32_t>(low));
+        state.write_vf_lane(vector, 1, static_cast<std::uint32_t>(low >> 32));
+        state.write_vf_lane(vector, 2, static_cast<std::uint32_t>(high));
+        state.write_vf_lane(vector, 3, static_cast<std::uint32_t>(high >> 32));
+        break;
+    }
+    case Operation::Cfc2: {
+        if (instruction.rt == 0) {
+            break;
+        }
+        const std::uint8_t control = instruction.rd;
+        if (control == 20) {
+            // The reciprocal register reads through its mantissa mask and
+            // leaves the upper word untouched, like the reference.
+            state.write_gpr_low32(instruction.rt, state.read_vi(20) & 0x7fffffu);
+        } else {
+            state.write_gpr32(instruction.rt, state.read_vi(control));
+        }
+        break;
+    }
+    case Operation::Ctc2: {
+        const std::uint8_t control = instruction.rd;
+        if (control == 0) {
+            break;
+        }
+        const std::uint32_t value = state.read_gpr32(instruction.rt);
+        switch (control) {
+        case 17:  // MAC_FLAG is read-only
+        case 26:  // TPC is read-only
+        case 29:  // VPU_STAT is read-only
+            break;
+        case 20:  // the reciprocal register keeps its exponent constant
+            state.write_vi(20, (value & 0x7fffffu) | 0x3f800000u);
+            break;
+        case 28: {
+            state.write_vi(28, value & 0x0c0cu);
+            if ((value & 0x00000100u) != 0 || (value & 0x00000200u) != 0) {
+                throw std::runtime_error("ctc2 FBRST: VU1 control is not modeled");
+            }
+            if ((value & 0x00000002u) != 0) {
+                state.reset_vu0_registers();
+            }
+            // The force-break request only matters with running VU micro
+            // code, which this model does not execute.
+            break;
+        }
+        case 31:
+            throw std::runtime_error("ctc2 CMSAR1: VU1 execution is not modeled");
+        case 18:
+            // CLIP_FLAG reaches the shadow register and the VI entry.
+            state.set_vu0_clip_flag(value);
+            state.write_vi(18, value);
+            break;
+        default:
+            state.write_vi(control, value);
+            break;
+        }
+        break;
+    }
+    case Operation::Lqc2: {
+        const std::uint32_t address = effective_address(state, instruction);
+        if ((address & 0xfu) != 0) {
+            throw std::runtime_error("lqc2 requires a 16-byte aligned address");
+        }
+        // The access happens even when the destination is the constant
+        // register, which discards the value.
+        const std::uint64_t low = state.memory().read_doubleword(address);
+        const std::uint64_t high = state.memory().read_doubleword(address + 8);
+        state.write_vf_lane(instruction.rt, 0, static_cast<std::uint32_t>(low));
+        state.write_vf_lane(instruction.rt, 1, static_cast<std::uint32_t>(low >> 32));
+        state.write_vf_lane(instruction.rt, 2, static_cast<std::uint32_t>(high));
+        state.write_vf_lane(instruction.rt, 3, static_cast<std::uint32_t>(high >> 32));
+        break;
+    }
+    case Operation::Sqc2: {
+        const std::uint32_t address = effective_address(state, instruction);
+        if ((address & 0xfu) != 0) {
+            throw std::runtime_error("sqc2 requires a 16-byte aligned address");
+        }
+        const std::uint64_t low =
+            static_cast<std::uint64_t>(state.read_vf_lane(instruction.rt, 0))
+            | (static_cast<std::uint64_t>(state.read_vf_lane(instruction.rt, 1)) << 32);
+        const std::uint64_t high =
+            static_cast<std::uint64_t>(state.read_vf_lane(instruction.rt, 2))
+            | (static_cast<std::uint64_t>(state.read_vf_lane(instruction.rt, 3)) << 32);
+        state.memory().write_doubleword(address, low);
+        state.memory().write_doubleword(address + 8, high);
+        break;
+    }
+    case Operation::Vnop:
+        // The reference treats it as a full no-operation.
+        break;
+    default:
+        return false;
+    }
+    return true;
+}
+
 // Returns true when the operation belongs to the MMI extension. Lane results
 // fill all four 32-bit lanes of the 128-bit register; saturated forms clamp to
 // the range limits exactly like the reference implementation.
@@ -2091,7 +2213,8 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
     }
     default:
         if (execute_special_register(instruction, state)
-            || execute_cop1(instruction, state) || execute_mmi(instruction, state)) {
+            || execute_cop1(instruction, state) || execute_cop2(instruction, state)
+            || execute_mmi(instruction, state)) {
             return;
         }
         throw std::logic_error("non-plain instruction reached the plain executor");

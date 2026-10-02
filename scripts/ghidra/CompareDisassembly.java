@@ -42,7 +42,8 @@ public class CompareDisassembly extends GhidraScript {
         "ppacw", "ppach", "ppacb", "pext5", "ppac5", "padsbh",
         "pinth", "pinteh", "pcpyld", "pcpyud", "pcpyh",
         "pexeh", "prevh", "pexew", "pexch", "pexcw", "prot3w",
-        "pmfhi", "pmflo", "pmthi", "pmtlo", "pmfhl", "pmthl", "qfsrv");
+        "pmfhi", "pmflo", "pmthi", "pmtlo", "pmfhl", "pmthl", "qfsrv",
+        "qmfc2", "qmtc2", "cfc2", "ctc2", "lqc2", "sqc2", "vnop");
 
     private String normalize(String assembly) {
         String normalized = assembly.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");

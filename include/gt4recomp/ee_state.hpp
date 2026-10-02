@@ -113,6 +113,19 @@ public:
     [[nodiscard]] std::uint32_t read_cp0(std::uint8_t index) const;
     void write_cp0(std::uint8_t index, std::uint32_t value);
 
+    // VU0 macro-mode state: 32 vector registers of four 32-bit lanes, the
+    // integer register file, and the clip flag the control moves reach. The
+    // constant register 0 reads as (0, 0, 0, 1.0) and ignores writes, and the
+    // integer register 0 is hardwired zero, like the hardware.
+    [[nodiscard]] std::uint32_t read_vf_lane(std::uint8_t index, std::uint8_t lane) const;
+    void write_vf_lane(std::uint8_t index, std::uint8_t lane, std::uint32_t value);
+    [[nodiscard]] std::uint32_t read_vi(std::uint8_t index) const;
+    void write_vi(std::uint8_t index, std::uint32_t value);
+    [[nodiscard]] std::uint32_t vu0_clip_flag() const noexcept;
+    void set_vu0_clip_flag(std::uint32_t value) noexcept;
+    // The FBRST reset bit clears the whole VU0 register file.
+    void reset_vu0_registers() noexcept;
+
 private:
     static void require_gpr_index(std::uint8_t index);
     static void require_fpr_index(std::uint8_t index);
@@ -128,6 +141,9 @@ private:
     std::uint32_t fpu_control_ = 0;
     std::uint32_t shift_amount_cache_ = 0;
     std::array<std::uint32_t, 32> cp0_{};
+    std::array<std::array<std::uint32_t, 4>, 32> vu0_vf_{};
+    std::array<std::uint32_t, 32> vu0_vi_{};
+    std::uint32_t vu0_clip_flag_ = 0;
     std::uint32_t pc_ = 0;
     GuestMemory memory_;
 };
