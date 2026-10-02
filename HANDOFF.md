@@ -44,12 +44,13 @@ after `20ba459`.
 | `private/tooling/ghidra_12.1.3_PUBLIC` + `private/tooling/jdk-21` | Ghidra and its JDK, bundled and used with `$env:JAVA_HOME` (no system install). |
 | `private/tooling/downloads/` | Installer caches: Ghidra zip, Temurin JDK zip, and **`zlib-1.3.1.tar.gz`** (hash-pinned, for the offline first CMake configure). |
 | `private/tooling-venv` | Python venv with `pycdlib 1.20.0` and `zstandard 0.25.0`. Works if base Python 3.14.2 is at `C:\Python314`; otherwise recreate (section 4). |
-| `private/pcsx2/` | Live-RAM dumps from M14 and, now, the **PCSX2 savestates** (`private/pcsx2/sstates/`: slot 9 = the PINE/menu state, slot 1 = the owner's, plus a backup) so the folder is self-contained for offline savestate decoding. |
+| `private/pcsx2/` | Live-RAM dumps from M14; the **PCSX2 savestates** (`sstates/`: slot 9 = the PINE/menu state, slot 1 = the owner's, plus a backup); the **BIOS dumps** (`bios/`, 32 MB) and the **PINE-enabled config** (`pcsx2-config/PCSX2.ini`) so live observation only needs the emulator install. |
 | `private/disassembly/` | Ghidra listings, comparison TSVs and logs from the M6/M16 verification runs (evidence). |
 | `generated/whole-program.hpp` | The M29 whole-program module: 15,068 functions, 924,991 instructions, 146.4 MB. Regenerable; ignored by git. |
 | `build/` | The previous build tree (0.34 GB). **Recreate it** (section 4): it contains absolute paths from this machine. |
 
-Repository total: **7.42 GB** (with hidden files, including the savestates).
+Repository total: **7.54 GB** (with hidden files, including the savestates,
+BIOS dumps and the generated whole-program module + its measurement object).
 
 ## 3. External tools to install on the new machine
 
@@ -61,10 +62,23 @@ Repository total: **7.42 GB** (with hidden files, including the savestates).
 | Ninja | 1.13.2 | On `PATH`. |
 | Git | 2.53.0.windows.1 | For the repo; sign in to GitHub (`moesuito`) to push. |
 | Python 3.14 | 3.14.2 at `C:\Python314` | Only for the Python suite and the copied venv. If installed elsewhere, recreate the venv (section 4). |
-| *(optional)* PCSX2 | 2.9.93 (this machine: `F:\Games\PS2`) | Only for live-observation work (PINE on port 28011). The savestates are already copied into `private/pcsx2/sstates/`, so offline savestate decoding works without PCSX2; the emulator itself is only needed for new live captures. |
+| *(optional)* PCSX2 | 2.9.93 (this machine: `F:\Games\PS2`) | **Not needed for the first M30 slices** (the driver work verifies against the interpreter). It becomes useful for the BIOS-services layer: a live comparison oracle through PINE (port 28011) and new savestates deeper into the boot. The savestates, **the BIOS dumps** and **the PINE-enabled config** are already copied into `private/pcsx2/` (see the note below); only the emulator install itself would be external. |
 
 Nothing else: Java is not needed system-wide (JDK 21 is bundled), Ghidra is
 bundled, ImHex/LLVM are not used.
+
+**PCSX2 setup (only if/when live observation is needed).** Install nightly
+**2.9.93** (same version, so the copied savestates load) anywhere, then point
+it at the copied data:
+
+- BIOS: `private/pcsx2/bios/` (the set in use is
+  `SCPH-90001_BIOS_V18_USA_230.ROM0`).
+- Config: `private/pcsx2/pcsx2-config/PCSX2.ini` is the PINE-enabled config
+  (`EnablePINE = true`, `PINESlot = 28011`); adjust the `Bios =` path to the
+  copied folder.
+- Game: the ISO already in the repo folder.
+- Savestates: `private/pcsx2/sstates/` (slot 9 = PINE/menu, slot 1 = owner's)
+  can be placed in the emulator's sstates folder to resume that moment.
 
 ## 4. First-run checklist (on the new machine)
 
