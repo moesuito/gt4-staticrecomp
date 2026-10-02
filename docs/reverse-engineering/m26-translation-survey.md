@@ -60,3 +60,9 @@ stops with context on unknown targets.
 - `jal` targets inside the trailing data table (700 words) are filtered by
   the text range but stray call words inside code can still name non-code
   addresses; those appear as "no reachable instructions" and are harmless.
+
+## Follow-up
+
+M27 turned indirect control flow into a boundary; the same survey then
+reports 99.1% of the entries translated (14,938 of 15,067) and 858,621
+covered instructions. See `m27-indirect-flow-boundaries.md`.

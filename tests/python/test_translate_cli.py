@@ -39,14 +39,13 @@ class TranslateCliTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"),
                              self.run_tool("0x577878").stdout)
 
-    def test_rejects_a_trap_only_seed(self):
-        # 0x001001c8 is the first BIOS syscall: with the halt removed there is
-        # nothing left to translate, and the rejection carries the context.
+    def test_trap_only_seed_becomes_a_boundary_stub(self):
+        # 0x001001c8 is the first BIOS syscall: with the halt removed it now
+        # translates as a stub that stops at its own entry, exactly where the
+        # interpreter stops.
         result = self.run_tool("0x1001c8")
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout, "")
-        self.assertIn("ERROR:", result.stderr)
-        self.assertIn("no reachable instructions", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("state.set_pc(0x001001c8u);", result.stdout)
 
     def test_calls_translate_the_direct_call_tree(self):
         result = self.run_tool("0x10c0c0", 2000)
@@ -56,14 +55,14 @@ class TranslateCliTests(unittest.TestCase):
         self.assertIn("function_0044cb58(state);", result.stdout)
         self.assertIn("state.write_gpr64(31, 0x0010c0d0u); // link", result.stdout)
 
-    def test_rejects_indirect_calls_with_context(self):
-        # 0x5a3140 jumps below its entry (now allowed and walked) and reaches
-        # a jalr, which stays rejected with the exact word and address.
-        result = self.run_tool("0x5a3140")
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout, "")
-        self.assertIn("Indirect calls are not supported", result.stderr)
-        self.assertIn("0x005a3194", result.stderr)  # jumps from 0x5a31cc up into startup code below the entry
+    def test_indirect_calls_become_boundaries(self):
+        # 0x5a3140 reaches a jalr at 0x5a3194. The module now translates and
+        # stops there with the pc at the transfer, exactly like the other
+        # boundaries; the earlier rejection is gone.
+        result = self.run_tool("0x5a3140", 2000)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("state.set_pc(0x005a3194u);", result.stdout)
+        self.assertIn("jalr", result.stdout)
 
     def test_survey_reports_the_translation_outcome(self):
         result = subprocess.run([str(TOOL), str(CORE), "--survey"],
@@ -71,8 +70,10 @@ class TranslateCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("survey: entries=", result.stdout)
         self.assertIn("covered instructions:", result.stdout)
-        # The dominant blocker in the pinned text is indirect control flow.
-        self.assertIn("Indirect calls are not supported", result.stdout)
+        # Rejections keep reporting their reason; the module-size policy is the
+        # strongest one left in the pinned text.
+        self.assertIn("reason: ", result.stdout)
+        self.assertIn("call tree exceeds the function limit", result.stdout)
 
 
 if __name__ == "__main__":

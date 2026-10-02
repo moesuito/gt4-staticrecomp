@@ -1,9 +1,9 @@
 # Project status
 
-Updated 2026-10-02 after M26 — the whole-text translation survey: 62% of the
-direct-call targets translate today; indirect control flow is the remaining
-blocker. This is the first document to read in a new session; it is kept
-current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M27 — indirect control flow became a boundary:
+99.1% of the direct-call targets translate and every remaining rejection is a
+module-size policy. This is the first document to read in a new session; it is
+kept current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -198,6 +198,17 @@ current as work proceeds. Details live in the linked evidence documents.
   validation edges. Instruction coverage is effectively complete; control-flow
   structure is the limiting factor. CTest 24/24; Python 72
   (`docs/reverse-engineering/m26-translation-survey.md`).
+- M27 (2026-10-02): **indirect control flow became a boundary** — `jalr` and
+  computed `jr` stop the module at the transfer exactly where the interpreter
+  stops (delay slot included, link register untouched); unmodeled words
+  (VCALLMS, the unassigned encodings) stop at the word; an unmodeled delay
+  slot stops at the slot after the transfer's state effects. A
+  boundary-at-entry function translates as a stopping stub. **99.1% of the
+  direct-call targets translate (14,938 of 15,067); covered instructions rose
+  from 399,046 to 858,621 (64.3%)**; all remaining rejections are module-size
+  policy. New verified module 0x00101C28 (a `jalr` trampoline, three target
+  values). CTest 25/25; Python 72
+  (`docs/reverse-engineering/m27-indirect-flow-boundaries.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -215,7 +226,7 @@ current as work proceeds. Details live in the linked evidence documents.
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 24/24 CTest (the translation tests exist only where the local CORE
+- Tests: 25/25 CTest (the translation tests exist only where the local CORE
   does); Python suite 72 collected (66 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
@@ -240,7 +251,7 @@ current as work proceeds. Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M26 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M27 lessons are
   pending.
 - Unmodeled words left in the real code region (4): two BC0F (their condition
   is the DMA-derived COP0 line) and two words at unassigned function 0x28
@@ -252,11 +263,11 @@ current as work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M27 next: indirect control flow — a registry of the statically known
-   function entries (the survey already enumerates them) with `jalr`/computed
-   `jr` translated as a dispatch through it that stops with context on
-   unknown targets; differential execution still needs step control (open).
-2. The M9-M26 lessons and retroactive M2-M5 notes if useful.
+1. M28 next: the boundary driver — a dispatcher that resolves the stopped
+   pcs (indirect targets through a registry of translated entries, syscalls
+   through their services) and a module-size policy for whole-program builds;
+   differential execution still needs step control (open).
+2. The M9-M27 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
@@ -281,5 +292,6 @@ current as work proceeds. Details live in the linked evidence documents.
   trapping arithmetic and the parallel multiply/divide family), M25 (the
   translator reaches the macro and trapping operations; the 0x0056df58
   module verified) and M26 (the whole-text translation survey: 62% of the
-  entries translate; indirect control flow blocks the rest), plus the scan
-  correction trail.
+  entries translate; indirect control flow blocks the rest) and M27
+  (indirect control flow became a boundary: 99.1% of the entries translate),
+  plus the scan correction trail.
