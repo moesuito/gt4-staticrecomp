@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 39 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 40 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -218,13 +218,12 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   the failure is the worker leaving the stream's +0x94 at 0; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 40 — who drains the handler's +0x4C list: the open
-  reaches state 1 (the stream on the +0x4C list) and the state-2 step and
-  the completion (0x004AD868 → 0x004AD808, which sets the stream's +0x94)
-  never run; find which code drains that list and advances the state to 2 —
-  the candidates are the handler's own worker thread (created at boot) and
-  the pump's callers — and why the model stops before it (the worker never
-  scheduled, or waiting on a condition the model does not signal).
+- Next: M30 slice 41 — the handler's worker steps 0x004AD9F4/0x004ADBD4:
+  the open is asynchronous and the formatter blocks in the context's wait
+  (0x004AF3A0) until the stream's state reaches 3; the handler's own steps
+  that call the check (0x004AD9F4, 0x004ADBD4) advance it and never run in
+  the model; find which code calls them, on which thread, and why the
+  model's run stops before them.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

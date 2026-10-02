@@ -1,22 +1,22 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 39 — the pump's state machine and the
-missing state 2: **0x004AF268** drives the stream's state (+0x80) — state 0
-→ 0x004AD368; state 1 → the once-only check **0x004AF520** (a flag at
-+0x98) then **0x004AD438** (which signals the condition 0x00574EE8 on the
-handler+0x64); state 2 → 0x004AD5E0. The completion that sets the result is
-**0x004AD890 → 0x004AD808** (`*(stream+0x94) = the vtable+0x20 method's
-result`), whose vtable entry (handler class +0x24) is **0x004AD868** — a
-virtual method with no direct caller, invoked by the pipeline when the open
-finishes. The slice-38 trace shows the open reaching **state 1** (the step
-0x004AD690 sets +0x80 = 1 and appends the stream to the handler's +0x4C
-list) and then the formatter's cleanup: the **state never reaches 2**, so
-the state-2 step and the completion never run. The +0x4C list is the stage
-the worker pipeline drains. No model behavior changed. The differential
-passes at 3,000 services (interpreter reference at 7,570,583 instructions,
-full state identical). This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-02 after M30 slice 40 — the context's virtual table and the
+wait for state 3: the context class (vtable 0x00688ED0) maps to +0x10 = the
+*process* (0x004AF1D8 — with the state at 0 it calls 0x004AD648), **+0x18 =
+the state machine (0x004AF268)**, **+0x20 = the wait (0x004AF3A0 — while
+the stream's state +0x80 is not 3 it blocks at 0x005767E0)**, +0x38/+0x40 =
+callback dispatchers. The formatter's format step **0x004AF3E8** calls the
+process and then the wait: the open is asynchronous and the formatter
+**blocks until the state reaches 3**, only then reading the result (+0x94).
+The once-only check **0x004AF520** is called from the pump *and* from the
+handler's own steps **0x004AD9F4** and **0x004ADBD4** — the worker-side
+processing that advances the state. The slice-38 trace shows the state
+reaching **1** (the process's next-stage step appends the stream to the
+handler's +0x4C list) and never 2 or 3, so those handler steps never run.
+No model behavior changed. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -948,6 +948,26 @@ documents.
   services with the interpreter reference at 7,570,583 instructions and the
   full state identical
   (`docs/reverse-engineering/m30-slice39-pump-state-machine.md`).
+- M30 slice 40 (2026-10-02): **the context's virtual table and the wait for
+  state 3** — the context class (vtable **0x00688ED0**) maps to +0x08 = the
+  destructor (0x004AF0A0), +0x10 = the *process* (**0x004AF1D8** — with the
+  state at 0 and a handler bound it calls 0x004AD648), **+0x18 = the state
+  machine (0x004AF268)**, **+0x20 = the wait (0x004AF3A0 — while the
+  stream's state +0x80 is not 3 it blocks at 0x005767E0)**, +0x30 =
+  0x004AF108, +0x38/+0x40 = callback dispatchers (0x004AF448/0x004AF478).
+  The formatter's format step **0x004AF3E8** calls the context's process
+  and then its wait: the open is **asynchronous** and the formatter
+  **blocks until the stream's state reaches 3**, only then reading the
+  result (+0x94). The once-only check **0x004AF520** is called from the
+  pump *and* from the handler's own steps **0x004AD9F4** and **0x004ADBD4**
+  — the worker-side processing that advances the state. The slice-38 trace
+  shows the state reaching **1** (the process's next-stage step appends the
+  stream to the handler's +0x4C list) and never 2 or 3, so those handler
+  steps never run. No model behavior changed: CTest 34/34; Python 73
+  (67 run, 6 skip); the differential passes at 3,000 services with the
+  interpreter reference at 7,570,583 instructions and the full state
+  identical
+  (`docs/reverse-engineering/m30-slice40-context-vtable-and-the-wait.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -957,14 +977,13 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **who drains the handler's +0x4C list** —
-  the open reaches state 1 (the stream on the +0x4C list) and the state-2
-  step and the completion (0x004AD868 → 0x004AD808, which sets the stream's
-  +0x94) never run; the next slice finds which code drains that list and
-  advances the state to 2 — the candidates are the handler's own worker
-  thread (created at boot) and the pump's callers — and why the model stops
-  before it (the worker never scheduled, or waiting on a condition the
-  model does not signal).
+- Next technical milestone work: **the handler's worker steps
+  0x004AD9F4/0x004ADBD4** — the open is asynchronous and the formatter
+  blocks in the context's wait (0x004AF3A0) until the stream's state
+  reaches 3; the handler's own steps that call the check (0x004AD9F4,
+  0x004ADBD4) advance it and never run in the model; the next slice finds
+  which code calls them, on which thread, and why the model's run stops
+  before them.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
