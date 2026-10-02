@@ -131,6 +131,15 @@ int main() {
           && bad_slot_block.continuation == base + 8 && bad_slot_block.delay_slot_unsupported
           && bad_slot_block.stop_reason == "branch", "unsupported delay slot");
 
+    // A trap in a likely branch's delay slot: the block keeps its branch facts
+    // and flags the slot (which runs only when the branch is taken).
+    const auto trap_slot_text = make_text(base, {0x50C00001, 0x0000000D, 0x24080001});
+    const auto trap_slot_block = build_basic_block(trap_slot_text, base, 40);
+    check(trap_slot_block.instruction_count == 2 && trap_slot_block.ending == FlowKind::Branch
+          && trap_slot_block.target_known && trap_slot_block.target == base + 8
+          && !trap_slot_block.delay_slot_unsupported && trap_slot_block.delay_slot_traps
+          && trap_slot_block.stop_reason == "branch", "trap in a likely delay slot");
+
     // A branch inside a delay slot is undefined behavior; claim nothing.
     const auto illegal_text = make_text(base, {0x11090003, 0x1509fffe});
     const auto illegal_block = build_basic_block(illegal_text, base, 40);

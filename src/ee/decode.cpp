@@ -81,6 +81,7 @@ Operation decode_special(const DecodedInstruction& instruction) {
     case 0x2a: return Operation::Slt;
     case 0x2b: return Operation::Sltu;
     case 0x2d: return Operation::Daddu;
+    case 0x2f: return Operation::Dsubu;
     default: return Operation::Unsupported;
     }
 }
@@ -215,6 +216,7 @@ Operation decode_cop0(const DecodedInstruction& instruction) {
     case 0x10:
         // The C0 function field holds the control operations.
         switch (instruction.function) {
+        case 0x18: return Operation::Eret;
         case 0x38: return Operation::Ei;
         case 0x39: return Operation::Di;
         default: return Operation::Unsupported;
@@ -438,6 +440,7 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Lb: return "lb";
     case Operation::Lbu: return "lbu";
     case Operation::Daddu: return "daddu";
+    case Operation::Dsubu: return "dsubu";
     case Operation::Movz: return "movz";
     case Operation::Movn: return "movn";
     case Operation::Lh: return "lh";
@@ -495,6 +498,7 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Mtc0: return "mtc0";
     case Operation::Ei: return "ei";
     case Operation::Di: return "di";
+    case Operation::Eret: return "eret";
     case Operation::Mfhi: return "mfhi";
     case Operation::Mthi: return "mthi";
     case Operation::Mflo: return "mflo";

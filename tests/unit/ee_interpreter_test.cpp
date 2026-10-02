@@ -629,6 +629,53 @@ int run_tests() {
         check(state.memory().read_word(base + 0x108) == 0xddaabbccu, "sdl merged its three bytes");
     }
 
+    // A trap in a likely branch's delay slot: taken runs the trap and stops
+    // there (the pending transfer never applies); not taken skips the slot.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24060000,    // addiu a2, zero, 0    (taken)
+                      0x50C00001,    // beql a2, zero, +1
+                      0x0000000D,    // break 0x0 (the delay slot)
+                      0x24020001});  // addiu v0, zero, 1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 2);
+        const auto trapped = interpreter.step();
+        check(trapped.outcome == StepOutcome::Exception && trapped.pc == base + 8
+                  && state.pc() == base + 8,
+              "the taken likely branch traps in its delay slot");
+        check(state.read_gpr64(2) == 0, "the skipped target never ran");
+
+        auto second = make_state();
+        load_program(second.memory(), base,
+                     {0x24060005,    // addiu a2, zero, 5    (not taken)
+                      0x50C00001,    // beql a2, zero, +1
+                      0x0000000D,    // break (skipped with the nullified slot)
+                      0x24020001});  // addiu v0, zero, 1
+        second.set_pc(base);
+        Interpreter second_interpreter(second);
+        run_steps(second_interpreter, 3);
+        check(second.read_gpr64(2) == 1, "the not-taken likely branch skipped the trap slot");
+    }
+
+    // ERET returns through CP0: the target comes from EPC, the exception
+    // level bit it returns from is cleared, and no delay slot runs.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24081234,    // addiu t0, zero, 0x1234
+                      0x40887000,    // mtc0 t0, EPC
+                      0x24090002,    // addiu t1, zero, 2      (EXL)
+                      0x40896000,    // mtc0 t1, Status
+                      0x42000018});  // eret
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 5);
+        check(state.pc() == 0x1234, "eret jumped to EPC");
+        check(state.read_cp0(12) == 0u, "eret cleared EXL");
+    }
+
     // Fetching outside the mapped region propagates the memory error.
     {
         auto state = make_state();

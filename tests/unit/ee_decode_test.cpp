@@ -42,6 +42,7 @@ int main() {
         {0x012a402a, Operation::Slt, "slt", 9, 10, 8, 0, 0x2a},
         {0x012a402b, Operation::Sltu, "sltu", 9, 10, 8, 0, 0x2b},
         {0x012a402d, Operation::Daddu, "daddu", 9, 10, 8, 0, 0x2d},
+        {0x012a402f, Operation::Dsubu, "dsubu", 9, 10, 8, 0, 0x2f},
         {0x012a400a, Operation::Movz, "movz", 9, 10, 8, 0, 0x0a},
         {0x012a400b, Operation::Movn, "movn", 9, 10, 8, 0, 0x0b},
         {0x012a4027, Operation::Nor, "nor", 9, 10, 8, 0, 0x27},
@@ -157,6 +158,7 @@ int main() {
         {0x40826000, Operation::Mtc0, "mtc0", 0x10, 4, 2, 0x6000, 24576},
         {0x42000038, Operation::Ei, "ei", 0x10, 16, 0, 0x0038, 56},
         {0x42000039, Operation::Di, "di", 0x10, 16, 0, 0x0039, 57},
+        {0x42000018, Operation::Eret, "eret", 0x10, 16, 0, 0x0018, 24},
         {0x68a30007, Operation::Ldl, "ldl", 0x1a, 5, 3, 0x0007, 7},
         {0x6c830007, Operation::Ldr, "ldr", 0x1b, 4, 3, 0x0007, 7},
         {0xb0830007, Operation::Sdl, "sdl", 0x2c, 4, 3, 0x0007, 7},
@@ -211,7 +213,7 @@ int main() {
     // Outside the implemented subset, plus nonzero fixed fields. Unsupported
     // is our policy; it makes no claim about a hardware reserved-instruction trap.
     const std::uint32_t unsupported[] = {
-        0x00000005, 0x70000002, 0x46800000, 0x42000018, 0x041a0000,
+        0x00000005, 0x70000002, 0x46800000, 0x42000001, 0x041a0000,
         0x00294100, 0x00294102, 0x03e10008, 0x03e00808, 0x03e00048,
         0x012a4061, 0x012a4063, 0x012a4064, 0x012a4065, 0x012a4066,
         0x3c281234, 0x19280004, 0x1d280004, 0x0120f849,

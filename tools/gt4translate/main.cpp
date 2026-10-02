@@ -40,6 +40,9 @@ struct TranslationUnit {
     // and the optional explicit halt. The emitted module sets the pc there and
     // returns, exactly where the interpreter stops.
     std::set<std::uint32_t> halts;
+    // Trap words inside a likely branch's delay slot: the taken path stops
+    // there instead of running an inline statement.
+    std::set<std::uint32_t> trap_slots;
 };
 
 std::uint32_t word_at(const ImageRecord& text, std::uint32_t address) {
@@ -124,6 +127,50 @@ std::string statement_for(const DecodedInstruction& instruction) {
     case Operation::Nor:
         code << "state.write_gpr64(" << rd << ", ~(state.read_gpr64(" << rs
              << ") | state.read_gpr64(" << rt << ")));";
+        break;
+    case Operation::Dsubu:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rs
+             << ") - state.read_gpr64(" << rt << "));";
+        break;
+    case Operation::Mult:
+        code << "detail::execute_multiply(state, " << rs << ", " << rt << ", " << rd
+             << ", true, false);";
+        break;
+    case Operation::Multu:
+        code << "detail::execute_multiply(state, " << rs << ", " << rt << ", " << rd
+             << ", false, false);";
+        break;
+    case Operation::Mult1:
+        code << "detail::execute_multiply(state, " << rs << ", " << rt << ", " << rd
+             << ", true, true);";
+        break;
+    case Operation::Multu1:
+        code << "detail::execute_multiply(state, " << rs << ", " << rt << ", " << rd
+             << ", false, true);";
+        break;
+    case Operation::Div:
+        code << "detail::execute_div(state, " << rs << ", " << rt << ", false);";
+        break;
+    case Operation::Divu:
+        code << "detail::execute_divu(state, " << rs << ", " << rt << ", false);";
+        break;
+    case Operation::Div1:
+        code << "detail::execute_div(state, " << rs << ", " << rt << ", true);";
+        break;
+    case Operation::Divu1:
+        code << "detail::execute_divu(state, " << rs << ", " << rt << ", true);";
+        break;
+    case Operation::Mfhi:
+        code << "state.write_gpr64(" << rd << ", state.hi());";
+        break;
+    case Operation::Mflo:
+        code << "state.write_gpr64(" << rd << ", state.lo());";
+        break;
+    case Operation::Mfhi1:
+        code << "state.write_gpr64(" << rd << ", state.hi1());";
+        break;
+    case Operation::Mflo1:
+        code << "state.write_gpr64(" << rd << ", state.lo1());";
         break;
     case Operation::Andi:
         code << "state.write_gpr64(" << rt << ", state.read_gpr64(" << rs
@@ -216,6 +263,21 @@ std::string statement_for(const DecodedInstruction& instruction) {
         code << "state.write_gpr32(" << rt
              << ", detail::sign_extend_8(state.memory().read_byte(detail::effective_address(state, "
              << rs << ", " << displacement << "))));";
+        break;
+    case Operation::Lhu:
+        code << "state.write_gpr64(" << rt
+             << ", state.memory().read_halfword(detail::effective_address(state, " << rs << ", "
+             << displacement << ")));";
+        break;
+    case Operation::Lwu:
+        code << "state.write_gpr64(" << rt
+             << ", state.memory().read_word(detail::effective_address(state, " << rs << ", "
+             << displacement << ")));";
+        break;
+    case Operation::Sh:
+        code << "state.memory().write_halfword(detail::effective_address(state, " << rs << ", "
+             << displacement << "), static_cast<std::uint16_t>(state.read_gpr64(" << rt
+             << ") & 0xffffu));";
         break;
     case Operation::Lbu:
         code << "state.write_gpr32(" << rt
@@ -514,15 +576,27 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         const auto flow = classify(instruction, address);
 
         if (unit.halts.contains(address)) {
-            // The model boundary: stop exactly where the interpreter stops,
-            // with the pc at (not past) this word.
+            // The model boundary: stop exactly where the interpreter stops.
             if (unit.labels.contains(address)) {
                 body << label_for(address) << ":;\n";
             }
             body << "    // 0x" << hex_value(address, 8) << ": " << hex_value(word, 8) << "  "
-                 << format_instruction(word, address) << "\n"
-                 << "    state.set_pc(0x" << hex_value(address, 8) << "u);\n"
-                 << "    return;\n\n";
+                 << format_instruction(word, address) << "\n";
+            if (instruction.operation == Operation::Eret) {
+                // The exception return leaves the module with the pc derived
+                // from CP0, clearing the level it returns from.
+                body << "    if ((state.read_cp0(12) & 0x00000004u) != 0) {\n"
+                     << "        state.set_pc(state.read_cp0(30));\n"
+                     << "        state.write_cp0(12, state.read_cp0(12) & ~0x00000004u);\n"
+                     << "    } else {\n"
+                     << "        state.set_pc(state.read_cp0(14));\n"
+                     << "        state.write_cp0(12, state.read_cp0(12) & ~0x00000002u);\n"
+                     << "    }\n"
+                     << "    return;\n\n";
+            } else {
+                body << "    state.set_pc(0x" << hex_value(address, 8) << "u);\n"
+                     << "    return;\n\n";
+            }
             continue;
         }
         if (!unit.reachable.contains(address) && !unit.labels.contains(address)) {
@@ -584,9 +658,15 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                          << "u);\n";
                 }
                 comment(address + 4, word_at(text, address + 4), "        ");
-                body << "        " << statement_at(address + 4)
-                     << " // delay slot (runs only when taken)\n";
-                body << "        goto " << label_for(flow.target) << ";\n";
+                if (unit.trap_slots.contains(address + 4)) {
+                    body << "        // the delay slot traps: the taken path stops\n"
+                         << "        state.set_pc(0x" << hex_value(address + 4, 8) << "u);\n"
+                         << "        return;\n";
+                } else {
+                    body << "        " << statement_at(address + 4)
+                         << " // delay slot (runs only when taken)\n";
+                    body << "        goto " << label_for(flow.target) << ";\n";
+                }
                 body << "    }\n\n";
             } else {
                 if (writes_link_register(instruction.operation)) {
@@ -725,6 +805,21 @@ int wmain(int argc, wchar_t* argv[]) {
                     const std::uint32_t syscall_address = node.block.end_exclusive - 4;
                     unit.reachable.erase(syscall_address);
                     unit.halts.insert(syscall_address);
+                } else if (node.block.delay_slot_traps) {
+                    // A trap word in a likely branch's delay slot: the taken
+                    // path stops there; it is not an ordinary instruction.
+                    const std::uint32_t trap_address = node.block.end_exclusive - 4;
+                    unit.reachable.erase(trap_address);
+                    unit.trap_slots.insert(trap_address);
+                } else if (node.block.ending == FlowKind::IndirectJump) {
+                    // The exception return leaves the enclosing flow: record a
+                    // boundary the module stops at (the emission derives the
+                    // pc from CP0). Other computed jumps stay rejected.
+                    const std::uint32_t eret_address = node.block.end_exclusive - 4;
+                    if (decode(word_at(text, eret_address)).operation == Operation::Eret) {
+                        unit.reachable.erase(eret_address);
+                        unit.halts.insert(eret_address);
+                    }
                 }
             }
             if (halt_address != 0 && unit.reachable.contains(halt_address)) {
@@ -785,7 +880,8 @@ int wmain(int argc, wchar_t* argv[]) {
                         reject("A transfer leaves the function");
                     }
                     unit.labels.insert(flow.target);
-                    if (!unit.reachable.contains(address + 4)) {
+                    if (!unit.reachable.contains(address + 4)
+                        && !unit.trap_slots.contains(address + 4)) {
                         reject("A transfer has no reachable delay slot");
                     }
                     break;
@@ -999,6 +1095,92 @@ int wmain(int argc, wchar_t* argv[]) {
                << "constexpr std::uint8_t doubleword_place_shift[8] = {\n"
                << "    0, 8, 16, 24, 32, 40, 48, 56\n"
                << "};\n\n"
+               << "[[nodiscard]] inline std::uint64_t sign_extend_32_to_64(std::uint32_t value) {\n"
+               << "    return (value & 0x80000000u) != 0 ? (0xffffffff00000000ull | value) : value;\n"
+               << "}\n\n"
+               << "inline void write_hilo_low(ee::GuestState& state, std::uint64_t bits) {\n"
+               << "    state.set_lo(sign_extend_32_to_64(static_cast<std::uint32_t>(bits)));\n"
+               << "    state.set_hi(sign_extend_32_to_64(static_cast<std::uint32_t>(bits >> 32)));\n"
+               << "}\n\n"
+               << "inline void write_hilo_high(ee::GuestState& state, std::uint64_t bits) {\n"
+               << "    state.set_lo1(sign_extend_32_to_64(static_cast<std::uint32_t>(bits)));\n"
+               << "    state.set_hi1(sign_extend_32_to_64(static_cast<std::uint32_t>(bits >> 32)));\n"
+               << "}\n\n"
+               << "// MULT/MULTU (and their second-bank forms) with the optional\n"
+               << "// destination write the reference performs.\n"
+               << "inline void execute_multiply(ee::GuestState& state, std::uint8_t rs, std::uint8_t rt,\n"
+               << "                             std::uint8_t rd, bool signed_multiply, bool high_bank) {\n"
+               << "    const std::uint32_t left = state.read_gpr32(rs);\n"
+               << "    const std::uint32_t right = state.read_gpr32(rt);\n"
+               << "    std::uint64_t product = 0;\n"
+               << "    if (signed_multiply) {\n"
+               << "        product = static_cast<std::uint64_t>(\n"
+               << "            static_cast<std::int64_t>(static_cast<std::int32_t>(left))\n"
+               << "            * static_cast<std::int64_t>(static_cast<std::int32_t>(right)));\n"
+               << "    } else {\n"
+               << "        product = static_cast<std::uint64_t>(left)\n"
+               << "            * static_cast<std::uint64_t>(right);\n"
+               << "    }\n"
+               << "    if (high_bank) {\n"
+               << "        write_hilo_high(state, product);\n"
+               << "        if (rd != 0) {\n"
+               << "            state.write_gpr64(rd, state.lo1());\n"
+               << "        }\n"
+               << "    } else {\n"
+               << "        write_hilo_low(state, product);\n"
+               << "        if (rd != 0) {\n"
+               << "            state.write_gpr64(rd, state.lo());\n"
+               << "        }\n"
+               << "    }\n"
+               << "}\n\n"
+               << "// The divide quirks: 0x80000000/-1 saturates and a zero divisor\n"
+               << "// signals through LO/HI, exactly like the interpreter.\n"
+               << "inline void execute_div(ee::GuestState& state, std::uint8_t rs, std::uint8_t rt,\n"
+               << "                        bool high_bank) {\n"
+               << "    const std::uint32_t dividend_bits = state.read_gpr32(rs);\n"
+               << "    const std::uint32_t divisor_bits = state.read_gpr32(rt);\n"
+               << "    const auto dividend = static_cast<std::int32_t>(dividend_bits);\n"
+               << "    const auto divisor = static_cast<std::int32_t>(divisor_bits);\n"
+               << "    std::uint64_t lo_value = 0;\n"
+               << "    std::uint64_t hi_value = 0;\n"
+               << "    if (dividend_bits == 0x80000000u && divisor_bits == 0xffffffffu) {\n"
+               << "        lo_value = sign_extend_32_to_64(0x80000000u);\n"
+               << "    } else if (divisor != 0) {\n"
+               << "        lo_value = sign_extend_32_to_64(static_cast<std::uint32_t>(dividend / divisor));\n"
+               << "        hi_value = sign_extend_32_to_64(static_cast<std::uint32_t>(dividend % divisor));\n"
+               << "    } else {\n"
+               << "        lo_value = sign_extend_32_to_64(dividend < 0 ? 1u : 0xffffffffu);\n"
+               << "        hi_value = sign_extend_32_to_64(dividend_bits);\n"
+               << "    }\n"
+               << "    if (high_bank) {\n"
+               << "        state.set_lo1(lo_value);\n"
+               << "        state.set_hi1(hi_value);\n"
+               << "    } else {\n"
+               << "        state.set_lo(lo_value);\n"
+               << "        state.set_hi(hi_value);\n"
+               << "    }\n"
+               << "}\n\n"
+               << "inline void execute_divu(ee::GuestState& state, std::uint8_t rs, std::uint8_t rt,\n"
+               << "                         bool high_bank) {\n"
+               << "    const std::uint32_t dividend_bits = state.read_gpr32(rs);\n"
+               << "    const std::uint32_t divisor_bits = state.read_gpr32(rt);\n"
+               << "    std::uint64_t lo_value = 0;\n"
+               << "    std::uint64_t hi_value = 0;\n"
+               << "    if (divisor_bits != 0) {\n"
+               << "        lo_value = sign_extend_32_to_64(dividend_bits / divisor_bits);\n"
+               << "        hi_value = sign_extend_32_to_64(dividend_bits % divisor_bits);\n"
+               << "    } else {\n"
+               << "        lo_value = sign_extend_32_to_64(0xffffffffu);\n"
+               << "        hi_value = sign_extend_32_to_64(dividend_bits);\n"
+               << "    }\n"
+               << "    if (high_bank) {\n"
+               << "        state.set_lo1(lo_value);\n"
+               << "        state.set_hi1(hi_value);\n"
+               << "    } else {\n"
+               << "        state.set_lo(lo_value);\n"
+               << "        state.set_hi(hi_value);\n"
+               << "    }\n"
+               << "}\n\n"
                << "// The PS2 FPU has no denormals and saturates at the largest finite\n"
                << "// value; this mirrors the interpreter's hardware_float exactly.\n"
                << "[[nodiscard]] inline float hardware_float(std::uint32_t bits) {\n"

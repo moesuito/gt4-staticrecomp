@@ -61,6 +61,11 @@ InstructionFlow classify(const DecodedInstruction& instruction, std::uint32_t pc
         flow.kind = instruction.rs == 31 ? FlowKind::Return : FlowKind::IndirectJump;
         flow.has_delay_slot = true;
         break;
+    case Operation::Eret:
+        // The exception return reads its target from CP0 and applies it
+        // immediately: no delay slot, no static target, like a computed jump.
+        flow.kind = FlowKind::IndirectJump;
+        break;
     case Operation::Syscall:
         // Control leaves through the exception handler; SYSCALL has no delay slot.
         flow.kind = FlowKind::Exception;
@@ -134,10 +139,14 @@ BasicBlock build_basic_block(const ImageRecord& text, std::uint32_t start,
             "Expected a nonzero limit and an aligned start inside file-backed text");
     }
 
-    const auto flow_at = [&](std::uint32_t address) {
+    const auto decode_at = [&](std::uint32_t address) {
         const auto offset = static_cast<std::size_t>(address - text.guest_address);
         const auto bytes = std::span<const std::uint8_t, 4>(text.bytes.data() + offset, 4);
-        return classify(decode(read_instruction_word(bytes)), address);
+        return decode(read_instruction_word(bytes));
+    };
+
+    const auto flow_at = [&](std::uint32_t address) {
+        return classify(decode_at(address), address);
     };
 
     BasicBlock block;
@@ -196,6 +205,15 @@ BasicBlock build_basic_block(const ImageRecord& text, std::uint32_t start,
         ++block.instruction_count;
         if (delay.kind == FlowKind::Unsupported) {
             block.delay_slot_unsupported = true;
+            pc += 4;
+            break;
+        }
+        if (delay.kind == FlowKind::Exception
+            && is_likely_branch(decode_at(pc - 4).operation)) {
+            // A trap in the delay slot of a likely branch: the slot runs only
+            // when the branch is taken, and then the trap preempts the
+            // transfer. The block keeps its branch facts and flags the slot.
+            block.delay_slot_traps = true;
             pc += 4;
             break;
         }

@@ -58,6 +58,10 @@ struct BasicBlock {
                                      // range stops; zero when none is static
     bool delay_slot_unsupported = false;  // ending transfer followed by an
                                           // undecodable word inside the block
+    bool delay_slot_traps = false;  // a likely branch whose (taken-only) delay
+                                    // slot is a trap word: the slot runs only
+                                    // when taken, and then the trap preempts
+                                    // the transfer
     std::string stop_reason;  // stable token: branch, jump, call, return,
                               // indirect-jump, exception, unsupported,
                               // instruction-limit, range, branch-in-delay-slot

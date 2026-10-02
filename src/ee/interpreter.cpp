@@ -1832,6 +1832,12 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
         state.write_gpr64(instruction.rd,
                           state.read_gpr64(instruction.rs) + state.read_gpr64(instruction.rt));
         break;
+    case Operation::Dsubu:
+        // The 64-bit subtract; the trapping DSUB form stays unsupported until
+        // the exception path exists.
+        state.write_gpr64(instruction.rd,
+                          state.read_gpr64(instruction.rs) - state.read_gpr64(instruction.rt));
+        break;
     case Operation::Movz:
         // Conditional move: the destination changes only when rt is zero
         // (movz) or nonzero (movn); r0 ignores writes either way.
@@ -2108,6 +2114,11 @@ StepResult Interpreter::step() {
         if (flow.kind == FlowKind::Unsupported) {
             return StepResult{StepOutcome::Unsupported, pc, instruction.operation};
         }
+        if (flow.kind == FlowKind::Exception) {
+            // A trap in the delay slot fires before the pending transfer; the
+            // handler is not modeled, so stop at the trapping word.
+            return StepResult{StepOutcome::Exception, pc, instruction.operation};
+        }
         if (flow.kind != FlowKind::FallThrough) {
             return StepResult{StepOutcome::IllegalDelaySlot, pc, instruction.operation};
         }
@@ -2163,6 +2174,20 @@ StepResult Interpreter::step() {
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     case FlowKind::Return:
     case FlowKind::IndirectJump:
+        if (instruction.operation == Operation::Eret) {
+            // The exception return applies immediately (no delay slot): the
+            // target comes from EPC or ErrorEPC by the error level, which the
+            // return clears, exactly like the reference.
+            const std::uint32_t status = state_.read_cp0(12);
+            if ((status & 0x00000004u) != 0) {
+                state_.set_pc(state_.read_cp0(30));
+                state_.write_cp0(12, status & ~0x00000004u);
+            } else {
+                state_.set_pc(state_.read_cp0(14));
+                state_.write_cp0(12, status & ~0x00000002u);
+            }
+            return StepResult{StepOutcome::Executed, pc, instruction.operation};
+        }
         // JR targets the low 32 bits of the register in the 32-bit model.
         transfer_target_ = static_cast<std::uint32_t>(state_.read_gpr64(instruction.rs));
         transfer_pending_ = true;
