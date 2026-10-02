@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 25 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 26 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -177,15 +177,18 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   0x00462xxx: its init 0x00463000 sets the stream at 0x008475C0 with
   13-byte records and assigns `/sound/roadnoiz.es` to the static object
   with the relocating flag 1, so the object's odd position is the stream's
-  position after three records); `--threads`
+  position after three records); slice 26 then pins the writer (the assign
+  function's own memcpy — the stream holds blobs, not names — and the
+  faulting path relocates the destination in place at the odd stream
+  position, with 39 bytes copied before it against the console's 32);
+  `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 26 — why the stream position is odd: the sound library's
-  stream at 0x008475C0 advances in 13-byte records, so odd positions leave
-  the static object's data pointer odd and the relocation 0x005595C8
-  faults; the console's same-class object is even. Pin the record grammar
-  (13 bytes = an archive entry plus a tag byte; 12 would keep positions
-  even) and the stream's contents against the console's.
+- Next: M30 slice 27 — the sources copied before the fault: the sound
+  library's assign copies blobs (parsed sound data) into the stream at
+  0x008475C0; 39 bytes precede the faulting entry in the model against 32
+  on the console, so identify those blobs (the engine's parse of the sound
+  data it read) and why their total length differs.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

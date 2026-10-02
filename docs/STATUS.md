@@ -1,20 +1,20 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 25 — the sound library's stream and its
-objects: the static object at 0x00623A50 belongs to the engine's **sound
-library** (0x00462xxx) — the setter 0x004627B0 maintains the statics
-0x00623A3C (a stream write position) and 0x00623A40 (its free space), and
-the init at 0x00463000 sets them to {0x008475C0, 0x1000}, assigns the sound
-banks (`/sound/gt4sys.ins`, `gt4race.ins`, `gt4count.ins`) and then
-**`/sound/roadnoiz.es` to the static object with the relocating flag 1**
-(the faulting path). The object's odd data pointer (0x008475E7) is exactly
-the stream position after three 13-byte records (0x008475C0 + 39), and its
-size (0xFD9) is 0x1000 − 39: the object is a view into the stream. No model
-behavior changed; the next slice finds why the stream position is odd while
-the console's object is even. The differential passes at 3,000 services
-(interpreter reference at 7,570,583 instructions, full state identical).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 26 — the sound library's assign fills the
+stream: a pc-carrying write watch (temporary, removed) shows **every byte of
+the stream at 0x008475C0 is written by the module entry 0x00462670** (the
+string/blob assign's own memcpy 0x005A4724), and the free-space static
+0x00623A40 advances by the copied sources' lengths (0x1000 → 0xFD9). The
+faulting flag-1 assign relocates the source, memcpys it into the stream's
+position, then relocates the destination in place — that last relocation's
+first read at the odd 0x008475E7 faults. The position is 0x008475C0 + 0x27
+(39 bytes copied before), while the live game's buffer holds 32 bytes before
+its aligned structure: the difference is in the *sources* copied before, not
+the mechanism. No model behavior changed; the next slice identifies those
+sources. The differential passes at 3,000 services (interpreter reference at
+7,570,583 instructions, full state identical). This is the first document to
+read in a new session; it is kept current as work proceeds. Details live in
+the linked evidence documents.
 
 ## Where we are
 
@@ -681,6 +681,25 @@ work proceeds. Details live in the linked evidence documents.
   services with the interpreter reference at 7,570,583 instructions and the
   full state identical
   (`docs/reverse-engineering/m30-slice25-sound-library-stream-and-objects.md`).
+- M30 slice 26 (2026-10-02): **the sound library's assign fills the stream** —
+  a pc-carrying write watch (a temporary global set by the driver at every
+  module entry and interpreter step) shows **every byte of the stream at
+  0x008475C0 is written by the module entry 0x00462670** (the string/blob
+  assign's own memcpy 0x005A4724 — there is no separate writer), with the
+  free-space static 0x00623A40 advancing by the copied sources' lengths
+  (0x1000 → 0xFF3 → 0xFE6 → 0xFD9); the writes' bytes are binary
+  (`00 D4 00 00 00 0D ...`), so the sources are **blobs** (parsed sound
+  data), not names. The faulting flag-1 assign relocates the source,
+  memcpys it into the stream's position, then **relocates the destination
+  in place** (0x00462618 → 0x005595C8 with a0 = 0x008475E7) — that last
+  relocation's first read `*(a0 + 4)` at the odd address faults. The
+  position is 0x008475C0 + 0x27 (**39 bytes** copied before) while the live
+  game's buffer holds 32 bytes before its aligned structure: the difference
+  is in the *sources copied before the fault*, not the mechanism. No model
+  behavior changed: CTest 34/34; Python 73 (67 run, 6 skip); the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice26-assign-fills-the-stream.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -690,13 +709,12 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **why the stream position is odd** — the
-  sound library's stream at 0x008475C0 advances in 13-byte records, so its
-  odd positions (after an odd number of records) leave the static object's
-  data pointer odd and the relocation 0x005595C8 faults; the console's
-  same-class object is even. The next slice pins the record grammar (13
-  bytes = an archive entry plus a tag byte; 12 would keep positions even)
-  and the stream's contents against the console's.
+- Next technical milestone work: **the sources copied before the fault** —
+  the sound library's assign copies blobs (parsed sound data) into the
+  stream at 0x008475C0; 39 bytes precede the faulting entry in the model
+  against 32 on the console, so the next slice identifies those blobs (the
+  engine's parse of the sound data it read) and why their total length
+  differs.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
