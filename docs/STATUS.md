@@ -1,14 +1,15 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 11 — the timer library's nodes: the delay
-callbacks are scheduled and active (both nodes in the library's active list
-with flags 3 and their descriptors), but the TIM2 handler's due condition
-never passes for any node, so the waits persist. The idle budget rose to
-200,000 (about an hour of virtual frames); the differential still passes at
-3,000 services (7,508,945 interpreter instructions) and a 30,000-service run
-takes about four seconds. This is the first document to read in a new
-session; it is kept current as work proceeds. Details live in the linked
-evidence documents.
+Updated 2026-10-02 after M30 slice 12 — handler execution: injected handlers
+no longer nest and cannot be preempted (decision 0013), which unblocks the
+game's timer library: the TIM2 handler runs to completion, the delay
+callbacks fire, and the boot runs **continuously** (1,000,000 services,
+33,650,798 interpreted steps, about 29 seconds) with the differential
+passing at 3,000 services (interpreter reference at 7,554,609 instructions,
+full state identical). The next frontier is characterizing the library
+wait/retry loops the game now lives in. This is the first document to read
+in a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -400,6 +401,23 @@ evidence documents.
   3,000 services (interpreter 7,508,945 instructions, state identical); a
   30,000-service run takes about four seconds
   (`docs/reverse-engineering/m30-slice11-timer-library-nodes.md`).
+- M30 slice 12 (2026-10-02): **handler execution** — a watch at the TIM2
+  handler's due comparison showed its body never ran, and the deferred-call
+  state showed a stuck handler frame. Two defects: queued causes were
+  injected before every bridge step (starving the first handler at one
+  instruction per delivery) and a handler's signal could switch threads
+  mid-handler, abandoning its frame. Fix (decision 0013): **no nested
+  injections** (`start_interrupt` refuses while a handler call is active)
+  and **no preemption inside a handler** (`preempt_if_outranked` refuses;
+  the switch happens in `deferred_return`). **The game's delay machinery now
+  works and the boot runs continuously: 1,000,000 services, 33,650,798
+  interpreted steps, about 29 seconds, no deadlock**; the differential
+  passes at 3,000 services with the interpreter reference at 7,554,609
+  instructions and the full state identical. `gt4boot --threads` now prints
+  the handler tables and the deferred-call/pending-cause counts. CTest
+  32/32; Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice12-handler-execution.md`,
+  `docs/decisions/0013-handler-execution.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -409,14 +427,13 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the TIM2 handler's due condition** — the
-  delay nodes are active (slice 11) but the handler never treats any node as
-  due. The next experiment is to instrument the handler's intermediate
-  values for one active node (its target and current at 0x005B822C) and to
-  test whether the model's TIM2 overflow counter and the `<< (CLKS * 4)`
-  scaling match the library's time base (the library's fixed epoch
-  0x23730000 and the handler's overflow handling are the two candidates).
-  Then the first RPC call whose reply the game acts on.
+- Next technical milestone work: **the library wait/retry loops the game now
+  lives in** — the run is continuous (1,000,000 services) and the service
+  mix at the tail is the delay helper's create/wait/signal/delete cycles
+  plus the RPC thread's wakeup checks, with semaphore ids climbing into the
+  thousands. The next slice characterizes what those loops wait for (most
+  likely the model IOP's empty RPC replies on the loading path) and answers
+  the first RPC call whose reply the game acts on.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -476,21 +493,24 @@ evidence documents.
   hits the 3,000-service limit inside the runtime with the state identical
   to the interpreter at 7,508,945 instructions. The **timer tick and DMA
   completion** sources of decision 0011 run the game's TIM2 handler every
-  idle frame (it reprograms COMP) and complete the VIF1/GIF chains, and the
+  idle frame (it reprograms COMP) and complete the VIF1/GIF chains, the
   **semaphore handle shape** of decision 0012 (ids 3, 7, 11, ...) carries
-  the long run from 3,645 to **9,765 services** (672,586 interpreted steps).
-  The remaining frontier: the three threads wait on semaphores created by
-  the game's delay helper (main on 143, the RPC thread on 11, the loader on
-  147); the delay callback is 0x005AEF58 (`iSignalSema`) and the dispatcher
-  0x005B8ED8 is reached through the timer library's nodes, but the delay
-  descriptors are not in the active list at the stop.
+  the long run from 3,645 to **9,765 services**, and the **handler execution
+  fix** of decision 0013 (no nested injections, no preemption inside a
+  handler) unblocks the delay callbacks: the boot now runs **continuously
+  (1,000,000 services, 33,650,798 interpreted steps, about 29 seconds)**.
+  The remaining frontier: the game lives in library wait/retry loops
+  (semaphore ids climb into the thousands; the RPC thread waits on its
+  queue), and the next slice characterizes what they wait for.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
-  WaitSema sequence) and now runs three threads under VBlank wakeups. No
-  timer preemption is modeled (decision 0005); equal-priority dispatch is
-  creation order, not the kernel's rotation; interrupts are delivered only
-  when every thread waits, never during a long-running computation, and the
-  6,000-interrupt idle budget is a guard rather than a modeled frequency.
+  WaitSema sequence) and now runs three threads under VBlank and timer
+  wakeups, with thread switches deferred while a handler runs (decision
+  0013). No timer preemption is modeled (decision 0005); equal-priority
+  dispatch is creation order, not the kernel's rotation; interrupts are
+  delivered only when every thread waits, never during a long-running
+  computation, and the 200,000-interrupt idle budget is a guard rather than
+  a modeled frequency.
 - The `jr ra` fall-through bug found in the fifth slice shows the limit of
   hand-picked differential modules: widen the verified surface
   (`gt4boot --compare-interpreter`) when new control-flow shapes appear.
@@ -500,12 +520,13 @@ evidence documents.
 
 ## Next actions
 
-1. M30 slice 12: **the TIM2 handler's due condition** — instrument the
-   handler's intermediate values for one active node and settle the time
-   base (the overflow counter and the `<< (CLKS * 4)` scaling against the
-   library's epoch); the acceptance evidence is `gt4boot
-   --compare-interpreter` past the current waits (semaphores 143/147/11)
-   with the state identical.
+1. M30 slice 13: **what the library wait/retry loops wait for** — the game
+   now runs continuously but spends its services in the delay helper's
+   cycles and the RPC thread's wakeup checks; identify the operation being
+   retried (most likely an RPC reply the model IOP answers with an empty
+   result) and answer the first call whose reply the game acts on; the
+   acceptance evidence is `gt4boot --compare-interpreter` past the current
+   service-limit boundaries with the state identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -569,4 +590,7 @@ evidence documents.
   handle bits and the delay library (ids 3, 7, 11, ... carry the long run
   from 3,645 to 9,765 services), and slice 11 is the timer library's nodes
   (the delay nodes are scheduled and active; the TIM2 handler's due
-  condition never passes; the idle budget rose to 200,000).
+  condition never passes; the idle budget rose to 200,000), and slice 12 is
+  the handler execution fix (no nested injections, no preemption inside a
+  handler; the delay callbacks fire and the boot runs continuously —
+  1,000,000 services, 33,650,798 interpreted steps).

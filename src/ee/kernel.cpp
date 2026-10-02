@@ -95,6 +95,11 @@ bool Kernel::dispatch(GuestState& state) {
 }
 
 bool Kernel::preempt_if_outranked(GuestState& state) {
+    if (handler_active()) {
+        // A handler is running: the kernel defers thread switches until it
+        // returns (the interrupted context is restored there).
+        return false;
+    }
     KernelThread* current = current_thread();
     KernelThread* next = pick_next_ready();
     if (next == nullptr) {
@@ -105,6 +110,11 @@ bool Kernel::preempt_if_outranked(GuestState& state) {
         return false;  // only a strictly higher priority takes the CPU
     }
     return dispatch(state);
+}
+
+bool Kernel::handler_active() const noexcept {
+    return !deferred_calls_.empty()
+        && deferred_calls_.back().kind == DeferredCall::Kind::Interrupt;
 }
 
 bool Kernel::block_current(GuestState& state, std::uint32_t wait_type,
@@ -1006,6 +1016,10 @@ std::uint32_t Kernel::pending_interrupts() const noexcept {
     return static_cast<std::uint32_t>(interrupt_queue_.size());
 }
 
+std::size_t Kernel::deferred_call_count() const noexcept {
+    return deferred_calls_.size();
+}
+
 std::uint32_t Kernel::sif_register_index_address(std::uint32_t index) const noexcept {
     // The public indices 1-4 name MSCOM, SMCOM, MSFLG and SMFLG.
     if (index >= 1 && index <= 4) {
@@ -1050,6 +1064,12 @@ void Kernel::raise_interrupt(std::uint32_t cause) {
 }
 
 bool Kernel::start_interrupt(GuestState& state) {
+    if (handler_active()) {
+        // A handler is still running. The model does not nest injections:
+        // the handler frame clears EIE and the kernel's handlers run with
+        // nesting disabled, so a queued cause waits for the return.
+        return false;
+    }
     if (interrupt_queue_.empty()) {
         return false;
     }
@@ -1114,8 +1134,13 @@ bool Kernel::deliver_idle_interrupt(GuestState& state) {
     if (interrupt_queue_.empty()) {
         return false;
     }
+    if (!start_interrupt(state)) {
+        // Nothing was delivered (for example a handler is still running);
+        // the cause stays queued for the next boundary.
+        return false;
+    }
     ++idle_interrupts_;
-    return start_interrupt(state);
+    return true;
 }
 
 void Kernel::advance_timers(GuestState& state) {

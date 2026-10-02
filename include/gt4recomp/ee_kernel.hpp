@@ -166,6 +166,8 @@ public:
 
     // Model introspection for tests and tools.
     [[nodiscard]] std::uint32_t pending_interrupts() const noexcept;
+    // The deferred-call stack depth (patched syscalls and active handlers).
+    [[nodiscard]] std::size_t deferred_call_count() const noexcept;
     [[nodiscard]] std::uint32_t sif_register_index_address(std::uint32_t index) const noexcept;
     // The IOP image path named by the last reset command, empty when none.
     [[nodiscard]] const std::string& sif_iop_image() const noexcept;
@@ -276,6 +278,9 @@ private:
     bool dispatch(GuestState& state);
     // Dispatches when a ready thread strictly outranks the running one.
     bool preempt_if_outranked(GuestState& state);
+    // True while an injected handler has not returned through the stub; the
+    // kernel does not nest injections and defers switches until it returns.
+    [[nodiscard]] bool handler_active() const noexcept;
     // The model's private return service: a patched handler or an injected
     // interrupt handler returns through the stub, which issues this number;
     // here the saved state is restored.

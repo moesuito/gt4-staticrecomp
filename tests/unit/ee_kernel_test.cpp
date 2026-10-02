@@ -451,11 +451,15 @@ int main() {
               "the VBlank return restores the context without a thread");
         bool delivered = true;
         std::uint32_t deliveries = 1;  // the one delivered above
-        while (delivered && deliveries <= Kernel::idle_interrupt_budget) {
-            delivered = kernel.deliver_idle_interrupt(state);
-            if (delivered) {
-                ++deliveries;
+        while (deliveries <= Kernel::idle_interrupt_budget) {
+            if (!kernel.deliver_idle_interrupt(state)) {
+                delivered = false;
+                break;
             }
+            ++deliveries;
+            // Let the handler return so the next delivery is allowed: the
+            // model does not nest handler injections.
+            (*return_handler)(state);
         }
         check(!delivered && deliveries == Kernel::idle_interrupt_budget,
               "the idle budget bounds deliveries that change nothing");

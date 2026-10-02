@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 11 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 12 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -126,13 +126,16 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   chain, the game's thread creation, the SIFCMD handshake, the IOP reset,
   the RPC initialization and the game's runtime threads (the cooperative
   scheduler and the injected interrupts exercised end to end) with the state
-  identical to the interpreter (7,508,945 instructions at the 3,000-service
-  comparison point; a long run reaches 9,765 services with semaphore ids
-  3, 7, 11, ... per decision 0012); `--threads` prints the kernel's thread
-  table and the DMA/timer state after a run.
-- Next: M30 slice 12 — the TIM2 handler's due condition (the delay nodes are
-  active but never treated as due; settle the time base), then the first RPC
-  call the game's loading path acts on.
+  identical to the interpreter (7,554,609 instructions at the 3,000-service
+  comparison point; the injected handlers run with no nesting and no
+  preemption per decision 0013, so the game's timer-driven waits complete
+  and a long run continues past **1,000,000 services** (33,650,798
+  interpreted steps, about 29 seconds) without stalling); `--threads`
+  prints the kernel's thread table, the handler tables, the DMA/timer state
+  and the deferred-call counts after a run.
+- Next: M30 slice 13 — what the library wait/retry loops wait for (the game
+  now lives in the delay helper's cycles and the RPC thread's wakeup
+  checks; likely the model IOP's empty RPC replies on the loading path).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

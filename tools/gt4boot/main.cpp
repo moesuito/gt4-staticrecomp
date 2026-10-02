@@ -361,6 +361,24 @@ int wmain(int argc, wchar_t* argv[]) {
                           << thread.function << ", pc 0x" << std::setw(8)
                           << thread.context.pc << std::dec << std::setfill(' ') << '\n';
             }
+            std::cout << "deferred calls: " << driver_kernel.deferred_call_count()
+                      << ", pending interrupts: " << driver_kernel.pending_interrupts()
+                      << '\n';
+            // The registered interrupt and DMA handlers at the stop.
+            for (const KernelInterruptHandler& registration :
+                 driver_kernel.interrupt_handlers()) {
+                std::cout << "intc handler: cause " << registration.cause
+                          << ", handler 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << registration.handler << std::dec
+                          << std::setfill(' ') << '\n';
+            }
+            for (const KernelInterruptHandler& registration :
+                 driver_kernel.dmac_handlers()) {
+                std::cout << "dmac handler: channel " << registration.cause
+                          << ", handler 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << registration.handler << std::dec
+                          << std::setfill(' ') << '\n';
+            }
             // The DMA channel control registers: a channel with the STR bit
             // (0x100) still set was started and never completed.
             const auto print_channel = [](const char* name, std::uint32_t chcr) {
