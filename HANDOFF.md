@@ -30,7 +30,7 @@ Read, in this order:
 5. This file — what is inside the folder, what to install, first-run steps.
 
 State at handoff: `main` green (25/25 CTest, Python 73 collected / 67 run / 6
-skip) and pushed to `origin`; check `git log -1` — this file adds one commit
+skip) and pushed to `origin`; check `git log -1` — the handoff commits sit
 after `20ba459`.
 
 ## 2. What is already inside the copied folder (no installation needed)
