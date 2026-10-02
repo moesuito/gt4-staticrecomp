@@ -1,9 +1,10 @@
 # Project status
 
-Updated 2026-10-02 after M29 — the whole-program build: 15,068 functions,
-924,991 instructions, 146 MB, syntax-checked by MSVC in 27.5 seconds. This is
-the first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 1 — the boundary driver: the translated
+startup now runs as a program under a runner that names the boundary it stops
+at, reaching the first BIOS syscall with the state identical to the
+interpreter's. This is the first document to read in a new session; it is kept
+current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -228,6 +229,19 @@ proceeds. Details live in the linked evidence documents.
   14,991 of 15,067 entries (99.5%), covering 871,317 instructions (65.3%);
   the remaining rejections are the survey's own per-tree budget. CTest 25/25;
   Python 73 (`docs/reverse-engineering/m29-whole-program-build.md`).
+- M30 slice 1 (2026-10-02): **the boundary driver** — `ee::Driver` executes a
+  translated module as a program and classifies where it stops from the guest
+  state (syscall with the service in v1, break, eret, unknown indirect
+  target, unsupported word, jr-ra return, trapping stop, unmapped pc, no
+  entry); `gt4run` is the driver as a program. **The translated startup now
+  runs through the driver from the ELF entry to the first BIOS syscall
+  (0x001001C8, service 0x3C = ExecPS2) with the full final state identical to
+  the interpreter after 942,695 instructions** (all GPRs in both halves, FPU
+  file, FCR31, accumulator, HI/LO in both banks, shift cache, CP0, pc, whole
+  guest-window digest). CTest 27/27 (new `ee_driver` unit test and
+  `gt4run_startup` CLI test); Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-driver-first-slice.md`,
+  `docs/decisions/0004-driver-boundary-classification.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -235,19 +249,19 @@ proceeds. Details live in the linked evidence documents.
   registers (the savestate's own eeMemory re-verifies the text image with 0
   differences). Savestate anchors: PINE slot 9 and the owner's slot 1
   (`docs/reverse-engineering/m14-live-observation.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M29
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: M22 part 2 — the VU0 macro arithmetic
-  (VADD/VMUL/VMADD/VDIV/... with the vector flag semantics); differential
-  execution still needs step control (open question).
+- Next technical milestone work: M30 slice 2 — the BIOS services, starting
+  with the resume-past-syscall mechanism (decision 0004); then jump-table
+  dispatch and the whole-program module under the driver.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 25/25 CTest (the translation tests exist only where the local CORE
-  does); Python suite 73 collected (67 run, 6 skip without the M3 reference
-  ELF).
+- Tests: 27/27 CTest (the translation tests and `gt4run` exist only where the
+  local CORE does); Python suite 73 collected (67 run, 6 skip without the M3
+  reference ELF; the savestate test finds the repository copy first).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
   pinned manifest); `private/reconstructed/SCUS_973.28.elf` (6,123,004 bytes,
@@ -256,11 +270,14 @@ proceeds. Details live in the linked evidence documents.
 - Ghidra 12.1.3 + Temurin JDK 21.0.12.1+1 under `private/tooling/`; hashes and
   provenance in `docs/environment.md`.
 - Disposable Ghidra project directory: `%TEMP%\GT4Recomp-M7`.
-- PCSX2 nightly 2.9.93 at `F:\Games\PS2` with BIOS dumps; PINE enabled on
-  port 28011 (`EnablePINE = true`; the original ini is kept as
-  `.bak-gt4recomp`). Savestates in `Documents/PCSX2/sstates`: slot 9 (PINE,
-  ours) and slot 1 (owner) hold the main menu; `scripts/pcsx2_savestate.py`
-  decodes their CPU state offline.
+- PCSX2 nightly 2.9.93 at `F:\Games\PS2` on the original machine; the owner
+  added a pre-configured **PCSX2 v2.9.94 under `private/pcsx2/`** (with its
+  `pcsx2-config` and BIOS), all ignored by `/private/`. PINE stays on port
+  28011 (`EnablePINE = true`; the original ini is kept as
+  `.bak-gt4recomp`). Savestates: the copies that travel in
+  `private/pcsx2/sstates/` (slot 9 = PINE/menu, ours; slot 1 = owner) and the
+  live `Documents/PCSX2/sstates`; `scripts/pcsx2_savestate.py` decodes their
+  CPU state offline.
 - Live RAM dump (ignored): `private/pcsx2/text-ram.bin` and
   `private/pcsx2/menu-eeMemory.bin`; distributable metadata in
   `docs/inputs/usa-v2.00-live-ram.json`.
@@ -270,7 +287,7 @@ proceeds. Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M29 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M30 lessons are
   pending.
 - Unmodeled words left in the real code region (4): two BC0F (their condition
   is the DMA-derived COP0 line) and two words at unassigned function 0x28
@@ -279,17 +296,26 @@ proceeds. Details live in the linked evidence documents.
   forms stay out of scope by design (VU micro execution).
 - Live single-stepping is unsolved (savestate parsing covers offline
   snapshots); the freeze layout is coupled to the emulator build.
+- The driver's classification is an inference from the stop pc: a jr-ra
+  return is recognized because pc equals ra (a trapping stop at that exact
+  address would be misreported; none observed), and a trapping overflow stops
+  at an ordinary word whose cause the pc alone does not carry. Recorded in
+  `docs/decisions/0004-driver-boundary-classification.md`.
+- **Resuming past a syscall has no module entry yet**: the translator ends a
+  function at the syscall and does not translate the continuation, so after a
+  service runs there is nowhere to re-enter at pc+4. The resume design (resume
+  entries vs an inline syscall runtime call) must be chosen before the BIOS
+  services slice; decision 0004 lists both options.
 
 ## Next actions
 
-1. M30 next: **the driver** — a runner that executes a translated module as a
-   program and resolves the boundaries it stops at (first slice: run from the
-   ELF entry to the first syscall through the driver, state identical to the
-   interpreter's; then the BIOS services, jump-table targets and the rest).
-   The whole-program module already generates and compiles (39 s, 0.53 GB
-   peak); differential execution still needs step control (open).
-2. The M9-M29 lessons and retroactive M2-M5 notes if useful.
-3. Keep the journal and this file current after every working session.
+1. M30 slice 2: **the BIOS services** — first decide and implement the
+   resume-past-syscall mechanism (decision 0004), then handle the services the
+   startup uses, starting with 0x3C (ExecPS2). `gt4run` is the host.
+2. Jump-table dispatch (computed `jr` into local blocks) and the remaining
+   boundary kinds; then the whole-program module under the driver.
+3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
+4. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -317,4 +343,7 @@ proceeds. Details live in the linked evidence documents.
   (indirect control flow became a boundary: 99.1% of the entries translate)
   and M28 (the module dispatches its own indirect targets) and M29 (the
   whole-program build: 15,068 functions, 924,991 instructions, MSVC
-  syntax-checked), plus the scan correction trail.
+  syntax-checked), plus the scan correction trail. M30 slice 1 followed the
+  same day: the boundary driver runs the translated startup to the first BIOS
+  syscall (service 0x3C) with state identical to the interpreter, and `gt4run`
+  runs it as a program.

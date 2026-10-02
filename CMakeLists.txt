@@ -25,6 +25,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/functions.cpp
     src/ee/state.cpp
     src/ee/interpreter.cpp
+    src/ee/driver.cpp
     src/ee/vu_macro.cpp
 )
 target_include_directories(gt4recomp_decode PUBLIC include)
@@ -86,6 +87,9 @@ if(BUILD_TESTING)
     add_executable(ee_interpreter_tests tests/unit/ee_interpreter_test.cpp)
     target_link_libraries(ee_interpreter_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_interpreter COMMAND ee_interpreter_tests)
+    add_executable(ee_driver_tests tests/unit/ee_driver_test.cpp)
+    target_link_libraries(ee_driver_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_driver COMMAND ee_driver_tests)
     add_executable(ee_synth_tests tests/unit/ee_synth_test.cpp)
     target_link_libraries(ee_synth_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_synth COMMAND ee_synth_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/synth-straight.txt")
@@ -178,6 +182,15 @@ if(BUILD_TESTING)
         target_include_directories(ee_translation_startup_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
         target_link_libraries(ee_translation_startup_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_translation_startup COMMAND ee_translation_startup_tests "${GT4_LOCAL_CORE}")
+
+        # The driver as a program: the same startup module, run and checked
+        # against the interpreter from the command line.
+        add_executable(gt4run tools/gt4run/main.cpp "${GT4_TRANSLATED_STARTUP_HEADER}")
+        target_include_directories(gt4run PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(gt4run PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME gt4run_startup COMMAND gt4run "${GT4_LOCAL_CORE}" --compare-interpreter)
+        set_tests_properties(gt4run_startup PROPERTIES
+            PASS_REGULAR_EXPRESSION "boundary: syscall 0x001001c8 service 0x3c")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(

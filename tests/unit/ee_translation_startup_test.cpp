@@ -1,11 +1,14 @@
 // Compares the natively translated startup block against the interpreter on
 // the complete final state: all 32 registers in both halves, HI/LO, the FPU
 // file, FCR31, the accumulator, the shift cache, the pc, and the written .bss
-// window. The translator emits a halt at the first BIOS syscall, exactly where
-// the interpreter stops. The generated header is produced into the build tree
-// from the local CORE; nothing game-derived is committed.
+// window. The translated run goes through the boundary driver (run_once),
+// which executes the module entry and classifies the stop; the translator
+// emits a halt at the first BIOS syscall, exactly where the interpreter stops.
+// The generated header is produced into the build tree from the local CORE;
+// nothing game-derived is committed.
 #include "translated-startup.hpp"
 
+#include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
 #include "gt4recomp/executable_image.hpp"
 #include "verified_core.hpp"
@@ -63,7 +66,11 @@ int wmain(int argc, wchar_t* argv[]) {
         const auto image = reconstruct_core(core);
 
         auto translated_state = make_startup_state(image);
-        translated::function_00100008(translated_state);
+        const ModuleEntry entries[] = {
+            { entry, &translated::function_00100008 },
+        };
+        Driver driver(translated_state, ModuleCatalog{entries});
+        const Boundary boundary = driver.run_once();
 
         auto interpreted_state = make_startup_state(image);
         Interpreter interpreter(interpreted_state);
@@ -85,6 +92,9 @@ int wmain(int argc, wchar_t* argv[]) {
         };
         check(result.outcome == StepOutcome::Exception && result.pc == first_syscall,
               "the interpreted run stopped at the first BIOS syscall");
+        check(boundary.kind == BoundaryKind::Syscall && boundary.pc == first_syscall
+                  && boundary.service == 0x3Cu,
+              "the driver stopped at the first BIOS syscall (service 0x3C)");
         check(translated_state.pc() == first_syscall,
               "the translated run stopped at the same pc");
         bool registers_match = true;
