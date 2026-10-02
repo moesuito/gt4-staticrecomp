@@ -1,16 +1,19 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 31 — the records come from the null
-pointer: a temporary instrument that tracks the last guest read shows the
-stream's copies read from **0x0..0xC** — the assign is copying from the
-**null pointer** because the assign chain's formatter/resolver **0x0044D740
-returned 0** (a failed parse); the "13-byte records" are simply the low
-memory's content (0xD4 at +4, 0x0D at +8), the length 13 comes from the low
-memory's byte, and after three such copies the stream position is odd (39
-bytes), which makes the flag-1 assignment's relocation fault. So the whole
-fault chain is: the resolver fails → the assign copies from null → the odd
-position → the relocation fault. No model behavior changed; the next slice
-finds why 0x0044D740 fails. The differential passes at 3,000 services
+Updated 2026-10-02 after M30 slice 32 — the resolver's handler registry: the
+failing parse (0x004AE1F8 → 0x004ACE58) is a **handler-registry dispatch**
+over the global list at 0x006318B0 (match at vtable+0x38, handler at
+vtable+0x40), and the model's registry at the fault is **identical** to the
+live dump's (nodes 0x617BB0/0x84B480/0x617AB0 with the same vtables). The
+match (0x004ACBA0) compares the path against the handler's string list at
+**+0xF4** (or the single string at **+0xAC** when that is zero); the live
+handler 0x617BB0 carries **+0xAC = "/"** (the string built at 0x004ACA68,
+0x006B00D0 — the constructor 0x004ACA40's own constant), so the console
+matches any path starting with "/", while the model's handler has
+**+0xF4 = 0x00617AA8** (the global holding the `/mpeg` pointer) — a
+different prefix list — so the sound-bank paths match no handler and the
+parse returns 0. The name strings were verified intact at the fault. No
+model behavior changed. The differential passes at 3,000 services
 (interpreter reference at 7,570,583 instructions, full state identical).
 This is the first document to read in a new session; it is kept current as
 work proceeds. Details live in the linked evidence documents.
@@ -787,6 +790,27 @@ work proceeds. Details live in the linked evidence documents.
   with the interpreter reference at 7,570,583 instructions and the full
   state identical
   (`docs/reverse-engineering/m30-slice31-records-from-the-null-pointer.md`).
+- M30 slice 32 (2026-10-02): **the resolver's handler registry** — the
+  failing parse (0x004AE1F8 → **0x004ACE58**) is a **handler-registry
+  dispatch** over the global list at **0x006318B0** (per handler: a match
+  at vtable+0x38, then the handler at vtable+0x40), and the model's
+  registry at the fault is **identical** to the live dump's (nodes
+  0x617BB0/0x84B480/0x617AB0, vtables 0x688C58/0x688B70). The match
+  (**0x004ACBA0**) compares the path against the handler's **string list at
+  +0xF4** (via 0x004AE9E8, a path-prefix compare) or, when +0xF4 is zero,
+  the **single string at +0xAC** (fallback 0x004B0A38). The live handler
+  0x617BB0 carries **+0xAC = "/"** (built at 0x004ACA68, the string
+  0x006B00D0, the constructor 0x004ACA40's own constant), so the console
+  matches any path starting with "/", while the model's handler has
+  **+0xF4 = 0x00617AA8** (the global holding the `/mpeg` pointer) and the
+  other handlers have +0xF4 = 0 — a different prefix list, so the
+  sound-bank paths match no handler and the parse returns 0. The name
+  strings were verified intact at the fault (`/sound/gt4race2.ins`,
+  `%s%s%s.ins`, `/sound/gt4sys.ins` at 0x006AB850 onward). No model
+  behavior changed: CTest 34/34; Python 73 (67 run, 6 skip); the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice32-resolver-handler-registry.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -796,13 +820,12 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **why the resolver 0x0044D740 fails** — the
-  assign chain's formatter/resolver returns 0 for the sound-bank sources
-  (its parse at 0x004AE1F8 fails), so the assign copies from the null
-  pointer and the stream position turns odd; the next slice reads the
-  parse/formatter context (0x004AEFF0) and the format strings' state in
-  guest memory at the fault to see what the resolver expects — a valid
-  format, a mounted volume, or a table the model has not provided yet.
+- Next technical milestone work: **the handler's prefix registration** —
+  which code constructs (or re-registers) the handler 0x00617BB0 with the
+  "/" prefix, and why the model's instance ends up with 0x00617AA8 (the
+  `/mpeg` global) instead — the candidates are the engine's mount paths
+  (the ISO, the GT4.VOL archives and the PCDV) and the order in which the
+  model runs them.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

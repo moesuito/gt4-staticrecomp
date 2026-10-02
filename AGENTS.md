@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 31 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 32 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -199,16 +199,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   finds the records' source is the **null pointer** (the assign chain's
   resolver 0x0044D740 returned 0 on a failed parse, so the copies read
   addresses 0x0..0xC — the low memory), which is the root of the fault
-  chain; `--threads`
+  chain; slice 32 then shows the resolver's parse is a handler-registry
+  dispatch (the list at 0x006318B0 matches the console's) and the failure
+  is the handler's path-prefix state: the live handler carries +0xAC = "/"
+  while the model's points its prefix list (+0xF4) at the `/mpeg` global;
+  `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 32 — why the resolver 0x0044D740 fails: the assign
-  chain's formatter/resolver returns 0 for the sound-bank sources (its
-  parse at 0x004AE1F8 fails), so the assign copies from the null pointer
-  and the stream position turns odd; read the parse/formatter context
-  (0x004AEFF0) and the format strings' state in guest memory at the fault
-  to see what the resolver expects — a valid format, a mounted volume, or a
-  table the model has not provided yet.
+- Next: M30 slice 33 — the handler's prefix registration: which code
+  constructs (or re-registers) the handler 0x00617BB0 with the "/" prefix,
+  and why the model's instance ends up with 0x00617AA8 (the `/mpeg` global)
+  instead — the candidates are the engine's mount paths (the ISO, the
+  GT4.VOL archives and the PCDV) and the order in which the model runs
+  them.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
