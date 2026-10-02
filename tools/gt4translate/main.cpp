@@ -736,22 +736,73 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             break;
         }
         case FlowKind::Call: {
-            // Direct calls only (validated earlier). The link is written, the
-            // delay slot runs, then the callee executes; execution resumes at
-            // pc+8, which is the next emitted statement.
             comment(address, word);
-            body << "    state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
-                 << "u); // link\n";
-            comment(address + 4, word_at(text, address + 4));
-            body << "    " << statement_at(address + 4)
-                 << " // delay slot (always executes)\n";
-            body << "    " << call_expression(flow.target) << "\n";
-            body << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
-                 << "u) { return; } // a service boundary stopped the callee\n\n";
+            if (instruction.operation == Operation::Jal) {
+                // Direct call: the link is written, the delay slot runs, then
+                // the callee executes; execution resumes at pc+8, which is the
+                // next emitted statement.
+                body << "    state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
+                     << "u); // link\n";
+                comment(address + 4, word_at(text, address + 4));
+                body << "    " << statement_at(address + 4)
+                     << " // delay slot (always executes)\n";
+                body << "    " << call_expression(flow.target) << "\n";
+                body << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
+                     << "u) { return; } // a service boundary stopped the callee\n\n";
+            } else {
+                // Indirect call through the module's own entry table. The
+                // target is read before the link (a shared rd == rs encoding
+                // still jumps to the old value), an unknown target stops at
+                // the transfer, and a boundary in the callee propagates.
+                const auto rs = static_cast<unsigned>(instruction.rs);
+                const auto rd = static_cast<unsigned>(instruction.rd);
+                const auto target = "target_" + hex_value(address, 8);
+                body << "    {\n"
+                     << "    const std::uint32_t " << target
+                     << " = static_cast<std::uint32_t>(state.read_gpr64(" << rs << "));\n"
+                     << "    if (!detail::has_entry(" << target << ")) {\n"
+                     << "        state.set_pc(0x" << hex_value(address, 8)
+                     << "u); // unknown indirect target: stop at the transfer\n"
+                     << "        return;\n"
+                     << "    }\n"
+                     << "    state.write_gpr64(" << rd << ", 0x"
+                     << hex_value(address + 8, 8) << "u); // link\n";
+                comment(address + 4, word_at(text, address + 4), "    ");
+                body << "    " << statement_at(address + 4)
+                     << " // delay slot (always executes)\n";
+                body << "    detail::call_entry(state, " << target << ");\n"
+                     << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
+                     << "u) { return; } // a boundary stopped the callee\n"
+                     << "    }\n\n";
+            }
             if (unit.labels.contains(address + 4)) {
                 body << "    goto " << label_for(address + 8)
                      << "; // skip the standalone delay-slot copy\n\n";
             }
+            consumed_delay_slots.insert(address + 4);
+            break;
+        }
+        case FlowKind::IndirectJump: {
+            // A computed jump through the module's entry table: the target
+            // returns through this function's ra, so the module returns after
+            // the call; an unknown target stops at the transfer.
+            const auto rs = static_cast<unsigned>(instruction.rs);
+            const auto target = "target_" + hex_value(address, 8);
+            comment(address, word);
+            body << "    {\n"
+                 << "    const std::uint32_t " << target
+                 << " = static_cast<std::uint32_t>(state.read_gpr64(" << rs << "));\n"
+                 << "    if (!detail::has_entry(" << target << ")) {\n"
+                 << "        state.set_pc(0x" << hex_value(address, 8)
+                 << "u); // unknown computed target: stop at the transfer\n"
+                 << "        return;\n"
+                 << "    }\n";
+            comment(address + 4, word_at(text, address + 4), "    ");
+            body << "    " << statement_at(address + 4)
+                 << " // delay slot (always executes)\n"
+                 << "    detail::call_entry(state, " << target << ");\n"
+                 << "    return; // the target returns through this function's ra\n"
+                 << "    }\n\n";
             consumed_delay_slots.insert(address + 4);
             break;
         }
@@ -841,32 +892,10 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
                     // pc from CP0).
                     unit.reachable.erase(last);
                     unit.halts.insert(last);
-                } else {
-                    // A computed jump (jr through another register): the target
-                    // is a runtime value. The module stops before the transfer
-                    // and a driver resolves it; the delay slot belongs to the
-                    // transfer, so it is a boundary word too.
-                    const std::uint32_t jump_address = node.block.end_exclusive - 8;
-                    if (classify(decode(word_at(text, jump_address)), jump_address).kind
-                        != FlowKind::IndirectJump) {
-                        throw std::runtime_error("A computed jump at the text edge is not modeled");
-                    }
-                    unit.reachable.erase(jump_address);
-                    unit.reachable.erase(jump_address + 4);
-                    unit.halts.insert(jump_address);
                 }
-            } else if (node.block.ending == FlowKind::Call && !node.block.target_known) {
-                // An indirect call (jalr): the target is a runtime value. The
-                // module stops before the call, exactly like the other
-                // boundaries, and the delay slot is a boundary word as well.
-                const std::uint32_t call_address = node.block.end_exclusive - 8;
-                if (classify(decode(word_at(text, call_address)), call_address).kind
-                    != FlowKind::Call) {
-                    throw std::runtime_error("An indirect call at the text edge is not modeled");
-                }
-                unit.reachable.erase(call_address);
-                unit.reachable.erase(call_address + 4);
-                unit.halts.insert(call_address);
+                // A computed jump stays reachable: the emission dispatches it
+                // through the module's entry table at run time and stops at
+                // the transfer when the target is unknown.
             } else if (node.block.ending == FlowKind::Unsupported
                        && node.block.stop_reason == "unsupported") {
                 // An instruction the model does not execute (VCALLMS, the
@@ -953,14 +982,23 @@ std::map<std::uint32_t, TranslationUnit> collect_units(
                 }
                 break;
             case FlowKind::Call:
-                if (instruction.operation != Operation::Jal) {
-                    reject("Indirect calls are not supported");
+                if (instruction.operation == Operation::Jal) {
+                    calls.push_back(flow.target);
                 }
                 if (!unit.reachable.contains(address + 4)
                     && !unit.unsupported_slots.contains(address + 4)) {
                     reject("A call has no reachable delay slot");
                 }
-                calls.push_back(flow.target);
+                break;
+            case FlowKind::IndirectJump:
+                // A computed jump dispatches through the module's table at run
+                // time; the eret form was already turned into a halt while
+                // collecting.
+                if (!unit.reachable.contains(address + 4)
+                    && !unit.trap_slots.contains(address + 4)
+                    && !unit.unsupported_slots.contains(address + 4)) {
+                    reject("A computed jump has no reachable delay slot");
+                }
                 break;
             default:
                 reject("Not supported by this translator");
@@ -1080,9 +1118,11 @@ int wmain(int argc, wchar_t* argv[]) {
                      "and multiple 'jr ra' returns. With a halt address the walk stops there\n"
                      "instead of translating further (a syscall or an unsupported word); the\n"
                      "emitted module sets the pc at that address and returns, exactly where\n"
-                     "the interpreter stops. Indirect transfers (jalr and computed jr) stop the\n"
-                     "module the same way, with the pc at the transfer: a driver resolves the\n"
-                     "runtime target. Exceptions and unsupported words stop identically.\n"
+                     "the interpreter stops. Indirect transfers (jalr and computed jr) now\n"
+                     "dispatch through the module's own entry table at run time and stop at\n"
+                     "the transfer only when the target is unknown; instructions the model\n"
+                     "does not run stop the module the same way. Exceptions and unsupported\n"
+                     "words stop identically.\n"
                      "max-instructions bounds the whole module. Without an output file the\n"
                      "header is printed to stdout. --survey tries every direct-call target in\n"
                      "the text and reports the outcome.\n";
@@ -1415,7 +1455,30 @@ int wmain(int argc, wchar_t* argv[]) {
             output << "inline void function_" << hex_value(entry, 8)
                    << "(ee::GuestState& state);\n";
         }
-        output << "\n";
+        output << "\n"
+               << "namespace detail {\n\n"
+               << "// The module's dispatch table for runtime targets. Indirect\n"
+               << "// transfers resolve through it; an unknown target keeps the\n"
+               << "// boundary stop.\n"
+               << "[[nodiscard]] inline bool has_entry(std::uint32_t target) {\n"
+               << "    switch (target) {\n";
+        for (const auto& [entry, unit] : units) {
+            output << "    case 0x" << hex_value(entry, 8) << "u: return true;\n";
+        }
+        output << "    default: return false;\n"
+               << "    }\n"
+               << "}\n\n"
+               << "// Executes the runtime target; callers check has_entry first.\n"
+               << "inline void call_entry(ee::GuestState& state, std::uint32_t target) {\n"
+               << "    switch (target) {\n";
+        for (const auto& [entry, unit] : units) {
+            output << "    case 0x" << hex_value(entry, 8) << "u: function_"
+                   << hex_value(entry, 8) << "(state); return;\n";
+        }
+        output << "    default: state.set_pc(target); return;\n"
+               << "    }\n"
+               << "}\n\n"
+               << "} // namespace detail\n\n";
         for (const auto& [entry, unit] : units) {
             output << "inline void function_" << hex_value(entry, 8)
                    << "(ee::GuestState& state) {\n"

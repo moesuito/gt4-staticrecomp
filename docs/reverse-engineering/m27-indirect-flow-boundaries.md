@@ -67,3 +67,10 @@ reason: 5 x start-validation edge cases
   larger policy (the 119 rejections are exactly that).
 - The continuation after an indirect call is translated even though the
   module cannot reach it yet; it is the future resume point.
+
+## Follow-up
+
+M28 replaced the stopping convention for known targets with an in-module
+dispatch table: `jalr` and computed `jr` now execute the entry when the
+module has it, and stop at the transfer only when the target is unknown. See
+`m28-module-dispatch.md`.
