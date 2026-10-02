@@ -1,21 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 36 — the handlers' state matches; the
-failure is in the stream's processing: every compared handler field is
-**identical** to the live dump (pending lists empty, state 0, the completed
-list at 0x6B00D0/0x6317C4, the current object 0x688C40) — the queued open
-*was processed*, not stuck — and together with the previous slices the
-entire handler-side state matches the console. The completion step is
-**0x004AED80** (it pops the completed list at the handler's +0xAC and
-dispatches the current object's vtable+0x48 method). So the difference is
-in the **stream's dynamic processing** — the stream is the formatter's
-context on its stack and the result the formatter reads (+0x94) stays 0 in
-the model while the console's open succeeds; the next slice watches that
-context (its +0x94/+0x80 writes) or keys on the context construction
-(0x004AEFF0). No model behavior changed. The differential passes at 3,000
-services (interpreter reference at 7,570,583 instructions, full state
-identical). This is the first document to read in a new session; it is kept
-current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 37 — the archive buffers are identical;
+the worker's insert: the live dump's handler buffers hold **the same
+archives the model serves, byte for byte** (0x0090EA80/0x59440 == the
+image's logical 0x1BEF0; 0x00905B00/0xF00 == the image's logical 0x143B24,
+with the -16 layer shift) — so the difference is not the archive content.
+The sound names appear plainly XOR-0xFF in the **outer** archives' name
+tables (GT4.VOL/GT4L1.VOL at 0xC01B/0xC025/0xC059); the inner archives'
+names are not raw-searchable (compressed, inconclusive). The worker step
+**0x004AD4A0** with an **empty list** (the state in both) takes the insert
+path **0x004AD53C**: it locks, sets the stream's state (+0x80) to 2 and
+inserts the stream into the handler's list (0x0057CB28 with the stream's
+condition node at +0x3C). No model behavior changed. The differential
+passes at 3,000 services (interpreter reference at 7,570,583 instructions,
+full state identical). This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -886,6 +886,26 @@ current as work proceeds. Details live in the linked evidence documents.
   with the interpreter reference at 7,570,583 instructions and the full
   state identical
   (`docs/reverse-engineering/m30-slice36-handler-state-matches.md`).
+- M30 slice 37 (2026-10-02): **the archive buffers are identical; the
+  worker's insert** — the live dump's handler buffers hold **the same
+  archives the model serves, byte for byte**: 0x0090EA80 (0x59440 bytes)
+  == the image's logical block 0x1BEF0, and 0x00905B00 (0xF00 bytes) ==
+  the image's logical 0x143B24 (file 0x143B14, the -16 layer shift); both
+  start with the 3.1 header (0xACB990AD). So the difference is **not** the
+  archive content. The sound names (`gt4sys`, `roadnoiz`, `gt4se`) appear
+  plainly XOR-0xFF in the **outer** archives' name tables (GT4.VOL and
+  GT4L1.VOL at 0xC01B/0xC025/0xC059); the inner archives' names are not
+  raw-searchable (their pages are compressed), so that search is
+  inconclusive. The worker step **0x004AD4A0** walks a sorted list at the
+  handler's +0x58 by the stream's key pair (+0xA0/+0xA4); with an **empty
+  list** (the state in both the model and the console) it takes the insert
+  path **0x004AD53C**: it locks, sets the **stream's state (+0x80) to 2**
+  and inserts the stream into the handler's list (0x0057CB28 with the
+  stream's condition node at +0x3C). No model behavior changed: CTest 34/34;
+  Python 73 (67 run, 6 skip); the differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical
+  (`docs/reverse-engineering/m30-slice37-archive-buffers-and-the-worker-insert.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -895,13 +915,13 @@ current as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the stream's dynamic processing** — the
-  handler-side state matches the console's, so the difference is in the
-  stream (the formatter's context on its stack): the result it reads
-  (+0x94) stays 0 while the console's open succeeds; the next slice watches
-  the context's +0x94/+0x80 writes (covering the sound thread's stack
-  window and filtering on the field offsets) or keys on the context
-  construction (0x004AEFF0).
+- Next technical milestone work: **the formatter's context fields** — the
+  archive content, the registry and the handler state all match, so the
+  difference is in the stream's dynamic fields (the formatter's context,
+  whose +0x94 the formatter reads as the result); the next instrument
+  exposes the guest sp from the driver and follows a narrow stack window
+  around the current sp, reporting the context's field writes (+0x94,
+  +0x80, +0x3C) during the open.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
