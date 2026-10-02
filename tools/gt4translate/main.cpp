@@ -141,6 +141,58 @@ std::string statement_for(const DecodedInstruction& instruction) {
              << ", detail::arithmetic_shift_right_32(state.read_gpr32(" << rt
              << "), " << static_cast<unsigned>(instruction.shift_amount) << "));";
         break;
+    case Operation::Sllv:
+        code << "state.write_gpr32(" << rd << ", state.read_gpr32(" << rt
+             << ") << (state.read_gpr32(" << rs << ") & 0x1fu));";
+        break;
+    case Operation::Srlv:
+        code << "state.write_gpr32(" << rd << ", state.read_gpr32(" << rt
+             << ") >> (state.read_gpr32(" << rs << ") & 0x1fu));";
+        break;
+    case Operation::Srav:
+        code << "state.write_gpr32(" << rd
+             << ", detail::arithmetic_shift_right_32(state.read_gpr32(" << rt
+             << "), static_cast<std::uint8_t>(state.read_gpr32(" << rs << ") & 0x1fu)));";
+        break;
+    case Operation::Dsll:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rt << ") << "
+             << static_cast<unsigned>(instruction.shift_amount) << ");";
+        break;
+    case Operation::Dsrl:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rt << ") >> "
+             << static_cast<unsigned>(instruction.shift_amount) << ");";
+        break;
+    case Operation::Dsra:
+        code << "state.write_gpr64(" << rd
+             << ", detail::arithmetic_shift_right_64(state.read_gpr64(" << rt
+             << "), " << static_cast<unsigned>(instruction.shift_amount) << "));";
+        break;
+    case Operation::Dsll32:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rt << ") << "
+             << (static_cast<unsigned>(instruction.shift_amount) + 32) << ");";
+        break;
+    case Operation::Dsrl32:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rt << ") >> "
+             << (static_cast<unsigned>(instruction.shift_amount) + 32) << ");";
+        break;
+    case Operation::Dsra32:
+        code << "state.write_gpr64(" << rd
+             << ", detail::arithmetic_shift_right_64(state.read_gpr64(" << rt
+             << "), " << (static_cast<unsigned>(instruction.shift_amount) + 32) << "));";
+        break;
+    case Operation::Dsllv:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rt
+             << ") << (state.read_gpr32(" << rs << ") & 0x3fu));";
+        break;
+    case Operation::Dsrlv:
+        code << "state.write_gpr64(" << rd << ", state.read_gpr64(" << rt
+             << ") >> (state.read_gpr32(" << rs << ") & 0x3fu));";
+        break;
+    case Operation::Dsrav:
+        code << "state.write_gpr64(" << rd
+             << ", detail::arithmetic_shift_right_64(state.read_gpr64(" << rt
+             << "), static_cast<std::uint8_t>(state.read_gpr32(" << rs << ") & 0x3fu)));";
+        break;
     case Operation::Lw:
         code << "state.write_gpr32(" << rt
              << ", state.memory().read_word(detail::effective_address(state, " << rs
@@ -236,6 +288,22 @@ std::string statement_for(const DecodedInstruction& instruction) {
     case Operation::Plzcw:
         code << "state.write_gpr64(" << rd
              << ", detail::plzcw_words(state.read_gpr64(" << rs << ")));";
+        break;
+    case Operation::Mfc0:
+        if (rt == 0 && rd != 9) {
+            code << "; // mfc0 with rt=0 and rd!=9 has no effect";
+            break;
+        }
+        code << "state.write_gpr32(" << rt << ", detail::read_cp0(state, " << rd << "));";
+        break;
+    case Operation::Mtc0:
+        code << "detail::write_cp0(state, " << rd << ", state.read_gpr32(" << rt << "));";
+        break;
+    case Operation::Ei:
+        code << "detail::execute_interrupt_enable(state, true);";
+        break;
+    case Operation::Di:
+        code << "detail::execute_interrupt_enable(state, false);";
         break;
     case Operation::AddaS:
         // The casts matter: uint8_t streams as a character, which would emit
@@ -669,7 +737,8 @@ int wmain(int argc, wchar_t* argv[]) {
                << "// and never commit it.\n\n"
                << "#include \"gt4recomp/ee_state.hpp\"\n\n"
                << "#include <bit>\n"
-               << "#include <cstdint>\n\n"
+               << "#include <cstdint>\n"
+               << "#include <stdexcept>\n\n"
                << "namespace gt4recomp::translated {\n\n"
                << "namespace detail {\n\n"
                << "[[nodiscard]] inline std::uint32_t effective_address(\n"
@@ -697,6 +766,16 @@ int wmain(int argc, wchar_t* argv[]) {
                << "    const std::uint32_t shifted = value >> shift;\n"
                << "    return (value & 0x80000000u) != 0\n"
                << "               ? (shifted | (0xffffffffu << (32 - shift)))\n"
+               << "               : shifted;\n"
+               << "}\n\n"
+               << "[[nodiscard]] inline std::uint64_t arithmetic_shift_right_64(std::uint64_t value,\n"
+               << "                                                              std::uint8_t shift) {\n"
+               << "    if (shift == 0) {\n"
+               << "        return value;\n"
+               << "    }\n"
+               << "    const std::uint64_t shifted = value >> shift;\n"
+               << "    return (value & 0x8000000000000000ull) != 0\n"
+               << "               ? (shifted | (0xffffffffffffffffull << (64 - shift)))\n"
                << "               : shifted;\n"
                << "}\n\n"
                << "[[nodiscard]] inline std::uint32_t lane_word(std::uint64_t value, int lane) {\n"
@@ -733,6 +812,45 @@ int wmain(int argc, wchar_t* argv[]) {
                << "    const std::uint32_t high_count =\n"
                << "        count_leading_sign_bits(static_cast<std::uint32_t>(source >> 32)) - 1;\n"
                << "    return (static_cast<std::uint64_t>(high_count) << 32) | low_count;\n"
+               << "}\n\n"
+               << "// CP0 access mirrors the interpreter: the Status read mask, the\n"
+               << "// protected Config bits and the performance counters stopping.\n"
+               << "[[nodiscard]] inline std::uint32_t read_cp0(const ee::GuestState& state,\n"
+               << "                                            std::uint8_t reg) {\n"
+               << "    if (reg == 12) {\n"
+               << "        return state.read_cp0(12) & 0xf0c79c1fu;\n"
+               << "    }\n"
+               << "    if (reg == 25) {\n"
+               << "        throw std::runtime_error(\"mfc0 from the performance counters is not modeled\");\n"
+               << "    }\n"
+               << "    return state.read_cp0(reg);\n"
+               << "}\n\n"
+               << "inline void write_cp0(ee::GuestState& state, std::uint8_t reg, std::uint32_t value) {\n"
+               << "    switch (reg) {\n"
+               << "    case 16:\n"
+               << "        state.write_cp0(16, (value & ~0xfc0u) | 0x440u);\n"
+               << "        break;\n"
+               << "    case 24:\n"
+               << "        break;  // the debug register accepts the write as feedback only\n"
+               << "    case 25:\n"
+               << "        throw std::runtime_error(\"mtc0 to the performance counters is not modeled\");\n"
+               << "    default:\n"
+               << "        state.write_cp0(reg, value);\n"
+               << "        break;\n"
+               << "    }\n"
+               << "}\n\n"
+               << "// EI and DI take effect in kernel mode or when already in an\n"
+               << "// exception level; they toggle Status.EIE the way the interpreter does.\n"
+               << "inline void execute_interrupt_enable(ee::GuestState& state, bool enable) {\n"
+               << "    const std::uint32_t status = state.read_cp0(12);\n"
+               << "    const bool takes_effect = (status & 0x00020000u) != 0\n"
+               << "        || (status & 0x00000002u) != 0\n"
+               << "        || (status & 0x00000004u) != 0\n"
+               << "        || (status & 0x00000018u) == 0;\n"
+               << "    if (takes_effect) {\n"
+               << "        state.write_cp0(12, enable ? (status | 0x00010000u)\n"
+               << "                                    : (status & ~0x00010000u));\n"
+               << "    }\n"
                << "}\n\n"
                << "// The PS2 FPU has no denormals and saturates at the largest finite\n"
                << "// value; this mirrors the interpreter's hardware_float exactly.\n"

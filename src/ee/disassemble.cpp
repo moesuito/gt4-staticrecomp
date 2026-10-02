@@ -24,6 +24,41 @@ std::string float_register(std::uint8_t index) {
     return "f" + std::to_string(index);
 }
 
+// CP0 registers have architectural names; unknown numbers fall back to their
+// index so a listing stays unambiguous.
+std::string cp0_register(std::uint8_t index) {
+    switch (index) {
+    case 0: return "Index";
+    case 1: return "Random";
+    case 2: return "EntryLo0";
+    case 3: return "EntryLo1";
+    case 4: return "Context";
+    case 5: return "PageMask";
+    case 6: return "Wired";
+    case 8: return "BadVAddr";
+    case 9: return "Count";
+    case 10: return "EntryHi";
+    case 11: return "Compare";
+    case 12: return "Status";
+    case 13: return "Cause";
+    case 14: return "EPC";
+    case 15: return "PRId";
+    case 16: return "Config";
+    case 17: return "LLAddr";
+    case 18: return "WatchLO";
+    case 19: return "WatchHI";
+    case 24: return "Debug";
+    case 25: return "PCCR";
+    case 26: return "DEPC";
+    case 27: return "PerfCnt";
+    case 28: return "ErrCtl";
+    case 29: return "CacheErr";
+    case 30: return "ErrorEPC";
+    case 31: return "DESAVE";
+    default: return "cp0_" + std::to_string(index);
+    }
+}
+
 std::string hex_value(std::uint32_t value, int width = 0) {
     std::ostringstream output;
     output << std::hex << std::setfill('0') << std::setw(width) << value;
@@ -153,7 +188,22 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Sll:
     case Operation::Srl:
     case Operation::Sra:
+    case Operation::Dsll:
+    case Operation::Dsrl:
+    case Operation::Dsra:
+    case Operation::Dsll32:
+    case Operation::Dsrl32:
+    case Operation::Dsra32:
         output << ' ' << rd << ", " << rt << ", 0x" << hex_value(instruction.shift_amount);
+        break;
+    case Operation::Sllv:
+    case Operation::Srlv:
+    case Operation::Srav:
+    case Operation::Dsllv:
+    case Operation::Dsrlv:
+    case Operation::Dsrav:
+        // The shift amount comes from rs, as in the SLLV/SLL family.
+        output << ' ' << rd << ", " << rt << ", " << rs;
         break;
     case Operation::Mfc1:
     case Operation::Mtc1:
@@ -338,6 +388,21 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Pmthl:
         output << " pmthl.lw " << rs;
         break;
+    case Operation::Mfc0:
+    case Operation::Mtc0:
+        output << ' ' << rt << ", " << cp0_register(instruction.rd);
+        break;
+    case Operation::Ei:
+    case Operation::Di:
+        break;
+    case Operation::Break: {
+        // The 20-bit code occupies bits 25-6, like SYSCALL's.
+        const std::uint32_t code = (word >> 6) & 0xfffffu;
+        if (code != 0) {
+            output << " 0x" << hex_value(code);
+        }
+        break;
+    }
     case Operation::Mult:
     case Operation::Multu:
     case Operation::Div:

@@ -106,6 +106,13 @@ public:
     [[nodiscard]] std::uint32_t shift_amount_cache() const noexcept;
     void set_shift_amount_cache(std::uint32_t value) noexcept;
 
+    // CP0: the system coprocessor's register file (Status, Cause, EPC and the
+    // rest). The model starts from the live menu state the M14 observation
+    // captured: Status reads 0x40000000 (CU2 usable) and everything else is
+    // zero, because the code we run was captured from a running game.
+    [[nodiscard]] std::uint32_t read_cp0(std::uint8_t index) const;
+    void write_cp0(std::uint8_t index, std::uint32_t value);
+
 private:
     static void require_gpr_index(std::uint8_t index);
     static void require_fpr_index(std::uint8_t index);
@@ -120,6 +127,7 @@ private:
     std::uint32_t fpu_accumulator_ = 0;
     std::uint32_t fpu_control_ = 0;
     std::uint32_t shift_amount_cache_ = 0;
+    std::array<std::uint32_t, 32> cp0_{};
     std::uint32_t pc_ = 0;
     GuestMemory memory_;
 };

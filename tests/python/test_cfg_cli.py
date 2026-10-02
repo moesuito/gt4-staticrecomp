@@ -29,9 +29,9 @@ class CfgCliTests(unittest.TestCase):
         self.assertIn("limited=", result.stderr)
 
     def test_unsupported_seed_is_a_single_open_block(self):
-        # 0x001001f8 holds an `ei` (COP0) word the model still rejects; the
-        # startup prologue at 0x00100008 now decodes and walks further.
-        result = self.run_tool("0x1001f8", "10")
+        # 0x001041f4 holds an `ldl` (unaligned 64-bit load) word the model
+        # still rejects; the startup prologue and COP0 now decode.
+        result = self.run_tool("0x1041f4", "10")
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 1)

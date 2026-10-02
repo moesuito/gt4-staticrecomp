@@ -506,6 +506,94 @@ int run_tests() {
         check(state.read_gpr64(2) == 0x0000001f0000001eull, "plzcw of one");
     }
 
+    // COP0 with hand-computed values: the Status register starts at the
+    // live-observed 0x40000000, mfc0 applies the readable-bits mask, mtc0
+    // writes through, ei/di toggle EIE in kernel mode only, the Config write
+    // protects the cache-size bits, and break stops at the trap boundary.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x40086000,    // mfc0 t0, Status
+                      0x40886000,    // mtc0 t0, Status
+                      0x42000038,    // ei
+                      0x42000039,    // di
+                      0x40026000,    // mfc0 v0, Status
+                      0x0000000D});  // break
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.read_gpr64(8) == 0x40000000ull, "mfc0 reads the masked Status");
+        run_steps(interpreter, 1);
+        check(state.read_cp0(12) == 0x40000000u, "mtc0 wrote the value back");
+        run_steps(interpreter, 1);
+        check(state.read_cp0(12) == 0x40010000u, "ei set EIE in kernel mode");
+        run_steps(interpreter, 1);
+        check(state.read_cp0(12) == 0x40000000u, "di cleared EIE again");
+        run_steps(interpreter, 1);
+        check(state.read_gpr64(2) == 0x40000000ull, "the toggled status reads back");
+        const auto stopped = interpreter.step();
+        check(stopped.outcome == StepOutcome::Exception && stopped.pc == base + 20
+                  && stopped.operation == Operation::Break,
+              "break stops at the trap boundary");
+    }
+
+    // With KSU set to supervisor mode, ei is gated out: EIE never changes.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24080008,    // addiu t0, zero, 8   (KSU = supervisor)
+                      0x40886000,    // mtc0 t0, Status
+                      0x42000038,    // ei                  (gated out)
+                      0x40026000});  // mfc0 v0, Status
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 4);
+        check(state.read_cp0(12) == 8u, "ei did not set EIE outside kernel mode");
+        check(state.read_gpr64(2) == 8ull, "the status read back unchanged");
+    }
+
+    // mtc0 to Config protects the cache-size bits and reports the fixed ones.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x3C08FFFF,    // lui t0, 0xffff
+                      0x40888000,    // mtc0 t0, Config
+                      0x40038000});  // mfc0 v1, Config
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 3);
+        check(state.read_cp0(16) == 0xffff0440u, "Config write masked and fixed bits set");
+        check(state.read_gpr64(3) == 0xffffffffffff0440ull, "Config reads sign-extended");
+    }
+
+    // 64-bit and variable shifts with hand-computed results: dsll32 moves the
+    // word to the high half, dsra32 fills with the sign, dsrav shifts a full
+    // 64-bit value and the V-forms take their amount from rs.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24080001,    // addiu t0, zero, 1
+                      0x00084938,    // dsll t1, t0, 4          (0x10)
+                      0x00094B3C,    // dsll32 t1, t1, 12       (1 << 44)
+                      0x00094B3E,    // dsrl32 t1, t1, 12       (back to 0x10)
+                      0x2402FFFF,    // addiu v0, zero, -1
+                      0x0002503C,    // dsll32 t2, v0, 0        (0xffffffff00000000)
+                      0x000A5BFF,    // dsra32 t3, t2, 31       (all ones)
+                      0x240C0004,    // addiu t4, zero, 4
+                      0x01886804,    // sllv t5, t0, t4         (0x10)
+                      0x018A7017,    // dsrav t6, t2, t4        (0xfffffffff0000000)
+                      0x0182C807});  // srav t9, v0, t4         (all ones)
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 11);
+        check(state.read_gpr64(9) == 0x10ull, "dsll/dsll32/dsrl32 round-trip");
+        check(state.read_gpr64(10) == 0xffffffff00000000ull, "dsll32 moved the word up");
+        check(state.read_gpr64(11) == 0xffffffffffffffffull, "dsra32 filled with the sign");
+        check(state.read_gpr64(13) == 0x10ull, "sllv took its amount from rs");
+        check(state.read_gpr64(14) == 0xfffffffff0000000ull, "dsrav shifted the 64-bit value");
+        check(state.read_gpr64(25) == 0xffffffffffffffffull, "srav filled with the sign");
+    }
+
     // Fetching outside the mapped region propagates the memory error.
     {
         auto state = make_state();

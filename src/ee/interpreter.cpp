@@ -87,6 +87,17 @@ std::uint32_t arithmetic_shift_right_32(std::uint32_t value, std::uint8_t shift)
     return (value & 0x80000000u) != 0 ? (shifted | (0xffffffffu << (32 - shift))) : shifted;
 }
 
+std::uint64_t arithmetic_shift_right_64(std::uint64_t value, std::uint8_t shift) {
+    // Same explicit sign fill for the 64-bit shifts.
+    if (shift == 0) {
+        return value;
+    }
+    const std::uint64_t shifted = value >> shift;
+    return (value & 0x8000000000000000ull) != 0
+        ? (shifted | (0xffffffffffffffffull << (64 - shift)))
+        : shifted;
+}
+
 // GPR[rs] + sign-extended immediate, truncated to the 32-bit address model.
 std::uint32_t effective_address(const GuestState& state, const DecodedInstruction& instruction) {
     const std::uint64_t base = state.read_gpr64(instruction.rs);
@@ -473,6 +484,56 @@ bool execute_special_register(const DecodedInstruction& instruction, GuestState&
         // The pipeline barrier is a no-op in this model; the reference
         // implementation treats it the same way outside of pipeline stalls.
         break;
+    case Operation::Mfc0: {
+        const std::uint8_t cp0_register = instruction.rd;
+        if (instruction.rt == 0 && cp0_register != 9) {
+            break;  // the reference skips the read entirely here
+        }
+        std::uint32_t value = state.read_cp0(cp0_register);
+        if (cp0_register == 12) {
+            value &= 0xf0c79c1fu;  // only the readable Status bits appear
+        } else if (cp0_register == 25) {
+            throw std::runtime_error("mfc0 from the performance counters is not modeled");
+        }
+        state.write_gpr32(instruction.rt, value);
+        break;
+    }
+    case Operation::Mtc0: {
+        const std::uint8_t cp0_register = instruction.rd;
+        const std::uint32_t value = state.read_gpr32(instruction.rt);
+        switch (cp0_register) {
+        case 16:
+            // Config protects the cache-size bits and reports the fixed ones.
+            state.write_cp0(16, (value & ~0xfc0u) | 0x440u);
+            break;
+        case 24:
+            // The debug register accepts the write as feedback only; the
+            // reference does not store it either.
+            break;
+        case 25:
+            throw std::runtime_error("mtc0 to the performance counters is not modeled");
+        default:
+            state.write_cp0(cp0_register, value);
+            break;
+        }
+        break;
+    }
+    case Operation::Ei:
+    case Operation::Di: {
+        // Both take effect only in kernel mode (KSU == 0) or when already in
+        // an exception level, exactly like the reference implementation.
+        const std::uint32_t status = state.read_cp0(12);
+        const bool takes_effect = (status & 0x00020000u) != 0  // _EDI
+            || (status & 0x00000002u) != 0                     // EXL
+            || (status & 0x00000004u) != 0                     // ERL
+            || (status & 0x00000018u) == 0;                    // KSU == kernel
+        if (takes_effect) {
+            state.write_cp0(12, instruction.operation == Operation::Ei
+                ? (status | 0x00010000u)
+                : (status & ~0x00010000u));
+        }
+        break;
+    }
     default:
         return false;
     }
@@ -1765,6 +1826,58 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
         state.write_gpr32(instruction.rd,
                           arithmetic_shift_right_32(state.read_gpr32(instruction.rt),
                                                     instruction.shift_amount));
+        break;
+    case Operation::Sllv:
+        state.write_gpr32(instruction.rd, state.read_gpr32(instruction.rt)
+            << (state.read_gpr32(instruction.rs) & 0x1fu));
+        break;
+    case Operation::Srlv:
+        state.write_gpr32(instruction.rd, state.read_gpr32(instruction.rt)
+            >> (state.read_gpr32(instruction.rs) & 0x1fu));
+        break;
+    case Operation::Srav:
+        state.write_gpr32(instruction.rd, arithmetic_shift_right_32(
+            state.read_gpr32(instruction.rt),
+            static_cast<std::uint8_t>(state.read_gpr32(instruction.rs) & 0x1fu)));
+        break;
+    case Operation::Dsll:
+        state.write_gpr64(instruction.rd,
+            state.read_gpr64(instruction.rt) << instruction.shift_amount);
+        break;
+    case Operation::Dsrl:
+        state.write_gpr64(instruction.rd,
+            state.read_gpr64(instruction.rt) >> instruction.shift_amount);
+        break;
+    case Operation::Dsra:
+        state.write_gpr64(instruction.rd, arithmetic_shift_right_64(
+            state.read_gpr64(instruction.rt), instruction.shift_amount));
+        break;
+    case Operation::Dsll32:
+        // The "32" forms add 32 to the five-bit shift amount.
+        state.write_gpr64(instruction.rd,
+            state.read_gpr64(instruction.rt) << (instruction.shift_amount + 32));
+        break;
+    case Operation::Dsrl32:
+        state.write_gpr64(instruction.rd,
+            state.read_gpr64(instruction.rt) >> (instruction.shift_amount + 32));
+        break;
+    case Operation::Dsra32:
+        state.write_gpr64(instruction.rd, arithmetic_shift_right_64(
+            state.read_gpr64(instruction.rt),
+            static_cast<std::uint8_t>(instruction.shift_amount + 32)));
+        break;
+    case Operation::Dsllv:
+        state.write_gpr64(instruction.rd, state.read_gpr64(instruction.rt)
+            << (state.read_gpr32(instruction.rs) & 0x3fu));
+        break;
+    case Operation::Dsrlv:
+        state.write_gpr64(instruction.rd, state.read_gpr64(instruction.rt)
+            >> (state.read_gpr32(instruction.rs) & 0x3fu));
+        break;
+    case Operation::Dsrav:
+        state.write_gpr64(instruction.rd, arithmetic_shift_right_64(
+            state.read_gpr64(instruction.rt),
+            static_cast<std::uint8_t>(state.read_gpr32(instruction.rs) & 0x3fu)));
         break;
     case Operation::Lw: {
         const auto address = effective_address(state, instruction);
