@@ -116,6 +116,30 @@ translated 0x005c11a8 matches the interpreter on 6 input states
 The M13 starter function re-translates with the new emitter and still matches;
 14/14 CTest.
 
+## Translator slice 3 — direct calls (2026-10-01)
+
+`gt4translate` now translates a function **and its direct call tree** into one
+module: a `jal` becomes `state.write_gpr64(31, pc+8)` (the link), runs its
+delay slot, and calls the translated callee as an ordinary C++ function;
+forward declarations make recursion and call cycles work. Indirect calls
+(`jalr`), exceptions and unsupported words anywhere in the tree are rejected
+with the offending instruction, address and function. The same instruction
+budget bounds the whole module (256-function cap).
+
+### Verified on a third real module
+
+`0x0010c0c0` and its tree — five functions, 24 instructions total — is a stack
+framing chain: the entry saves `ra`, calls a no-op leaf, then calls
+`0x0044cb58` (which frames again, calls two more `jr ra` leaves and restores
+`ra`), then restores `ra` and returns. The translated module and the
+interpreter agree on 6 input states (varied stack pointers, return addresses
+and junk registers): all 32 registers, the full memory image including both
+saved-`ra` stack slots, and the continuation.
+
+```text
+translated 0x0010c0c0 (5 functions) matches the interpreter on 6 input states
+```
+
 ## Next
 
 - M14 direction: automate observation/snapshots toward PCSX2 comparison, and
