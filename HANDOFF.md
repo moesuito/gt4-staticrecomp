@@ -49,7 +49,8 @@ after `20ba459`.
 | `generated/whole-program.hpp` | The M29 whole-program module: 15,068 functions, 924,991 instructions, 146.4 MB. Regenerable; ignored by git. |
 | `build/` | The previous build tree (0.34 GB). **Recreate it** (section 4): it contains absolute paths from this machine. |
 
-Repository total: **7.45 GB** (with hidden files, including the savestates and BIOS dumps).
+Repository total: **7.54 GB** (with hidden files, including the savestates,
+BIOS dumps and the generated whole-program module + its measurement object).
 
 ## 3. External tools to install on the new machine
 
