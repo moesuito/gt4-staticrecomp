@@ -382,6 +382,23 @@ int run_tests() {
         check(state.read_gpr_high64(4) == 0, "pextlw upper lanes came from zero sources");
     }
 
+    // movz and movn: the destination changes only when the full 64-bit rt is
+    // zero (movz) or nonzero (movn); the condition register is rt, not rs.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24080001,    // addiu t0, zero, 1
+                      0x0100100a,    // movz v0, t0, zero   (rt = 0: moves)
+                      0x0100180b,    // movn v1, t0, zero   (rt = 0: does not move)
+                      0x0108200a});  // movz a0, t0, t0     (rt != 0: does not move)
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 4);
+        check(state.read_gpr64(2) == 1, "movz moves when rt is zero");
+        check(state.read_gpr64(3) == 0, "movn does not move when rt is zero");
+        check(state.read_gpr64(4) == 0, "movz does not move when rt is nonzero");
+    }
+
     // Fetching outside the mapped region propagates the memory error.
     {
         auto state = make_state();

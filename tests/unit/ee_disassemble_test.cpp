@@ -28,6 +28,8 @@ int main() {
         {0x012a402a, 0, "slt t0, t1, t2"},
         {0x012a402b, 0, "sltu t0, t1, t2"},
         {0x012a402d, 0, "daddu t0, t1, t2"},
+        {0x012a400a, 0, "movz t0, t1, t2"},
+        {0x012a400b, 0, "movn t0, t1, t2"},
         {0x3c1fffff, 0, "lui ra, 0xffff"},
         {0x8fa80010, 0, "lw t0, 0x10(sp)"},
         {0xafa8fffc, 0, "sw t0, -0x4(sp)"},

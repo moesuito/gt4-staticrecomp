@@ -44,6 +44,8 @@ Operation decode_special(const DecodedInstruction& instruction) {
         return Operation::Unsupported;
     }
     switch (instruction.function) {
+    case 0x0a: return Operation::Movz;
+    case 0x0b: return Operation::Movn;
     case 0x21: return Operation::Addu;
     case 0x23: return Operation::Subu;
     case 0x24: return Operation::And;
@@ -355,6 +357,8 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Lb: return "lb";
     case Operation::Lbu: return "lbu";
     case Operation::Daddu: return "daddu";
+    case Operation::Movz: return "movz";
+    case Operation::Movn: return "movn";
     case Operation::Lh: return "lh";
     case Operation::Sb: return "sb";
     case Operation::Ld: return "ld";

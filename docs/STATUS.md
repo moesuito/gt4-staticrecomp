@@ -13,7 +13,7 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 173 operations. Ghidra verification: the M6 ten-region
+  - The decoder covers 175 operations. Ghidra verification: the M6 ten-region
     run matched 417 with 0 mismatches; the M15 listing (ten regions, candidate
     ranges and the five startup regions) matched 511 with 0 mismatches and 34
     R5900-only rows verified against the reference tables instead
@@ -58,6 +58,11 @@ work proceeds. Details live in the linked evidence documents.
   `ee_startup_run` CTest with a junk pre-fill. Bit-for-bit agreement with
   Ghidra on the base language; the 34 extension rows are verified against
   the reference tables (`docs/reverse-engineering/m15-cop1-mmi.md`).
+- M15 slice 2: `gt4translate` emits the prologue's operations plus LQ/SQ and
+  supports a halt address; the startup now also runs as a 112-instruction
+  native module whose final state matches the interpreter exactly after
+  942,695 instructions (`ee_translation_startup` CTest). MOVZ/MOVN added from
+  observed use (175 operations in total).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -110,9 +115,9 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M15 next: extend `gt4translate` to emit the new operations so the startup
-   block and FPU/MMI-using functions recompile natively; then the
-   multiply/divide family and COP0; indirect-call dispatch; differential
+1. M16 next: unaligned access (LWL/LWR/SWL/SWR), LWU/LHU/SH, PLZCW and the
+   multiply/divide family (MULT/DIV/MADD, PMULT*/PMADD*/PDIV*), COP0 and
+   BREAK; then indirect-call dispatch for jr-based tables; differential
    execution needs step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
@@ -124,4 +129,5 @@ work proceeds. Details live in the linked evidence documents.
   slices 1-2, M8 function map, M9 state model, M10 interpreter, M11/M12
   synthetic suites, M13 first natively compiled function, M14 live PCSX2
   observation and savestate register decoding, M15 COP1/MMI decoding and
-  execution with the game's startup running in the interpreter.
+  execution with the game's startup running in the interpreter and
+  recompiled natively (verified identical after 942,695 instructions).

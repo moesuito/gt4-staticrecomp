@@ -1529,6 +1529,18 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
         state.write_gpr64(instruction.rd,
                           state.read_gpr64(instruction.rs) + state.read_gpr64(instruction.rt));
         break;
+    case Operation::Movz:
+        // Conditional move: the destination changes only when rt is zero
+        // (movz) or nonzero (movn); r0 ignores writes either way.
+        if (state.read_gpr64(instruction.rt) == 0) {
+            state.write_gpr64(instruction.rd, state.read_gpr64(instruction.rs));
+        }
+        break;
+    case Operation::Movn:
+        if (state.read_gpr64(instruction.rt) != 0) {
+            state.write_gpr64(instruction.rd, state.read_gpr64(instruction.rs));
+        }
+        break;
     case Operation::Addiu:
         state.write_gpr32(instruction.rt,
                           state.read_gpr32(instruction.rs)

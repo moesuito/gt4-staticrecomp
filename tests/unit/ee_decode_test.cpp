@@ -42,6 +42,8 @@ int main() {
         {0x012a402a, Operation::Slt, "slt", 9, 10, 8, 0, 0x2a},
         {0x012a402b, Operation::Sltu, "sltu", 9, 10, 8, 0, 0x2b},
         {0x012a402d, Operation::Daddu, "daddu", 9, 10, 8, 0, 0x2d},
+        {0x012a400a, Operation::Movz, "movz", 9, 10, 8, 0, 0x0a},
+        {0x012a400b, Operation::Movn, "movn", 9, 10, 8, 0, 0x0b},
         {0x00022103, Operation::Sra, "sra", 0, 2, 4, 4, 0x03},
         {0x0040f809, Operation::Jalr, "jalr", 2, 0, 31, 0, 0x09},
         {0x0000000c, Operation::Syscall, "syscall", 0, 0, 0, 0, 0x0c},
