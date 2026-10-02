@@ -105,14 +105,14 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M28 BUILD/VERIFY complete; decoder covers 349 operations; the only
+- M0-M29 BUILD/VERIFY complete; decoder covers 349 operations; the only
   unsupported words left in the real code region are two DMA-dependent BC0F
   and two unassigned encodings inside the exception handler (the text's
-  trailing 700 words are a data table). The translator handles 99.1% of the
-  direct-call targets; indirect transfers dispatch through each module's own
-  entry table and stop at the transfer only for unknown targets.
-- Next: M29 a global entry registry across modules (whole-program builds and
-  the module-size policy).
+  trailing 700 words are a data table). The translator handles 99.5% of the
+  direct-call targets, and `--all` generates the whole game as one module
+  (15,068 functions, 924,991 instructions, 146 MB, MSVC syntax-checked).
+- Next: M30 split or stream the whole-program build and attempt a full
+  code-generation compile; then the driver and the BIOS services.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
