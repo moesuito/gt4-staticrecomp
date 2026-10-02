@@ -772,6 +772,9 @@ int main() {
             [[nodiscard]] std::uint64_t file_size(std::string_view path) const override {
                 return path == "cdrom0:\\IRX\\SIO2MAN.IRX;1" ? 6641ull : 0ull;
             }
+            [[nodiscard]] std::uint32_t file_extent(std::string_view) const override {
+                return 0;
+            }
             void read_file(std::string_view, std::uint64_t,
                            std::span<std::uint8_t>) const override {
                 throw std::runtime_error("the fake disc serves no reads");

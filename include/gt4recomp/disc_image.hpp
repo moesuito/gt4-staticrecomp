@@ -51,11 +51,32 @@ public:
     // 64-bit answer keeps room.)
     [[nodiscard]] virtual std::uint64_t file_size(std::string_view path) const = 0;
 
+    // The file's first block (its ISO9660 extent), or 0 when the path names
+    // no file; the model needs it to place the file's bytes.
+    [[nodiscard]] virtual std::uint32_t file_extent(std::string_view path) const = 0;
+
     // Reads part of a file at `offset`, zero-filling the tail when the file
     // ends before `destination`. Throws std::runtime_error when the path
     // names no file or the offset is past the file's end.
     virtual void read_file(std::string_view path, std::uint64_t offset,
                            std::span<std::uint8_t> destination) const = 0;
+};
+
+// Presents one file of a disc image as a byte source: the archive readers
+// (GT4.VOL) read their bytes through it, and so does the model's disc data
+// path. The file's size is read once, at construction.
+class DiscFileSliceSource final : public DiscByteSource {
+public:
+    DiscFileSliceSource(const DiscFiles* files, std::string path);
+
+    [[nodiscard]] std::uint64_t size() const override;
+    void read(std::uint64_t offset,
+              std::span<std::uint8_t> destination) const override;
+
+private:
+    const DiscFiles* files_ = nullptr;
+    std::string path_;
+    std::uint64_t size_ = 0;
 };
 
 // ISO9660 image reader. The pinned disc is a plain ISO9660 volume ("GRANTU-
@@ -70,6 +91,7 @@ public:
     explicit Iso9660Image(std::unique_ptr<DiscByteSource> source);
 
     [[nodiscard]] std::uint64_t file_size(std::string_view path) const override;
+    [[nodiscard]] std::uint32_t file_extent(std::string_view path) const override;
     void read_file(std::string_view path, std::uint64_t offset,
                    std::span<std::uint8_t> destination) const override;
 

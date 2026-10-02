@@ -117,6 +117,30 @@ std::unique_ptr<DiscByteSource> make_memory_disc_source(
     return std::make_unique<MemoryDiscSource>(std::move(bytes));
 }
 
+DiscFileSliceSource::DiscFileSliceSource(const DiscFiles* files,
+                                         std::string path)
+    : files_(files), path_(std::move(path)) {
+    if (files_ == nullptr) {
+        throw std::runtime_error("The disc file slice needs a disc image");
+    }
+    size_ = files_->file_size(path_);
+    if (size_ == 0) {
+        throw std::runtime_error("The disc image has no file named " + path_);
+    }
+}
+
+std::uint64_t DiscFileSliceSource::size() const {
+    return size_;
+}
+
+void DiscFileSliceSource::read(std::uint64_t offset,
+                               std::span<std::uint8_t> destination) const {
+    if (offset + destination.size() > size_) {
+        throw std::runtime_error("A disc file read leaves the file");
+    }
+    files_->read_file(path_, offset, destination);
+}
+
 Iso9660Image::Iso9660Image(std::unique_ptr<DiscByteSource> source)
     : source_(std::move(source)) {
     if (source_ == nullptr) {
@@ -261,6 +285,14 @@ std::uint64_t Iso9660Image::file_size(std::string_view path) const {
         return 0;
     }
     return record->size;
+}
+
+std::uint32_t Iso9660Image::file_extent(std::string_view path) const {
+    const Record* record = resolve(normalize(path));
+    if (record == nullptr || record->directory) {
+        return 0;
+    }
+    return record->extent;
 }
 
 void Iso9660Image::read_file(std::string_view path, std::uint64_t offset,

@@ -1,17 +1,17 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 17 — the archive path's reconnaissance:
-the engine runs two file layers (the file server and the game's own PCDV CD
-path) selected by the load task's flag; with the disc in place the boot has
-reached its movie phase (the name `/mpeg`) and the PCDV protocol's shape is
-now documented (its read/poll calls, the entry cache the library resolves
-names against, and the GT4.VOL archive's header, name table — text XOR
-0xFF — and directory tree). No model behavior changed; the next slice
-implements the GT4.VOL reader and uses it to answer the PCDV protocol. The
-differential passes at 3,000 services (interpreter reference at 7,570,583
-instructions, full state identical). This is the first document to read in
-a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-02 after M30 slice 18 — the GT4.VOL reader: the library now
+parses the game's data volume (header, directory tree, XOR-0xFF names) with
+lazy, validated parsing, verified against the pinned archive (the 22 root
+categories, the `mpeg/gt4` chain and the movie `mv0010`'s 18,874,372-byte
+size) and a synthetic image; `DiscFileSliceSource` presents the ISO's
+`GT4.VOL;1` as the byte source and `Iso9660Image` now reports file extents.
+A file entry's data records are recorded as not yet pinned (671 of the
+movie's 204,930 items coincide with real entries), so the reader reports
+names and sizes and stops there. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -515,6 +515,31 @@ linked evidence documents.
   with the interpreter reference at 7,570,583 instructions and the full
   state identical
   (`docs/reverse-engineering/m30-slice17-archive-path.md`).
+- M30 slice 18 (2026-10-02): **the GT4.VOL reader** — the library now
+  parses the game's data volume: the header (magic 0xACB990AD, version
+  0x00020002, the name-table pointer, a child count whose list holds
+  `count - 1` offsets — the header counts itself like an entry), entries
+  `{name, count, value}` (a directory's items are child offsets; a file's
+  `value` is its byte size) and **names as text XOR 0xFF** with three
+  tagged pointer tables. Parsing is **lazy** (children on demand with
+  entry/children caches and a rejected-items set; the metadata window is
+  read once) and **validated** (a child candidate must carry a known tag
+  and decode to printable text). `DiscFileSliceSource` presents the ISO's
+  `GT4.VOL;1` as a byte source and `Iso9660Image` reports file extents.
+  Verified against the pinned archive: the **22 root categories**
+  (advertise, bgm, car, character, config, crs, database, fep, font, icon,
+  menu, mpeg, music, narration, projects, race, rtext, script, sound,
+  specdb, text, tire), the `mpeg/gt4` chain and `mv0010`'s value
+  0x01200004 (18,874,372 bytes; count 204,931), plus `gtloading.img` =
+  0x21A0 (8,608). **A file entry's data records are not yet pinned** (671
+  of `mv0010`'s 204,930 items coincide with real entries), so the reader
+  reports names and sizes and stops there; the next slice pins the records
+  and answers the PCDV protocol. CTest **34/34** (the new `gt4_volume`
+  test); Python 73 (67 run, 6 skip); the differential passes at 3,000
+  services with the interpreter reference at 7,570,583 instructions and
+  the full state identical
+  (`docs/reverse-engineering/m30-slice18-gt4-volume-reader.md`,
+  `docs/decisions/0018-gt4-volume-reader.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -524,12 +549,11 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the GT4.VOL reader and the PCDV
-  answers** — the archive's header, directory tree and XOR-0xFF name table
-  are decoded; the next slice implements the reader over
-  `Iso9660Image::read_file`, verifies it against the pinned volume and a
-  synthetic archive, and uses it to fill the PCDV library's entry cache and
-  serve its sector reads (the movie path the boot has reached).
+- Next technical milestone work: **the file item records and the PCDV
+  answers** — the archive reader resolves names and sizes; pinning the file
+  entries' {name, offset, packed} records (the shapes at 0x4FAC onward)
+  gives the data offsets the PCDV library's entry cache and sector reads
+  need, so the boot's movie path can load.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -631,12 +655,11 @@ linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 18: **the GT4.VOL reader and the PCDV answers** — implement the
-   archive reader (header, tree, XOR-0xFF names) over the ISO's
-   `read_file`, verify it against the pinned volume (the root's 23 names,
-   `mpeg`/`MpegRoot`) and a synthetic archive, then use it to fill the PCDV
-   library's entry cache and serve its 2048-byte sector reads (the movie
-   path the boot reached); the acceptance evidence is
+1. M30 slice 19: **the file item records and the PCDV answers** — pin the
+   file entries' {name, offset, packed} record shapes (the bytes at 0x4FAC
+   onward), then use the reader's data offsets to fill the PCDV library's
+   entry cache and serve its 2048-byte sector reads (the movie path the
+   boot reached); the acceptance evidence is
    `gt4boot --compare-interpreter --disc <iso>` through the loads with the
    state identical.
 2. Performance: resume entries or inline syscall calls to shrink the
@@ -721,8 +744,11 @@ linked evidence documents.
   disc image backing the file service (the model reads the pinned ISO and
   answers the file server's open with the real sizes, so the boot walks its
   IOP module list: SIO2MAN 6,641; MCMAN 96,181; MCSERV 7,385; SIO2D 11,289;
-  DBCMAN 15,653; DS2U_D 11,821; LIBSD 30,085; USBD 34,993), and slice 17 is
-  the archive path's reconnaissance (the engine's two file layers, the
+  DBCMAN 15,653; DS2U_D 11,821; LIBSD 30,085; USBD 34,993), slice 17 is the
+  archive path's reconnaissance (the engine's two file layers, the
   movie-phase `/mpeg` load, the PCDV protocol's shape and the GT4.VOL
   header, XOR-0xFF name table and directory tree; no model behavior
-  changed).
+  changed), and slice 18 is the GT4.VOL reader (lazy, validated parsing;
+  the 22 root categories, the `mpeg/gt4` chain and `mv0010`'s 18,874,372
+  bytes verified against the pinned archive, with the file item records
+  recorded as not yet pinned).

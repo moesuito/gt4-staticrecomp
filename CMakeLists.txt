@@ -40,6 +40,7 @@ add_library(gt4recomp_executable STATIC
     src/executable/core_image.cpp
     src/executable/analysis_elf.cpp
     src/executable/disc_image.cpp
+    src/executable/gt4_volume.cpp
 )
 target_include_directories(gt4recomp_executable PUBLIC include)
 target_include_directories(gt4recomp_executable PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
@@ -128,6 +129,16 @@ if(BUILD_TESTING)
         add_test(NAME disc_image COMMAND disc_image_tests "${GT4_LOCAL_ISO}")
     else()
         add_test(NAME disc_image COMMAND disc_image_tests)
+    endif()
+
+    # The GT4.VOL archive reader: always the synthetic volume, plus the
+    # pinned archive through the ISO when both are present.
+    add_executable(gt4_volume_tests tests/unit/gt4_volume_test.cpp)
+    target_link_libraries(gt4_volume_tests PRIVATE gt4recomp_executable)
+    if(EXISTS "${GT4_LOCAL_ISO}")
+        add_test(NAME gt4_volume COMMAND gt4_volume_tests "${GT4_LOCAL_ISO}")
+    else()
+        add_test(NAME gt4_volume COMMAND gt4_volume_tests)
     endif()
 
     # The translation test needs the local CORE: the translated header is
