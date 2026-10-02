@@ -1,8 +1,9 @@
 # Project status
 
-Updated 2026-10-02 after M23 — the full VU0 macro instruction set. This is the
-first document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-02 after M24 — the trapping arithmetic and the parallel
+multiply/divide family; only 4 unsupported words remain in the code region.
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -13,13 +14,13 @@ Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 335 operations (line-filtered count; earlier documents
+  - The decoder covers 349 operations (line-filtered count; earlier documents
     cited 175, which counted comment fragments). Whole-text scan, corrected
-    after M23: 672 unsupported of 1,334,917 words — of which 555 are inside
-    the 700-word **data table** that occupies the text section's last bytes
-    (0x616F28..0x617A14) and only 81 are real code, all in known families
-    (trapping arithmetic 70, MMI2/MMI3 parallel multiply 7, COP0 BC0F 2,
-    unassigned function 0x28 2); the first 350,000 words — every sampled
+    after M24: 497 unsupported of 1,334,917 words — 493 of them inside the
+    700-word **data table** that occupies the text section's last bytes
+    (0x616F28..0x617A14) and only **4 real code words**: two BC0F whose
+    condition needs a DMA model and two words at unassigned function 0x28
+    inside the exception handler; the first 350,000 words — every sampled
     region — decode cleanly. (An
     earlier "zero unsupported" claim was a false positive from chunk ranges
     beyond the text end; the ERET sighting exposed it. Lesson: check the
@@ -169,6 +170,16 @@ Details live in the linked evidence documents.
   code; excluding it, the real code region holds only **81 unsupported
   words** in known families. CTest 23/23; Python 71
   (`docs/reverse-engineering/m23-vu0-macro-arithmetic.md`).
+- M24 (2026-10-02): the **trapping arithmetic** (ADD/SUB/DADD/DSUB/ADDI/
+  DADDI) with the reference's exact overflow checks, stopping with the stable
+  Exception outcome at the offending word when they fire, and **eight
+  parallel multiply/divide operations** (PMADDH/PMSUBH/PMULTH over the eight
+  halfword lanes; PMULTW/PMULTUW/PMADDUW/PDIVW/PDIVUW over the HI/LO pair,
+  special cases included) — 349 operations. Whole-file unsupported words:
+  672 → **497**; the real code region (0x00100000..0x616F1C) now holds only
+  **4 words**: two BC0F that need a DMA model for their condition, and two
+  words at unassigned function 0x28 in the exception handler. CTest 23/23;
+  Python 71 (`docs/reverse-engineering/m24-trapping-and-parallel-multiply.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -211,24 +222,23 @@ Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M23 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M24 lessons are
   pending.
-- Unmodeled words left in the real code region (81): the trapping arithmetic
-  (70 — DADDI, DSUB, ADDI, SUB, DADD, ADD; they need the exception path),
-  the MMI2/MMI3 parallel multiply (7), COP0's BC0F (2) and two words at
-  unassigned function 0x28. The text section's trailing 700 words are a data
-  table and are excluded from instruction counting. VCALLMS/VU0-memory
+- Unmodeled words left in the real code region (4): two BC0F (their condition
+  is the DMA-derived COP0 line) and two words at unassigned function 0x28
+  inside the exception handler. The text section's trailing 700 words are a
+  data table and are excluded from instruction counting. VCALLMS/VU0-memory
   forms stay out of scope by design (VU micro execution).
 - Live single-stepping is unsolved (savestate parsing covers offline
   snapshots); the freeze layout is coupled to the emulator build.
 
 ## Next actions
 
-1. M24 next: the trapping arithmetic forms (ADD/SUB/DADD/DSUB/ADDI/DADDI
-   with the overflow exception outcome) and the MMI2/MMI3 parallel-multiply
-   remainder; then COP0's BC0F; then indirect-call dispatch for jr-based
-   tables; differential execution needs step control (open).
-2. The M9-M23 lessons and retroactive M2-M5 notes if useful.
+1. M25 next: translate the VU0 macro operations and the trapping forms into
+   C++ so the translator can cover functions that use them; indirect-call
+   dispatch for jr-based tables remains open; differential execution needs
+   step control (open).
+2. The M9-M24 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
@@ -248,6 +258,7 @@ Details live in the linked evidence documents.
   family and the last decode gaps, M21 trap slots in likely delay slots,
   ERET and the largest verified module (57 functions, 2,588 instructions).
 - [2026-10-02](journal/2026-10-02.md) — M20, M21, M22 (the VU0 macro state,
-  its moves and the quad memory accesses) and M23 (the full VU0 macro
-  instruction set; the text's trailing data table discovered; 81 unsupported
-  words left in real code), plus the scan correction trail.
+  its moves and the quad memory accesses), M23 (the full VU0 macro
+  instruction set; the text's trailing data table discovered) and M24 (the
+  trapping arithmetic and the parallel multiply/divide family; only 4
+  unsupported words left in real code), plus the scan correction trail.

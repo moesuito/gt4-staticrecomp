@@ -28,6 +28,37 @@ constexpr std::uint32_t fpu_flag_sd = 0x00000020u;
 constexpr std::uint32_t fpu_flag_so = 0x00000010u;
 constexpr std::uint32_t fpu_flag_su = 0x00000008u;
 
+// Raised by the trapping arithmetic when its signed overflow check fires; the
+// step loop turns this into the stable Exception outcome at the offending
+// word. The reference sets Cause and EPC before entering its handler; this
+// model stops at the boundary instead, like it does for SYSCALL and BREAK.
+struct IntegerOverflow {};
+
+// The trapping arithmetic raises on signed overflow. The checks mirror the
+// reference exactly: the 32-bit method compares bit 31 against bit 32 of the
+// 64-bit sum, the 64-bit method tests the sign-bit identity, and the subtract
+// forms negate the right operand before the check (which reproduces the
+// reference's edge-case behavior for the most negative operand). The check
+// runs before any register write, even when the destination is the zero
+// register.
+std::uint32_t add_checked_32(std::uint32_t left, std::uint32_t right) {
+    const std::int64_t sum = static_cast<std::int64_t>(static_cast<std::int32_t>(left))
+        + static_cast<std::int64_t>(static_cast<std::int32_t>(right));
+    const auto bits = static_cast<std::uint64_t>(sum);
+    if (((bits >> 31) & 1u) != ((bits >> 32) & 1u)) {
+        throw IntegerOverflow{};
+    }
+    return static_cast<std::uint32_t>(bits);
+}
+
+std::uint64_t add_checked_64(std::uint64_t left, std::uint64_t right) {
+    const std::uint64_t sum = left + right;
+    if (((~(left ^ right) & (left ^ sum)) & 0x8000000000000000ull) != 0) {
+        throw IntegerOverflow{};
+    }
+    return sum;
+}
+
 bool is_negative_64(std::uint64_t value) {
     return (value & 0x8000000000000000ull) != 0;
 }
@@ -269,6 +300,43 @@ void write_hilo_high(GuestState& state, std::uint64_t bits) {
     state.set_hi1(sign_extend_32_to_64(static_cast<std::uint32_t>(bits >> 32)));
 }
 
+// The parallel multiply/divide family reaches the four 32-bit lanes of each
+// 128-bit accumulator: lanes 0-1 live in the low bank, lanes 2-3 in the "1"
+// bank the MMI variants use.
+std::uint32_t lo_lane(const GuestState& state, int lane) {
+    const std::uint64_t bank = lane < 2 ? state.lo() : state.lo1();
+    return static_cast<std::uint32_t>(bank >> (32 * (lane & 1)));
+}
+
+void write_lo_lane(GuestState& state, int lane, std::uint32_t value) {
+    const std::uint64_t bank = lane < 2 ? state.lo() : state.lo1();
+    const int shift = 32 * (lane & 1);
+    const std::uint64_t updated =
+        (bank & ~(0xffffffffull << shift)) | (static_cast<std::uint64_t>(value) << shift);
+    if (lane < 2) {
+        state.set_lo(updated);
+    } else {
+        state.set_lo1(updated);
+    }
+}
+
+std::uint32_t hi_lane(const GuestState& state, int lane) {
+    const std::uint64_t bank = lane < 2 ? state.hi() : state.hi1();
+    return static_cast<std::uint32_t>(bank >> (32 * (lane & 1)));
+}
+
+void write_hi_lane(GuestState& state, int lane, std::uint32_t value) {
+    const std::uint64_t bank = lane < 2 ? state.hi() : state.hi1();
+    const int shift = 32 * (lane & 1);
+    const std::uint64_t updated =
+        (bank & ~(0xffffffffull << shift)) | (static_cast<std::uint64_t>(value) << shift);
+    if (lane < 2) {
+        state.set_hi(updated);
+    } else {
+        state.set_hi1(updated);
+    }
+}
+
 // MMI results fill all four 32-bit lanes of the 128-bit register; the low 64
 // bits hold lanes 0..1 (words), 0..3 (halfwords) and 0..7 (bytes), the stored
 // upper half holds the remainder.
@@ -312,6 +380,28 @@ WideRegister read_wide(const GuestState& state, std::uint8_t index) {
 void write_wide(GuestState& state, std::uint8_t index, const WideRegister& value) {
     state.write_gpr64(index, value.low);
     state.write_gpr_high64(index, value.high);
+}
+
+// One signed halfword product of the parallel halfword forms (PMADDH, PMULTH,
+// PMSUBH): the eight products fill the eight accumulator lanes.
+std::uint32_t parallel_halfword_product(
+    const WideRegister& left, const WideRegister& right, int lane) {
+    const auto left_half =
+        static_cast<std::int32_t>(static_cast<std::int16_t>(left.halfword(lane)));
+    const auto right_half =
+        static_cast<std::int32_t>(static_cast<std::int16_t>(right.halfword(lane)));
+    return static_cast<std::uint32_t>(left_half * right_half);
+}
+
+// The halfword forms pack the low accumulator words of each pair into the
+// destination register.
+void write_parallel_packing(GuestState& state, std::uint8_t rd) {
+    if (rd == 0) {
+        return;
+    }
+    state.write_gpr64(rd, (static_cast<std::uint64_t>(hi_lane(state, 0)) << 32) | lo_lane(state, 0));
+    state.write_gpr_high64(
+        rd, (static_cast<std::uint64_t>(hi_lane(state, 2)) << 32) | lo_lane(state, 2));
 }
 
 std::uint16_t arithmetic_shift_right_16(std::uint16_t value, std::uint8_t shift) {
@@ -1885,6 +1975,155 @@ bool execute_mmi(const DecodedInstruction& instruction, GuestState& state) {
                           (static_cast<std::uint64_t>(high_count) << 32) | low_count);
         break;
     }
+    // The parallel multiply and divide family: the low pass works on the low
+    // words of the operands and the low accumulator pair, the second pass on
+    // their high halves and the "1" pair.
+    case Operation::Pmaddh:
+    case Operation::Pmsubh: {
+        const auto left = read_wide(state, instruction.rs);
+        const auto right = read_wide(state, instruction.rt);
+        const bool subtract = instruction.operation == Operation::Pmsubh;
+        const auto combine = [&](std::uint32_t accumulated, int lane) {
+            const std::uint32_t product =
+                parallel_halfword_product(left, right, lane);
+            return subtract ? accumulated - product : accumulated + product;
+        };
+        write_lo_lane(state, 0, combine(lo_lane(state, 0), 0));
+        write_lo_lane(state, 1, combine(lo_lane(state, 1), 1));
+        write_hi_lane(state, 0, combine(hi_lane(state, 0), 2));
+        write_hi_lane(state, 1, combine(hi_lane(state, 1), 3));
+        write_lo_lane(state, 2, combine(lo_lane(state, 2), 4));
+        write_lo_lane(state, 3, combine(lo_lane(state, 3), 5));
+        write_hi_lane(state, 2, combine(hi_lane(state, 2), 6));
+        write_hi_lane(state, 3, combine(hi_lane(state, 3), 7));
+        write_parallel_packing(state, instruction.rd);
+        break;
+    }
+    case Operation::Pmulth: {
+        const auto left = read_wide(state, instruction.rs);
+        const auto right = read_wide(state, instruction.rt);
+        write_lo_lane(state, 0, parallel_halfword_product(left, right, 0));
+        write_lo_lane(state, 1, parallel_halfword_product(left, right, 1));
+        write_hi_lane(state, 0, parallel_halfword_product(left, right, 2));
+        write_hi_lane(state, 1, parallel_halfword_product(left, right, 3));
+        write_lo_lane(state, 2, parallel_halfword_product(left, right, 4));
+        write_lo_lane(state, 3, parallel_halfword_product(left, right, 5));
+        write_hi_lane(state, 2, parallel_halfword_product(left, right, 6));
+        write_hi_lane(state, 3, parallel_halfword_product(left, right, 7));
+        write_parallel_packing(state, instruction.rd);
+        break;
+    }
+    case Operation::Pmultw: {
+        const auto multiply = [](std::uint32_t left, std::uint32_t right) {
+            return static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(static_cast<std::int32_t>(left))
+                * static_cast<std::int64_t>(static_cast<std::int32_t>(right)));
+        };
+        const std::uint64_t low_product =
+            multiply(state.read_gpr32(instruction.rs), state.read_gpr32(instruction.rt));
+        write_hilo_low(state, low_product);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, low_product);
+        }
+        const std::uint64_t high_product =
+            multiply(static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rs)),
+                     static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rt)));
+        write_hilo_high(state, high_product);
+        if (instruction.rd != 0) {
+            state.write_gpr_high64(instruction.rd, high_product);
+        }
+        break;
+    }
+    case Operation::Pmultuw: {
+        const auto multiply = [](std::uint32_t left, std::uint32_t right) {
+            return static_cast<std::uint64_t>(left) * static_cast<std::uint64_t>(right);
+        };
+        const std::uint64_t low_product =
+            multiply(state.read_gpr32(instruction.rs), state.read_gpr32(instruction.rt));
+        write_hilo_low(state, low_product);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, low_product);
+        }
+        const std::uint64_t high_product =
+            multiply(static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rs)),
+                     static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rt)));
+        write_hilo_high(state, high_product);
+        if (instruction.rd != 0) {
+            state.write_gpr_high64(instruction.rd, high_product);
+        }
+        break;
+    }
+    case Operation::Pmadduw: {
+        const auto accumulate = [](std::uint32_t left, std::uint32_t right,
+                                   std::uint32_t accumulator_low,
+                                   std::uint32_t accumulator_high) {
+            const std::uint64_t accumulator = static_cast<std::uint64_t>(accumulator_low)
+                | (static_cast<std::uint64_t>(accumulator_high) << 32);
+            return accumulator + static_cast<std::uint64_t>(left) * static_cast<std::uint64_t>(right);
+        };
+        const std::uint64_t low_sum = accumulate(state.read_gpr32(instruction.rs),
+                                                 state.read_gpr32(instruction.rt),
+                                                 lo_lane(state, 0), hi_lane(state, 0));
+        write_hilo_low(state, low_sum);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, low_sum);
+        }
+        const std::uint64_t high_sum = accumulate(
+            static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rs)),
+            static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rt)),
+            lo_lane(state, 2), hi_lane(state, 2));
+        write_hilo_high(state, high_sum);
+        if (instruction.rd != 0) {
+            state.write_gpr_high64(instruction.rd, high_sum);
+        }
+        break;
+    }
+    case Operation::Pdivw: {
+        const auto divide = [](std::uint32_t left_bits, std::uint32_t right_bits) {
+            const auto left = static_cast<std::int32_t>(left_bits);
+            const auto right = static_cast<std::int32_t>(right_bits);
+            std::int32_t quotient = 0;
+            std::int32_t remainder = 0;
+            if (left_bits == 0x80000000u && right_bits == 0xffffffffu) {
+                quotient = static_cast<std::int32_t>(0x80000000u);
+            } else if (right != 0) {
+                quotient = left / right;
+                remainder = left % right;
+            } else {
+                quotient = left < 0 ? 1 : -1;
+                remainder = left;
+            }
+            return static_cast<std::uint64_t>(static_cast<std::uint32_t>(quotient))
+                | (static_cast<std::uint64_t>(static_cast<std::uint32_t>(remainder)) << 32);
+        };
+        write_hilo_low(state, divide(state.read_gpr32(instruction.rs),
+                                     state.read_gpr32(instruction.rt)));
+        write_hilo_high(state, divide(
+            static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rs)),
+            static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rt))));
+        break;
+    }
+    case Operation::Pdivuw: {
+        const auto divide = [](std::uint32_t left, std::uint32_t right) {
+            std::uint32_t quotient = 0;
+            std::uint32_t remainder = 0;
+            if (right != 0) {
+                quotient = left / right;
+                remainder = left % right;
+            } else {
+                quotient = 0xffffffffu;  // the reference's -1
+                remainder = left;
+            }
+            return static_cast<std::uint64_t>(quotient)
+                | (static_cast<std::uint64_t>(remainder) << 32);
+        };
+        write_hilo_low(state, divide(state.read_gpr32(instruction.rs),
+                                     state.read_gpr32(instruction.rt)));
+        write_hilo_high(state, divide(
+            static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rs)),
+            static_cast<std::uint32_t>(state.read_gpr_high64(instruction.rt))));
+        break;
+    }
     default:
         return false;
     }
@@ -1900,6 +2139,25 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
     case Operation::Subu:
         state.write_gpr32(instruction.rd,
                           state.read_gpr32(instruction.rs) - state.read_gpr32(instruction.rt));
+        break;
+    case Operation::Add:
+        state.write_gpr32(instruction.rd, add_checked_32(state.read_gpr32(instruction.rs),
+                                                         state.read_gpr32(instruction.rt)));
+        break;
+    case Operation::Sub:
+        // The reference negates the right operand before the overflow check.
+        state.write_gpr32(instruction.rd,
+                          add_checked_32(state.read_gpr32(instruction.rs),
+                                         0u - state.read_gpr32(instruction.rt)));
+        break;
+    case Operation::Dadd:
+        state.write_gpr64(instruction.rd, add_checked_64(state.read_gpr64(instruction.rs),
+                                                         state.read_gpr64(instruction.rt)));
+        break;
+    case Operation::Dsub:
+        state.write_gpr64(instruction.rd,
+                          add_checked_64(state.read_gpr64(instruction.rs),
+                                         0ull - state.read_gpr64(instruction.rt)));
         break;
     case Operation::And:
         state.write_gpr64(instruction.rd,
@@ -1978,6 +2236,17 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
         state.write_gpr32(instruction.rt,
                           state.read_gpr32(instruction.rs)
                               + static_cast<std::uint32_t>(instruction.signed_immediate()));
+        break;
+    case Operation::Addi:
+        state.write_gpr32(instruction.rt,
+                          add_checked_32(state.read_gpr32(instruction.rs),
+                                         static_cast<std::uint32_t>(instruction.signed_immediate())));
+        break;
+    case Operation::Daddi:
+        state.write_gpr64(
+            instruction.rt,
+            add_checked_64(state.read_gpr64(instruction.rs),
+                           static_cast<std::uint64_t>(instruction.signed_immediate())));
         break;
     case Operation::Andi:
         state.write_gpr64(instruction.rt, state.read_gpr64(instruction.rs) & instruction.immediate);
@@ -2223,6 +2492,17 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
     }
 }
 
+// Executes one plain instruction, turning the trapping arithmetic's overflow
+// into the step's stable Exception outcome; returns true when it completed.
+bool execute_plain_allowing_trap(const DecodedInstruction& instruction, GuestState& state) {
+    try {
+        execute_plain(instruction, state);
+        return true;
+    } catch (const IntegerOverflow&) {
+        return false;
+    }
+}
+
 } // namespace
 
 Interpreter::Interpreter(GuestState& state) : state_(state) {}
@@ -2247,7 +2527,11 @@ StepResult Interpreter::step() {
         if (flow.kind != FlowKind::FallThrough) {
             return StepResult{StepOutcome::IllegalDelaySlot, pc, instruction.operation};
         }
-        execute_plain(instruction, state_);
+        if (!execute_plain_allowing_trap(instruction, state_)) {
+            // The overflow fires before the pending transfer; stopping here
+            // leaves the same word, so the outcome is stable.
+            return StepResult{StepOutcome::Exception, pc, instruction.operation};
+        }
         transfer_pending_ = false;
         state_.set_pc(transfer_target_);
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
@@ -2260,7 +2544,9 @@ StepResult Interpreter::step() {
         // The exception handler is not modeled; stop at the boundary.
         return StepResult{StepOutcome::Exception, pc, instruction.operation};
     case FlowKind::FallThrough:
-        execute_plain(instruction, state_);
+        if (!execute_plain_allowing_trap(instruction, state_)) {
+            return StepResult{StepOutcome::Exception, pc, instruction.operation};
+        }
         state_.set_pc(pc + 4);
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     case FlowKind::Branch: {

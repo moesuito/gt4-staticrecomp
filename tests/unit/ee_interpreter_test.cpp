@@ -783,6 +783,159 @@ int run_tests() {
         check(state.read_vi(3) == 0x0000FFF7u, "viaddi wrapped the negative sum");
     }
 
+    // The trapping arithmetic executes normally and stops with the Exception
+    // outcome at the offending word when the signed overflow check fires; the
+    // destination is untouched and the stop repeats at the same word.
+    {
+        auto state = make_state();
+        state.write_gpr64(9, 5);
+        state.write_gpr64(10, 7);
+        load_program(state.memory(), base,
+                     {0x012A4020,    // add t0, t1, t2
+                      0x012A4022,    // sub t0, t1, t2
+                      0x21280001,    // addi t0, t1, 0x1
+                      0x61280001,    // daddi t0, t1, 0x1
+                      0x012A402C});  // dadd t0, t1, t2
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.read_gpr64(8) == 12u, "add wrote the sum");
+        run_steps(interpreter, 1);
+        check(state.read_gpr64(8) == 0xFFFFFFFFFFFFFFFEull, "sub wrote the difference");
+        run_steps(interpreter, 2);
+        check(state.read_gpr64(8) == 6u, "the immediate forms added one twice");
+        run_steps(interpreter, 1);
+        check(state.read_gpr64(8) == 12u, "dadd wrote the sum");
+    }
+    {
+        const auto expect_overflow_stop = [&](std::uint32_t word, std::uint64_t left,
+                                              std::uint64_t right, const char* label) {
+            auto state = make_state();
+            state.write_gpr64(9, left);
+            state.write_gpr64(10, right);
+            load_program(state.memory(), base, {word});
+            state.set_pc(base);
+            Interpreter interpreter(state);
+            const auto outcome = run_steps(interpreter, 1);
+            check(outcome.outcome == StepOutcome::Exception, label);
+            check(state.pc() == base && state.read_gpr64(8) == 0,
+                  "the overflowed destination and pc stay put");
+        };
+        expect_overflow_stop(0x012A4020, 0x000000007FFFFFFFull, 1ull, "add overflow stops");
+        expect_overflow_stop(0x012A4022, 0x000000007FFFFFFFull, 0xFFFFFFFFFFFFFFFFull,
+                             "sub overflow stops");
+        expect_overflow_stop(0x012A402C, 0x7FFFFFFFFFFFFFFFull, 1ull, "dadd overflow stops");
+        expect_overflow_stop(0x012A402E, 0x8000000000000000ull, 1ull, "dsub overflow stops");
+        expect_overflow_stop(0x21280001, 0x000000007FFFFFFFull, 0ull, "addi overflow stops");
+        expect_overflow_stop(0x61280001, 0x7FFFFFFFFFFFFFFFull, 0ull, "daddi overflow stops");
+    }
+
+    // The parallel halfword multiply-accumulates fill the eight accumulator
+    // lanes and pack the low accumulator words into the destination.
+    {
+        auto state = make_state();
+        state.write_gpr64(8, 0x0004000300020001ull);       // t0 halfwords 1,2,3,4
+        state.write_gpr_high64(8, 0x0008000700060005ull);  // and 5,6,7,8
+        state.write_gpr64(9, 0x0001000100010001ull);       // t1 halfwords all 1
+        state.write_gpr_high64(9, 0x0001000100010001ull);
+        load_program(state.memory(), base,
+                     {0x71095409,    // pmaddh t2, t0, t1
+                      0x71095509});  // pmsubh t2, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.lo() == 0x0000000200000001ull && state.hi() == 0x0000000400000003ull,
+              "pmaddh accumulated the low halfword lanes");
+        check(state.lo1() == 0x0000000600000005ull && state.hi1() == 0x0000000800000007ull,
+              "pmaddh accumulated the high halfword lanes");
+        check(state.read_gpr64(10) == 0x0000000300000001ull
+                  && state.read_gpr_high64(10) == 0x0000000700000005ull,
+              "pmaddh packed the low accumulator words into the destination");
+        run_steps(interpreter, 1);
+        check(state.lo() == 0u && state.hi() == 0u && state.lo1() == 0u && state.hi1() == 0u,
+              "pmsubh subtracts the same products back to zero");
+    }
+    {
+        auto state = make_state();
+        state.write_gpr64(8, 0xFFFFFFFFFFFFFFFDull);       // t0's low word: -3
+        state.write_gpr_high64(8, 0x0000000000000004ull);
+        state.write_gpr64(9, 0x0000000000000005ull);       // t1's low word: 5
+        state.write_gpr_high64(9, 0x0000000000000006ull);
+        load_program(state.memory(), base, {0x71095309});  // pmultw t2, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.lo() == 0xFFFFFFFFFFFFFFF1ull && state.hi() == 0xFFFFFFFFFFFFFFFFull,
+              "pmultw stored the signed products");
+        check(state.read_gpr64(10) == 0xFFFFFFFFFFFFFFF1ull
+                  && state.read_gpr_high64(10) == 24u,
+              "pmultw wrote the full products to the destination");
+    }
+    {
+        auto state = make_state();
+        state.write_gpr64(8, 0xFFFFFFFFFFFFFFFDull);
+        state.write_gpr_high64(8, 0x0000000000000004ull);
+        state.write_gpr64(9, 0x0000000000000005ull);
+        state.write_gpr_high64(9, 0x0000000000000006ull);
+        load_program(state.memory(), base, {0x71095329});  // pmultuw t2, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        // The unsigned multiply reads the same lane as 4294967293.
+        check(state.lo() == 0xFFFFFFFFFFFFFFF1ull && state.hi() == 4u,
+              "pmultuw stored the unsigned product halves");
+        check(state.read_gpr64(10) == 0x00000004FFFFFFF1ull
+                  && state.read_gpr_high64(10) == 24u,
+              "pmultuw wrote the unsigned product");
+    }
+    {
+        auto state = make_state();
+        state.write_gpr64(8, 0x0000000000000002ull);
+        state.write_gpr_high64(8, 0x0000000000000005ull);
+        state.write_gpr64(9, 0x0000000000000003ull);
+        state.write_gpr_high64(9, 0x0000000000000006ull);
+        state.set_lo(1);
+        state.set_lo1(4);
+        load_program(state.memory(), base, {0x71095029});  // pmadduw t2, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.lo() == 7u && state.hi() == 0u, "pmadduw added the low product to the pair");
+        check(state.lo1() == 34u && state.hi1() == 0u, "pmadduw added the high product");
+        check(state.read_gpr64(10) == 7u && state.read_gpr_high64(10) == 34u,
+              "pmadduw wrote the sums to the destination");
+    }
+    {
+        auto state = make_state();
+        state.write_gpr64(8, 0xFFFFFFFFFFFFFFF9ull);       // t0's low word: -7
+        state.write_gpr_high64(8, 0x0000000000000007ull);
+        state.write_gpr64(9, 0x0000000000000002ull);
+        state.write_gpr_high64(9, 0xFFFFFFFFFFFFFFFEull);  // t1's high word: -2
+        load_program(state.memory(), base, {0x71095349});  // pdivw t2, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.lo() == 0xFFFFFFFFFFFFFFFDull && state.hi() == 0xFFFFFFFFFFFFFFFFull,
+              "pdivw stored quotient and remainder sign-extended");
+        check(state.lo1() == 0xFFFFFFFFFFFFFFFDull && state.hi1() == 1u,
+              "pdivw divided the second lane pair");
+    }
+    {
+        auto state = make_state();
+        state.write_gpr64(8, 0xFFFFFFFFFFFFFFF9ull);       // 4294967289 unsigned
+        state.write_gpr_high64(8, 0xFFFFFFFFFFFFFFF9ull);
+        state.write_gpr64(9, 0x0000000000000002ull);
+        state.write_gpr_high64(9, 0);                      // the zero-divisor pass
+        load_program(state.memory(), base, {0x71095369});  // pdivuw t2, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 1);
+        check(state.lo() == 0x000000007FFFFFFCull && state.hi() == 1u,
+              "pdivuw stored the unsigned quotient and remainder");
+        check(state.lo1() == 0xFFFFFFFFFFFFFFFFull && state.hi1() == 0xFFFFFFFFFFFFFFF9ull,
+              "pdivuw's zero divisor yields -1 and the dividend");
+    }
+
     // Fetching outside the mapped region propagates the memory error.
     {
         auto state = make_state();
