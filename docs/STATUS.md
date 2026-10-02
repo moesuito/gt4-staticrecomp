@@ -282,10 +282,12 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 next: split or stream the whole-program build and attempt a full
-   code-generation compile (the syntax check passed); then the driver and the
-   BIOS services that turn stopped boundaries into running game code;
-   differential execution still needs step control (open).
+1. M30 next: **the driver** — a runner that executes a translated module as a
+   program and resolves the boundaries it stops at (first slice: run from the
+   ELF entry to the first syscall through the driver, state identical to the
+   interpreter's; then the BIOS services, jump-table targets and the rest).
+   The whole-program module already generates and compiles (39 s, 0.53 GB
+   peak); differential execution still needs step control (open).
 2. The M9-M29 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 

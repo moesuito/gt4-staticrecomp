@@ -134,19 +134,17 @@ $env:JAVA_HOME = "$PWD/private/tooling/jdk-21"
   924,991 instructions, 146.4 MB) in ~136 s; an MSVC **syntax check passes in
   27.5 s**.
 - **Next (M30)**, in priority order:
-  1. **Full code generation** of the whole-program module. **Measured here**
-     (Debug, `/Od`, `/bigobj`, single TU, with the dispatch referenced so
-     every function is emitted): **38.9 s, peak 0.53 GB RAM, 96.7 MB object,
-     45,345 sections** — light enough that a 32 GB machine is comfortable.
-     Two gotchas: (a) reference the module's dispatch (`detail::call_entry`)
-     from the TU or the compiler drops every `inline` function and produces a
-     2.5 KB empty object; (b) `/bigobj` is advised (the sections count is
-     already ~45k). A **Release `/O2`** build was not measured and will be
-     heavier; measure before committing to it.
-  2. Then the **driver and BIOS services**: turn the stopped boundaries
-     (syscalls, jump-table dispatch, VCALLMS, the five out-of-text calls)
-     into execution. See the M29 doc's "Reading the numbers" section.
-  3. Lessons M9–M29 are still pending (`docs/lessons/`).
+  1. **The driver**: a runner that executes a translated module as a program
+     and resolves the boundaries it stops at. First verifiable slice: run the
+     startup (or the whole-program module) from the ELF entry through the
+     driver to the first syscall, with the state identical to the
+     interpreter's at the same stop.
+  2. **BIOS services**: implement the syscall handler layer so the game gets
+     past its first service call (start with the services the startup uses).
+  3. **Jump-table dispatch** (computed `jr` into local blocks) and the other
+     boundary kinds; VCALLMS stays out of scope until a VU0 micro interpreter
+     exists.
+  4. Lessons M9–M29 are still pending (`docs/lessons/`).
 
 ## 6. Rules and gotchas
 
