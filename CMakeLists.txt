@@ -164,5 +164,18 @@ if(BUILD_TESTING)
             tests/unit/ee_startup_run_test.cpp)
         target_link_libraries(ee_startup_run_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_startup_run COMMAND ee_startup_run_tests "${GT4_LOCAL_CORE}")
+
+        set(GT4_TRANSLATED_STARTUP_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-startup.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_STARTUP_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x100008 200 "${GT4_TRANSLATED_STARTUP_HEADER}" 0x1001C8
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_startup_tests
+            tests/unit/ee_translation_startup_test.cpp
+            "${GT4_TRANSLATED_STARTUP_HEADER}")
+        target_include_directories(ee_translation_startup_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_startup_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation_startup COMMAND ee_translation_startup_tests "${GT4_LOCAL_CORE}")
     endif()
 endif()

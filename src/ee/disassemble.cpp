@@ -73,6 +73,8 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Slt:
     case Operation::Sltu:
     case Operation::Daddu:
+    case Operation::Movz:
+    case Operation::Movn:
         output << ' ' << rd << ", " << rs << ", " << rt;
         break;
     case Operation::Addiu:

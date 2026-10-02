@@ -9,7 +9,7 @@ namespace gt4recomp::ee {
 enum class Operation {
     Unsupported,
     // Register arithmetic and logic.
-    Addu, Subu, And, Or, Xor, Slt, Sltu, Daddu,
+    Addu, Subu, And, Or, Xor, Slt, Sltu, Daddu, Movz, Movn,
     // Immediates, shifts and upper immediates.
     Addiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
     // Memory access.

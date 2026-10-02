@@ -90,6 +90,33 @@ HI/LO banks, FCR31, the FPU accumulator and all 32 FPU registers stay
 cleared. The prologue's expected effects are also covered by a unit fixture
 rebuilt from the encodings (no game words committed).
 
+## Slice 2 — the startup recompiled natively (2026-10-01)
+
+`gt4translate` gained emission for the prologue's operations plus LQ/SQ, and a
+**halt address**: the walk stops at a boundary word (a syscall or an
+unsupported instruction) and the emitted module sets the pc at that address
+and returns — the same place the interpreter stops. The startup translates as
+one module of 112 instructions, loops and all.
+
+Verification (`ee_translation_startup` CTest, needs the local CORE): the
+native module and the interpreter start from identical states (the image plus
+a junk-filled .bss neighborhood) and their final states must be identical —
+all 32 registers in both 64-bit halves, HI/LO, the FPU file, FCR31, the FPU
+accumulator, the shift cache, the pc and the whole written .bss window:
+
+```text
+translated startup matches the interpreter after 942695 instructions;
+.bss window and full register state identical
+```
+
+The same slice added MOVZ/MOVN (observed in real code during the survey: the
+0x58ce48 call tree reaches 0x5b3080, whose block uses `movn`), with decoder,
+disassembler, interpreter, translator and fixture coverage.
+
+Remaining gaps observed while surveying candidate functions: PLZCW
+(0x572438), DIV (0x579780), LWL (0x5b28f0, reached from the 0x58ce48 tree)
+and indirect jumps (0x5af850, 0x578b50) — the next slices.
+
 ## Limits recorded
 
 - No MULT/MULTU/DIV/DIVU/MADD/MADDU or the MMI multiply/divide family
