@@ -66,3 +66,24 @@ reason: 76 x The call tree exceeds the instruction budget
   boundaries until the data region is understood.
 - The 76 survey rejections only exist because each tree is walked with a
   20,000-instruction budget; the `--all` walk has no such limit.
+
+## Reading the numbers (after an owner question, 2026-10-02)
+
+- **"Entries" are the 15,067 addresses the game calls with a direct `jal`** —
+  the best available proxy for its function list. "Translated" means the walk
+  of that function and its direct call tree passed every validation. The 76
+  that fail are larger than the survey's per-tree budget (20,000
+  instructions): a measuring cup, not a translation limit — the `--all`
+  build, with no such cap, included every one of them.
+- **"Covered instructions" is the union of addresses inside the successful
+  trees**: 871,317 of 1,334,917 (65.3%); the whole-program module itself
+  holds 924,991 (69.3%). The missing ~31% is **not** "untranslatable code":
+  it is code the direct-call walk cannot see — jump-table bodies reached only
+  through computed `jr` (switch statements), functions only ever called
+  through pointers (never by a `jal`), and the 700-word data table (0.05%).
+  The exact split between the first two is not measured yet.
+- **Every gap is a stop with context at run time, not a silent guess**: a
+  computed `jr` into an untranslated local block, VCALLMS, the five
+  out-of-text calls and every BIOS syscall stop the module where the
+  interpreter stops. The next milestones (full codegen, driver, services) are
+  about turning those stops into execution.
