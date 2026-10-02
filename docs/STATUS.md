@@ -575,13 +575,13 @@ evidence documents.
   remaining frontier: the polling round's calls' real replies.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
-  WaitSema sequence) and now runs three threads under VBlank and timer
+  WaitSema sequence) and now runs up to twelve threads under VBlank and timer
   wakeups, with thread switches deferred while a handler runs (decision
   0013). No timer preemption is modeled (decision 0005); equal-priority
-  dispatch is creation order, not the kernel's rotation; interrupts are
-  delivered only when every thread waits, never during a long-running
-  computation, and the 200,000-interrupt idle budget is a guard rather than
-  a modeled frequency.
+  dispatch is creation order, not the kernel's rotation; pending causes are
+  delivered at driver unit boundaries (module calls and interpreted steps),
+  so busy code is interrupted like the hardware, and the idle source's
+  200,000-interrupt budget only bounds a machine where every thread waits.
 - The `jr ra` fall-through bug found in the fifth slice shows the limit of
   hand-picked differential modules: widen the verified surface
   (`gt4boot --compare-interpreter`) when new control-flow shapes appear.
@@ -598,12 +598,10 @@ evidence documents.
    oracle for the real replies); the acceptance evidence is
    `gt4boot --compare-interpreter` through the round with the state
    identical.
-2. A periodic tick that can interrupt long-running computation, not only
-   idle waits (the timer and VBlank sources are idle-triggered today).
-3. Performance: resume entries or inline syscall calls to shrink the
+2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
-4. The M9-M30 lessons and retroactive M2-M5 notes if useful.
-5. Keep the journal and this file current after every working session.
+3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
+4. Keep the journal and this file current after every working session.
 
 ## Journal
 
