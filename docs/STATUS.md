@@ -1,9 +1,9 @@
 # Project status
 
-Updated 2026-10-02 after M27 — indirect control flow became a boundary:
-99.1% of the direct-call targets translate and every remaining rejection is a
-module-size policy. This is the first document to read in a new session; it is
-kept current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M28 — every module dispatches its own indirect
+targets through a per-module entry table; unknown targets keep the boundary
+stop. This is the first document to read in a new session; it is kept current
+as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -209,6 +209,14 @@ kept current as work proceeds. Details live in the linked evidence documents.
   policy. New verified module 0x00101C28 (a `jalr` trampoline, three target
   values). CTest 25/25; Python 72
   (`docs/reverse-engineering/m27-indirect-flow-boundaries.md`).
+- M28 (2026-10-02): **the module dispatches its own indirect targets** — a
+  per-module entry table (`has_entry`/`call_entry`) backs `jalr` (target read
+  before the link to rd, delay slot, dispatch, boundary propagation or inline
+  continuation) and computed `jr`; an unknown target keeps the M27 boundary
+  stop before the link or delay slot. Covered instructions rose from 858,621
+  to 864,507. The 0x00101C28 test verifies the known-target dispatch and the
+  unknown-target boundary. CTest 25/25; Python 72
+  (`docs/reverse-engineering/m28-module-dispatch.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -263,11 +271,10 @@ kept current as work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M28 next: the boundary driver — a dispatcher that resolves the stopped
-   pcs (indirect targets through a registry of translated entries, syscalls
-   through their services) and a module-size policy for whole-program builds;
-   differential execution still needs step control (open).
-2. The M9-M27 lessons and retroactive M2-M5 notes if useful.
+1. M29 next: a global entry registry across modules (whole-program builds
+   and the module-size policy) so indirect targets translated elsewhere stop
+   being boundaries; differential execution still needs step control (open).
+2. The M9-M28 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
@@ -293,5 +300,6 @@ kept current as work proceeds. Details live in the linked evidence documents.
   translator reaches the macro and trapping operations; the 0x0056df58
   module verified) and M26 (the whole-text translation survey: 62% of the
   entries translate; indirect control flow blocks the rest) and M27
-  (indirect control flow became a boundary: 99.1% of the entries translate),
-  plus the scan correction trail.
+  (indirect control flow became a boundary: 99.1% of the entries translate)
+  and M28 (the module dispatches its own indirect targets), plus the scan
+  correction trail.

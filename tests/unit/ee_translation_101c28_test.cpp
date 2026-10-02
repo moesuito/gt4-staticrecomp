@@ -27,7 +27,6 @@ using namespace gt4recomp::ee;
 namespace {
 
 constexpr std::uint32_t function_entry = 0x00101C28;
-constexpr std::uint32_t jalr_address = 0x00101C30;
 constexpr std::uint32_t scratch_start = 0x00100200;
 constexpr std::uint32_t scratch_end = 0x00101000;
 constexpr std::uint32_t stack_pointer = 0x00100800;
@@ -35,14 +34,17 @@ constexpr std::uint32_t return_address = 0x00100000;
 
 struct InputState {
     const char* label;
-    std::uint64_t a0;  // the indirect target register: the module stops before
-                       // it matters, so any value must give the same prefix
+    std::uint64_t a0;           // the indirect target register
+    std::uint32_t expected_stop;  // where both sides must stop
 };
 
 const InputState states[] = {
-    {"zero target", 0},
-    {"code target", 0x00101C28ull},
-    {"scratch target", 0x00100400ull},
+    // The target is one of the module's own entries: the module dispatches
+    // into it, and the callee's first instruction is the break boundary.
+    {"known target", 0x0058B268ull, 0x0058B268},
+    // The target is not translated: the module stops at the transfer, before
+    // the link or the delay slot.
+    {"unknown target", 0x00100400ull, 0x00101C30},
 };
 
 void fill_pattern(GuestState& state) {
@@ -123,7 +125,7 @@ int wmain(int argc, wchar_t* argv[]) {
             };
             auto translated_state = make_state();
             translated::function_00101c28(translated_state);
-            if (translated_state.pc() != jalr_address) {
+            if (translated_state.pc() != input.expected_stop) {
                 std::cerr << input.label << ": translated function stopped at 0x" << std::hex
                           << translated_state.pc() << std::dec << '\n';
                 ++failures;
@@ -134,7 +136,7 @@ int wmain(int argc, wchar_t* argv[]) {
             Interpreter interpreter(interpreted_state);
             bool stopped = false;
             for (int step = 0; step < 64; ++step) {
-                if (interpreted_state.pc() == jalr_address) {
+                if (interpreted_state.pc() == input.expected_stop) {
                     stopped = true;
                     break;
                 }
@@ -146,7 +148,8 @@ int wmain(int argc, wchar_t* argv[]) {
                 }
             }
             if (!stopped) {
-                std::cerr << input.label << ": interpreter did not reach the jalr\n";
+                std::cerr << input.label << ": interpreter did not reach 0x" << std::hex
+                          << input.expected_stop << std::dec << '\n';
                 ++failures;
                 continue;
             }
@@ -158,7 +161,7 @@ int wmain(int argc, wchar_t* argv[]) {
             return 1;
         }
         std::cout << "translated 0x00101c28 matches the interpreter on "
-                  << std::size(states) << " input states (indirect-call boundary)\n";
+                  << std::size(states) << " input states (indirect dispatch and boundary)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAILURE: " << error.what() << '\n';
