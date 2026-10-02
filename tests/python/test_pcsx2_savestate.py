@@ -81,10 +81,23 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(savestate.main(["registers", str(path), "--with-memory"]), 0)
 
 
-LOCAL_SAVESTATE = Path.home() / "Documents" / "PCSX2" / "sstates" / "SCUS-97328 (77E61C8A).09.p2s"
+def find_local_savestate():
+    """The repository copy travels with the folder; the live emulator's
+    Documents folder is the fallback for machines that have PCSX2 installed."""
+    candidates = [
+        ROOT / "private" / "pcsx2" / "sstates" / "SCUS-97328 (77E61C8A).09.p2s",
+        Path.home() / "Documents" / "PCSX2" / "sstates" / "SCUS-97328 (77E61C8A).09.p2s",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
-@unittest.skipUnless(LOCAL_SAVESTATE.exists(), "Requires the local GT4 menu savestate")
+LOCAL_SAVESTATE = find_local_savestate()
+
+
+@unittest.skipUnless(LOCAL_SAVESTATE is not None, "Requires the local GT4 menu savestate")
 class LocalSavestateTests(unittest.TestCase):
     def test_menu_savestate_parses(self):
         state = savestate.read_cpu_state(savestate.read_entry(
