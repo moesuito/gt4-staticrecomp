@@ -1,18 +1,19 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 19 — the file item records probed as far
-as the evidence goes: `mv0010`'s list starts with 97 clean three-word
-records (`mv0011`.. names with a position and a packed size) and then mixes
-entry references, name references and other records; three candidate
-grammars were tested against the pinned archive and none closes (the walk
-drifts by 11k-17k unknown fields), so **no parser was shipped** and the
-reader keeps its documented limit. The next slice should pin the record
-boundary from the game's own consumer (the PCDV library's scan and the
-engine's descriptor use) before answering the PCDV lookups. The
-differential passes at 3,000 services (interpreter reference at 7,570,583
-instructions, full state identical). This is the first document to read in
-a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-02 after M30 slice 20 — the game's own CD driver reads the
+disc: the PCDV read (sid 0x50434456 RPC 3) is answered from the disc
+image's raw sectors (`{LBA, byte count, EE destination}`; the "CD001" check
+at 0x00548E90 proves the positions are LBAs), and the boot's driver now
+walks the ISO's file system (the observed reads are LBA 0x10 = the primary
+volume descriptor and LBA 0x105 = the root directory) instead of retrying
+blind. The external GT4FS reference corroborates the archive format family
+and supplies the entry semantics (parent node, name, type byte, page
+offset/date/size; `file offset = DataOffset + pageOffset * PageLength`),
+while the pinned volume is the older uncompressed 2.2 variant the reference
+cannot read. The differential passes at 3,000 services (interpreter
+reference at 7,570,583 instructions, full state identical). This is the
+first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -559,6 +560,29 @@ linked evidence documents.
   services with the interpreter reference at 7,570,583 instructions and the
   full state identical
   (`docs/reverse-engineering/m30-slice19-file-item-records.md`).
+- M30 slice 20 (2026-10-02): **the game's own CD driver reads the disc** —
+  the PCDV read (sid 0x50434456 RPC 3) request is `{LBA, byte count, EE
+  destination}` (the boot's first is `{0x10, 0x800, 0x0084E080}`) and the
+  library checks the block's bytes at +1 against the ISO9660 "CD001"
+  signature (0x00548E90), so the positions are **disc LBAs**. The kernel now
+  answers from the disc image's raw sectors (`set_disc_sectors`; a machine
+  without a disc answers zeros; a read outside the image stops loudly) and
+  **the boot's driver walks the ISO's file system**: the observed reads are
+  **LBA 0x10 (the primary volume descriptor)** and **LBA 0x105 (the root
+  directory, the ISO's root extent 261)**, and the run's work changes
+  (71,124 module calls at 60,000 services versus 80,089 before). The
+  **external GT4FS reference** (github.com/Razer2015/GT4FS) corroborates
+  the format family — TOC header (magic "RoFS", version 3.1), entries
+  `{parent node (BE), name, type byte, file {page offset, date, size} /
+  directory node id}` and `file offset = DataOffset + pageOffset *
+  PageLength` — while the pinned volume is the older uncompressed 2.2
+  variant (names XOR 0xFF) the reference cannot read; its layout is the
+  guide for pinning the file records next. CTest **34/34** (the kernel test
+  covers the read service); Python 73 (67 run, 6 skip); the differential
+  passes at 3,000 services with the interpreter reference at 7,570,583
+  instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice20-pcdv-disc-reads.md`,
+  `docs/decisions/0019-pcdv-disc-reads.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -568,11 +592,14 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the PCDV answers from the game's own
-  consumer** — the file records' boundary should be pinned by reading the
-  PCDV library's scan and the engine's descriptor use (0x004B1C70) instead
-  of guessing from the bytes; the pinned three-word shape (name, position,
-  packed size) is what the lookups and the 2048-byte sector reads need.
+- Next technical milestone work: **the file records with the GT4FS layout as
+  the guide** — pin the pinned volume's record grammar against the
+  reference's entry layout (parent node, name, type byte, page
+  offset/date/size) and answer the PCDV lookups the driver makes after
+  walking the ISO (the boot now reads the volume descriptor and the root
+  directory). The GTAdhocToolchain
+  (github.com/Nenkai/GTAdhocToolchain) is recorded for the later scripting
+  milestone.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -674,12 +701,12 @@ linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 20: **the PCDV answers from the game's own consumer** — pin
-   the file records' boundary from the PCDV library's scan and the engine's
-   descriptor use (0x004B1C70), then answer the first PCDV lookup and the
-   2048-byte sector reads for `/mpeg`; the acceptance evidence is
-   `gt4boot --compare-interpreter --disc <iso>` through the loads with the
-   state identical.
+1. M30 slice 21: **the file records with the GT4FS layout as the guide** —
+   pin the pinned volume's record grammar against the reference's entry
+   layout (parent node, name, type byte, page offset/date/size) and answer
+   the PCDV lookups the driver makes after walking the ISO; the acceptance
+   evidence is `gt4boot --compare-interpreter --disc <iso>` through the
+   loads with the state identical.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
@@ -773,4 +800,9 @@ linked evidence documents.
   (97 clean three-word records `mv0011`..`mv0107` with position and packed
   size, then a mix of entry references, name references and fields; three
   candidate grammars tested, none closes, so no parser shipped — the next
-  slice pins the boundary from the game's own consumer).
+  slice pins the boundary from the game's own consumer), and slice 20 is
+  the game's own CD driver reading the disc (the PCDV read answers from the
+  disc image's raw sectors; the driver walks the ISO — LBA 0x10 the volume
+  descriptor, LBA 0x105 the root directory — and the external GT4FS
+  reference corroborates the format family and supplies the entry
+  semantics for the next slice).

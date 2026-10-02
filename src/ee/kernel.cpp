@@ -1386,6 +1386,46 @@ const DiscFiles* Kernel::disc_files() const noexcept {
     return disc_files_;
 }
 
+void Kernel::set_disc_sectors(const DiscByteSource* sectors) noexcept {
+    disc_sectors_ = sectors;
+}
+
+const DiscByteSource* Kernel::disc_sectors() const noexcept {
+    return disc_sectors_;
+}
+
+std::uint32_t Kernel::answer_disc_read(GuestState& state,
+                                       std::uint32_t request) {
+    // The game's own CD driver (the PCDV server, sid 0x50434456) reads the
+    // disc itself: the request is {LBA, byte count, EE destination} — the
+    // boot's first read is LBA 0x10 (the ISO9660 primary volume descriptor,
+    // whose "CD001" signature the library checks at 0x00548E90) for 0x800
+    // bytes into 0x0084E080. The model copies the sectors from the image
+    // exactly as the drive would; without a disc the read answers zeros.
+    constexpr std::uint32_t sector_size = 2048;
+    const std::uint32_t lba = state.memory().read_word(request + 0);
+    const std::uint32_t read_size = state.memory().read_word(request + 4);
+    const std::uint32_t destination = state.memory().read_word(request + 8);
+    if (read_size == 0 || read_size > 0x100000
+        || !state.memory().contains(destination, read_size)) {
+        return 0;
+    }
+    std::vector<std::uint8_t> data(read_size, 0);
+    if (disc_sectors_ != nullptr) {
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(lba) * sector_size;
+        if (offset + read_size > disc_sectors_->size()) {
+            throw std::runtime_error(
+                "The game's disc read leaves the disc image");
+        }
+        disc_sectors_->read(offset, data);
+    }
+    for (std::uint32_t index = 0; index < read_size; ++index) {
+        state.memory().write_byte(destination + index, data[index]);
+    }
+    return read_size;
+}
+
 std::uint32_t Kernel::answer_file_open(GuestState& state, std::uint32_t request,
                                        std::uint32_t request_size,
                                        std::uint8_t* result,
@@ -1527,6 +1567,11 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     const std::uint32_t sd = state.memory().read_word(command_buffer + 52);
     const SifRpcServer* server = find_sif_server_by_handle(sd);
     const std::uint32_t sid = server == nullptr ? 0 : server->sid;
+    if (sid == 0x50434456u && rpc_number == 3u && server != nullptr) {
+        // The transfer's byte count is not part of the reply the library
+        // reads (its status word stays zero, which it takes as success).
+        (void)answer_disc_read(state, server->buffer);
+    }
     std::uint8_t result[576] = {};
     std::uint32_t result_size = 0;
     if (sid == 0x80000006u && rpc_number == 0u && server != nullptr) {

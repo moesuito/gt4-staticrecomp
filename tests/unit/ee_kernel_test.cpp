@@ -815,6 +815,55 @@ int main() {
               "a machine without a disc answers handle 0");
     }
 
+    // The game's own CD read answers from the disc image: the request is
+    // {LBA, byte count, EE destination} and the sectors land in the guest
+    // (decision 0019).
+    {
+        class FakeSectors final : public gt4recomp::DiscByteSource {
+        public:
+            [[nodiscard]] std::uint64_t size() const override {
+                return 32 * 2048;
+            }
+            void read(std::uint64_t offset,
+                      std::span<std::uint8_t> destination) const override {
+                std::fill(destination.begin(), destination.end(), 0);
+                if (offset == 16 * 2048 && destination.size() >= 5) {
+                    destination[1] = 'C';
+                    destination[2] = 'D';
+                    destination[3] = '0';
+                    destination[4] = '0';
+                    destination[5] = '1';
+                }
+            }
+        };
+
+        Kernel kernel;
+        GuestState state = make_state();
+        FakeSectors sectors;
+        kernel.set_disc_sectors(&sectors);
+        constexpr std::uint32_t request = 0x00100800;
+        constexpr std::uint32_t destination = 0x00100900;
+        state.memory().write_word(request + 0, 16);    // the LBA
+        state.memory().write_word(request + 4, 2048);  // one sector
+        state.memory().write_word(request + 8, destination);
+        check(kernel.answer_disc_read(state, request) == 2048
+                  && state.memory().read_byte(destination + 1) == 'C'
+                  && state.memory().read_byte(destination + 5) == '1',
+              "the disc read lands the sector in the guest");
+        state.memory().write_word(request + 0, 0x7FFFFFFF);  // far outside
+        bool threw = false;
+        try {
+            (void)kernel.answer_disc_read(state, request);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw, "a read outside the disc image stops loudly");
+        kernel.set_disc_sectors(nullptr);
+        check(kernel.answer_disc_read(state, request) == 2048
+                  && state.memory().read_byte(destination + 1) == 0,
+              "a machine without a disc answers zeros");
+    }
+
     // A run with no runnable thread is the NoRunnableThread outcome.
     {
         Kernel kernel;

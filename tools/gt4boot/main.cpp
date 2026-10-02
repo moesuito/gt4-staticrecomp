@@ -331,10 +331,14 @@ int wmain(int argc, wchar_t* argv[]) {
         // like a console without a disc.
         std::unique_ptr<gt4recomp::DiscByteSource> disc_source;
         std::unique_ptr<gt4recomp::Iso9660Image> disc_image;
+        std::unique_ptr<gt4recomp::DiscByteSource> disc_sectors;
         if (!disc_path.empty()) {
             disc_source = gt4recomp::open_disc_file(disc_path.string());
             disc_image = std::make_unique<gt4recomp::Iso9660Image>(
                 std::move(disc_source));
+            // The game's own CD driver reads raw sectors, so the tool keeps
+            // a second handle on the image for it.
+            disc_sectors = gt4recomp::open_disc_file(disc_path.string());
             std::cout << "disc: " << disc_path.string() << " ("
                       << disc_image->directory_names("").size()
                       << " root entries)\n";
@@ -343,6 +347,9 @@ int wmain(int argc, wchar_t* argv[]) {
         Kernel driver_kernel;
         if (disc_image != nullptr) {
             driver_kernel.set_disc_files(disc_image.get());
+        }
+        if (disc_sectors != nullptr) {
+            driver_kernel.set_disc_sectors(disc_sectors.get());
         }
         ServiceTable services = make_boot_services(driver_kernel);
         BootDevices driver_devices([&driver_kernel](std::uint32_t cause) {
@@ -446,6 +453,9 @@ int wmain(int argc, wchar_t* argv[]) {
             Kernel reference_kernel;
             if (disc_image != nullptr) {
                 reference_kernel.set_disc_files(disc_image.get());
+            }
+            if (disc_sectors != nullptr) {
+                reference_kernel.set_disc_sectors(disc_sectors.get());
             }
             ServiceTable reference_services = make_boot_services(reference_kernel);
             BootDevices reference_devices([&reference_kernel](std::uint32_t cause) {

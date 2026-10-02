@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 19 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 20 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -152,13 +152,17 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   (97 clean three-word `mv0011`..`mv0107` entries with position and packed
   size, then a mix of kinds; three candidate grammars tested, none closes,
   so no parser shipped — the next slice pins the boundary from the game's
-  own consumer); `--threads`
+  own consumer); the **CD read service** of decision 0019 then answers the
+  game's own driver from the disc image's raw sectors (`{LBA, size, EE
+  destination}`), so the boot walks the ISO (LBA 0x10 the volume
+  descriptor, LBA 0x105 the root directory) with the external GT4FS
+  reference corroborating the archive format family; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 20 — the PCDV answers from the game's own consumer (pin
-  the file records' boundary from the PCDV library's scan and the engine's
-  descriptor use at 0x004B1C70, then answer the first lookup and the
-  2048-byte sector reads for `/mpeg`).
+- Next: M30 slice 21 — the file records with the GT4FS layout as the guide
+  (parent node, name, type byte, page offset/date/size) and the PCDV
+  lookups the driver makes after walking the ISO. The GTAdhocToolchain is
+  recorded for the later scripting milestone.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

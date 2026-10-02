@@ -18,8 +18,10 @@
 #include <vector>
 
 namespace gt4recomp {
-// The disc image interface the file services read from (disc_image.hpp).
+// The disc image interfaces the file and CD services read from
+// (disc_image.hpp).
 class DiscFiles;
+class DiscByteSource;
 } // namespace gt4recomp
 
 namespace gt4recomp::ee {
@@ -185,6 +187,14 @@ public:
     void set_disc_files(const DiscFiles* files) noexcept;
     [[nodiscard]] const DiscFiles* disc_files() const noexcept;
 
+    // The disc's raw bytes for the game's own CD driver (the PCDV read
+    // service): its requests carry an LBA, a byte count and an EE
+    // destination, and the model copies the sectors straight from the
+    // image, exactly as the drive would (decision 0019). Null means no
+    // disc: reads answer nothing. The source must outlive the kernel.
+    void set_disc_sectors(const DiscByteSource* sectors) noexcept;
+    [[nodiscard]] const DiscByteSource* disc_sectors() const noexcept;
+
     // Model introspection for tests and tools.
     [[nodiscard]] std::uint32_t pending_interrupts() const noexcept;
     // The deferred-call stack depth (patched syscalls and active handlers).
@@ -206,6 +216,12 @@ public:
                                                  std::uint32_t request_size,
                                                  std::uint8_t* result,
                                                  std::uint32_t capacity);
+    // Answers the game's own CD read (sid 0x50434456, RPC 3): the request is
+    // {LBA, byte count, EE destination}; the sectors come from the disc
+    // image (decision 0019). Returns the byte count transferred. Exposed for
+    // unit tests.
+    [[nodiscard]] std::uint32_t answer_disc_read(GuestState& state,
+                                                 std::uint32_t request);
     [[nodiscard]] std::uint32_t sif_register_index_address(std::uint32_t index) const noexcept;
     // The IOP image path named by the last reset command, empty when none.
     [[nodiscard]] const std::string& sif_iop_image() const noexcept;
@@ -480,6 +496,8 @@ private:
     // The disc image (null without one) and the files the file server has
     // handed out: handle -> path. Handle 0 is the "not found" answer.
     const DiscFiles* disc_files_ = nullptr;
+    // The disc's raw byte source for the PCDV read service (decision 0019).
+    const DiscByteSource* disc_sectors_ = nullptr;
     std::map<std::uint32_t, std::string> disc_files_by_handle_;
     std::uint32_t next_disc_handle_ = 1;
 };
