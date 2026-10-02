@@ -276,7 +276,7 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
 
 void usage() {
     std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--disc IMAGE] "
-                 "[--compare-interpreter] [--threads]\n"
+                 "[--compare-interpreter] [--threads] [--dump ADDRESS LENGTH]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
                  "  --disc IMAGE          serve the game's file requests from an ISO9660\n"
@@ -284,7 +284,10 @@ void usage() {
                  "                        opens answer \"not found\"\n"
                  "  --compare-interpreter repeat the run in the interpreter and require the\n"
                  "                        stop and the full final state to match\n"
-                 "  --threads             print the kernel's thread table after the run\n";
+                 "  --threads             print the kernel's thread table after the run\n"
+                 "  --dump ADDRESS LENGTH print LENGTH bytes of guest memory at the stop,\n"
+                 "                        eight words per line (both values hexadecimal;\n"
+                 "                        may be repeated)\n";
 }
 
 } // namespace
@@ -299,6 +302,10 @@ int wmain(int argc, wchar_t* argv[]) {
     std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
     std::filesystem::path core_path;
     bool print_threads = false;
+    // The stop-time memory views the caller asked for, as address and byte
+    // count. They are read after the run, so they show the state the run
+    // stopped in.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> dumps;
     std::filesystem::path disc_path;
     for (int index = 1; index < argc; ++index) {
         const std::wstring argument = argv[index];
@@ -306,6 +313,12 @@ int wmain(int argc, wchar_t* argv[]) {
             compare_interpreter = true;
         } else if (argument == L"--threads") {
             print_threads = true;
+        } else if (argument == L"--dump" && index + 2 < argc) {
+            const std::uint32_t address = static_cast<std::uint32_t>(
+                std::stoul(argv[++index], nullptr, 16));
+            const std::uint32_t length = static_cast<std::uint32_t>(
+                std::stoul(argv[++index], nullptr, 16));
+            dumps.push_back({address, length});
         } else if (argument == L"--disc" && index + 1 < argc) {
             disc_path = argv[++index];
         } else if (argument == L"--services" && index + 1 < argc) {
@@ -385,8 +398,40 @@ int wmain(int argc, wchar_t* argv[]) {
             driver_kernel.advance_service_time(state);
         };
 
+        // The stop-time memory views the caller asked for: each line shows
+        // eight words with the address at the left, so a structure's fields
+        // can be read off after a run. The views print after a normal stop
+        // and also when the guest faults, because they are what explains
+        // the fault.
+        const auto print_dumps = [&driver_state, &dumps]() {
+            for (const auto& [address, length] : dumps) {
+                std::cout << "dump 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << address << std::dec << " ("
+                          << length << " bytes):\n";
+                for (std::uint32_t offset = 0; offset < length; offset += 4) {
+                    if (offset % 32 == 0) {
+                        std::cout << "  " << std::hex << std::setfill('0')
+                                  << std::setw(8) << (address + offset) << ':';
+                    }
+                    std::cout << ' ' << std::hex << std::setfill('0')
+                              << std::setw(8)
+                              << driver_state.memory().read_word(address + offset)
+                              << std::dec << std::setfill(' ');
+                    if (offset % 32 == 28 || offset + 4 >= length) {
+                        std::cout << '\n';
+                    }
+                }
+            }
+        };
+
         Driver driver(driver_state, make_boot_module());
-        const RunResult result = driver.run(services, options);
+        RunResult result;
+        try {
+            result = driver.run(services, options);
+        } catch (...) {
+            print_dumps();
+            throw;
+        }
         const Boundary& boundary = result.boundary;
 
         std::cout << "boundary: " << gt4recomp::tools::boundary_kind_name(boundary.kind)
@@ -459,6 +504,8 @@ int wmain(int argc, wchar_t* argv[]) {
                           << std::dec << std::setfill(' ') << '\n';
             }
         }
+
+        print_dumps();
 
         if (compare_interpreter) {
             Kernel reference_kernel;

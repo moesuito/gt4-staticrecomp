@@ -1,20 +1,31 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 40 — the context's virtual table and the
-wait for state 3: the context class (vtable 0x00688ED0) maps to +0x10 = the
-*process* (0x004AF1D8 — with the state at 0 it calls 0x004AD648), **+0x18 =
-the state machine (0x004AF268)**, **+0x20 = the wait (0x004AF3A0 — while
-the stream's state +0x80 is not 3 it blocks at 0x005767E0)**, +0x38/+0x40 =
-callback dispatchers. The formatter's format step **0x004AF3E8** calls the
-process and then the wait: the open is asynchronous and the formatter
-**blocks until the state reaches 3**, only then reading the result (+0x94).
-The once-only check **0x004AF520** is called from the pump *and* from the
-handler's own steps **0x004AD9F4** and **0x004ADBD4** — the worker-side
-processing that advances the state. The slice-38 trace shows the state
-reaching **1** (the process's next-stage step appends the stream to the
-handler's +0x4C list) and never 2 or 3, so those handler steps never run.
-No model behavior changed. The differential passes at 3,000 services
-(interpreter reference at 7,570,583 instructions, full state identical).
+Updated 2026-10-02 after M30 slice 41 — the worker runs; the result field is
+the wall: the handler class's constructor (0x004AD1C8, base vtable 0x688D48)
+initializes the mutex (+0x10), the three lists (+0x40, +0x4C, +0x58 — each
+{head, tail, tag 0x688C40}), the worker's condition (+0x64) and the result
+(+0x94) — and creates no thread. The archive handler's vtable (0x00688C58)
+maps every step: +0x38 the path match, +0x40 the open (0x004B1730),
++0x50 the **worker loop** (0x004AD8F8: waits on the condition, drains
++0x4C), +0x58 the first drain (0x004AD9D0: the gate 0x004AF520, the work
+method for the command, then 0x004AD6D8 moves the stream to the sorted
+tree +0x58 and sets state 2), +0x60 the lookup work (0x004B0B48 →
++0xC8 0x004B1800 → +0xE0 0x004B1F90, the archive search), +0x70 the second
+drain (0x004ADBB8: work +0x78, pop the tree, then the **stream's**
+completion 0x004AF4A8 sets state 3), +0x28 the handler's completion
+(0x004AD890 → 0x004AD808: handler+0x94 = the file object). A new
+`gt4boot --dump ADDRESS LENGTH` stop-time memory view shows the model at
+83,782 services: the formatter's context (0x01FFFDB0) has **state +0x80 =
+3**, +0x84 = 2 and **result +0x94 = 0**; the handler 0x617AB0's three
+lists are **empty** and its +0x94 = 0x0096DEF0. So the open's pipeline
+**ran end to end** — the thirty-eighth to fortieth slices' "the completion
+never runs / the state never reaches 3" was wrong (the stack watch
+followed the sound thread's sp, missing the worker thread's writes). The
+differential at 83,782 services — the whole boot to the fault's doorstep —
+is **identical** (24,114,381 interpreter instructions, full state): the
+zero result is what the guest code produces from these inputs, so the next
+slice must find which step should write the context's +0x94 (the lookup's
+request field is only zeroed) and which input differs from the console.
 This is the first document to read in a new session; it is kept current as
 work proceeds. Details live in the linked evidence documents.
 
@@ -968,6 +979,36 @@ work proceeds. Details live in the linked evidence documents.
   interpreter reference at 7,570,583 instructions and the full state
   identical
   (`docs/reverse-engineering/m30-slice40-context-vtable-and-the-wait.md`).
+- M30 slice 41 (2026-10-02): **the worker runs; the result field is the
+  wall** — the handler class's constructor (0x004AD1C8, base vtable
+  0x688D48) initializes the mutex (+0x10), the three lists (+0x40, +0x4C,
+  +0x58 — each {head, tail, tag 0x688C40}), the worker's condition (+0x64)
+  and the result (+0x94), and creates no thread. The archive handler's
+  vtable (0x00688C58) maps every step: +0x38 the path match, +0x40 the
+  open (0x004B1730), +0x50 the **worker loop** (0x004AD8F8: waits on the
+  condition, drains +0x4C), +0x58 the first drain (0x004AD9D0: the gate
+  0x004AF520, the work method for the command, then 0x004AD6D8 moves the
+  stream to the sorted tree +0x58 and sets state 2), +0x60 the lookup work
+  (0x004B0B48 → +0xC8 0x004B1800 → +0xE0 0x004B1F90, the archive search
+  that normalizes the path through 0x004B2050 and searches the directory
+  object at handler+0xC4 through 0x004B3270), +0x70 the second drain
+  (0x004ADBB8: work +0x78 = 0x004ADC40 → 0x004AF780, pop the tree, then
+  the **stream's** completion 0x004AF4A8 sets state 3 and wakes the
+  formatter), +0x28 the handler's completion (0x004AD890 → 0x004AD808:
+  handler+0x94 = the file object). A new `gt4boot --dump ADDRESS LENGTH`
+  stop-time memory view (which also prints when the guest faults) shows
+  the model at 83,782 services: the formatter's context (0x01FFFDB0) has
+  **state +0x80 = 3**, +0x84 = 2 and **result +0x94 = 0**; the handler
+  0x617AB0's three lists are **empty** and its +0x94 = 0x0096DEF0. The
+  open's pipeline therefore **ran end to end**, which **corrects slices
+  38–40** ("the completion never runs / the state never reaches 3": the
+  stack watch followed the sound thread's sp and missed the worker
+  thread's writes). The differential at 83,782 services — the whole boot
+  to the fault's doorstep — is **identical** (24,114,381 interpreter
+  instructions, full state). The next slice must find which step should
+  write the context's +0x94 (the lookup's request field is only zeroed)
+  and which input differs from the console
+  (`docs/reverse-engineering/m30-slice41-worker-and-the-result-field.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -977,13 +1018,16 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the handler's worker steps
-  0x004AD9F4/0x004ADBD4** — the open is asynchronous and the formatter
-  blocks in the context's wait (0x004AF3A0) until the stream's state
-  reaches 3; the handler's own steps that call the check (0x004AD9F4,
-  0x004ADBD4) advance it and never run in the model; the next slice finds
-  which code calls them, on which thread, and why the model's run stops
-  before them.
+- Next technical milestone work: **who writes the context's +0x94** — the
+  worker pipeline runs end to end (state 3, lists drained, the differential
+  identical at 83,782 services), but the formatter's context keeps
+  result +0x94 = 0; the lookup work (0x004B0B48) copies it from the search
+  request's +0x10, which the search (0x004B1F90) never writes and 0x004AF6B8
+  zeroes; the next slice finds which step is supposed to fill that field
+  (the search's result at handler+0xC4, the entry pointer or the completion's
+  file object) and which input differs from the console — comparing the
+  request, the path string and the directory object with the console's live
+  state.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

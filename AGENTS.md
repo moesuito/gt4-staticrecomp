@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 40 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 41 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -217,13 +217,29 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   console's) and shows the enqueue is a plain list append (0x0057CB00), so
   the failure is the worker leaving the stream's +0x94 at 0; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
-  and the deferred-call counts after a run.
-- Next: M30 slice 41 — the handler's worker steps 0x004AD9F4/0x004ADBD4:
-  the open is asynchronous and the formatter blocks in the context's wait
-  (0x004AF3A0) until the stream's state reaches 3; the handler's own steps
-  that call the check (0x004AD9F4, 0x004ADBD4) advance it and never run in
-  the model; find which code calls them, on which thread, and why the
-  model's run stops before them.
+  and the deferred-call counts after a run, and `--dump ADDRESS LENGTH`
+  prints stop-time guest memory (also when the guest faults). Slice 41 then
+  reads the handler class's full vtable and its constructor (0x004AD1C8:
+  the mutex +0x10, the lists +0x40/+0x4C/+0x58, the worker's condition
+  +0x64, the result +0x94 — no thread) and **corrects slices 38–40** with a
+  stop-time dump: at 83,782 services the formatter's context has **state 3**,
+  the handler's three lists are **empty** (the worker loop 0x004AD8F8 ran,
+  drained +0x4C through 0x004AD9D0 and the tree through 0x004ADBB8, and the
+  **stream's** completion 0x004AF4A8 set state 3), and the context's result
+  +0x94 = 0 — the value the formatter returns; the differential over the
+  whole boot to the fault's doorstep (24,114,381 interpreter instructions)
+  is **identical**, so the next slice finds which step should write +0x94
+  (the lookup work 0x004B0B48 copies it from the search request's +0x10,
+  which 0x004B1F90 never writes) and which input differs from the console.
+- Next: M30 slice 42 — who writes the formatter context's +0x94: the worker
+  pipeline runs end to end (state 3, lists drained, the differential
+  identical at 83,782 services), but the context keeps result +0x94 = 0;
+  the lookup work (0x004B0B48) copies it from the search request's +0x10,
+  which the search (0x004B1F90) never writes and 0x004AF6B8 zeroes; find
+  which step is supposed to fill that field (the search's result at
+  handler+0xC4, the entry pointer or the completion's file object) and
+  which input differs from the console — comparing the request, the path
+  string and the directory object with the console's live state.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

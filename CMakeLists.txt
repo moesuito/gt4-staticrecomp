@@ -265,6 +265,13 @@ if(BUILD_TESTING)
         set_tests_properties(gt4boot_services PROPERTIES
             FIXTURES_REQUIRED gt4boot
             PASS_REGULAR_EXPRESSION "services handled 3000")
+        # The stop-time memory view: a short run prints the requested guest
+        # words, so the --dump option stays exercised.
+        add_test(NAME gt4boot_dump
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 400 --dump 0x100000 0x20)
+        set_tests_properties(gt4boot_dump PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            PASS_REGULAR_EXPRESSION "dump 0x00100000 \\(32 bytes\\):")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(
