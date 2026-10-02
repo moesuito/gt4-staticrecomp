@@ -1,23 +1,22 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 38 — the stack watch captures the open;
-the completion never runs: a temporary write watch followed a narrow window
-around the guest sp (the driver publishes the current sp) and reported each
-new (pc, address) pair. The trace shows the open running through the
-formatter's context at 0x1FFFDB0 in order: the handler store
-(0x004B176C), the enqueue (0x004AD330 sets the state +0x80 to 0, 0x0057CB00
-appends to the pending list), the formatter's bookkeeping (0x0044D7C0/8),
-the **next-stage step (0x004AD690 sets the state to 1 and appends to the
-+0x4C list)** and the path string `'gt4sys.ins` built at 0x96DAF2 — then the
-formatter's cleanup runs and it reads the result. **The stream's +0x94 is
-never written** (only its initial clear). The completion function is
+Updated 2026-10-02 after M30 slice 39 — the pump's state machine and the
+missing state 2: **0x004AF268** drives the stream's state (+0x80) — state 0
+→ 0x004AD368; state 1 → the once-only check **0x004AF520** (a flag at
++0x98) then **0x004AD438** (which signals the condition 0x00574EE8 on the
+handler+0x64); state 2 → 0x004AD5E0. The completion that sets the result is
 **0x004AD890 → 0x004AD808** (`*(stream+0x94) = the vtable+0x20 method's
-result`), a virtual method of the handler (vtable+0x24 = 0x004AD868) that
-the worker pipeline invokes when the open finishes — in the model it never
-runs. No model behavior changed. The differential passes at 3,000 services
-(interpreter reference at 7,570,583 instructions, full state identical).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+result`), whose vtable entry (handler class +0x24) is **0x004AD868** — a
+virtual method with no direct caller, invoked by the pipeline when the open
+finishes. The slice-38 trace shows the open reaching **state 1** (the step
+0x004AD690 sets +0x80 = 1 and appends the stream to the handler's +0x4C
+list) and then the formatter's cleanup: the **state never reaches 2**, so
+the state-2 step and the completion never run. The +0x4C list is the stage
+the worker pipeline drains. No model behavior changed. The differential
+passes at 3,000 services (interpreter reference at 7,570,583 instructions,
+full state identical). This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -929,6 +928,26 @@ work proceeds. Details live in the linked evidence documents.
   differential passes at 3,000 services with the interpreter reference at
   7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice38-stack-watch-and-the-missing-completion.md`).
+- M30 slice 39 (2026-10-02): **the pump's state machine and the missing
+  state 2** — **0x004AF268** drives the stream's state (+0x80): state 0 →
+  0x004AD368 (then +0x84 = 1 and a vtable+0x40 call); state 1 → the
+  once-only check **0x004AF520** (it reads the stream's +0x98, sets it to 1
+  and returns true only the first time) then **0x004AD438** (which signals
+  the condition 0x00574EE8 on the handler's +0x64); state 2 → the check
+  then 0x004AD5E0. The completion that sets the result is **0x004AD890 →
+  0x004AD808** (`*(stream+0x94) = the vtable+0x20 method's result`, wrapped
+  by 0x005750C0), whose vtable entry (handler class +0x24) is
+  **0x004AD868** — a virtual method with no direct caller, invoked by the
+  pipeline when the open finishes. The slice-38 trace shows the open
+  reaching **state 1** (the step 0x004AD690 inside 0x004AD648 sets +0x80 =
+  1 and appends the stream to the handler's +0x4C list) and then the
+  formatter's cleanup: the **state never reaches 2**, so the state-2 step
+  and the completion never run. The +0x4C list is the stage the worker
+  pipeline drains to advance to state 2. No model behavior changed: CTest
+  34/34; Python 73 (67 run, 6 skip); the differential passes at 3,000
+  services with the interpreter reference at 7,570,583 instructions and the
+  full state identical
+  (`docs/reverse-engineering/m30-slice39-pump-state-machine.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -938,13 +957,14 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **who drains the +0x4C list** — the open
-  advances to the state-1 step (the stream appended to the handler's +0x4C
-  list) and the completion (vtable+0x24 → 0x004AD868 → 0x004AD808, which
-  sets the stream's +0x94) never runs; the next slice finds which code
-  drains that list and calls the completion, and why the model's run stops
-  before it (the handler's worker thread and the cooperative scheduler's
-  ordering, or the formatter's own pump).
+- Next technical milestone work: **who drains the handler's +0x4C list** —
+  the open reaches state 1 (the stream on the +0x4C list) and the state-2
+  step and the completion (0x004AD868 → 0x004AD808, which sets the stream's
+  +0x94) never run; the next slice finds which code drains that list and
+  advances the state to 2 — the candidates are the handler's own worker
+  thread (created at boot) and the pump's callers — and why the model stops
+  before it (the worker never scheduled, or waiting on a condition the
+  model does not signal).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
