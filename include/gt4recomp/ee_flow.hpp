@@ -4,7 +4,9 @@
 #include "gt4recomp/executable_image.hpp"
 
 #include <cstdint>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace gt4recomp::ee {
 
@@ -62,5 +64,30 @@ struct BasicBlock {
 // instruction limit.
 [[nodiscard]] BasicBlock build_basic_block(const ImageRecord& text, std::uint32_t start,
                                            std::uint32_t max_instructions);
+
+// One graph node: a block plus the block starts that are followed from it.
+struct CfgNode {
+    BasicBlock block;
+    std::vector<std::uint32_t> successors;  // followed edges, target before fall-through
+};
+
+// Breadth-first traversal over static successors from the caller's seeds.
+// Branches and jumps are followed; direct call targets are recorded as
+// call_targets but NOT followed (their bodies are separate flows); returns,
+// indirect jumps, exceptions and unsupported words end a path. Fall-through
+// stops at the end of text are truncations and produce no edge.
+// Traversal is deterministic: seeds in order, then successors in the order
+// they were recorded.
+struct ControlFlowGraph {
+    std::vector<CfgNode> nodes;                 // unique block starts, discovery order
+    std::vector<std::uint32_t> call_targets;    // unique direct call targets, in order
+    std::uint32_t outside_text_successors = 0;  // static edges that fall outside text
+    bool limited = false;                       // the max_blocks cap was reached
+};
+
+// Throws std::runtime_error for a zero block limit or an invalid seed.
+[[nodiscard]] ControlFlowGraph build_control_flow_graph(
+    const ImageRecord& text, std::span<const std::uint32_t> seeds,
+    std::uint32_t max_blocks);
 
 } // namespace gt4recomp::ee

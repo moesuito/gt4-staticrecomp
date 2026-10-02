@@ -1,8 +1,12 @@
 #include "gt4recomp/ee_flow.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <deque>
+#include <set>
 #include <span>
 #include <stdexcept>
+#include <utility>
 
 namespace gt4recomp::ee {
 
@@ -171,6 +175,84 @@ BasicBlock build_basic_block(const ImageRecord& text, std::uint32_t start,
 
     block.end_exclusive = pc;
     return block;
+}
+
+ControlFlowGraph build_control_flow_graph(const ImageRecord& text,
+                                          std::span<const std::uint32_t> seeds,
+                                          std::uint32_t max_blocks) {
+    if (max_blocks == 0) {
+        throw std::runtime_error("Expected a nonzero block limit");
+    }
+    const std::uint64_t text_end = static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
+    // Within one traversal a linear run is bounded by the text extents, not by
+    // an artificial per-block number.
+    const auto max_block_instructions = static_cast<std::uint32_t>(text.bytes.size() / 4);
+
+    ControlFlowGraph graph;
+    std::deque<std::uint32_t> pending(seeds.begin(), seeds.end());
+    std::set<std::uint32_t> visited;
+
+    while (!pending.empty()) {
+        if (graph.nodes.size() == max_blocks) {
+            graph.limited = true;
+            break;
+        }
+        const auto start = pending.front();
+        pending.pop_front();
+        if (!visited.insert(start).second) {
+            continue;
+        }
+
+        CfgNode node;
+        node.block = build_basic_block(text, start, max_block_instructions);
+
+        const auto follow = [&](std::uint32_t address) {
+            if (address < text.guest_address
+                || static_cast<std::uint64_t>(address) + 4 > text_end) {
+                ++graph.outside_text_successors;
+                return;
+            }
+            if (std::find(node.successors.begin(), node.successors.end(), address)
+                == node.successors.end()) {
+                node.successors.push_back(address);
+                pending.push_back(address);
+            }
+        };
+
+        switch (node.block.ending) {
+        case FlowKind::Branch:
+            if (node.block.target_known) {
+                follow(node.block.target);
+            }
+            follow(node.block.continuation);
+            break;
+        case FlowKind::Jump:
+            if (node.block.target_known) {
+                follow(node.block.target);
+            }
+            break;
+        case FlowKind::Call:
+            if (node.block.target_known
+                && std::find(graph.call_targets.begin(), graph.call_targets.end(),
+                             node.block.target) == graph.call_targets.end()) {
+                // Direct callees are recorded for the function map; their
+                // bodies are separate flows and are not enqueued here.
+                graph.call_targets.push_back(node.block.target);
+            }
+            follow(node.block.continuation);
+            break;
+        case FlowKind::FallThrough:
+        case FlowKind::Return:
+        case FlowKind::IndirectJump:
+        case FlowKind::Exception:
+        case FlowKind::Unsupported:
+            // Truncations and dynamic transfers have no static successor.
+            break;
+        }
+
+        graph.nodes.push_back(std::move(node));
+    }
+    return graph;
 }
 
 } // namespace gt4recomp::ee

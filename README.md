@@ -64,6 +64,19 @@ kind, static target, continuation address and stop reason. Unsupported words
 stop the walk with context. See the
 [M7 evidence](docs/reverse-engineering/m7-control-flow.md).
 
+## Follow static control flow
+
+```powershell
+.\build\gt4cfg.exe private/fingerprint-check/CORE.GT4 0x5a3140 200
+```
+
+The third argument caps the visited blocks. Branches and jumps are followed;
+direct call targets are recorded but not followed; returns, indirect jumps,
+exceptions and unsupported words end a path. The tool prints one line per block
+and a stderr summary (blocks, instructions, edges, call targets, open ends,
+outside-text edges, limit flag). See the
+[M7 evidence](docs/reverse-engineering/m7-control-flow.md).
+
 ## Reconstruct an analysis ELF
 
 With the verified CORE copy from M2:
