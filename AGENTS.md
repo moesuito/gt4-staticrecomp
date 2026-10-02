@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 30 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 31 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -195,17 +195,20 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   names; slice 30 then completes the stream's reconstruction (four 13-byte
   records, nothing else — the small fields are not stream offsets) and
   identifies each record as the head of a serialized object the flag-1
-  assign relocates in place, faulting on the odd position; `--threads`
+  assign relocates in place, faulting on the odd position; slice 31 then
+  finds the records' source is the **null pointer** (the assign chain's
+  resolver 0x0044D740 returned 0 on a failed parse, so the copies read
+  addresses 0x0..0xC — the low memory), which is the root of the fault
+  chain; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 31 — the serialized source objects: each 13-byte stream
-  record is the head of an object the assign serializes (flag, value,
-  length 13, value) and the three bank assignments produce identical
-  records; identify those source objects (their content is observable in
-  memory) and why the model's serialized head is 13 bytes where the
-  console's layout leads to an even position — the candidates are the sound
-  library's object constructors (0x00462900, 0x00463600) and the objects
-  the sound init builds.
+- Next: M30 slice 32 — why the resolver 0x0044D740 fails: the assign
+  chain's formatter/resolver returns 0 for the sound-bank sources (its
+  parse at 0x004AE1F8 fails), so the assign copies from the null pointer
+  and the stream position turns odd; read the parse/formatter context
+  (0x004AEFF0) and the format strings' state in guest memory at the fault
+  to see what the resolver expects — a valid format, a mounted volume, or a
+  table the model has not provided yet.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

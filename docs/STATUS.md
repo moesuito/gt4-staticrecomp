@@ -1,21 +1,19 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 30 — the stream's serialized content,
-complete: a write watch over the whole stream (1,344 writes) shows it holds
-exactly **four 13-byte records** and nothing else — `{0, 212, 13, 0}` three
-times and `{0, 0, 13, 64}` for the fourth (the flag-1 `/sound/roadnoiz.es`
-assignment that faults) — so the small fields (212, 64) are **not offsets
-into the stream** (no string data exists at the stream + 212). Each record
-is the head of a **serialized object** the assign copies (flag, value,
-length 13, value), which the flag-1 assign then relocates in place,
-converting the serialized values into absolute pointers; that relocation's
-first read at the odd 0x008475E7 (after 39 bytes) faults while the console
-has 32 bytes before its aligned structure. The live dump's same buffer
-holds "INST" at the menu (a later moment). No model behavior changed. The
-differential passes at 3,000 services (interpreter reference at 7,570,583
-instructions, full state identical). This is the first document to read in
-a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-02 after M30 slice 31 — the records come from the null
+pointer: a temporary instrument that tracks the last guest read shows the
+stream's copies read from **0x0..0xC** — the assign is copying from the
+**null pointer** because the assign chain's formatter/resolver **0x0044D740
+returned 0** (a failed parse); the "13-byte records" are simply the low
+memory's content (0xD4 at +4, 0x0D at +8), the length 13 comes from the low
+memory's byte, and after three such copies the stream position is odd (39
+bytes), which makes the flag-1 assignment's relocation fault. So the whole
+fault chain is: the resolver fails → the assign copies from null → the odd
+position → the relocation fault. No model behavior changed; the next slice
+finds why 0x0044D740 fails. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -772,6 +770,23 @@ linked evidence documents.
   with the interpreter reference at 7,570,583 instructions and the full
   state identical
   (`docs/reverse-engineering/m30-slice30-stream-serialized-content.md`).
+- M30 slice 31 (2026-10-02): **the records come from the null pointer** — a
+  temporary instrument that tracks the last guest read and prints it with
+  every stream write shows the copies' sources are **0x0..0xC**: the assign
+  copies from the **null pointer** because the assign chain's
+  formatter/resolver **0x0044D740 returned 0** (a failed parse — its
+  disassembly returns 0 when 0x004AE1F8's parse of the format fails). The
+  "13-byte records" are the **low memory's content** (0xD4 at +4, 0x0D at
+  +8 — exactly slice 30's reconstruction; the memory scan also finds the
+  fourth pattern at address 0x0), the length 13 comes from the low memory's
+  byte at +8, and after three such copies the stream position is odd (39
+  bytes), which makes the flag-1 assignment's relocation fault. The fault
+  chain: **the resolver fails → the assign copies from null → the odd
+  position → the relocation fault.** No model behavior changed: CTest 34/34;
+  Python 73 (67 run, 6 skip); the differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical
+  (`docs/reverse-engineering/m30-slice31-records-from-the-null-pointer.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -781,14 +796,13 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the serialized source objects** — each
-  13-byte stream record is the head of an object the assign serializes
-  (flag, value, length 13, value), and the three bank assignments produce
-  identical records; the next slice identifies those source objects (their
-  content is observable in memory) and why the model's serialized head is
-  13 bytes where the console's layout leads to an even position — the
-  candidates are the sound library's object constructors (0x00462900,
-  0x00463600) and the objects the sound init builds.
+- Next technical milestone work: **why the resolver 0x0044D740 fails** — the
+  assign chain's formatter/resolver returns 0 for the sound-bank sources
+  (its parse at 0x004AE1F8 fails), so the assign copies from the null
+  pointer and the stream position turns odd; the next slice reads the
+  parse/formatter context (0x004AEFF0) and the format strings' state in
+  guest memory at the fault to see what the resolver expects — a valid
+  format, a mounted volume, or a table the model has not provided yet.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
