@@ -33,10 +33,13 @@ struct TranslationUnit {
     std::set<std::uint32_t> reachable;
     std::set<std::uint32_t> labels;
     std::uint32_t extent_end = 0;
-    // When set, the walk stops here instead of translating further: the
-    // emitted module sets the pc and returns, exactly where the interpreter
-    // stops (a syscall or an unsupported word at this address).
-    std::uint32_t halt_at = 0;
+    // The scan starts at the lowest reachable address: a function may be
+    // entered above one of its own transfers (tail thunks).
+    std::uint32_t scan_start = 0;
+    // Boundary addresses the module stops at: syscalls encountered by the walk
+    // and the optional explicit halt. The emitted module sets the pc there and
+    // returns, exactly where the interpreter stops.
+    std::set<std::uint32_t> halts;
 };
 
 std::uint32_t word_at(const ImageRecord& text, std::uint32_t address) {
@@ -227,6 +230,9 @@ std::string statement_for(const DecodedInstruction& instruction) {
     case Operation::Sync:
         code << "; // sync: the pipeline barrier has no effect in this model";
         break;
+    case Operation::Cache:
+        code << "; // cache hint: no effect in this model";
+        break;
     case Operation::Plzcw:
         code << "state.write_gpr64(" << rd
              << ", detail::plzcw_words(state.read_gpr64(" << rs << ")));";
@@ -315,12 +321,18 @@ std::string call_expression(std::uint32_t target) {
 std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit) {
     std::ostringstream body;
     std::set<std::uint32_t> consumed_delay_slots;
-    for (std::uint32_t address = unit.entry; address < unit.extent_end; address += 4) {
+    if (unit.scan_start < unit.entry) {
+        // The scan begins below the entry (a tail thunk's target); a caller
+        // must still start executing at the entry address.
+        body << "    goto " << label_for(unit.entry)
+             << "; // the entry lies above the scan start\n\n";
+    }
+    for (std::uint32_t address = unit.scan_start; address < unit.extent_end; address += 4) {
         const auto word = word_at(text, address);
         const auto instruction = decode(word);
         const auto flow = classify(instruction, address);
 
-        if (unit.halt_at != 0 && address == unit.halt_at) {
+        if (unit.halts.contains(address)) {
             // The model boundary: stop exactly where the interpreter stops,
             // with the pc at (not past) this word.
             if (unit.labels.contains(address)) {
@@ -332,9 +344,17 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                  << "    return;\n\n";
             continue;
         }
-        if (!unit.reachable.contains(address)) {
-            body << "    // unreachable word 0x" << hex_value(address, 8) << ": "
-                 << hex_value(word, 8) << " (not translated)\n\n";
+        if (!unit.reachable.contains(address) && !unit.labels.contains(address)) {
+            // Collapse runs of addresses that carry no code (a tail thunk's
+            // target can sit far below its caller) into one comment.
+            std::uint32_t next = address;
+            while (next < unit.extent_end && !unit.reachable.contains(next)
+                   && !unit.labels.contains(next) && !unit.halts.contains(next)) {
+                next += 4;
+            }
+            body << "    // " << ((next - address) / 4) << " word(s) with no reachable code (0x"
+                 << hex_value(address, 8) << " to 0x" << hex_value(next, 8) << ")\n\n";
+            address = next - 4;  // the loop increment moves to `next`
             continue;
         }
         if (unit.labels.contains(address)) {
@@ -417,7 +437,9 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             comment(address + 4, word_at(text, address + 4));
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n";
-            body << "    " << call_expression(flow.target) << "\n\n";
+            body << "    " << call_expression(flow.target) << "\n";
+            body << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
+                 << "u) { return; } // a service boundary stopped the callee\n\n";
             consumed_delay_slots.insert(address + 4);
             break;
         }
@@ -503,10 +525,19 @@ int wmain(int argc, wchar_t* argv[]) {
                     unit.reachable.insert(address);
                 }
                 unit.extent_end = std::max(unit.extent_end, node.block.end_exclusive);
+                if (node.block.ending == FlowKind::Exception) {
+                    // A syscall the walk reached: the module stops there,
+                    // exactly like the interpreter, and callers propagate the
+                    // stop through the call check. Exception has no delay
+                    // slot, so the syscall is the block's last word.
+                    const std::uint32_t syscall_address = node.block.end_exclusive - 4;
+                    unit.reachable.erase(syscall_address);
+                    unit.halts.insert(syscall_address);
+                }
             }
             if (halt_address != 0 && unit.reachable.contains(halt_address)) {
-                // The halt address must be a boundary the interpreter stops on,
-                // and it is not translated: the module stops there instead.
+                // The explicit halt address must be a boundary the interpreter
+                // stops on, and it is not translated either.
                 const auto halt_flow =
                     classify(decode(word_at(text, halt_address)), halt_address);
                 if (halt_flow.kind != FlowKind::Exception
@@ -515,12 +546,21 @@ int wmain(int argc, wchar_t* argv[]) {
                         "A halt address must be a syscall or an unsupported word");
                 }
                 unit.reachable.erase(halt_address);
-                unit.halt_at = halt_address;
+                unit.halts.insert(halt_address);
+                halt_seen = true;
+            } else if (halt_address != 0 && unit.halts.contains(halt_address)) {
+                // The walk already found this boundary as a syscall.
                 halt_seen = true;
             }
-            if (unit.reachable.empty() || *unit.reachable.begin() < unit.entry) {
+            if (unit.reachable.empty()) {
                 throw std::runtime_error("Function at 0x" + hex_value(entry, 8)
-                                         + ": a transfer leaves it below its entry");
+                                         + ": no reachable instructions");
+            }
+            unit.scan_start = std::min(unit.entry, *unit.reachable.begin());
+            if (unit.scan_start < unit.entry) {
+                // The walk went below the entry (a tail thunk's target): the
+                // emission must still begin execution at the entry address.
+                unit.labels.insert(unit.entry);
             }
             if (unit.reachable.size() > budget) {
                 throw std::runtime_error("The call tree exceeds the instruction budget");
@@ -548,7 +588,8 @@ int wmain(int argc, wchar_t* argv[]) {
                     break;
                 case FlowKind::Branch:
                 case FlowKind::Jump:
-                    if (!unit.reachable.contains(flow.target) && flow.target != unit.halt_at) {
+                    if (!unit.reachable.contains(flow.target)
+                        && !unit.halts.contains(flow.target)) {
                         reject("A transfer leaves the function");
                     }
                     unit.labels.insert(flow.target);

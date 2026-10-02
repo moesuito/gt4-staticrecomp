@@ -190,5 +190,18 @@ if(BUILD_TESTING)
         target_include_directories(ee_translation_572438_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
         target_link_libraries(ee_translation_572438_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_translation_572438 COMMAND ee_translation_572438_tests "${GT4_LOCAL_CORE}")
+
+        set(GT4_TRANSLATED_THUNK_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-005b27f8.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_THUNK_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x5b27f8 64 "${GT4_TRANSLATED_THUNK_HEADER}"
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_thunk_tests
+            tests/unit/ee_translation_thunk_test.cpp
+            "${GT4_TRANSLATED_THUNK_HEADER}")
+        target_include_directories(ee_translation_thunk_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_thunk_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation_thunk COMMAND ee_translation_thunk_tests "${GT4_LOCAL_CORE}")
     endif()
 endif()

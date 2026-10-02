@@ -109,6 +109,11 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Swr:
         output << ' ' << rt << ", " << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
+    case Operation::Cache:
+        // The operation code occupies the rt field for the cache hint.
+        output << " 0x" << hex_value(instruction.rt, 2) << ", "
+               << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
+        break;
     case Operation::Beq:
     case Operation::Bne:
     case Operation::Beql:

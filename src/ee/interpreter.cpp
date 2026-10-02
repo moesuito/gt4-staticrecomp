@@ -1881,6 +1881,9 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
             (state.read_gpr32(instruction.rt) << place_shift[shift]) | (word & swr_mask[shift]));
         break;
     }
+    case Operation::Cache:
+        // The hint has no effect in this model, like the reference.
+        break;
     default:
         if (execute_special_register(instruction, state)
             || execute_cop1(instruction, state) || execute_mmi(instruction, state)) {

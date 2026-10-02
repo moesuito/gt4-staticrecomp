@@ -340,6 +340,7 @@ DecodedInstruction decode(std::uint32_t word) {
     case 0x2b: result.operation = Operation::Sw; break;
     case 0x2e: result.operation = Operation::Swr; break;
     case 0x31: result.operation = Operation::Lwc1; break;
+    case 0x2f: result.operation = Operation::Cache; break;
     case 0x37: result.operation = Operation::Ld; break;
     case 0x39: result.operation = Operation::Swc1; break;
     case 0x3f: result.operation = Operation::Sd; break;
@@ -385,6 +386,7 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Sd: return "sd";
     case Operation::Lq: return "lq";
     case Operation::Sq: return "sq";
+    case Operation::Cache: return "cache";
     case Operation::Lhu: return "lhu";
     case Operation::Lwu: return "lwu";
     case Operation::Sh: return "sh";

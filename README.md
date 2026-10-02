@@ -13,11 +13,13 @@ decoder expansion and Ghidra re-verification, 417 of 488 words match Ghidra
 operations, including the REGIMM branch family, JALR/SYSCALL, LD/SD/SB/LH and
 SLT/SLTU/DADDU. Later expansions added LB/LBU/SRA/SLTI/SLTIU/XORI, corrected
 SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics, added the COP1/MMI
-extensions and the unaligned-access and multiply/divide families (188
-operations in total, with PCSX2 used as the semantic reference). The game's
-startup executes in the interpreter from its ELF entry to the first BIOS
-syscall — and, through `gt4translate`, as a native C++ module verified
-identical to the interpreter after 942,695 instructions. The full CTest set
+extensions and the unaligned-access and multiply/divide families (189
+operations in total, with PCSX2 used as the semantic reference; CACHE decodes
+as the no-op hint it is). The game's startup executes in the interpreter from
+its ELF entry to the first BIOS syscall — and, through `gt4translate`, as a
+native C++ module verified identical to the interpreter after 942,695
+instructions; tail thunks and syscall boundaries translate too, stopping at
+service calls exactly like the interpreter. The full CTest set
 and the Python suite pass locally; 6 optional native Python checks skip
 without the M3 reference ELF. Tutoring remains pending; see the
 [M6 lesson](docs/lessons/m6.md).

@@ -15,6 +15,9 @@ enum class Operation {
     // Memory access.
     Lb, Lbu, Lh, Lhu, Lw, Lwu, Sw, Sh, Ld, Sd, Sb, Lq, Sq,
     Lwl, Lwr, Swl, Swr,
+    // The cache hint: decoded so real code flows past it; it has no effect in
+    // this model, like the reference implementation.
+    Cache,
     // Relative branches; the REGIMM family compares rs against zero.
     Beq, Bne, Beql, Bnel, Blez, Bgtz,
     Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall,

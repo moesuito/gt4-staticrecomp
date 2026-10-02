@@ -55,11 +55,14 @@ class TranslateCliTests(unittest.TestCase):
         self.assertIn("function_0044cb58(state);", result.stdout)
         self.assertIn("state.write_gpr64(31, 0x0010c0d0u); // link", result.stdout)
 
-    def test_rejects_transfers_that_leave_the_function(self):
-        result = self.run_tool("0x5a3140")  # jumps from 0x5a31cc into startup code below the entry
+    def test_rejects_indirect_calls_with_context(self):
+        # 0x5a3140 jumps below its entry (now allowed and walked) and reaches
+        # a jalr, which stays rejected with the exact word and address.
+        result = self.run_tool("0x5a3140")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
-        self.assertIn("leaves it below its entry", result.stderr)
+        self.assertIn("Indirect calls are not supported", result.stderr)
+        self.assertIn("0x005a3194", result.stderr)  # jumps from 0x5a31cc up into startup code below the entry
 
 
 if __name__ == "__main__":
