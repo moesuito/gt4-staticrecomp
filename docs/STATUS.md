@@ -337,10 +337,10 @@ Details live in the linked evidence documents.
 
 1. M30 slice 3: **the EE thread and semaphore scheduler** — CreateSema,
    CreateThread/StartThread/ExitThread, GetThreadId/ChangeThreadPriority,
-   SignalSema/WaitSema/PollSema, modeled from the public ABI with a
-   deterministic cooperative scheduler; the acceptance evidence is the same
-   differential harness (`gt4boot --compare-interpreter`) extended past
-   0x005ADCA4.
+   SignalSema/WaitSema/PollSema, modeled with the deterministic cooperative
+   scheduler of `docs/decisions/0005-thread-scheduler.md`; the acceptance
+   evidence is the same differential harness (`gt4boot --compare-interpreter`)
+   extended past 0x005ADCA4.
 2. The kernel-patch services (Copy/FindAddress/SetSyscall) and what they mean
    when the model is the kernel.
 3. Performance: resume entries or inline syscall calls to shrink the
