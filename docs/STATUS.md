@@ -1,20 +1,20 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 24 — the engine's stream and its static
-object: a write watch (temporary, removed) shows the engine builds a stream
-of **13-byte records** in its static buffer (0x00847580) with a cursor at
-0x00623A40 counting down by 13 per record, and its static object at
-0x00623A50 (the class with vtable 0x00688868) receives **+4 = 0x008475E7**
-(the odd data pointer that later faults in the relocation 0x005595C8) and
-**+0xC = 0xFD9** (the stream's remaining size); the live game's same-class
-object holds an **even** pointer (0x008483C0) and size 0x200, and its
-buffer's structure sits aligned at 0x008475E0. The file server sees no
-reads before the fault, so the stream is built from data the engine already
-has. No model behavior changed; the next slice finds the stream's builder.
-The differential passes at 3,000 services (interpreter reference at
-7,570,583 instructions, full state identical). This is the first document
-to read in a new session; it is kept current as work proceeds. Details live
-in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 25 — the sound library's stream and its
+objects: the static object at 0x00623A50 belongs to the engine's **sound
+library** (0x00462xxx) — the setter 0x004627B0 maintains the statics
+0x00623A3C (a stream write position) and 0x00623A40 (its free space), and
+the init at 0x00463000 sets them to {0x008475C0, 0x1000}, assigns the sound
+banks (`/sound/gt4sys.ins`, `gt4race.ins`, `gt4count.ins`) and then
+**`/sound/roadnoiz.es` to the static object with the relocating flag 1**
+(the faulting path). The object's odd data pointer (0x008475E7) is exactly
+the stream position after three 13-byte records (0x008475C0 + 39), and its
+size (0xFD9) is 0x1000 − 39: the object is a view into the stream. No model
+behavior changed; the next slice finds why the stream position is odd while
+the console's object is even. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -662,6 +662,25 @@ in the linked evidence documents.
   interpreter reference at 7,570,583 instructions and the full state
   identical
   (`docs/reverse-engineering/m30-slice24-engine-stream-and-static-object.md`).
+- M30 slice 25 (2026-10-02): **the sound library's stream and its objects** —
+  the static object at 0x00623A50 belongs to the engine's **sound library**
+  (0x00462xxx): the setter 0x004627B0 maintains the statics 0x00623A3C (a
+  stream write position) and 0x00623A40 (its free space), and the init at
+  **0x00463000** (guarded by the flag at 0x00623A74) sets them to
+  {0x008475C0, 0x1000}, assigns the sound banks `/sound/gt4sys.ins`
+  (0x006AB898), `/sound/gt4race.ins` (0x006AB8B0) and
+  `/sound/gt4count.ins` (0x006AB8C8) to a static array of string objects at
+  0x008505C0, then **assigns `/sound/roadnoiz.es` (0x006AB8E0) to the
+  static object at 0x00623A50 with the relocating flag 1** (the faulting
+  path), and parses `/sound/gt4se.inf` (0x006AB8F8) through 0x004AE230,
+  relocating the result with the same idiom (0x004630E0). The object's odd
+  data pointer (0x008475E7) is exactly the stream position after three
+  13-byte records (0x008475C0 + 39) and its size (0xFD9) is 0x1000 − 39 —
+  the object is a view into the stream. No model behavior changed: CTest
+  34/34; Python 73 (67 run, 6 skip); the differential passes at 3,000
+  services with the interpreter reference at 7,570,583 instructions and the
+  full state identical
+  (`docs/reverse-engineering/m30-slice25-sound-library-stream-and-objects.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -671,12 +690,13 @@ in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the stream's builder** — the engine
-  builds a 13-byte-record stream in its static buffer (cursor at 0x623A40
-  counting down by 13) and points the static object at 0x623A50 into it at
-  an odd offset (0x8475E7), which later faults in the relocation 0x5595C8;
-  the next slice finds the builder (a pc-carrying watch or a static scan
-  for the 13-byte stride) and why the console's object ends up even.
+- Next technical milestone work: **why the stream position is odd** — the
+  sound library's stream at 0x008475C0 advances in 13-byte records, so its
+  odd positions (after an odd number of records) leave the static object's
+  data pointer odd and the relocation 0x005595C8 faults; the console's
+  same-class object is even. The next slice pins the record grammar (13
+  bytes = an archive entry plus a tag byte; 12 would keep positions even)
+  and the stream's contents against the console's.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 24 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 25 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -173,15 +173,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   was building there (a stream of 13-byte records with a cursor counting
   down by 13, whose odd position leaves the static object's data pointer
   odd; the console's same-class object is even, and no file read precedes
-  it); `--threads`
+  it); slice 25 then names the builder (the engine's sound library at
+  0x00462xxx: its init 0x00463000 sets the stream at 0x008475C0 with
+  13-byte records and assigns `/sound/roadnoiz.es` to the static object
+  with the relocating flag 1, so the object's odd position is the stream's
+  position after three records); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 25 — the stream's builder: the engine builds a 13-byte
-  record stream in its static buffer (0x00847580) with the cursor at
-  0x00623A40 counting down by 13, and points the static object at
-  0x00623A50 into it at an odd offset (0x008475E7); find the builder (a
-  pc-carrying watch or a static scan for the 13-byte stride) and why the
-  console's object ends up even.
+- Next: M30 slice 26 — why the stream position is odd: the sound library's
+  stream at 0x008475C0 advances in 13-byte records, so odd positions leave
+  the static object's data pointer odd and the relocation 0x005595C8
+  faults; the console's same-class object is even. Pin the record grammar
+  (13 bytes = an archive entry plus a tag byte; 12 would keep positions
+  even) and the stream's contents against the console's.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
