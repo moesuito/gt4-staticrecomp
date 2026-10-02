@@ -13,14 +13,36 @@ enum class Operation {
     // Immediates, shifts and upper immediates.
     Addiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
     // Memory access.
-    Lb, Lbu, Lh, Lw, Sw, Ld, Sd, Sb,
+    Lb, Lbu, Lh, Lw, Sw, Ld, Sd, Sb, Lq, Sq,
     // Relative branches; the REGIMM family compares rs against zero.
     Beq, Bne, Beql, Bnel, Blez, Bgtz,
     Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall,
     // Direct and register jumps.
     J, Jal, Jr, Jalr,
     // Exception boundary.
-    Syscall
+    Syscall,
+    // Special register moves, synchronization and the MMI shift cache.
+    Mfhi, Mthi, Mflo, Mtlo, Sync, Mfhi1, Mthi1, Mflo1, Mtlo1, Mtsa, Mtsab, Mtsah,
+    // COP1: register moves, FPU memory access, single-precision arithmetic,
+    // accumulator forms, comparisons, conversions and conditional branches.
+    Mfc1, Cfc1, Mtc1, Ctc1, Lwc1, Swc1,
+    AddS, SubS, MulS, DivS, SqrtS, AbsS, MovS, NegS, MaxS, MinS, RsqrtS,
+    AddaS, SubaS, MulaS, MaddaS, MsubaS, MaddS, MsubS,
+    CF, CEq, CLt, CLe, CvtS, CvtW,
+    Bc1f, Bc1t, Bc1fl, Bc1tl,
+    // MMI: parallel lane arithmetic and logic.
+    Paddw, Psubw, Paddh, Psubh, Paddb, Psubb,
+    Paddsw, Psubsw, Paddsh, Psubsh, Paddsb, Psubsb,
+    Padduw, Psubuw, Padduh, Psubuh, Paddub, Psubub,
+    Pcgtw, Pcgth, Pcgtb, Pceqw, Pceqh, Pceqb,
+    Pmaxw, Pmaxh, Pminw, Pminh, Pabsw, Pabsh,
+    Pand, Por, Pxor, Pnor,
+    Psllh, Psrlh, Psrah, Psllw, Psrlw, Psraw, Psllvw, Psrlvw, Psravw,
+    Pextlw, Pextlh, Pextlb, Pextuw, Pextuh, Pextub,
+    Ppacw, Ppach, Ppacb, Pext5, Ppac5, Padsbh,
+    Pinth, Pinteh, Pcpyld, Pcpyud, Pcpyh, Pexeh, Prevh, Pexew, Pexch, Pexcw, Prot3w,
+    // MMI: HI/LO moves and the state-backed shift.
+    Pmfhi, Pmflo, Pmthi, Pmtlo, Pmfhl, Pmthl, Qfsrv
 };
 
 // These are overlapping views of the encoded bits, not a list of operands.
@@ -36,6 +58,13 @@ struct DecodedInstruction {
     std::uint8_t function = 0;
     std::uint16_t immediate = 0;
     std::uint32_t jump_index = 0;
+
+    // COP1 names the same bit ranges differently: fs is bits 15-11, ft is bits
+    // 20-16 and fd is bits 10-6. MMI uses bits 10-6 as its group index, which
+    // is why that field is shared between shift amounts and MMI selection.
+    [[nodiscard]] std::uint8_t cop1_fs() const { return rd; }
+    [[nodiscard]] std::uint8_t cop1_ft() const { return rt; }
+    [[nodiscard]] std::uint8_t cop1_fd() const { return shift_amount; }
 
     // Interpret the immediate as signed without narrowing to a signed 16-bit type.
     [[nodiscard]] std::int32_t signed_immediate() const;

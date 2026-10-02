@@ -40,7 +40,8 @@ class TranslateCliTests(unittest.TestCase):
                              self.run_tool("0x577878").stdout)
 
     def test_rejects_unsupported_words(self):
-        result = self.run_tool("0x100008")
+        # 0x001001f8 is an `ei` (COP0) word: outside the translated subset.
+        result = self.run_tool("0x1001f8")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertIn("ERROR:", result.stderr)

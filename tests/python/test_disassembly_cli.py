@@ -36,12 +36,15 @@ class DisassemblyCliTests(unittest.TestCase):
                 self.assertIn("ERROR:", result.stderr)
 
     def test_unsupported_is_explicit_and_summary_counts_it(self):
-        result = self.run_tool("0x100008", "2")
+        # 0x001001f8 is an `ei` (COP0) word; 0x001001fc is a jal. The startup
+        # prologue itself now decodes, so the rejection is exercised here.
+        result = self.run_tool("0x1001f8", "2")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 2)
-        self.assertEqual(result.stdout.count("unsupported"), 2)
-        self.assertIn("supported=0 unsupported=2", result.stderr)
-        self.assertIn("opcode=0x1c function=0x28 count=2", result.stderr)
+        self.assertEqual(result.stdout.count("unsupported"), 1)
+        self.assertIn("supported=1 unsupported=1", result.stderr)
+        self.assertIn("opcode=0x10 rs=0x10 count=1", result.stderr)
+        self.assertIn("jal", result.stdout)
 
     def test_missing_input_and_missing_arguments_fail(self):
         result = self.run_tool(core=ROOT / "private/nonexistent-core")

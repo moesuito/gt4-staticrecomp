@@ -60,16 +60,61 @@ public:
     [[nodiscard]] std::uint32_t read_gpr32(std::uint8_t index) const;
     void write_gpr32(std::uint8_t index, std::uint32_t value);
 
+    // The R5900 register file is 128 bits wide; the accesses above view the
+    // low half. MMI instructions read and write all four 32-bit lanes, so the
+    // upper half is addressable separately. The alias register r0 is zero for
+    // both halves and ignores writes.
+    [[nodiscard]] std::uint64_t read_gpr_high64(std::uint8_t index) const;
+    void write_gpr_high64(std::uint8_t index, std::uint64_t value);
+
     [[nodiscard]] std::uint32_t pc() const noexcept;
     void set_pc(std::uint32_t value) noexcept;
 
     [[nodiscard]] GuestMemory& memory() noexcept;
     [[nodiscard]] const GuestMemory& memory() const noexcept;
 
+    // FPU registers keep single-precision values as their 32-bit bit patterns;
+    // interpreting those patterns as floats happens in the interpreter.
+    [[nodiscard]] std::uint32_t read_fpr(std::uint8_t index) const;
+    void write_fpr(std::uint8_t index, std::uint32_t value);
+
+    // The FPU accumulator is written by the ADDA/SUBA/MULA forms and read by
+    // MADD/MSUB. FCR31 holds the compare condition (bit 23) plus cause bits.
+    [[nodiscard]] std::uint32_t fpu_accumulator() const noexcept;
+    void set_fpu_accumulator(std::uint32_t value) noexcept;
+    [[nodiscard]] std::uint32_t fpu_control() const noexcept;
+    void set_fpu_control(std::uint32_t value) noexcept;
+
+    // HI/LO come in two 64-bit halves each: the "1" halves serve the MMI
+    // variants (MFHI1/MTHI1/...) and the 128-bit shift staging.
+    [[nodiscard]] std::uint64_t hi() const noexcept;
+    void set_hi(std::uint64_t value) noexcept;
+    [[nodiscard]] std::uint64_t lo() const noexcept;
+    void set_lo(std::uint64_t value) noexcept;
+    [[nodiscard]] std::uint64_t hi1() const noexcept;
+    void set_hi1(std::uint64_t value) noexcept;
+    [[nodiscard]] std::uint64_t lo1() const noexcept;
+    void set_lo1(std::uint64_t value) noexcept;
+
+    // Shift-amount cache written by MTSA/MTSAB/MTSAH and read by the shift
+    // instructions that take their amount from state instead of the encoding.
+    [[nodiscard]] std::uint32_t shift_amount_cache() const noexcept;
+    void set_shift_amount_cache(std::uint32_t value) noexcept;
+
 private:
     static void require_gpr_index(std::uint8_t index);
+    static void require_fpr_index(std::uint8_t index);
 
     std::array<std::uint64_t, 32> gpr_{};
+    std::array<std::uint64_t, 32> gpr_high_{};
+    std::array<std::uint32_t, 32> fpr_{};
+    std::uint64_t hi_ = 0;
+    std::uint64_t lo_ = 0;
+    std::uint64_t hi1_ = 0;
+    std::uint64_t lo1_ = 0;
+    std::uint32_t fpu_accumulator_ = 0;
+    std::uint32_t fpu_control_ = 0;
+    std::uint32_t shift_amount_cache_ = 0;
     std::uint32_t pc_ = 0;
     GuestMemory memory_;
 };

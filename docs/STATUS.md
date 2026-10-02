@@ -13,11 +13,12 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 45 operations. Ghidra verification: the M6 ten-region
-    run matched 417 with 0 mismatches; the slice-4 extended listing (ten
-    regions plus candidate function ranges) matched 475 with 0 mismatches
+  - The decoder covers 173 operations. Ghidra verification: the M6 ten-region
+    run matched 417 with 0 mismatches; the M15 listing (ten regions, candidate
+    ranges and the five startup regions) matched 511 with 0 mismatches and 34
+    R5900-only rows verified against the reference tables instead
     (`docs/reverse-engineering/m6-disassembly.md`,
-    `docs/reverse-engineering/m13-first-function.md`).
+    `docs/reverse-engineering/m15-cop1-mmi.md`).
 - M7 (2026-10-01): flow classification, delay-slot-aware basic blocks
   (`gt4blocks`) and deterministic CFG traversal (`gt4cfg`); real seeded run:
   15 blocks, 71 instructions, 20 edges
@@ -49,6 +50,14 @@ work proceeds. Details live in the linked evidence documents.
   comparison semantics corrected to 64-bit (shared-speculation bug found by
   cross-checking PCSX2), and a fourth function verified (`0x00549378`)
   (`docs/reverse-engineering/m13-first-function.md`).
+- M15 COP1/MMI: 35 FPU and 73 MMI operations, LQ/SQ, the HI/LO second bank
+  and the MTSA shift cache decode and execute (PCSX2 is the semantic
+  reference). The interpreter runs the game's real startup: 942,695
+  instructions from the ELF entry (0x00100008) to the first BIOS syscall
+  (0x001001c8), clearing the .bss window — asserted by the new
+  `ee_startup_run` CTest with a junk pre-fill. Bit-for-bit agreement with
+  Ghidra on the base language; the 34 extension rows are verified against
+  the reference tables (`docs/reverse-engineering/m15-cop1-mmi.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -93,16 +102,18 @@ work proceeds. Details live in the linked evidence documents.
   optional native CLI tests skip. Rebuilding it is an optional future task.
 - Retroactive lesson notes for M2-M5 are not written; the M9-M14 lessons are
   pending.
-- 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
-  deferred to M15-M17 by the curriculum.
+- The multiply/divide family (MULT/DIV/MADD/MADDU, PMULT*/PMADD*/PHM*/PDIV*,
+  PLZCW), COP0 (`ei`/`eret`) and BREAK remain unmodeled; in the sampled
+  regions only those encodings are left.
 - Live single-stepping is unsolved (savestate parsing covers offline
   snapshots); the freeze layout is coupled to the emulator build.
 
 ## Next actions
 
-1. M14 next: broader decoding (COP1/MMI) so the interpreter can run real
-   code; translator: indirect-call dispatch; differential execution needs
-   step control (open).
+1. M15 next: extend `gt4translate` to emit the new operations so the startup
+   block and FPU/MMI-using functions recompile natively; then the
+   multiply/divide family and COP0; indirect-call dispatch; differential
+   execution needs step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -112,4 +123,5 @@ work proceeds. Details live in the linked evidence documents.
   decoder expansion, Ghidra verification, working rules, M6-M8 lessons, M7
   slices 1-2, M8 function map, M9 state model, M10 interpreter, M11/M12
   synthetic suites, M13 first natively compiled function, M14 live PCSX2
-  observation and savestate register decoding.
+  observation and savestate register decoding, M15 COP1/MMI decoding and
+  execution with the game's startup running in the interpreter.

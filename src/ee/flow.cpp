@@ -28,6 +28,10 @@ InstructionFlow classify(const DecodedInstruction& instruction, std::uint32_t pc
     case Operation::Bgezal:
     case Operation::Bltzall:
     case Operation::Bgezall:
+    case Operation::Bc1f:
+    case Operation::Bc1t:
+    case Operation::Bc1fl:
+    case Operation::Bc1tl:
         flow.kind = FlowKind::Branch;
         flow.has_delay_slot = true;
         flow.target_known = true;
@@ -91,6 +95,8 @@ bool is_likely_branch(Operation operation) {
     case Operation::Bgezl:
     case Operation::Bltzall:
     case Operation::Bgezall:
+    case Operation::Bc1fl:
+    case Operation::Bc1tl:
         return true;
     default:
         return false;

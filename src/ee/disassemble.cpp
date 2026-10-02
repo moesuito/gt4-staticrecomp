@@ -7,6 +7,7 @@
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace gt4recomp::ee {
@@ -18,6 +19,10 @@ constexpr std::array<std::string_view, 32> register_names = {
     "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
     "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"
 };
+
+std::string float_register(std::uint8_t index) {
+    return "f" + std::to_string(index);
+}
 
 std::string hex_value(std::uint32_t value, int width = 0) {
     std::ostringstream output;
@@ -91,6 +96,8 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Ld:
     case Operation::Sd:
     case Operation::Sb:
+    case Operation::Lq:
+    case Operation::Sq:
         output << ' ' << rt << ", " << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
     case Operation::Beq:
@@ -133,6 +140,189 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Srl:
     case Operation::Sra:
         output << ' ' << rd << ", " << rt << ", 0x" << hex_value(instruction.shift_amount);
+        break;
+    case Operation::Mfc1:
+    case Operation::Mtc1:
+        output << ' ' << rt << ", " << float_register(instruction.cop1_fs());
+        break;
+    case Operation::Cfc1:
+    case Operation::Ctc1:
+        // The operand names a control register: FCR0 and FCR31 have the
+        // conventional fir/fcsr names.
+        output << ' ' << rt << ", ";
+        if (instruction.cop1_fs() == 0) {
+            output << "fir";
+        } else if (instruction.cop1_fs() == 31) {
+            output << "fcsr";
+        } else {
+            output << float_register(instruction.cop1_fs());
+        }
+        break;
+    case Operation::Lwc1:
+    case Operation::Swc1:
+        output << ' ' << float_register(instruction.rt) << ", "
+               << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
+        break;
+    case Operation::AddS:
+    case Operation::SubS:
+    case Operation::MulS:
+    case Operation::DivS:
+    case Operation::AbsS:
+    case Operation::MovS:
+    case Operation::NegS:
+    case Operation::MaxS:
+    case Operation::MinS:
+    case Operation::RsqrtS:
+    case Operation::AddaS:
+    case Operation::SubaS:
+    case Operation::MulaS:
+    case Operation::MaddaS:
+    case Operation::MsubaS:
+    case Operation::MaddS:
+    case Operation::MsubS:
+        output << ' ' << float_register(instruction.cop1_fd()) << ", "
+               << float_register(instruction.cop1_fs()) << ", "
+               << float_register(instruction.cop1_ft());
+        break;
+    case Operation::SqrtS:
+        // sqrt.s reads only ft; the fs field is not an operand.
+        output << ' ' << float_register(instruction.cop1_fd()) << ", "
+               << float_register(instruction.cop1_ft());
+        break;
+    case Operation::CF:
+    case Operation::CEq:
+    case Operation::CLt:
+    case Operation::CLe:
+        output << ' ' << float_register(instruction.cop1_fs()) << ", "
+               << float_register(instruction.cop1_ft());
+        break;
+    case Operation::CvtS:
+    case Operation::CvtW:
+        output << ' ' << float_register(instruction.cop1_fd()) << ", "
+               << float_register(instruction.cop1_fs());
+        break;
+    case Operation::Bc1f:
+    case Operation::Bc1t:
+    case Operation::Bc1fl:
+    case Operation::Bc1tl:
+        output << ' ' << target_text(relative_branch_target(pc, instruction));
+        break;
+    case Operation::Mthi:
+    case Operation::Mtlo:
+    case Operation::Mtsa:
+    case Operation::Mthi1:
+    case Operation::Mtlo1:
+    case Operation::Pmthi:
+    case Operation::Pmtlo:
+        output << ' ' << rs;
+        break;
+    case Operation::Mfhi:
+    case Operation::Mflo:
+    case Operation::Mfhi1:
+    case Operation::Mflo1:
+    case Operation::Pmfhi:
+    case Operation::Pmflo:
+        output << ' ' << rd;
+        break;
+    case Operation::Mtsab:
+    case Operation::Mtsah:
+        output << ' ' << rs << ", 0x" << hex_value(instruction.immediate);
+        break;
+    case Operation::Sync:
+        // The five-bit completion code names the barrier flavor; zero is the
+        // plain form.
+        if (instruction.shift_amount != 0) {
+            output << " 0x" << hex_value(instruction.shift_amount);
+        }
+        break;
+    case Operation::Paddw:
+    case Operation::Psubw:
+    case Operation::Paddh:
+    case Operation::Psubh:
+    case Operation::Paddb:
+    case Operation::Psubb:
+    case Operation::Paddsw:
+    case Operation::Psubsw:
+    case Operation::Paddsh:
+    case Operation::Psubsh:
+    case Operation::Paddsb:
+    case Operation::Psubsb:
+    case Operation::Padduw:
+    case Operation::Psubuw:
+    case Operation::Padduh:
+    case Operation::Psubuh:
+    case Operation::Paddub:
+    case Operation::Psubub:
+    case Operation::Pcgtw:
+    case Operation::Pcgth:
+    case Operation::Pcgtb:
+    case Operation::Pceqw:
+    case Operation::Pceqh:
+    case Operation::Pceqb:
+    case Operation::Pmaxw:
+    case Operation::Pmaxh:
+    case Operation::Pminw:
+    case Operation::Pminh:
+    case Operation::Pand:
+    case Operation::Por:
+    case Operation::Pxor:
+    case Operation::Pnor:
+    case Operation::Pextlw:
+    case Operation::Pextlh:
+    case Operation::Pextlb:
+    case Operation::Pextuw:
+    case Operation::Pextuh:
+    case Operation::Pextub:
+    case Operation::Ppacw:
+    case Operation::Ppach:
+    case Operation::Ppacb:
+    case Operation::Padsbh:
+    case Operation::Pinth:
+    case Operation::Pinteh:
+    case Operation::Pcpyld:
+    case Operation::Pcpyud:
+    case Operation::Qfsrv:
+        output << ' ' << rd << ", " << rs << ", " << rt;
+        break;
+    case Operation::Pabsw:
+    case Operation::Pabsh:
+    case Operation::Pext5:
+    case Operation::Ppac5:
+    case Operation::Pexeh:
+    case Operation::Prevh:
+    case Operation::Pexew:
+    case Operation::Pexch:
+    case Operation::Pexcw:
+    case Operation::Pcpyh:
+        output << ' ' << rd << ", " << rt;
+        break;
+    case Operation::Psllh:
+    case Operation::Psrlh:
+    case Operation::Psrah:
+    case Operation::Psllw:
+    case Operation::Psrlw:
+    case Operation::Psraw:
+        output << ' ' << rd << ", " << rt << ", 0x" << hex_value(instruction.shift_amount);
+        break;
+    case Operation::Psllvw:
+    case Operation::Psrlvw:
+    case Operation::Psravw:
+        // The shift amount comes from rs; rt holds the data.
+        output << ' ' << rd << ", " << rt << ", " << rs;
+        break;
+    case Operation::Pmfhl: {
+        // The five variants share the mnemonic; the suffix names the format.
+        static constexpr std::array<std::string_view, 5> suffixes = {
+            ".lw", ".uw", ".slw", ".lh", ".sh"
+        };
+        if (instruction.shift_amount < suffixes.size()) {
+            output << suffixes[instruction.shift_amount];
+        }
+        output << ' ' << rd;
+        break;
+    }
+    case Operation::Pmthl:
+        output << " pmthl.lw " << rs;
         break;
     case Operation::Unsupported:
         output << " 0x" << hex_value(word, 8) << " ; " << unsupported_family(instruction);
