@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 29 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 30 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -192,15 +192,20 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   state-pointer instrument captured zero copies), maps the assign chain's
   formatter (the SDK printf 0x0044D740) and shows the bank assignments
   advance the stream by 13 bytes each — the copied objects are not the
-  names; `--threads`
+  names; slice 30 then completes the stream's reconstruction (four 13-byte
+  records, nothing else — the small fields are not stream offsets) and
+  identifies each record as the head of a serialized object the flag-1
+  assign relocates in place, faulting on the odd position; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 30 — the copied objects' identity: the sound library's
-  three bank assignments advance its stream by 13 bytes each, so the copied
-  objects are not the formatted names; identify them from the source
-  object's content in memory (reliable) or by tracing the two sound
-  functions that also write the stream (0x00462900, 0x00463600) — register
-  reads are not reliable on translated code.
+- Next: M30 slice 31 — the serialized source objects: each 13-byte stream
+  record is the head of an object the assign serializes (flag, value,
+  length 13, value) and the three bank assignments produce identical
+  records; identify those source objects (their content is observable in
+  memory) and why the model's serialized head is 13 bytes where the
+  console's layout leads to an even position — the candidates are the sound
+  library's object constructors (0x00462900, 0x00463600) and the objects
+  the sound init builds.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

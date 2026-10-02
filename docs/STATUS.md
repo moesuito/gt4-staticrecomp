@@ -1,17 +1,17 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 29 — instruments and the formatter: a
-second instrument that read the guest argument registers from a state
-pointer at every write captured **zero** copies — the translated module
-keeps values in host registers and synchronizes the guest file only at
-boundaries, so mid-execution register reads are stale (the same reason the
-slice-28 a1 read zero). The assign chain's formatter (0x0044D740) is mapped
-as the SDK printf: context init 0x004AEFF0, format parse 0x004AE1F8, format
-0x004AF3E8, result at `*(context+0x94)`. The three sound-bank assignments
-advance the stream by **13 bytes each** — not by the names' lengths — so
-the copied objects are not the formatted names; identifying them needs the
-source object's content or the two sound functions that also write the
-stream (0x00462900, 0x00463600). No model behavior changed. The
+Updated 2026-10-02 after M30 slice 30 — the stream's serialized content,
+complete: a write watch over the whole stream (1,344 writes) shows it holds
+exactly **four 13-byte records** and nothing else — `{0, 212, 13, 0}` three
+times and `{0, 0, 13, 64}` for the fourth (the flag-1 `/sound/roadnoiz.es`
+assignment that faults) — so the small fields (212, 64) are **not offsets
+into the stream** (no string data exists at the stream + 212). Each record
+is the head of a **serialized object** the assign copies (flag, value,
+length 13, value), which the flag-1 assign then relocates in place,
+converting the serialized values into absolute pointers; that relocation's
+first read at the odd 0x008475E7 (after 39 bytes) faults while the console
+has 32 bytes before its aligned structure. The live dump's same buffer
+holds "INST" at the menu (a later moment). No model behavior changed. The
 differential passes at 3,000 services (interpreter reference at 7,570,583
 instructions, full state identical). This is the first document to read in
 a new session; it is kept current as work proceeds. Details live in the
@@ -753,6 +753,25 @@ linked evidence documents.
   differential passes at 3,000 services with the interpreter reference at
   7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice29-instruments-and-the-formatter.md`).
+- M30 slice 30 (2026-10-02): **the stream's serialized content, complete** —
+  a write watch over the whole stream (0x00847180..0x008476C0, **1,344
+  writes**) shows the stream at 0x008475C0 holds exactly **four 13-byte
+  records** and nothing else: `{0, 212, 13, 0}` three times and
+  `{0, 0, 13, 64}` for the fourth (the flag-1 `/sound/roadnoiz.es`
+  assignment that faults); the rest of the region is zero, so the small
+  fields (212, 64) are **not offsets into the stream**. Each record is the
+  **head of a serialized object** the assign copies (flag, value, length
+  13, value) — the assign copies the source object's first `*(source+8)`
+  bytes — and the flag-1 assign then relocates the copy in place
+  (converting the serialized values into absolute pointers); that
+  relocation's first read at the odd 0x008475E7 (after 39 bytes) faults,
+  while the console's buffer has 32 bytes before its aligned structure. The
+  live dump's same buffer holds "INST" (the engine's uppercased extension)
+  at the menu — a later moment. No model behavior changed: CTest 34/34;
+  Python 73 (67 run, 6 skip); the differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical
+  (`docs/reverse-engineering/m30-slice30-stream-serialized-content.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -762,12 +781,14 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the copied objects' identity** — the
-  sound library's three bank assignments advance its stream by 13 bytes
-  each, so the copied objects are not the formatted names; identify them
-  from the source object's content in memory (reliable) or by tracing the
-  two sound functions that also write the stream (0x00462900, 0x00463600)
-  — register reads are not reliable on translated code.
+- Next technical milestone work: **the serialized source objects** — each
+  13-byte stream record is the head of an object the assign serializes
+  (flag, value, length 13, value), and the three bank assignments produce
+  identical records; the next slice identifies those source objects (their
+  content is observable in memory) and why the model's serialized head is
+  13 bytes where the console's layout leads to an even position — the
+  candidates are the sound library's object constructors (0x00462900,
+  0x00463600) and the objects the sound init builds.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
