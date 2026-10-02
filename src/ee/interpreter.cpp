@@ -40,34 +40,6 @@ bool branch_taken(const DecodedInstruction& instruction, const GuestState& state
     }
 }
 
-// Likely branches (the L and ALL forms) nullify their delay slot when the
-// branch is not taken.
-bool has_likely_suffix(Operation operation) {
-    switch (operation) {
-    case Operation::Beql:
-    case Operation::Bnel:
-    case Operation::Bltzl:
-    case Operation::Bgezl:
-    case Operation::Bltzall:
-    case Operation::Bgezall:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool writes_link_register(Operation operation) {
-    switch (operation) {
-    case Operation::Bltzal:
-    case Operation::Bgezal:
-    case Operation::Bltzall:
-    case Operation::Bgezall:
-        return true;
-    default:
-        return false;
-    }
-}
-
 std::uint32_t sign_extended_16(std::uint16_t value) {
     return (value & 0x8000u) != 0 ? (0xffff0000u | value) : value;
 }
@@ -222,7 +194,7 @@ StepResult Interpreter::step() {
             transfer_target_ = flow.target;
             transfer_pending_ = true;
             state_.set_pc(pc + 4);
-        } else if (has_likely_suffix(instruction.operation)) {
+        } else if (is_likely_branch(instruction.operation)) {
             state_.set_pc(pc + 8);  // the delay slot is nullified
         } else {
             state_.set_pc(pc + 4);  // the delay slot still runs

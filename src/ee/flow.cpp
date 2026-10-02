@@ -83,6 +83,32 @@ const char* flow_name(FlowKind kind) {
     return "unsupported";
 }
 
+bool is_likely_branch(Operation operation) {
+    switch (operation) {
+    case Operation::Beql:
+    case Operation::Bnel:
+    case Operation::Bltzl:
+    case Operation::Bgezl:
+    case Operation::Bltzall:
+    case Operation::Bgezall:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool writes_link_register(Operation operation) {
+    switch (operation) {
+    case Operation::Bltzal:
+    case Operation::Bgezal:
+    case Operation::Bltzall:
+    case Operation::Bgezall:
+        return true;
+    default:
+        return false;
+    }
+}
+
 BasicBlock build_basic_block(const ImageRecord& text, std::uint32_t start,
                              std::uint32_t max_instructions) {
     const std::uint64_t text_end = static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();

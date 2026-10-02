@@ -36,6 +36,11 @@ struct InstructionFlow {
 [[nodiscard]] InstructionFlow classify(const DecodedInstruction& instruction, std::uint32_t pc);
 [[nodiscard]] const char* flow_name(FlowKind kind);
 
+// Likely branches (the L and ALL forms) nullify their delay slot when not taken.
+[[nodiscard]] bool is_likely_branch(Operation operation);
+// Branch forms that write the link value (pc + 8) into ra when taken.
+[[nodiscard]] bool writes_link_register(Operation operation);
+
 // One straight-line run of instructions ending at a control transfer, an
 // unsupported word, the caller's limit or the end of file-backed text. The
 // ending transfer's delay slot is consumed and counts toward the block; it is
