@@ -28,14 +28,15 @@ class CfgCliTests(unittest.TestCase):
         self.assertIn("cfg blocks=", result.stderr)
         self.assertIn("limited=", result.stderr)
 
-    def test_unsupported_seed_is_a_single_open_block(self):
-        # 0x001041f4 holds an `ldl` (unaligned 64-bit load) word the model
-        # still rejects; the startup prologue and COP0 now decode.
-        result = self.run_tool("0x1041f4", "10")
+    def test_trap_seed_is_a_single_open_block(self):
+        # 0x001001c8 is the first BIOS syscall: one instruction, no
+        # successors, exactly the trap boundary. (Every word of the pinned
+        # text now decodes, so no decode-level unsupported example exists.)
+        result = self.run_tool("0x1001c8", "10")
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 1)
-        self.assertIn("ending=unsupported", lines[0])
+        self.assertIn("ending=exception", lines[0])
         self.assertIn("successors=none", lines[0])
         self.assertIn("cfg blocks=1", result.stderr)
 

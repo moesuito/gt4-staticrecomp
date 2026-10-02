@@ -40,8 +40,10 @@ bool branch_taken(const DecodedInstruction& instruction, const GuestState& state
     case Operation::Bnel:
         return left != state.read_gpr64(instruction.rt);
     case Operation::Blez:
+    case Operation::Blezl:
         return is_negative_64(left) || left == 0;
     case Operation::Bgtz:
+    case Operation::Bgtzl:
         return !is_negative_64(left) && left != 0;
     case Operation::Bltz:
     case Operation::Bltzl:
@@ -212,6 +214,36 @@ constexpr std::array<std::uint32_t, 4> swr_mask = {
 };
 constexpr std::array<std::uint8_t, 4> merge_shift = { 24, 16, 8, 0 };
 constexpr std::array<std::uint8_t, 4> place_shift = { 0, 8, 16, 24 };
+
+// The same tables for the unaligned doubleword forms: LDL/SDL shift the
+// incoming value left through the low bytes (56..0), LDR/SDR shift it right
+// into the low bytes (0..56).
+constexpr std::array<std::uint64_t, 8> ldl_mask = {
+    0x00ffffffffffffffull, 0x0000ffffffffffffull, 0x000000ffffffffffull,
+    0x00000000ffffffffull, 0x0000000000ffffffull, 0x000000000000ffffull,
+    0x00000000000000ffull, 0x0000000000000000ull
+};
+constexpr std::array<std::uint64_t, 8> ldr_mask = {
+    0x0000000000000000ull, 0xff00000000000000ull, 0xffff000000000000ull,
+    0xffffff0000000000ull, 0xffffffff00000000ull, 0xffffffffff000000ull,
+    0xffffffffffff0000ull, 0xffffffffffffff00ull
+};
+constexpr std::array<std::uint64_t, 8> sdl_mask = {
+    0xffffffffffffff00ull, 0xffffffffffff0000ull, 0xffffffffff000000ull,
+    0xffffffff00000000ull, 0xffffff0000000000ull, 0xffff000000000000ull,
+    0xff00000000000000ull, 0x0000000000000000ull
+};
+constexpr std::array<std::uint64_t, 8> sdr_mask = {
+    0x0000000000000000ull, 0x00000000000000ffull, 0x000000000000ffffull,
+    0x0000000000ffffffull, 0x00000000ffffffffull, 0x000000ffffffffffull,
+    0x0000ffffffffffffull, 0x00ffffffffffffffull
+};
+constexpr std::array<std::uint8_t, 8> doubleword_merge_shift = {
+    56, 48, 40, 32, 24, 16, 8, 0
+};
+constexpr std::array<std::uint8_t, 8> doubleword_place_shift = {
+    0, 8, 16, 24, 32, 40, 48, 56
+};
 
 // PLZCW counts the leading bits equal to the sign (excluding the sign bit
 // itself): the reference inverts negative values, counts 32 for zero, and the
@@ -1784,6 +1816,18 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
     case Operation::Xori:
         state.write_gpr64(instruction.rt, state.read_gpr64(instruction.rs) ^ instruction.immediate);
         break;
+    case Operation::Daddiu:
+        // The 64-bit immediate add: the sign-extended immediate joins the
+        // full 64-bit register without truncation.
+        state.write_gpr64(instruction.rt,
+                          state.read_gpr64(instruction.rs)
+                              + static_cast<std::uint64_t>(
+                                  static_cast<std::int64_t>(instruction.signed_immediate())));
+        break;
+    case Operation::Nor:
+        state.write_gpr64(instruction.rd,
+                          ~(state.read_gpr64(instruction.rs) | state.read_gpr64(instruction.rt)));
+        break;
     case Operation::Daddu:
         state.write_gpr64(instruction.rd,
                           state.read_gpr64(instruction.rs) + state.read_gpr64(instruction.rt));
@@ -1997,6 +2041,48 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
     case Operation::Cache:
         // The hint has no effect in this model, like the reference.
         break;
+    case Operation::Pref:
+        // The prefetch hint has no effect either.
+        break;
+    case Operation::Ldl: {
+        // The 64-bit sibling of LWL: the bytes merge into the full register.
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 7u;
+        const std::uint64_t word = state.memory().read_doubleword(address & ~7u);
+        state.write_gpr64(instruction.rt,
+                          (state.read_gpr64(instruction.rt) & ldl_mask[shift])
+                              | (word << doubleword_merge_shift[shift]));
+        break;
+    }
+    case Operation::Ldr: {
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 7u;
+        const std::uint64_t word = state.memory().read_doubleword(address & ~7u);
+        state.write_gpr64(instruction.rt,
+                          (state.read_gpr64(instruction.rt) & ldr_mask[shift])
+                              | (word >> doubleword_place_shift[shift]));
+        break;
+    }
+    case Operation::Sdl: {
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 7u;
+        const std::uint32_t aligned = address & ~7u;
+        const std::uint64_t word = state.memory().read_doubleword(aligned);
+        state.memory().write_doubleword(aligned,
+            (state.read_gpr64(instruction.rt) >> doubleword_merge_shift[shift])
+                | (word & sdl_mask[shift]));
+        break;
+    }
+    case Operation::Sdr: {
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 7u;
+        const std::uint32_t aligned = address & ~7u;
+        const std::uint64_t word = state.memory().read_doubleword(aligned);
+        state.memory().write_doubleword(aligned,
+            (state.read_gpr64(instruction.rt) << doubleword_place_shift[shift])
+                | (word & sdr_mask[shift]));
+        break;
+    }
     default:
         if (execute_special_register(instruction, state)
             || execute_cop1(instruction, state) || execute_mmi(instruction, state)) {

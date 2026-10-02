@@ -35,15 +35,16 @@ class DisassemblyCliTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertIn("ERROR:", result.stderr)
 
-    def test_unsupported_is_explicit_and_summary_counts_it(self):
-        # 0x001041f4 is an `ldl` (unaligned 64-bit load) the model rejects;
-        # COP0 words now decode, so the rejection is exercised here.
-        result = self.run_tool("0x1041f4", "1")
+    def test_unaligned_family_region_decodes_fully(self):
+        # 0x001041f4 opens the unaligned 64-bit family; the whole pinned text
+        # now decodes without an unsupported word, so the tool reports a
+        # clean region instead of rejections.
+        result = self.run_tool("0x1041f4", "4")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(result.stdout.splitlines()), 1)
-        self.assertEqual(result.stdout.count("unsupported"), 1)
-        self.assertIn("supported=0 unsupported=1", result.stderr)
-        self.assertIn("opcode=0x1a count=1", result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 4)
+        self.assertIn("supported=4 unsupported=0", result.stderr)
+        self.assertIn("ldl", result.stdout)
+        self.assertIn("ldr", result.stdout)
 
     def test_missing_input_and_missing_arguments_fail(self):
         result = self.run_tool(core=ROOT / "private/nonexistent-core")

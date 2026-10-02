@@ -20,6 +20,8 @@ InstructionFlow classify(const DecodedInstruction& instruction, std::uint32_t pc
     case Operation::Bnel:
     case Operation::Blez:
     case Operation::Bgtz:
+    case Operation::Blezl:
+    case Operation::Bgtzl:
     case Operation::Bltz:
     case Operation::Bgez:
     case Operation::Bltzl:
@@ -102,6 +104,8 @@ bool is_likely_branch(Operation operation) {
     case Operation::Bgezall:
     case Operation::Bc1fl:
     case Operation::Bc1tl:
+    case Operation::Blezl:
+    case Operation::Bgtzl:
         return true;
     default:
         return false;

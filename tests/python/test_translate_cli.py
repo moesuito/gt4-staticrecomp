@@ -39,15 +39,14 @@ class TranslateCliTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"),
                              self.run_tool("0x577878").stdout)
 
-    def test_rejects_unsupported_words(self):
-        # 0x001041f4 is an `ldl` (unaligned 64-bit load): outside the
-        # translated subset.
-        result = self.run_tool("0x1041f4")
+    def test_rejects_a_trap_only_seed(self):
+        # 0x001001c8 is the first BIOS syscall: with the halt removed there is
+        # nothing left to translate, and the rejection carries the context.
+        result = self.run_tool("0x1001c8")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertIn("ERROR:", result.stderr)
-        self.assertIn("unsupported", result.stderr)
-        self.assertIn("0x001041f4", result.stderr)
+        self.assertIn("no reachable instructions", result.stderr)
 
     def test_calls_translate_the_direct_call_tree(self):
         result = self.run_tool("0x10c0c0", 2000)

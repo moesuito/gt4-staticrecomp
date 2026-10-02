@@ -594,6 +594,41 @@ int run_tests() {
         check(state.read_gpr64(25) == 0xffffffffffffffffull, "srav filled with the sign");
     }
 
+    // Unaligned doubleword loads and stores: the ldr/ldl pair reassembles the
+    // eight bytes at +0x103 and the sdr/sdl pair writes a value back across
+    // the same window, with every merged word checked.
+    {
+        auto state = make_state();
+        state.memory().write_doubleword(base + 0x100, 0x1122334455667788ull);
+        state.memory().write_doubleword(base + 0x108, 0x99aabbccddeeff00ull);
+        load_program(state.memory(), base,
+                     {0x3C090010,    // lui t1, 0x10
+                      0x25290100,    // addiu t1, t1, 0x100
+                      0x6D280003,    // ldr t0, 0x3(t1)
+                      0x6928000A,    // ldl t0, 0xa(t1)
+                      0x3C0AAABB,    // lui t2, 0xaabb
+                      0x354ACCDD,    // ori t2, t2, 0xccdd
+                      0x000A503C,    // dsll32 t2, t2, 0     (0xaabbccdd00000000)
+                      0x340BEEFF,    // ori t3, zero, 0xeeff
+                      0x000B5C38,    // dsll t3, t3, 16      (0xeeff0000)
+                      0x356B0011,    // ori t3, t3, 0x0011   (0xeeff0011)
+                      0x014B502D,    // daddu t2, t2, t3     (0xaabbccddeeff0011)
+                      0xB52A0003,    // sdr t2, 0x3(t1)
+                      0xB12A000A});  // sdl t2, 0xa(t1)
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 13);
+        check(state.read_gpr64(8) == 0xeeff001122334455ull,
+              "ldr/ldl reassembled the unaligned value");
+        check(state.read_gpr64(10) == 0xaabbccddeeff0011ull, "the value to store was built");
+        // The merged words, hand-computed: the SDR result is
+        // (value << 24) | (memory & 0xffffff), the SDL result is
+        // (value >> 40) | (memory & 0xffffffffff000000).
+        check(state.memory().read_word(base + 0x100) == 0x11667788u, "sdr wrote the merged low word");
+        check(state.memory().read_word(base + 0x104) == 0xddeeff00u, "sdr wrote the merged high word");
+        check(state.memory().read_word(base + 0x108) == 0xddaabbccu, "sdl merged its three bytes");
+    }
+
     // Fetching outside the mapped region propagates the memory error.
     {
         auto state = make_state();

@@ -13,8 +13,10 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 206 operations (line-filtered count; earlier documents
-    cited 175, which counted comment fragments). Ghidra verification: the M6
+  - The decoder covers 215 operations (line-filtered count; earlier documents
+    cited 175, which counted comment fragments) and the pinned text decodes
+    completely: a scan of all 1,334,917 words reports zero unsupported
+    (0x00100000..0x00617E54, four chunks). Ghidra verification: the M6
     ten-region run matched 417 with 0 mismatches; the M16 listing (startup
     regions, candidates and the unaligned-access neighborhoods) matched 594
     with 0 mismatches and 34 R5900-only rows verified against the reference
@@ -108,6 +110,18 @@ work proceeds. Details live in the linked evidence documents.
   unaligned 64-bit family). Next recorded gaps: the `beql …; break` trap in a
   likely delay slot (0x005baea4) and `ldl`/`ldr`/`sdl`/`sdr`
   (`docs/reverse-engineering/m19-cop0-and-shifts.md`).
+- M20 complete decode: LDL/LDR/SDL/SDR with the reference merge tables (the
+  655-word blocker), BLEZL/BGTZL, DADDIU, NOR and the PREF hint close every
+  remaining decode gap (215 operations). A scan of the whole file-backed text
+  (1,334,917 words, four chunks) reports zero unsupported words: every word
+  of the game's executable image is now named and classified (decode
+  coverage; the hints are documented no-ops). The first-200k progression:
+  655 → 63 → 10 → 0. Hand-computed doubleword fixtures caught my own
+  arithmetic slips in expected values — the implementation matched the
+  reference formulas. The CLI tests were repurposed (no decode-level
+  unsupported example exists any more). The 0x58ce48 tree's only remaining
+  block is the `beql …; break` trap in a likely delay slot
+  (`docs/reverse-engineering/m20-fully-decoding-text.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -160,12 +174,11 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M20 next: the `beql …; break` trap in a likely delay slot (emit
-   `if (taken) { set_pc(delay); return; }` with no inline statement) and the
-   unaligned 64-bit family `ldl`/`ldr`/`sdl`/`sdr` (655 unsupported words in
-   the first 200k of text); the MMI parallel multiply family; indirect-call
-   dispatch for jr-based tables; differential execution needs step control
-   (open).
+1. M21 next: the `beql …; break` trap in a likely delay slot (emit
+   `if (taken) { set_pc(delay); return; }` with no inline statement) so the
+   0x58ce48 call tree finishes; then the MMI parallel multiply family,
+   indirect-call dispatch for jr-based tables, and differential execution
+   needs step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -182,7 +195,9 @@ work proceeds. Details live in the linked evidence documents.
   M17 tail thunks and syscall boundaries (the thunk 0x005b27f8 verified
   stopping at service 0x42) and the cache hint, M18 critical edges (a branch
   targeting a delay slot, verified with the 0x005b0f78 cache-flush loop),
-  M19 COP0/BREAK and the 64-bit shift family.
+  M19 COP0/BREAK and the 64-bit shift family, M20 the unaligned 64-bit
+  family and the last decode gaps — the whole pinned text (1,334,917 words)
+  now decodes with zero unsupported words.
 - [2026-10-02](journal/2026-10-02.md) — M19 was developed across the day
   boundary (its entry lives in the 2026-10-01 tail); state checks and the
   next recorded work.

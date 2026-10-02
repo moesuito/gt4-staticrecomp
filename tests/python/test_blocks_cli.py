@@ -28,16 +28,17 @@ class BlocksCliTests(unittest.TestCase):
         self.assertIn("005a3168: 12400011  beq s2, zero, 0x005a31b0", result.stdout)
         self.assertIn("005a316c: 0080982d  daddu s3, a0, zero", result.stdout)
 
-    def test_unsupported_start_stops_with_context(self):
-        # 0x001041f4 holds an `ldl` (unaligned 64-bit load) word the model
-        # still rejects; the startup prologue and COP0 now decode and run.
-        result = self.run_tool("0x1041f4", "10")
+    def test_trap_start_stops_with_context(self):
+        # 0x001001c8 is the first BIOS syscall: the model stops at the trap
+        # boundary with context. (Every word of the pinned text now decodes,
+        # so no decode-level unsupported example exists any more.)
+        result = self.run_tool("0x1001c8", "10")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("instructions=1 ending=unsupported", result.stderr)
-        self.assertIn("reason=unsupported", result.stderr)
+        self.assertIn("instructions=1 ending=exception", result.stderr)
+        self.assertIn("reason=exception", result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 1)
-        self.assertIn("unsupported", result.stdout)
-        self.assertIn("68a30007", result.stdout)
+        self.assertIn("syscall", result.stdout)
+        self.assertIn("0000000c", result.stdout)
 
     def test_bad_arguments_fail_without_listing(self):
         for start, limit in [("-1", "1"), ("0x100001", "1"), ("0x5a3140", "0"),

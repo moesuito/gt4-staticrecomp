@@ -9,18 +9,18 @@ namespace gt4recomp::ee {
 enum class Operation {
     Unsupported,
     // Register arithmetic and logic.
-    Addu, Subu, And, Or, Xor, Slt, Sltu, Daddu, Movz, Movn,
+    Addu, Subu, And, Or, Xor, Nor, Slt, Sltu, Daddu, Movz, Movn,
     // Immediates, shifts and upper immediates.
-    Addiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
+    Addiu, Daddiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
     Sllv, Srlv, Srav, Dsll, Dsrl, Dsra, Dsll32, Dsrl32, Dsra32, Dsllv, Dsrlv, Dsrav,
     // Memory access.
     Lb, Lbu, Lh, Lhu, Lw, Lwu, Sw, Sh, Ld, Sd, Sb, Lq, Sq,
-    Lwl, Lwr, Swl, Swr,
-    // The cache hint: decoded so real code flows past it; it has no effect in
-    // this model, like the reference implementation.
-    Cache,
+    Lwl, Lwr, Swl, Swr, Ldl, Ldr, Sdl, Sdr,
+    // The cache hint and the prefetch hint: decoded so real code flows past
+    // them; both have no effect in this model, like the reference.
+    Cache, Pref,
     // Relative branches; the REGIMM family compares rs against zero.
-    Beq, Bne, Beql, Bnel, Blez, Bgtz,
+    Beq, Bne, Beql, Bnel, Blez, Bgtz, Blezl, Bgtzl,
     Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall,
     // Direct and register jumps.
     J, Jal, Jr, Jalr,

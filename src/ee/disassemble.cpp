@@ -110,9 +110,11 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Daddu:
     case Operation::Movz:
     case Operation::Movn:
+    case Operation::Nor:
         output << ' ' << rd << ", " << rs << ", " << rt;
         break;
     case Operation::Addiu:
+    case Operation::Daddiu:
     case Operation::Slti:
     case Operation::Sltiu:
         output << ' ' << rt << ", " << rs << ", " << signed_hex(instruction.signed_immediate());
@@ -142,10 +144,19 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Lwr:
     case Operation::Swl:
     case Operation::Swr:
+    case Operation::Ldl:
+    case Operation::Ldr:
+    case Operation::Sdl:
+    case Operation::Sdr:
         output << ' ' << rt << ", " << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
     case Operation::Cache:
         // The operation code occupies the rt field for the cache hint.
+        output << " 0x" << hex_value(instruction.rt, 2) << ", "
+               << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
+        break;
+    case Operation::Pref:
+        // The prefetch hint shares the cache-hint operand shape.
         output << " 0x" << hex_value(instruction.rt, 2) << ", "
                << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
@@ -158,6 +169,8 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
         break;
     case Operation::Blez:
     case Operation::Bgtz:
+    case Operation::Blezl:
+    case Operation::Bgtzl:
     case Operation::Bltz:
     case Operation::Bgez:
     case Operation::Bltzl:
