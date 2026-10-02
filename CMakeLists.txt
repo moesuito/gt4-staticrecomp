@@ -18,7 +18,12 @@ target_include_directories(gt4recomp_core PUBLIC include)
 target_compile_features(gt4recomp_core PUBLIC cxx_std_20)
 set_target_properties(gt4recomp_core PROPERTIES CXX_EXTENSIONS OFF)
 
-add_library(gt4recomp_decode STATIC src/ee/decode.cpp src/ee/disassemble.cpp src/ee/flow.cpp)
+add_library(gt4recomp_decode STATIC
+    src/ee/decode.cpp
+    src/ee/disassemble.cpp
+    src/ee/flow.cpp
+    src/ee/functions.cpp
+)
 target_include_directories(gt4recomp_decode PUBLIC include)
 target_compile_features(gt4recomp_decode PUBLIC cxx_std_20)
 set_target_properties(gt4recomp_decode PROPERTIES CXX_EXTENSIONS OFF)
@@ -49,6 +54,8 @@ if(WIN32)
     target_link_libraries(gt4blocks PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
     add_executable(gt4cfg tools/gt4cfg/main.cpp)
     target_link_libraries(gt4cfg PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+    add_executable(gt4funcs tools/gt4funcs/main.cpp)
+    target_link_libraries(gt4funcs PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
 endif()
 
 add_executable(gt4recomp tools/gt4recomp/main.cpp)
@@ -65,6 +72,9 @@ if(BUILD_TESTING)
     add_executable(ee_cfg_tests tests/unit/ee_cfg_test.cpp)
     target_link_libraries(ee_cfg_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_cfg COMMAND ee_cfg_tests)
+    add_executable(ee_functions_tests tests/unit/ee_functions_test.cpp)
+    target_link_libraries(ee_functions_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_functions COMMAND ee_functions_tests)
     add_executable(ee_decode_tests tests/unit/ee_decode_test.cpp)
     target_link_libraries(ee_decode_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_decode COMMAND ee_decode_tests)
