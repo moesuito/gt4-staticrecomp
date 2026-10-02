@@ -27,6 +27,10 @@ int main() {
     };
     const RegisterCase register_cases[] = {
         {0x012a4021, Operation::Addu, "addu", 9, 10, 8, 0, 0x21},
+        {0x012a4020, Operation::Add, "add", 9, 10, 8, 0, 0x20},
+        {0x012a4022, Operation::Sub, "sub", 9, 10, 8, 0, 0x22},
+        {0x012a402c, Operation::Dadd, "dadd", 9, 10, 8, 0, 0x2c},
+        {0x012a402e, Operation::Dsub, "dsub", 9, 10, 8, 0, 0x2e},
         {0x03e0f821, Operation::Addu, "addu", 31, 0, 31, 0, 0x21},
         {0x012a4023, Operation::Subu, "subu", 9, 10, 8, 0, 0x23},
         {0x012a4024, Operation::And, "and", 9, 10, 8, 0, 0x24},
@@ -205,6 +209,22 @@ int main() {
         {0x7000001b, Operation::Divu1, "divu1", 0x1c, 0, 0, 0x001b, 27},
         {0x70000020, Operation::Madd1, "madd1", 0x1c, 0, 0, 0x0020, 32},
         {0x70000021, Operation::Maddu1, "maddu1", 0x1c, 0, 0, 0x0021, 33},
+        // The trapping immediate forms and the parallel multiply/divide
+        // family, including words observed in the pinned text (0x70421409,
+        // 0x704E0709, 0x7181C329).
+        {0x21280001, Operation::Addi, "addi", 0x08, 9, 8, 0x0001, 1},
+        {0x61280001, Operation::Daddi, "daddi", 0x18, 9, 8, 0x0001, 1},
+        {0x71095409, Operation::Pmaddh, "pmaddh", 0x1c, 8, 9, 0x5409, 21513},
+        {0x70421409, Operation::Pmaddh, "pmaddh", 0x1c, 2, 2, 0x1409, 5129},
+        {0x71095509, Operation::Pmsubh, "pmsubh", 0x1c, 8, 9, 0x5509, 21769},
+        {0x71095709, Operation::Pmulth, "pmulth", 0x1c, 8, 9, 0x5709, 22281},
+        {0x704E0709, Operation::Pmulth, "pmulth", 0x1c, 2, 14, 0x0709, 1801},
+        {0x71095309, Operation::Pmultw, "pmultw", 0x1c, 8, 9, 0x5309, 21257},
+        {0x71095329, Operation::Pmultuw, "pmultuw", 0x1c, 8, 9, 0x5329, 21289},
+        {0x7181C329, Operation::Pmultuw, "pmultuw", 0x1c, 12, 1, 0xc329, -15575},
+        {0x71095029, Operation::Pmadduw, "pmadduw", 0x1c, 8, 9, 0x5029, 20521},
+        {0x71095349, Operation::Pdivw, "pdivw", 0x1c, 8, 9, 0x5349, 21321},
+        {0x71095369, Operation::Pdivuw, "pdivuw", 0x1c, 8, 9, 0x5369, 21353},
     };
     for (const auto& expected : immediate_cases) {
         const auto actual = decode(expected.word);

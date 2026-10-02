@@ -10,8 +10,12 @@ enum class Operation {
     Unsupported,
     // Register arithmetic and logic.
     Addu, Subu, And, Or, Xor, Nor, Slt, Sltu, Daddu, Dsubu, Movz, Movn,
+    // The trapping add/subtract forms raise on signed overflow.
+    Add, Sub, Dadd, Dsub,
     // Immediates, shifts and upper immediates.
     Addiu, Daddiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
+    // The trapping immediate forms raise on signed overflow.
+    Addi, Daddi,
     Sllv, Srlv, Srav, Dsll, Dsrl, Dsra, Dsll32, Dsrl32, Dsra32, Dsllv, Dsrlv, Dsrav,
     // Memory access.
     Lb, Lbu, Lh, Lhu, Lw, Lwu, Sw, Sh, Ld, Sd, Sb, Lq, Sq,
@@ -80,7 +84,9 @@ enum class Operation {
     Ppacw, Ppach, Ppacb, Pext5, Ppac5, Padsbh,
     Pinth, Pinteh, Pcpyld, Pcpyud, Pcpyh, Pexeh, Prevh, Pexew, Pexch, Pexcw, Prot3w,
     // MMI: HI/LO moves and the state-backed shift.
-    Pmfhi, Pmflo, Pmthi, Pmtlo, Pmfhl, Pmthl, Qfsrv, Plzcw
+    Pmfhi, Pmflo, Pmthi, Pmtlo, Pmfhl, Pmthl, Qfsrv, Plzcw,
+    // MMI: the parallel multiply and divide family.
+    Pmaddh, Pmsubh, Pmulth, Pmultw, Pmadduw, Pmultuw, Pdivw, Pdivuw
 };
 
 // These are overlapping views of the encoded bits, not a list of operands.

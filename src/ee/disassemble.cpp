@@ -244,6 +244,10 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     switch (instruction.operation) {
     case Operation::Addu:
     case Operation::Subu:
+    case Operation::Add:
+    case Operation::Sub:
+    case Operation::Dadd:
+    case Operation::Dsub:
     case Operation::And:
     case Operation::Or:
     case Operation::Xor:
@@ -258,6 +262,8 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
         break;
     case Operation::Addiu:
     case Operation::Daddiu:
+    case Operation::Addi:
+    case Operation::Daddi:
     case Operation::Slti:
     case Operation::Sltiu:
         output << ' ' << rt << ", " << rs << ", " << signed_hex(instruction.signed_immediate());
@@ -487,6 +493,14 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Por:
     case Operation::Pxor:
     case Operation::Pnor:
+    case Operation::Pmaddh:
+    case Operation::Pmsubh:
+    case Operation::Pmulth:
+    case Operation::Pmultw:
+    case Operation::Pmadduw:
+    case Operation::Pmultuw:
+    case Operation::Pdivw:
+    case Operation::Pdivuw:
     case Operation::Pextlw:
     case Operation::Pextlh:
     case Operation::Pextlb:

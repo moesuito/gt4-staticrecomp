@@ -43,6 +43,7 @@ public class CompareDisassembly extends GhidraScript {
         "pinth", "pinteh", "pcpyld", "pcpyud", "pcpyh",
         "pexeh", "prevh", "pexew", "pexch", "pexcw", "prot3w",
         "pmfhi", "pmflo", "pmthi", "pmtlo", "pmfhl", "pmthl", "qfsrv",
+        "pmaddh", "pmsubh", "pmulth", "pmultw", "pmadduw", "pmultuw", "pdivw", "pdivuw",
         "qmfc2", "qmtc2", "cfc2", "ctc2", "lqc2", "sqc2", "vnop",
         "vaddx", "vaddy", "vaddz", "vaddw", "vsubx", "vsuby", "vsubz", "vsubw",
         "vmaddx", "vmaddy", "vmaddz", "vmaddw", "vmsubx", "vmsuby", "vmsubz", "vmsubw",

@@ -15,14 +15,16 @@ JALR/SYSCALL, LD/SD/SB/LH and
 SLT/SLTU/DADDU. Later expansions added LB/LBU/SRA/SLTI/SLTIU/XORI, corrected
 SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics, added the COP1/MMI
 extensions, the unaligned-access and multiply/divide families, COP0 with the
-break boundary, the 64-bit shift family, and the VU0 macro instruction set
-with its vector state, moves, quad accesses and the full macro arithmetic
-(335 operations in total, with PCSX2 used as the semantic reference; CACHE
+break boundary, the 64-bit shift family, the VU0 macro instruction set with
+its vector state, moves, quad accesses and the full macro arithmetic, and the
+trapping arithmetic with the parallel multiply/divide family (349 operations
+in total, with PCSX2 used as the semantic reference; CACHE
 and PREF decode as the no-op hints they are). An honest whole-text scan puts
-the remaining unsupported words at 672 of 1,334,917 — 555 of them inside the
-text's trailing 700-word data table (a table, not code), leaving only 81
-unsupported words in the real code region; the first 350,000 words — every
-sampled region — decode
+the remaining unsupported words at 497 of 1,334,917 — 493 of them inside the
+text's trailing 700-word data table (a table, not code), leaving only 4
+unsupported words in the real code region (two DMA-dependent BC0F and two
+words at an unassigned encoding inside the exception handler); the first
+350,000 words — every sampled region — decode
 cleanly. The game's startup executes in
 the interpreter from
 its ELF entry to the first BIOS syscall — and, through `gt4translate`, as a
