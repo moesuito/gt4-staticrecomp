@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 18 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 19 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -148,12 +148,17 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   reader** of decision 0018 then parses that archive lazily and with
   validation, verified against the pinned volume (the 22 root categories,
   the `mpeg/gt4` chain and `mv0010`'s 18,874,372 bytes) with the file item
-  records recorded as not yet pinned; `--threads`
+  records recorded as not yet pinned; slice 19 then probes those records
+  (97 clean three-word `mv0011`..`mv0107` entries with position and packed
+  size, then a mix of kinds; three candidate grammars tested, none closes,
+  so no parser shipped — the next slice pins the boundary from the game's
+  own consumer); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 19 — the file item records (the {name, offset, packed}
-  shapes at 0x4FAC onward) and the PCDV answers (the entry cache and the
-  2048-byte sector reads) so the movie path the boot reached can load.
+- Next: M30 slice 20 — the PCDV answers from the game's own consumer (pin
+  the file records' boundary from the PCDV library's scan and the engine's
+  descriptor use at 0x004B1C70, then answer the first lookup and the
+  2048-byte sector reads for `/mpeg`).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

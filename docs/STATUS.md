@@ -1,17 +1,18 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 18 — the GT4.VOL reader: the library now
-parses the game's data volume (header, directory tree, XOR-0xFF names) with
-lazy, validated parsing, verified against the pinned archive (the 22 root
-categories, the `mpeg/gt4` chain and the movie `mv0010`'s 18,874,372-byte
-size) and a synthetic image; `DiscFileSliceSource` presents the ISO's
-`GT4.VOL;1` as the byte source and `Iso9660Image` now reports file extents.
-A file entry's data records are recorded as not yet pinned (671 of the
-movie's 204,930 items coincide with real entries), so the reader reports
-names and sizes and stops there. The differential passes at 3,000 services
-(interpreter reference at 7,570,583 instructions, full state identical).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 19 — the file item records probed as far
+as the evidence goes: `mv0010`'s list starts with 97 clean three-word
+records (`mv0011`.. names with a position and a packed size) and then mixes
+entry references, name references and other records; three candidate
+grammars were tested against the pinned archive and none closes (the walk
+drifts by 11k-17k unknown fields), so **no parser was shipped** and the
+reader keeps its documented limit. The next slice should pin the record
+boundary from the game's own consumer (the PCDV library's scan and the
+engine's descriptor use) before answering the PCDV lookups. The
+differential passes at 3,000 services (interpreter reference at 7,570,583
+instructions, full state identical). This is the first document to read in
+a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -540,6 +541,24 @@ work proceeds. Details live in the linked evidence documents.
   the full state identical
   (`docs/reverse-engineering/m30-slice18-gt4-volume-reader.md`,
   `docs/decisions/0018-gt4-volume-reader.md`).
+- M30 slice 19 (2026-10-02): **the file item records, probed** — `mv0010`'s
+  item list begins with **97 clean three-word records** (`mv0011` .. `mv0107`
+  in the tag-0 name table, each `{name, position, packed size}`: e.g.
+  `mv0012` x 0x00034501, y 0x17104004 whose upper bits are 1,511,488) and
+  then **mixes kinds**: one-word values that are valid tree entries
+  (0x15C0 "arcade", 0xA1B4 "CarSelectionRoot.gpb"), name pointers from the
+  tag-1/tag-2 tables and small fields (0x00000007, 0x00000FEC). **Three
+  candidate grammars were tested against the pinned archive and none
+  closes** (187,055/17,248 and 190,839/11,411 splits end with the cursor
+  drifted), so **no parser was shipped** and the reader keeps its
+  documented limit. The pinned three-word shape is exactly what the PCDV
+  answers need (a name's position and size); the next slice should pin the
+  record boundary from the game's own consumer (the PCDV library's scan and
+  the engine's descriptor use at 0x004B1C70). No model behavior changed:
+  CTest 34/34; Python 73 (67 run, 6 skip); the differential passes at 3,000
+  services with the interpreter reference at 7,570,583 instructions and the
+  full state identical
+  (`docs/reverse-engineering/m30-slice19-file-item-records.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -549,11 +568,11 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the file item records and the PCDV
-  answers** — the archive reader resolves names and sizes; pinning the file
-  entries' {name, offset, packed} records (the shapes at 0x4FAC onward)
-  gives the data offsets the PCDV library's entry cache and sector reads
-  need, so the boot's movie path can load.
+- Next technical milestone work: **the PCDV answers from the game's own
+  consumer** — the file records' boundary should be pinned by reading the
+  PCDV library's scan and the engine's descriptor use (0x004B1C70) instead
+  of guessing from the bytes; the pinned three-word shape (name, position,
+  packed size) is what the lookups and the 2048-byte sector reads need.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -655,11 +674,10 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 19: **the file item records and the PCDV answers** — pin the
-   file entries' {name, offset, packed} record shapes (the bytes at 0x4FAC
-   onward), then use the reader's data offsets to fill the PCDV library's
-   entry cache and serve its 2048-byte sector reads (the movie path the
-   boot reached); the acceptance evidence is
+1. M30 slice 20: **the PCDV answers from the game's own consumer** — pin
+   the file records' boundary from the PCDV library's scan and the engine's
+   descriptor use (0x004B1C70), then answer the first PCDV lookup and the
+   2048-byte sector reads for `/mpeg`; the acceptance evidence is
    `gt4boot --compare-interpreter --disc <iso>` through the loads with the
    state identical.
 2. Performance: resume entries or inline syscall calls to shrink the
@@ -751,4 +769,8 @@ work proceeds. Details live in the linked evidence documents.
   changed), and slice 18 is the GT4.VOL reader (lazy, validated parsing;
   the 22 root categories, the `mpeg/gt4` chain and `mv0010`'s 18,874,372
   bytes verified against the pinned archive, with the file item records
-  recorded as not yet pinned).
+  recorded as not yet pinned), and slice 19 probes those file item records
+  (97 clean three-word records `mv0011`..`mv0107` with position and packed
+  size, then a mix of entry references, name references and fields; three
+  candidate grammars tested, none closes, so no parser shipped — the next
+  slice pins the boundary from the game's own consumer).
