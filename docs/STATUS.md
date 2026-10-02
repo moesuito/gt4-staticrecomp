@@ -1,19 +1,17 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 20 — the game's own CD driver reads the
-disc: the PCDV read (sid 0x50434456 RPC 3) is answered from the disc
-image's raw sectors (`{LBA, byte count, EE destination}`; the "CD001" check
-at 0x00548E90 proves the positions are LBAs), and the boot's driver now
-walks the ISO's file system (the observed reads are LBA 0x10 = the primary
-volume descriptor and LBA 0x105 = the root directory) instead of retrying
-blind. The external GT4FS reference corroborates the archive format family
-and supplies the entry semantics (parent node, name, type byte, page
-offset/date/size; `file offset = DataOffset + pageOffset * PageLength`),
-while the pinned volume is the older uncompressed 2.2 variant the reference
-cannot read. The differential passes at 3,000 services (interpreter
-reference at 7,570,583 instructions, full state identical). This is the
-first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 21 — the driver's disc walk and the
+volume's version family: with the CD read service in place the game's own
+driver reads the ISO's **primary volume descriptor (LBA 0x10)** and its
+**root directory (LBA 0x105)** and then stops, so the next slice reads the
+library's parse of the root block; the pinned volume is confirmed as the
+**uncompressed 2.2 variant** of the RoFS family the GT4FS packer also
+writes (none of its pages inflate; its pages are the intervals of the
+`count - 1` offset table at +0x20). No model behavior changed; the
+differential passes at 3,000 services (interpreter reference at 7,570,583
+instructions, full state identical). This is the first document to read in
+a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -583,6 +581,24 @@ proceeds. Details live in the linked evidence documents.
   instructions and the full state identical
   (`docs/reverse-engineering/m30-slice20-pcdv-disc-reads.md`,
   `docs/decisions/0019-pcdv-disc-reads.md`).
+- M30 slice 21 (2026-10-02): **the driver's disc walk and the volume's
+  version family** — with the read service in place a 120,000-service run
+  issues exactly two reads (**LBA 0x10** = the ISO's primary volume
+  descriptor and **LBA 0x105** = the root directory, extent 261) and then
+  stops: the driver parses the descriptor, follows the root extent and
+  reads the root, but does not reach any file's extent (GT4.VOL's 105879
+  would be next). The GT4FS packer writes the **same 2.2 version** the
+  pinned volume carries and its offset encryption is
+  `offset ^ index * 0x14AC327A + 0x14AC327A`; testing the pinned volume
+  shows its TOC page table is the `count - 1` offsets at +0x20, its pages
+  are the intervals (24, 16, 20, 24, 92, 268, ... bytes) and **none of them
+  inflates** — Sony's 2.2 is uncompressed, which is why the empirical
+  reader (names XOR 0xFF) reads it directly. Serving GT4.VOL at the
+  requested offsets and treating the pages as deflate were both tried and
+  rejected. No model behavior changed: CTest 34/34; Python 73 (67 run, 6
+  skip); the differential passes at 3,000 services with the interpreter
+  reference at 7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice21-driver-disc-walk.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -592,14 +608,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the file records with the GT4FS layout as
-  the guide** — pin the pinned volume's record grammar against the
-  reference's entry layout (parent node, name, type byte, page
-  offset/date/size) and answer the PCDV lookups the driver makes after
-  walking the ISO (the boot now reads the volume descriptor and the root
-  directory). The GTAdhocToolchain
-  (github.com/Nenkai/GTAdhocToolchain) is recorded for the later scripting
-  milestone.
+- Next technical milestone work: **the library's parse of the root
+  directory block** — the driver reads the ISO's volume descriptor and root
+  directory and then stops; the next slice reads the library's parse
+  (0x00548E20 onward, including the five-byte comparison at 0x00548E90
+  whose target 0x006D83D8 is not written by any address-built store) to
+  find what it expects next, and answers it from the disc.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -701,12 +715,13 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 21: **the file records with the GT4FS layout as the guide** —
-   pin the pinned volume's record grammar against the reference's entry
-   layout (parent node, name, type byte, page offset/date/size) and answer
-   the PCDV lookups the driver makes after walking the ISO; the acceptance
-   evidence is `gt4boot --compare-interpreter --disc <iso>` through the
-   loads with the state identical.
+1. M30 slice 22: **the library's parse of the root directory block** —
+   trace the game's own driver parse (the library's scan at 0x00548E20 and
+   the five-byte comparison at 0x00548E90) to see what it expects after
+   reading the ISO's volume descriptor and root directory, and answer it
+   from the disc; the acceptance evidence is
+   `gt4boot --compare-interpreter --disc <iso>` through the loads with the
+   state identical.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
@@ -805,4 +820,9 @@ proceeds. Details live in the linked evidence documents.
   disc image's raw sectors; the driver walks the ISO — LBA 0x10 the volume
   descriptor, LBA 0x105 the root directory — and the external GT4FS
   reference corroborates the format family and supplies the entry
-  semantics for the next slice).
+  semantics for the next slice), and slice 21 is the driver's disc walk and
+  the volume's version family (the driver reads the ISO's volume descriptor
+  and root directory and then stops; the pinned volume is the uncompressed
+  2.2 variant the GT4FS packer also writes, with its page table at +0x20
+  and pages that do not inflate — deflate and archive-offset reads were
+  tried and rejected).

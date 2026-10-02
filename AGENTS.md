@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 20 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 21 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -156,13 +156,17 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   game's own driver from the disc image's raw sectors (`{LBA, size, EE
   destination}`), so the boot walks the ISO (LBA 0x10 the volume
   descriptor, LBA 0x105 the root directory) with the external GT4FS
-  reference corroborating the archive format family; `--threads`
+  reference corroborating the archive format family; slice 21 then traces
+  that walk (the driver reads the ISO's volume descriptor and root
+  directory and stops, so the library's parse of the root block is the next
+  frontier, and the pinned volume is confirmed as the uncompressed 2.2
+  variant the GT4FS packer also writes); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 21 — the file records with the GT4FS layout as the guide
-  (parent node, name, type byte, page offset/date/size) and the PCDV
-  lookups the driver makes after walking the ISO. The GTAdhocToolchain is
-  recorded for the later scripting milestone.
+- Next: M30 slice 22 — the library's parse of the root directory block (the
+  scan at 0x00548E20 and the five-byte comparison at 0x00548E90) to see
+  what the driver expects after the ISO's volume descriptor and root
+  directory, and answer it from the disc.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
