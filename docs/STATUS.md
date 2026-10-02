@@ -183,3 +183,6 @@ work proceeds. Details live in the linked evidence documents.
   stopping at service 0x42) and the cache hint, M18 critical edges (a branch
   targeting a delay slot, verified with the 0x005b0f78 cache-flush loop),
   M19 COP0/BREAK and the 64-bit shift family.
+- [2026-10-02](journal/2026-10-02.md) — M19 was developed across the day
+  boundary (its entry lives in the 2026-10-01 tail); state checks and the
+  next recorded work.
