@@ -82,6 +82,38 @@ around archive offset 0x2463834 ("MpegRoot", "StartProject", "design_work",
 their symbol tables — which is why the game streams it through its own
 driver instead of the IOP loadfile module.
 
+## Entry shapes (probing the tree)
+
+Walking deeper shows two entry shapes:
+
+```
+@0x000078 "advertise"    count=4   word2=0x14     children 0x504, 0x514, 0x530
+@0x000504 "gtloading.img" count=30 word2=0x21A0   items 0x6B4, 0x0100BAFB, 5,
+                                                  0x78, 0x31B4, 0x31C4, ...
+@0x000514 "jp"           count=5   word2=0x78     children 0x31B4, 0x31C4,
+                                                  0x31D4, 0x31E4
+@0x0031B4 "demo.img"     count=31  word2=0x75600  items 0xE251, 0x0200C15B,
+                                                  0x3C, 0x75600, ...
+@0x0031C4 "prius.img"    count=60  word2=0x75600  items 0xE252, 0x0200C165,
+                                                  0x59, 0x75600, ...
+```
+
+- Directories carry small child offsets (inside the tree region) and the
+  third word is their own header size (0x14 for the small entries, larger
+  when the item list is long) — that is the entry's *size*, not a file
+  size.
+- Files carry a **byte size** as the third word (`gtloading.img` 0x21A0 =
+  8,608; the `.img` movies 0x75600 = 480,768) and their item lists are not
+  child offsets: they look like `{position, name pointer, count}` records
+  (the second word points into a *second* table region via its 0x0200xxxx
+  tag). The `advertise/jp/*.img` entries (counts 31/60/89/114) are the
+  first concrete files to resolve.
+
+The next slice's first task is therefore to pin the *file* item records
+(what the position/name/count triple addresses), then implement the reader
+with both shapes and verify it against the pinned volume.
+
+
 ## The next slice
 
 1. Implement the GT4.VOL reader (`Iso9660Image::read_file` already streams
