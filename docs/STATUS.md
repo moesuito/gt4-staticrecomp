@@ -1,21 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 33 — the handler registration, and a
-correction: the game's own early init (0x00100D30–0x00100DB4) constructs
-and registers the two archive handlers through 0x004ACC28 → 0x004ACA40 —
-0x00617AB0 with no prefix list and **0x00617BB0 with t0 = 0x00617AA8**
-(the game's own registration, whose array starts with `/mpeg`). The field
-comparison at the fault shows the model's and the live handlers are nearly
-identical (vtable, **+0xAC = "/"**, the archive bindings 0x1BEF0/0x59440/
-0x90EA80, +0xF4), so **slice 32's reading was wrong**: the prefix state
-matches the console's and the match chain reaches the third handler (the
-layer-0 archive handler, +0xAC = "/" matches any "/" path). The failure is
-inside the **handler method 0x004B1730** returning 0 — the archive's file
-open for `/sound/gt4sys.ins`. No model behavior changed. The differential
-passes at 3,000 services (interpreter reference at 7,570,583 instructions,
-full state identical). This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-02 after M30 slice 34 — the archive open handler's flow: the
+vtable-0x688C58 open method **0x004B1730** allocates a stream
+(0x004AC660 — returning 0 is its only early exit), builds the full path
+from the handler's **+0xAC ("/")** and the requested path, then **enqueues
+the stream via 0x004AD300**, which locks the handler's queue (+0x40), sets
+the stream's state (+0x80 = 0) and **waits on the condition 0x0057CB00** —
+the open is processed by the handler's own worker under the lock. The
+result the caller reads lives in the **stream's +0x94**, and the worker
+step **0x004AD4A0** walks a **sorted tree at the handler's +0x58**
+comparing the stream's key pair (+0xA0, +0xA4) — the archive's page tree
+(the GT4FS reference's B-tree). So the failure is either the stream
+allocation returning 0 or the worker leaving the result at 0. No model
+behavior changed. The differential passes at 3,000 services (interpreter
+reference at 7,570,583 instructions, full state identical). This is the
+first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -831,6 +831,24 @@ documents.
   interpreter reference at 7,570,583 instructions and the full state
   identical
   (`docs/reverse-engineering/m30-slice33-handler-registration.md`).
+- M30 slice 34 (2026-10-02): **the archive open handler's flow** — the
+  vtable-0x688C58 open method **0x004B1730**: it allocates a stream
+  (0x004AC660 — returning 0 is its only early exit), builds the full path
+  from the handler's **+0xAC ("/")** and the requested path (0x004AE908),
+  then **enqueues the stream via 0x004AD300**, which locks the handler's
+  queue (+0x40), sets the stream's state (+0x80 = 0) and **waits on the
+  condition 0x0057CB00** — the open is processed by the handler's own
+  worker under the lock — and returns the stream; the result the caller
+  reads lives in the **stream's +0x94**. The worker step **0x004AD4A0**
+  walks a **sorted tree at the handler's +0x58**, comparing the stream's
+  key pair (+0xA0, +0xA4) against each node's pair and descending (the
+  archive's page tree, the GT4FS reference's B-tree), and sets the
+  stream's state (+0x80 = 2) on a match. So the failure is either the
+  stream allocation returning 0 or the worker leaving the result at 0. No
+  model behavior changed: CTest 34/34; Python 73 (67 run, 6 skip); the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice34-archive-open-handler.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -840,13 +858,13 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the archive open handler 0x004B1730** —
-  the match chain reaches the layer-0 archive handler (whose +0xAC = "/"
-  matches), so the failure is inside the handler method 0x004B1730
-  returning 0 (the archive's file open for `/sound/gt4sys.ins`); the next
-  slice disassembles it and follows its failure path (the archive buffer at
-  0x90EA80 holds the same bytes as the console's, so the difference is
-  likely in a state field or a service the open depends on).
+- Next technical milestone work: **the stream's result or the allocation** —
+  the open handler 0x004B1730 either fails its stream allocation
+  (0x004AC660 → 0) or the worker leaves the result (stream +0x94) at 0; the
+  next slice watches the stream's +0x94/+0x80 (keyed on the handler's queue
+  or the allocation's return, since the stream is dynamic) and checks the
+  worker's tree search key (the path-derived pair at +0xA0/+0xA4) against
+  the archive's page tree.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

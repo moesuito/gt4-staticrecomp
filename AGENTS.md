@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 33 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 34 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -208,16 +208,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   **corrects slice 32**: the field comparison shows the model's handlers
   match the console's (vtable, +0xAC = "/", the archive bindings), so the
   match chain reaches the layer-0 archive handler and the failure is inside
-  its open method 0x004B1730; `--threads`
+  its open method 0x004B1730; slice 34 then maps that open's flow (it
+  allocates a stream, builds the path from the handler's "/" prefix,
+  enqueues the stream to the handler's worker under a condition wait, and
+  the result lives in the stream's +0x94; the worker searches a sorted tree
+  at the handler's +0x58 — the archive's page tree); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 34 — the archive open handler 0x004B1730: the match chain
-  reaches the layer-0 archive handler (whose +0xAC = "/" matches), so the
-  failure is inside the handler method 0x004B1730 returning 0 (the
-  archive's file open for `/sound/gt4sys.ins`); disassemble it and follow
-  its failure path — the archive buffer at 0x90EA80 holds the same bytes as
-  the console's, so the difference is likely in a state field or a service
-  the open depends on.
+- Next: M30 slice 35 — the stream's result or the allocation: the open
+  handler 0x004B1730 either fails its stream allocation (0x004AC660 → 0) or
+  the worker leaves the result (stream +0x94) at 0; watch the stream's
+  +0x94/+0x80 (keyed on the handler's queue or the allocation's return,
+  since the stream is dynamic) and check the worker's tree search key (the
+  path-derived pair at +0xA0/+0xA4) against the archive's page tree.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
