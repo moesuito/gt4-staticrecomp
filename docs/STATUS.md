@@ -86,6 +86,16 @@ work proceeds. Details live in the linked evidence documents.
   call tree advanced through movn, lwl, the thunk and cache; its next gap is
   a branch targeting a delay slot at 0x005b0fcc
   (`docs/reverse-engineering/m17-thunks-and-syscall-boundaries.md`).
+- M18 critical edges: a delay slot that is also a transfer target now gets a
+  standalone copy at its own address (the edge path falls through); the
+  transfer jumps past it on the normal path, and branch-decision variables
+  are hoisted to the top of the generated function (forward gotos may not
+  skip initializations; MSVC C2362). The cache-flush loop 0x005b0f78 (43
+  instructions, the critical edge in its middle) matches the interpreter on 7
+  states, all registers and the continuation compared
+  (`ee_translation_cacheflush`). The 0x58ce48 call tree now stops at COP0
+  `mfc0` (Status) in 0x005b72f8
+  (`docs/reverse-engineering/m18-critical-edges.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -138,10 +148,10 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M18 next: the translator's critical-edge handling (a branch targeting a
-   delay slot at 0x005b0fcc), the MMI parallel multiply family, BREAK and
-   COP0; indirect-call dispatch for jr-based tables; differential execution
-   needs step control (open).
+1. M19 next: COP0 (`mfc0`/`mtc0`, the Status register with the observed
+   0x40000000 default, EI/DI) and BREAK; the MMI parallel multiply family;
+   indirect-call dispatch for jr-based tables; differential execution needs
+   step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -156,4 +166,5 @@ work proceeds. Details live in the linked evidence documents.
   recompiled natively (verified identical after 942,695 instructions), M16
   unaligned access, multiply/divide and PLZCW with a fifth verified function,
   M17 tail thunks and syscall boundaries (the thunk 0x005b27f8 verified
-  stopping at service 0x42) and the cache hint.
+  stopping at service 0x42) and the cache hint, M18 critical edges (a branch
+  targeting a delay slot, verified with the 0x005b0f78 cache-flush loop).
