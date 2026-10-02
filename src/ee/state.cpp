@@ -53,19 +53,26 @@ void GuestMemory::map_mmio(std::uint32_t base, std::uint32_t size,
         throw std::runtime_error(
             "An MMIO window needs a nonzero size and both callbacks");
     }
-    mmio_base_ = base;
-    mmio_size_ = size;
-    mmio_read_ = std::move(read);
-    mmio_write_ = std::move(write);
+    mmio_windows_.push_back(MmioWindow{base, size, std::move(read), std::move(write)});
+}
+
+const GuestMemory::MmioWindow* GuestMemory::find_mmio(std::uint32_t address,
+                                                      std::size_t width) const noexcept {
+    if (width == 0) {
+        return nullptr;
+    }
+    for (const MmioWindow& window : mmio_windows_) {
+        const std::uint64_t end = static_cast<std::uint64_t>(address) + width;
+        if (address >= window.base
+            && end <= static_cast<std::uint64_t>(window.base) + window.size) {
+            return &window;
+        }
+    }
+    return nullptr;
 }
 
 bool GuestMemory::is_mmio(std::uint32_t address, std::size_t width) const noexcept {
-    if (mmio_size_ == 0 || width == 0) {
-        return false;
-    }
-    const std::uint64_t end = static_cast<std::uint64_t>(address) + width;
-    return address >= mmio_base_
-        && end <= static_cast<std::uint64_t>(mmio_base_) + mmio_size_;
+    return find_mmio(address, width) != nullptr;
 }
 
 void GuestMemory::enable_segment_alias() noexcept {
@@ -101,8 +108,8 @@ std::size_t GuestMemory::range_offset(std::uint32_t address, std::size_t width) 
 
 std::uint8_t GuestMemory::read_byte(std::uint32_t address) const {
     const std::uint32_t physical = physical_address(address);
-    if (is_mmio(physical, 1)) {
-        return static_cast<std::uint8_t>(mmio_read_(physical, 1) & 0xffu);
+    if (const MmioWindow* window = find_mmio(physical, 1); window != nullptr) {
+        return static_cast<std::uint8_t>(window->read(physical, 1) & 0xffu);
     }
     return bytes_[range_offset(address, 1)];
 }
@@ -110,8 +117,8 @@ std::uint8_t GuestMemory::read_byte(std::uint32_t address) const {
 std::uint16_t GuestMemory::read_halfword(std::uint32_t address) const {
     require_alignment(address, 2);
     const std::uint32_t physical = physical_address(address);
-    if (is_mmio(physical, 2)) {
-        return static_cast<std::uint16_t>(mmio_read_(physical, 2) & 0xffffu);
+    if (const MmioWindow* window = find_mmio(physical, 2); window != nullptr) {
+        return static_cast<std::uint16_t>(window->read(physical, 2) & 0xffffu);
     }
     const auto offset = range_offset(address, 2);
     return static_cast<std::uint16_t>(static_cast<std::uint32_t>(bytes_[offset])
@@ -121,8 +128,8 @@ std::uint16_t GuestMemory::read_halfword(std::uint32_t address) const {
 std::uint32_t GuestMemory::read_word(std::uint32_t address) const {
     require_alignment(address, 4);
     const std::uint32_t physical = physical_address(address);
-    if (is_mmio(physical, 4)) {
-        return mmio_read_(physical, 4);
+    if (const MmioWindow* window = find_mmio(physical, 4); window != nullptr) {
+        return window->read(physical, 4);
     }
     const auto offset = range_offset(address, 4);
     return static_cast<std::uint32_t>(bytes_[offset])
@@ -151,8 +158,8 @@ std::uint64_t GuestMemory::read_doubleword(std::uint32_t address) const {
 
 void GuestMemory::write_byte(std::uint32_t address, std::uint8_t value) {
     const std::uint32_t physical = physical_address(address);
-    if (is_mmio(physical, 1)) {
-        mmio_write_(physical, 1, value);
+    if (const MmioWindow* window = find_mmio(physical, 1); window != nullptr) {
+        window->write(physical, 1, value);
         return;
     }
     bytes_[range_offset(address, 1)] = value;
@@ -161,8 +168,8 @@ void GuestMemory::write_byte(std::uint32_t address, std::uint8_t value) {
 void GuestMemory::write_halfword(std::uint32_t address, std::uint16_t value) {
     require_alignment(address, 2);
     const std::uint32_t physical = physical_address(address);
-    if (is_mmio(physical, 2)) {
-        mmio_write_(physical, 2, value);
+    if (const MmioWindow* window = find_mmio(physical, 2); window != nullptr) {
+        window->write(physical, 2, value);
         return;
     }
     const auto offset = range_offset(address, 2);
@@ -173,8 +180,8 @@ void GuestMemory::write_halfword(std::uint32_t address, std::uint16_t value) {
 void GuestMemory::write_word(std::uint32_t address, std::uint32_t value) {
     require_alignment(address, 4);
     const std::uint32_t physical = physical_address(address);
-    if (is_mmio(physical, 4)) {
-        mmio_write_(physical, 4, value);
+    if (const MmioWindow* window = find_mmio(physical, 4); window != nullptr) {
+        window->write(physical, 4, value);
         return;
     }
     const auto offset = range_offset(address, 4);

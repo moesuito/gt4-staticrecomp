@@ -1,0 +1,44 @@
+#pragma once
+
+// A plain device register bank: 32-bit storage for one hardware register
+// window. Reads return the last written value and untouched registers read
+// as zero. No side effects, no ticking, no interrupts — the honest default
+// for device blocks the verified paths have not needed to drive yet.
+//
+// The timer unit keeps its own typed class on top of the same storage; DMAC
+// and SIF use a bank directly. Only 32-bit accesses are modeled; any other
+// width stops with the address instead of guessing a byte order.
+
+#include "gt4recomp/ee_state.hpp"
+
+#include <cstdint>
+#include <map>
+
+namespace gt4recomp::ee {
+
+class RegisterBank {
+public:
+    RegisterBank(std::uint32_t base, std::uint32_t size);
+
+    // Routes the bank's window of the memory to this bank. The bank must
+    // outlive the memory (the callbacks capture it).
+    void map_into(GuestMemory& memory);
+
+    [[nodiscard]] std::uint32_t read_register(std::uint32_t address,
+                                              std::size_t width) const;
+    void write_register(std::uint32_t address, std::size_t width,
+                        std::uint32_t value);
+
+    // The stored value of one register; zero when never written.
+    [[nodiscard]] std::uint32_t register_value(std::uint32_t address) const;
+
+    [[nodiscard]] std::uint32_t base() const noexcept;
+    [[nodiscard]] std::uint32_t size() const noexcept;
+
+private:
+    std::uint32_t base_ = 0;
+    std::uint32_t size_ = 0;
+    std::map<std::uint32_t, std::uint32_t> registers_;
+};
+
+} // namespace gt4recomp::ee

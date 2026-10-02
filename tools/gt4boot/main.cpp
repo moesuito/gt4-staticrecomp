@@ -10,6 +10,7 @@
 #include "translated-whole-program.hpp"
 
 #include "boundary_text.hpp"
+#include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
 #include "gt4recomp/ee_kernel.hpp"
@@ -45,16 +46,29 @@ constexpr std::uint32_t junk_margin = 0x100;
 constexpr std::uint32_t ram_size = 0x2000000;  // the EE's 32 MiB
 constexpr std::uint64_t default_step_limit = 200'000'000;
 
+// The device register windows the boot touches so far: the timer block and
+// the DMAC and SIF registers (plain storage; decision 0007).
+struct BootDevices {
+    TimerUnit timer;
+    RegisterBank dmac{0x1000E000u, 0x100u};
+    RegisterBank sif{0x1000C000u, 0x100u};
+
+    void map_into(GuestMemory& memory) {
+        timer.map_into(memory);
+        dmac.map_into(memory);
+        sif.map_into(memory);
+    }
+};
+
 // The full EE RAM as one flat zero-filled window with the image's own
 // addresses and the junk pre-fill around .bss the startup tests use. The
 // segment alias is on because the SDK's kernel search reads the low 512 KiB
 // through KSEG0/KSEG1 (0x80000000/0xA0000000, both mapping physical 0), and
-// the timer unit's register window is mapped so InitAlarm/InitTimer can read
-// and write it.
-GuestState make_boot_state(const ExecutableImage& image, TimerUnit& timer) {
+// the device windows are mapped so the init can read and write them.
+GuestState make_boot_state(const ExecutableImage& image, BootDevices& devices) {
     GuestMemory memory(0, ram_size);
     memory.enable_segment_alias();
-    timer.map_into(memory);
+    devices.map_into(memory);
     memory.write_bytes(image.text.guest_address, image.text.bytes);
     memory.write_bytes(image.data.guest_address, image.data.bytes);
     std::vector<std::uint8_t> junk(bss_end - bss_start + 2 * junk_margin, 0xAA);
@@ -244,8 +258,8 @@ int wmain(int argc, wchar_t* argv[]) {
 
         Kernel driver_kernel;
         ServiceTable services = make_boot_services(driver_kernel);
-        TimerUnit driver_timer;
-        auto driver_state = make_boot_state(image, driver_timer);
+        BootDevices driver_devices;
+        auto driver_state = make_boot_state(image, driver_devices);
         RunOptions options;
         options.step_limit = default_step_limit;
         options.service_limit = service_limit;
@@ -271,8 +285,8 @@ int wmain(int argc, wchar_t* argv[]) {
                   << ", services handled " << result.stats.services_handled << '\n';
 
         if (compare_interpreter) {
-            TimerUnit reference_timer;
-            auto reference_state = make_boot_state(image, reference_timer);
+            BootDevices reference_devices;
+            auto reference_state = make_boot_state(image, reference_devices);
             Kernel reference_kernel;
             ServiceTable reference_services = make_boot_services(reference_kernel);
             const ReferenceResult reference = run_reference(

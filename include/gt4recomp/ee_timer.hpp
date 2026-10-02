@@ -13,10 +13,10 @@
 // no timer interrupt is ever raised. Code that needs a firing compare or
 // overflow stops at that boundary instead of observing a guessed time.
 
+#include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_state.hpp"
 
 #include <cstdint>
-#include <map>
 
 namespace gt4recomp::ee {
 
@@ -47,7 +47,7 @@ public:
     [[nodiscard]] std::uint32_t register_value(std::uint32_t address) const;
 
 private:
-    std::map<std::uint32_t, std::uint32_t> registers_;
+    RegisterBank registers_{window_base, window_size};
 };
 
 } // namespace gt4recomp::ee

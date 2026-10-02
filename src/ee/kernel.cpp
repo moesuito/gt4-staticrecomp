@@ -168,6 +168,8 @@ void Kernel::register_services(ServiceTable& services) {
     add(0x47u, &Kernel::refer_sema_status);
     add(static_cast<std::uint32_t>(-0x48), &Kernel::refer_sema_status);
     add(0x74u, &Kernel::set_syscall);
+    add(0x4Au, &Kernel::set_osd_config);
+    add(0x4Bu, &Kernel::get_osd_config);
     add(0x10u, &Kernel::add_intc_handler);
     add(0x11u, &Kernel::remove_intc_handler);
     add(0x12u, &Kernel::add_dmac_handler);
@@ -192,6 +194,10 @@ std::uint32_t Kernel::patched_handler(std::uint32_t number) const noexcept {
         return 0;
     }
     return patched_handlers_[number];
+}
+
+std::uint32_t Kernel::osd_config() const noexcept {
+    return osd_config_;
 }
 
 void Kernel::ensure_syscall_table(GuestState& state) {
@@ -752,6 +758,33 @@ ServiceOutcome Kernel::patch_return(GuestState& state) {
     state.write_gpr64(31, call.caller_ra);
     state.set_pc(call.resume_pc);
     return ServiceOutcome::Jumped;
+}
+
+ServiceOutcome Kernel::get_osd_config(GuestState& state) {
+    // GetOsdConfigParam(addr): the kernel writes its ConfigParam word to the
+    // guest address.
+    const std::uint32_t address = state.read_gpr32(4);
+    if (!state.memory().contains(address, 4)) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    state.memory().write_word(address, osd_config_);
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::set_osd_config(GuestState& state) {
+    // SetOsdConfigParam(addr): every field is retained, including version;
+    // the SDK probes exactly that to tell a late kernel from an early
+    // Japanese one (decision 0008).
+    const std::uint32_t address = state.read_gpr32(4);
+    if (!state.memory().contains(address, 4)) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    osd_config_ = state.memory().read_word(address);
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
 }
 
 ServiceOutcome Kernel::add_intc_handler(GuestState& state) {

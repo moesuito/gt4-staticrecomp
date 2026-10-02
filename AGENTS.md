@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 5 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 6 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -113,15 +113,15 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   (15,068 functions, 924,991 instructions, 146 MB, MSVC syntax-checked). The
   boundary driver executes translated modules as programs; the BIOS service
   layer models SetupThread, SetupHeap, FlushCache, the thread/semaphore
-  scheduler, kernel patches and the timer registers; the step-by-step
-  interpreter bridges the boundaries a module cannot pass. `gt4boot` runs
-  the whole game as one module from the ELF entry through the whole
-  `_InitSys` tree and the game's thread creation (the cooperative scheduler
-  is exercised end to end) with the state identical to the interpreter
-  (961,937 instructions), stopping at GetOsdConfigParam.
-- Next: M30 slice 6 — the OSD configuration (GetOsdConfigParam 0x4B,
-  SetOsdConfigParam 0x4A), then a ticking timer with interrupt/alarm
-  delivery.
+  scheduler, kernel patches, the timer registers, the OSD configuration and
+  the DMAC/SIF register banks; the step-by-step interpreter bridges the
+  boundaries a module cannot pass. `gt4boot` runs the whole game as one
+  module from the ELF entry through the whole init chain and the game's
+  thread creation (the cooperative scheduler is exercised end to end) with
+  the state identical to the interpreter (6,321,377 instructions), stopping
+  at SifSetDChain — the IOP wall.
+- Next: M30 slice 7 — the IOP interface (SIF register handshakes, SIF DMA
+  and RPC), then a ticking timer with interrupt/alarm delivery.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

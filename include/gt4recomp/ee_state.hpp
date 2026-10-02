@@ -38,11 +38,12 @@ public:
     void enable_segment_alias() noexcept;
     [[nodiscard]] bool segment_alias_enabled() const noexcept;
 
-    // Memory-mapped I/O: accesses inside [base, base+size) are routed to the
-    // callbacks instead of the byte array. The model has one device window
-    // (the EE's hardware registers at 0x10000000); the callbacks must handle
-    // every access width the guest uses and live at least as long as the
-    // memory. Bytes outside the window stay strictly bounded RAM.
+    // Memory-mapped I/O: accesses inside a mapped window are routed to the
+    // window's callbacks instead of the byte array. The model separates one
+    // window per device (the EE's hardware register blocks); the callbacks
+    // must handle every access width the guest uses and live at least as
+    // long as the memory. Bytes outside every window stay strictly bounded
+    // RAM. Overlapping windows are a caller bug.
     using MmioRead = std::function<std::uint32_t(std::uint32_t address, std::size_t width)>;
     using MmioWrite = std::function<void(std::uint32_t address, std::size_t width,
                                          std::uint32_t value)>;
@@ -63,17 +64,23 @@ public:
     void write_bytes(std::uint32_t address, std::span<const std::uint8_t> source);
 
 private:
+    struct MmioWindow {
+        std::uint32_t base = 0;
+        std::uint32_t size = 0;
+        MmioRead read;
+        MmioWrite write;
+    };
+
     void require_alignment(std::uint32_t address, std::size_t width) const;
     [[nodiscard]] std::size_t range_offset(std::uint32_t address, std::size_t width) const;
     [[nodiscard]] std::uint32_t physical_address(std::uint32_t address) const noexcept;
+    [[nodiscard]] const MmioWindow* find_mmio(std::uint32_t address,
+                                              std::size_t width) const noexcept;
 
     std::uint32_t base_ = 0;
     std::vector<std::uint8_t> bytes_;
     bool segment_alias_ = false;
-    std::uint32_t mmio_base_ = 0;
-    std::uint32_t mmio_size_ = 0;
-    MmioRead mmio_read_;
-    MmioWrite mmio_write_;
+    std::vector<MmioWindow> mmio_windows_;
 };
 
 // The whole per-thread register state a context switch must carry: the

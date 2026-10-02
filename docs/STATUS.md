@@ -1,11 +1,10 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 5 — timer registers and interrupt handlers:
-the boot runs the whole `_InitSys` tree and the game's thread creation, with
-the cooperative scheduler exercised end to end for the first time, and stops
-at GetOsdConfigParam; a translator bug in `jr ra` emission was found and
-fixed. This is the first document to read in a new session; it is kept current
-as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 6 — the OSD configuration and the device
+register banks: the boot passes the whole init chain and the game's thread
+creation and stops at SifSetDChain, the IOP wall, with the state identical to
+the interpreter. This is the first document to read in a new session; it is
+kept current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -309,6 +308,21 @@ as work proceeds. Details live in the linked evidence documents.
   interpreter after 961,937 instructions. CTest 32/32; Python 73 (67 run,
   6 skip) (`docs/reverse-engineering/m30-timer-and-interrupts.md`,
   `docs/decisions/0007-timer-registers.md`).
+- M30 slice 6 (2026-10-02): **the OSD configuration and the register-bank
+  device model** — GetOsdConfigParam (0x4B) writes the ConfigParam word and
+  SetOsdConfigParam (0x4A) stores it retaining every field, which is exactly
+  what the SDK's early-kernel probe at 0x005B7620 tests (write version=1,
+  read it back); the initial USA default is a documented model value
+  (decision 0008). `GuestMemory` now maps **multiple device windows** and
+  `RegisterBank` gives the DMAC (0x1000E000) and SIF0 CHCR (0x1000C000)
+  blocks 32-bit storage; `TimerUnit` sits on the same bank. **The boot now
+  passes the whole init chain and stops at SifSetDChain (0x78) at pc
+  0x005AE084 — the IOP wall** (the public `sceSifInitCmd` shows the following
+  CMDINIT wait would spin forever without an IOP model) — with the full state
+  identical to the interpreter after 6,321,377 instructions. CTest 32/32;
+  Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-osd-and-the-iop-wall.md`,
+  `docs/decisions/0008-osd-and-device-banks.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -318,12 +332,13 @@ as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the OSD configuration** — the boot stops
-  at GetOsdConfigParam (0x4B) at 0x005ADD54, called from 0x005B7620 (which
-  also calls SetOsdConfigParam 0x4A); the layout and plausible values
-  (region/language/aspect/TV mode) need their own small decision, with the
-  pinned USA BIOS and the live savestate as evidence. Then a ticking timer
-  and interrupt delivery for code that waits on alarms.
+- Next technical milestone work: **the IOP interface (SIF)** — the boot stops
+  at SifSetDChain (0x78) at 0x005AE084, and the public `sceSifInitCmd` shows
+  the following steps: register the SIF0 DMA handler, then handshake with
+  the IOP through the SIF registers and wait for CMDINIT. The decision must
+  settle how the model represents the IOP side (register semantics, DMA
+  completion, RPC), with the public SIF sources and the live PCSX2 emulator
+  as evidence. Then a ticking timer with interrupt/alarm delivery.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -373,14 +388,14 @@ as work proceeds. Details live in the linked evidence documents.
   step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
-  module entries (correctness first; 15,699 instructions in the boot run).
+  module entries (correctness first; 17,696 instructions in the boot run).
   The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now stops at the OSD configuration**: GetOsdConfigParam (0x4B)
-  at 0x005ADD54, called from 0x005B7620 while the init reads the console's
-  settings. The timer windows before it are modeled (decision 0007) and the
-  kernel-patch mechanism is verified. FlushCache is registered but still
-  unreached.
+- **The boot now stops at the IOP wall**: SifSetDChain (0x78) at 0x005AE084,
+  the SIF initialization's channel enable. The OSD configuration and the
+  DMAC/SIF register banks before it are modeled (decision 0008); the public
+  `sceSifInitCmd` shows the following CMDINIT handshake would spin without an
+  IOP model.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence). No timer preemption is modeled (decision 0005);
@@ -395,10 +410,11 @@ as work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 6: **the OSD configuration** — model GetOsdConfigParam (0x4B)
-   and SetOsdConfigParam (0x4A) with the documented block layout and values
-   evidenced by the pinned USA BIOS and the savestate RAM; the acceptance
-   evidence is `gt4boot --compare-interpreter` past 0x005ADD54.
+1. M30 slice 7: **the IOP interface (SIF)** — model the SIF register
+   semantics (handshake flags), SIF DMA submission/completion and the RPC
+   layer the game builds on top, using the public `sifcmd.c`/`sifdma.h`
+   sources and the live PCSX2 emulator as the oracle; the acceptance evidence
+   is `gt4boot --compare-interpreter` past SifSetDChain (0x78).
 2. A ticking timer with interrupt/alarm delivery for code that waits on
    alarms (the timer registers are storage-only today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -447,4 +463,5 @@ as work proceeds. Details live in the linked evidence documents.
   registers and interrupt handlers (the whole `_InitSys` tree and the game's
   thread creation run, the cooperative scheduler is exercised end to end, a
   `jr ra` translator bug is found and fixed, and the run stops at
-  GetOsdConfigParam).
+  GetOsdConfigParam), and slice 6 is the OSD configuration and the device
+  register banks (the run stops at SifSetDChain, the IOP wall).

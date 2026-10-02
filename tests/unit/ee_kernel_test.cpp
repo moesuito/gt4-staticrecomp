@@ -302,6 +302,34 @@ int main() {
               "re-installing a model token removes the patch");
     }
 
+    // GetOsdConfigParam/SetOsdConfigParam move the ConfigParam word and
+    // retain every field, including the version bits the SDK probes.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        constexpr std::uint32_t word_address = 0x00100200;
+        state.write_gpr32(4, word_address);
+        check(kernel.get_osd_config(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0
+                  && state.memory().read_word(word_address) == kernel.osd_config(),
+              "GetOsdConfigParam writes the ConfigParam word");
+        const std::uint32_t probe = (kernel.osd_config() & 0x1fffu) | 0x2000u;
+        state.memory().write_word(word_address, probe);
+        check(kernel.set_osd_config(state) == ServiceOutcome::Handled
+                  && kernel.osd_config() == probe,
+              "SetOsdConfigParam retains every field");
+        check(kernel.get_osd_config(state) == ServiceOutcome::Handled
+                  && state.memory().read_word(word_address) == probe
+                  && ((state.memory().read_word(word_address) >> 13) & 7u) == 1u,
+              "the version field is retained for the SDK probe");
+        state.write_gpr32(4, 0xfffffff0u);
+        check(kernel.set_osd_config(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu,
+              "an unmapped OSD address is rejected");
+    }
+
     // Interrupt and DMA handler registrations are stored and removable;
     // enabling and disabling are accepted without delivering anything.
     {

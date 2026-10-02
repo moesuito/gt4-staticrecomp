@@ -111,6 +111,13 @@ public:
     ServiceOutcome poll_sema(GuestState& state);           // 0x45
     ServiceOutcome refer_sema_status(GuestState& state);   // 0x47
     ServiceOutcome set_syscall(GuestState& state);         // 0x74
+    // The OSD configuration word (ConfigParam): Get writes it to the guest
+    // address, Set stores what the guest wrote. The kernel of a late console
+    // retains every field, including the version bits the SDK probes for an
+    // early Japanese kernel; the initial value is a documented USA default
+    // (decision 0008).
+    ServiceOutcome get_osd_config(GuestState& state);      // 0x4B
+    ServiceOutcome set_osd_config(GuestState& state);      // 0x4A
     // Interrupt and DMA handler registrations (0x10-0x17 and the negative
     // i* aliases). The model stores them; enable/disable are accepted with
     // no effect because no interrupt is delivered.
@@ -130,6 +137,8 @@ public:
     [[nodiscard]] const std::vector<KernelInterruptHandler>& interrupt_handlers() const noexcept;
     // The guest handler a SetSyscall installed for the number, or zero.
     [[nodiscard]] std::uint32_t patched_handler(std::uint32_t number) const noexcept;
+    // The OSD configuration word the services read and write.
+    [[nodiscard]] std::uint32_t osd_config() const noexcept;
 
     // The model's synthetic syscall table lives at this physical address, in
     // the zero-filled low RAM the SDK's kernel search scans. The game only
@@ -185,6 +194,10 @@ private:
     ServiceTable* service_table_ = nullptr;  // set by register_services
     bool syscall_table_ready_ = false;
     std::array<std::uint32_t, syscall_table_entries> patched_handlers_{};
+    // spdifMode=1 (disabled), screenType=0 (4:3), videoOutput=0 (RGB),
+    // japLanguage=1 (non-Japanese), ps1drvConfig=0, version=1 (OSD2),
+    // language=1 (English), timezoneOffset=0. See decision 0008.
+    std::uint32_t osd_config_ = 0x00012011u;
     // One entry per patched handler call in flight; nested calls are a
     // stack, exactly like the handlers' returns.
     struct PendingPatchCall {

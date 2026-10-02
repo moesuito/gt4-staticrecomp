@@ -1,5 +1,6 @@
-// Unit tests for the EE timer register window and the explicit MMIO routing
-// that carries it, with no game data.
+// Unit tests for the EE timer register window, the generic device register
+// bank and the explicit MMIO routing that carries them, with no game data.
+#include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_timer.hpp"
 
 #include <cstdint>
@@ -68,6 +69,31 @@ int main() {
                   memory.write_bytes(t3_mode, payload);
               }),
               "bulk writes into the device window are rejected");
+    }
+
+    // Two device windows coexist: the timer unit and a plain register bank
+    // (the DMAC block the SIF initialization reads).
+    {
+        GuestMemory memory(ram_base, ram_size);
+        TimerUnit timer;
+        RegisterBank dmac(0x1000E000u, 0x100u);
+        timer.map_into(memory);
+        dmac.map_into(memory);
+        check(memory.is_mmio(0x1000E010u, 4) && memory.is_mmio(TimerUnit::window_base, 4)
+                  && !memory.is_mmio(0x1000D000u, 4),
+              "each device window is bounded and separate");
+        check(memory.read_word(0x1000E010u) == 0,
+              "an untouched device register reads as zero");
+        memory.write_word(0x1000E010u, 0x00000020u);
+        check(memory.read_word(0x1000E010u) == 0x00000020u
+                  && dmac.register_value(0x1000E010u) == 0x00000020u,
+              "the register bank stores and returns the value");
+        memory.write_word(TimerUnit::window_base + 0x10, 0x1234u);
+        check(memory.read_word(0x1000E010u) == 0x00000020u
+                  && timer.register_value(TimerUnit::window_base + 0x10) == 0x1234u,
+              "the two windows stay independent");
+        check(throws_runtime([&] { (void)memory.read_byte(0x1000E010u); }),
+              "the register bank rejects non-32-bit widths");
     }
 
     if (failures != 0) {
