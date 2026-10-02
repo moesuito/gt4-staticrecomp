@@ -77,6 +77,19 @@ and a stderr summary (blocks, instructions, edges, call targets, open ends,
 outside-text edges, limit flag). See the
 [M7 evidence](docs/reverse-engineering/m7-control-flow.md).
 
+## Translate one real function
+
+```powershell
+.\build\gt4translate.exe private/fingerprint-check/CORE.GT4 0x577878 64
+```
+
+The translator emits a C++ header for one straight-line leaf function ending in
+`jr ra`, statement by statement, with the original assembly as comments. The
+output is derived from game code: keep it in ignored directories and never
+commit it. The translation test generates it into the build tree and compares
+the translated function against the interpreter on six input states. See the
+[M13 evidence](docs/reverse-engineering/m13-first-function.md).
+
 ## Discover an evidence-backed function map
 
 ```powershell

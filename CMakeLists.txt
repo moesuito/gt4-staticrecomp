@@ -58,6 +58,8 @@ if(WIN32)
     target_link_libraries(gt4cfg PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
     add_executable(gt4funcs tools/gt4funcs/main.cpp)
     target_link_libraries(gt4funcs PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+    add_executable(gt4translate tools/gt4translate/main.cpp)
+    target_link_libraries(gt4translate PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
 endif()
 
 add_executable(gt4recomp tools/gt4recomp/main.cpp)
@@ -100,4 +102,23 @@ if(BUILD_TESTING)
     target_link_libraries(executable_image_tests PRIVATE gt4recomp_executable zlibstatic)
     target_include_directories(executable_image_tests PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
     add_test(NAME executable_image COMMAND executable_image_tests)
+
+    # The translation test needs the local CORE: the translated header is
+    # generated into the ignored build tree and never committed. On machines
+    # without the CORE the test simply does not exist.
+    set(GT4_LOCAL_CORE "${CMAKE_CURRENT_SOURCE_DIR}/private/fingerprint-check/CORE.GT4")
+    if(WIN32 AND EXISTS "${GT4_LOCAL_CORE}")
+        set(GT4_TRANSLATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00577878.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x577878 64 "${GT4_TRANSLATED_HEADER}"
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_tests
+            tests/unit/ee_translation_test.cpp
+            "${GT4_TRANSLATED_HEADER}")
+        target_include_directories(ee_translation_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation COMMAND ee_translation_tests "${GT4_LOCAL_CORE}")
+    endif()
 endif()
