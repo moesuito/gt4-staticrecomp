@@ -13,10 +13,14 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 215 operations (line-filtered count; earlier documents
-    cited 175, which counted comment fragments) and the pinned text decodes
-    completely: a scan of all 1,334,917 words reports zero unsupported
-    (0x00100000..0x00617E54, four chunks). Ghidra verification: the M6
+  - The decoder covers 217 operations (line-filtered count; earlier documents
+    cited 175, which counted comment fragments). Whole-text scan, corrected:
+    2,269 unsupported of 1,334,917 words (0.17%), dominated by VU0 macro
+    (COP2, ~1,250), LQC2/SQC2 (378) and the trapping arithmetic forms (123);
+    the first 350,000 words — every sampled region — decode cleanly. (An
+    earlier "zero unsupported" claim was a false positive from chunk ranges
+    beyond the text end; the ERET sighting exposed it. Lesson: check the
+    tool's exit status, not only its output.) Ghidra verification: the M6
     ten-region run matched 417 with 0 mismatches; the M16 listing (startup
     regions, candidates and the unaligned-access neighborhoods) matched 594
     with 0 mismatches and 34 R5900-only rows verified against the reference
@@ -122,6 +126,18 @@ work proceeds. Details live in the linked evidence documents.
   unsupported example exists any more). The 0x58ce48 tree's only remaining
   block is the `beql …; break` trap in a likely delay slot
   (`docs/reverse-engineering/m20-fully-decoding-text.md`).
+- M21 trap slots and the largest module: the `beql …; break` idiom is
+  represented end to end (flow flag, interpreter Exception stop when taken /
+  slot skip when not, translator `if (taken) { set_pc(slot); return; }`);
+  `eret` executes with the CP0-derived target and level clear and is a
+  derived-pc boundary in translated code; translator emission gaps closed
+  (lhu/lwu/sh, dsubu, mult/multu/div/divu + second bank via mirroring
+  helpers, mfhi/mflo/mfhi1/mflo1) — 217 operations. **Two new verified
+  modules: 0x00579780 (66 instructions, 6 states) and 0x0058ce48 — 57
+  functions, 2,588 instructions, the largest verified translation so far**
+  (4 states, lazy-initializer runs stopping at the first BIOS service).
+  The whole-text scan correction is recorded above and in the M20 doc
+  (`docs/reverse-engineering/m21-trap-slots-and-the-largest-module.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -174,11 +190,12 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M21 next: the `beql …; break` trap in a likely delay slot (emit
-   `if (taken) { set_pc(delay); return; }` with no inline statement) so the
-   0x58ce48 call tree finishes; then the MMI parallel multiply family,
-   indirect-call dispatch for jr-based tables, and differential execution
-   needs step control (open).
+1. M22 next: VU0 macro mode (COP2, the dominant remaining family: ~1,250
+   macro words plus 378 quad loads/stores) with its own vector register file
+   and semantics; then the MMI2/MMI3 parallel-multiply remainder and the
+   trapping arithmetic/DADDI forms (they need the exception path); then
+   indirect-call dispatch for jr-based tables; differential execution needs
+   step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -196,8 +213,8 @@ work proceeds. Details live in the linked evidence documents.
   stopping at service 0x42) and the cache hint, M18 critical edges (a branch
   targeting a delay slot, verified with the 0x005b0f78 cache-flush loop),
   M19 COP0/BREAK and the 64-bit shift family, M20 the unaligned 64-bit
-  family and the last decode gaps — the whole pinned text (1,334,917 words)
-  now decodes with zero unsupported words.
+  family and the last decode gaps, M21 trap slots in likely delay slots,
+  ERET and the largest verified module (57 functions, 2,588 instructions).
 - [2026-10-02](journal/2026-10-02.md) — M19 was developed across the day
   boundary (its entry lives in the 2026-10-01 tail); state checks and the
   next recorded work.

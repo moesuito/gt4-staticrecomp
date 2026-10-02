@@ -15,10 +15,12 @@ JALR/SYSCALL, LD/SD/SB/LH and
 SLT/SLTU/DADDU. Later expansions added LB/LBU/SRA/SLTI/SLTIU/XORI, corrected
 SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics, added the COP1/MMI
 extensions, the unaligned-access and multiply/divide families, COP0 with the
-break boundary and the 64-bit shift family (215
+break boundary and the 64-bit shift family (217
 operations in total, with PCSX2 used as the semantic reference; CACHE and
-PREF decode as the no-op hints they are, and every word of the pinned
-executable text is now named and classified). The game's startup executes in
+PREF decode as the no-op hints they are). An honest whole-text scan puts the
+remaining unsupported words at 2,269 of 1,334,917 (0.17%), dominated by the
+VU0 macro family; the first 350,000 words — every sampled region — decode
+cleanly. The game's startup executes in
 the interpreter from
 its ELF entry to the first BIOS syscall — and, through `gt4translate`, as a
 native C++ module verified identical to the interpreter after 942,695

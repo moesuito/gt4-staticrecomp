@@ -216,5 +216,31 @@ if(BUILD_TESTING)
         target_include_directories(ee_translation_cacheflush_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
         target_link_libraries(ee_translation_cacheflush_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_translation_cacheflush COMMAND ee_translation_cacheflush_tests "${GT4_LOCAL_CORE}")
+
+        set(GT4_TRANSLATED_579780_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00579780.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_579780_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x579780 256 "${GT4_TRANSLATED_579780_HEADER}"
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_579780_tests
+            tests/unit/ee_translation_579780_test.cpp
+            "${GT4_TRANSLATED_579780_HEADER}")
+        target_include_directories(ee_translation_579780_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_579780_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation_579780 COMMAND ee_translation_579780_tests "${GT4_LOCAL_CORE}")
+
+        set(GT4_TRANSLATED_58CE48_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-0058ce48.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_TRANSLATED_58CE48_HEADER}"
+            COMMAND gt4translate "${GT4_LOCAL_CORE}" 0x58ce48 6000 "${GT4_TRANSLATED_58CE48_HEADER}"
+            DEPENDS gt4translate
+            VERBATIM)
+        add_executable(ee_translation_58ce48_tests
+            tests/unit/ee_translation_58ce48_test.cpp
+            "${GT4_TRANSLATED_58CE48_HEADER}")
+        target_include_directories(ee_translation_58ce48_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_translation_58ce48_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_translation_58ce48 COMMAND ee_translation_58ce48_tests "${GT4_LOCAL_CORE}")
     endif()
 endif()

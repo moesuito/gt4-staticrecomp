@@ -9,7 +9,7 @@ namespace gt4recomp::ee {
 enum class Operation {
     Unsupported,
     // Register arithmetic and logic.
-    Addu, Subu, And, Or, Xor, Nor, Slt, Sltu, Daddu, Movz, Movn,
+    Addu, Subu, And, Or, Xor, Nor, Slt, Sltu, Daddu, Dsubu, Movz, Movn,
     // Immediates, shifts and upper immediates.
     Addiu, Daddiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
     Sllv, Srlv, Srav, Dsll, Dsrl, Dsra, Dsll32, Dsrl32, Dsra32, Dsllv, Dsrlv, Dsrav,
@@ -32,7 +32,7 @@ enum class Operation {
     // compact forms and the accumulate variants.
     Mult, Multu, Div, Divu, Madd, Maddu, Mult1, Multu1, Div1, Divu1, Madd1, Maddu1,
     // CP0: system-coprocessor moves and the interrupt-enable pair.
-    Mfc0, Mtc0, Ei, Di,
+    Mfc0, Mtc0, Ei, Di, Eret,
     // COP1: register moves, FPU memory access, single-precision arithmetic,
     // accumulator forms, comparisons, conversions and conditional branches.
     Mfc1, Cfc1, Mtc1, Ctc1, Lwc1, Swc1,

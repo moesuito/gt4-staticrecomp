@@ -1,5 +1,23 @@
 # M20 — Unaligned 64-bit access, the last decode gaps, and a fully decoding text
 
+> **Correction (2026-10-02, same session).** The "TOTAL unsupported: 0" below
+> was a **false positive from a broken scan**: chunks 2-4 used start addresses
+> beyond the end of the text, `gt4disasm` rejects those ranges with an error on
+> stderr while printing nothing to stdout, and the scan read silence as "0".
+> The sighting of an `eret` word in real translated code exposed it. A correct
+> scan (proper chunk starts, the exact text end 0x617A14, tool exit status
+> checked) over all 1,334,917 words reports **2,269 unsupported (0.17%)**: the
+> VU0 macro family (opcode 0x12, about 1,250 words), the COP2 quad loads/stores
+> `lqc2`/`sqc2` (opcodes 0x36/0x3e, 378), the trapping `add`/`sub`/`dsub`/
+> `dadd` forms (123), `daddi` (23), the remaining MMI2/MMI3 parallel-multiply
+> words (14) and words consistent with embedded data tables inside the text
+> segment. The **first chunk (0x100000..0x255CC0, 350,000 words) does decode
+> with zero unsupported** — that is where every sampled region lives. Lesson
+> recorded: a scan that cannot distinguish "clean" from "did not run" must
+> check the tool's exit status and its range validation, not only the output.
+> The rest of this document stands as written: the unaligned doubleword family
+> and the last gaps it closed are real and verified.
+
 Date: 2026-10-02. Inputs: the pinned CORE. References: PCSX2 master
 (`R5900OpcodeImpl.cpp` for the LDL/LDR/SDL/SDR merge tables), fetched
 2026-10-01; used as documentation of hardware behavior.

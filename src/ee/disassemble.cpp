@@ -111,6 +111,7 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Movz:
     case Operation::Movn:
     case Operation::Nor:
+    case Operation::Dsubu:
         output << ' ' << rd << ", " << rs << ", " << rt;
         break;
     case Operation::Addiu:
@@ -407,6 +408,7 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
         break;
     case Operation::Ei:
     case Operation::Di:
+    case Operation::Eret:
         break;
     case Operation::Break: {
         // The 20-bit code occupies bits 25-6, like SYSCALL's.
