@@ -52,6 +52,18 @@ opcode counts to stderr. The script saves ten selected regions under ignored
 `private/disassembly/`; it needs only standard Python. See the
 [M6 evidence](docs/reverse-engineering/m6-disassembly.md) for Ghidra comparison commands.
 
+## Inspect one basic block
+
+```powershell
+.\build\gt4blocks.exe private/fingerprint-check/CORE.GT4 0x5a3140 40
+```
+
+The third argument is the instruction limit. The walk ends at the first control
+transfer and includes its delay slot; the stderr summary records the ending
+kind, static target, continuation address and stop reason. Unsupported words
+stop the walk with context. See the
+[M7 evidence](docs/reverse-engineering/m7-control-flow.md).
+
 ## Reconstruct an analysis ELF
 
 With the verified CORE copy from M2:
