@@ -1,21 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 35 — the stream pool and the queued open:
-the stream factory 0x004AC660 pops from the **free list at 0x0084B528**
-(the raw-disc handler +0xA8), and at the fault that list is **identical to
-the console's** (`0x0084B528 → 0x62A0B4 → 0x62A078 → 0`; the streams are a
-static array at 0x0062A0xx) — so the allocation is **not** the failure. The
-handler's third argument is the **formatter's context**, and its enqueue
-call **0x0057CB00 is a doubly linked-list append**, not a wait: the stream
-is **queued to the handler's pending list at +0x40** and the handler's own
-**worker thread** processes it later; the formatter then reads the result
-from the **stream's +0x94**. So the failure is the worker leaving +0x94 at
-0 — its search over the tree at the handler's +0x58 (the archive's page
-tree) finding nothing, or the worker never processing the queued stream.
-No model behavior changed. The differential passes at 3,000 services
-(interpreter reference at 7,570,583 instructions, full state identical).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 36 — the handlers' state matches; the
+failure is in the stream's processing: every compared handler field is
+**identical** to the live dump (pending lists empty, state 0, the completed
+list at 0x6B00D0/0x6317C4, the current object 0x688C40) — the queued open
+*was processed*, not stuck — and together with the previous slices the
+entire handler-side state matches the console. The completion step is
+**0x004AED80** (it pops the completed list at the handler's +0xAC and
+dispatches the current object's vtable+0x48 method). So the difference is
+in the **stream's dynamic processing** — the stream is the formatter's
+context on its stack and the result the formatter reads (+0x94) stays 0 in
+the model while the console's open succeeds; the next slice watches that
+context (its +0x94/+0x80 writes) or keys on the context construction
+(0x004AEFF0). No model behavior changed. The differential passes at 3,000
+services (interpreter reference at 7,570,583 instructions, full state
+identical). This is the first document to read in a new session; it is kept
+current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -867,6 +867,25 @@ work proceeds. Details live in the linked evidence documents.
   skip); the differential passes at 3,000 services with the interpreter
   reference at 7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice35-stream-pool-and-queued-open.md`).
+- M30 slice 36 (2026-10-02): **the handlers' state matches; the failure is in
+  the stream's processing** — every compared handler field is **identical**
+  to the live dump: the pending lists (+0x40) are **empty** (the queued
+  open *was processed*, not stuck), the state (+0x50) is 0, the completed
+  list (+0xAC) holds 0x6B00D0/0x6317C4 and the current object (+0x60) is
+  0x688C40 — so the entire handler-side state (registry, prefixes, archive
+  bindings, stream pool, queues) matches the console. The completion step
+  is **0x004AED80**: it locks, pops the completed list (0x0057CB80 on the
+  handler's +0xAC) and dispatches the handler's current object (+0x60)
+  through its vtable+0x48 method. With the handler state matching, the
+  difference is in the **stream's dynamic processing** — the stream is the
+  formatter's context (on its stack) and the result the formatter reads
+  (+0x94) stays 0 in the model while the console's open succeeds; the next
+  slice watches that context (its +0x94/+0x80 writes) or keys on the
+  context construction (0x004AEFF0). No model behavior changed: CTest 34/34;
+  Python 73 (67 run, 6 skip); the differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical
+  (`docs/reverse-engineering/m30-slice36-handler-state-matches.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -876,12 +895,13 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the worker's result** — the open is
-  queued to the handler's pending list (+0x40) and the worker thread should
-  set the stream's +0x94; the next slice instruments the worker's search
-  (0x004AD4A0: its key comparison and descent over the tree at the
-  handler's +0x58) and the pending list at the fault, and compares the
-  stream's path buffer (+0x48, built by the open) with the archive's tree.
+- Next technical milestone work: **the stream's dynamic processing** — the
+  handler-side state matches the console's, so the difference is in the
+  stream (the formatter's context on its stack): the result it reads
+  (+0x94) stays 0 while the console's open succeeds; the next slice watches
+  the context's +0x94/+0x80 writes (covering the sound thread's stack
+  window and filtering on the field offsets) or keys on the context
+  construction (0x004AEFF0).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
