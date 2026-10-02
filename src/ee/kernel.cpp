@@ -1388,6 +1388,7 @@ const DiscFiles* Kernel::disc_files() const noexcept {
 
 void Kernel::set_disc_sectors(const DiscByteSource* sectors) noexcept {
     disc_sectors_ = sectors;
+    disc_volume_lba_ = 0;
 }
 
 const DiscByteSource* Kernel::disc_sectors() const noexcept {
@@ -1424,6 +1425,80 @@ std::uint32_t Kernel::answer_disc_read(GuestState& state,
         state.memory().write_byte(destination + index, data[index]);
     }
     return read_size;
+}
+
+std::uint32_t Kernel::answer_disc_volume(GuestState& state,
+                                         std::uint32_t request) {
+    // The game's CD library registers the volume descriptor its scan
+    // accepted: 0x00548E20's success path calls 0x005485D8 with the block
+    // and the checksum 0x00548D20 computed over it. The model recomputes
+    // that checksum from the same image the reads come from; a mismatch
+    // means the model's disc differs from the one the game read, and the
+    // registration carries no reply to report it in, so it stops loudly.
+    constexpr std::uint32_t sector_size = 2048;
+    const std::uint32_t lba = state.memory().read_word(request + 0);
+    const std::uint32_t checksum = state.memory().read_word(request + 4);
+    if (disc_sectors_ == nullptr) {
+        return 0;
+    }
+    const std::uint64_t offset = static_cast<std::uint64_t>(lba) * sector_size;
+    if (offset + sector_size > disc_sectors_->size()) {
+        throw std::runtime_error(
+            "The game registered a volume outside the disc image");
+    }
+    std::vector<std::uint8_t> block(sector_size, 0);
+    disc_sectors_->read(offset, block);
+    // The library's sum: each byte times its one-based position, wrapping in
+    // 32 bits exactly like the guest's accumulator.
+    std::uint32_t computed = 0;
+    for (std::uint32_t index = 0; index < sector_size; ++index) {
+        computed += static_cast<std::uint32_t>(block[index]) * (index + 1);
+    }
+    if (computed != checksum) {
+        throw std::runtime_error(
+            "The game's volume checksum differs from the disc image's block");
+    }
+    disc_volume_lba_ = lba;
+    return sector_size;
+}
+
+std::uint32_t Kernel::answer_disc_volume_size(std::uint8_t* result,
+                                              std::uint32_t capacity) const {
+    // The library's query wrapper (0x005487C0) reads the reply as {status,
+    // value} and reports the value only when the status word is non-zero.
+    constexpr std::uint32_t reply_size = 8;
+    constexpr std::uint32_t sector_size = 2048;
+    if (capacity < reply_size) {
+        return 0;
+    }
+    for (std::uint32_t offset = 0; offset < reply_size; ++offset) {
+        result[offset] = 0;
+    }
+    if (disc_sectors_ == nullptr || disc_volume_lba_ == 0) {
+        return reply_size;
+    }
+    const std::uint64_t offset =
+        static_cast<std::uint64_t>(disc_volume_lba_) * sector_size;
+    if (offset + sector_size > disc_sectors_->size()) {
+        throw std::runtime_error(
+            "The registered volume lies outside the disc image");
+    }
+    std::vector<std::uint8_t> block(sector_size, 0);
+    disc_sectors_->read(offset, block);
+    const std::uint32_t volume_size =
+        static_cast<std::uint32_t>(block[0x50])
+        | (static_cast<std::uint32_t>(block[0x51]) << 8)
+        | (static_cast<std::uint32_t>(block[0x52]) << 16)
+        | (static_cast<std::uint32_t>(block[0x53]) << 24);
+    const auto put_word = [result](std::uint32_t at, std::uint32_t value) {
+        result[at + 0] = static_cast<std::uint8_t>(value);
+        result[at + 1] = static_cast<std::uint8_t>(value >> 8);
+        result[at + 2] = static_cast<std::uint8_t>(value >> 16);
+        result[at + 3] = static_cast<std::uint8_t>(value >> 24);
+    };
+    put_word(0, 1);
+    put_word(4, volume_size);
+    return reply_size;
 }
 
 std::uint32_t Kernel::answer_file_open(GuestState& state, std::uint32_t request,
@@ -1567,10 +1642,15 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     const std::uint32_t sd = state.memory().read_word(command_buffer + 52);
     const SifRpcServer* server = find_sif_server_by_handle(sd);
     const std::uint32_t sid = server == nullptr ? 0 : server->sid;
-    if (sid == 0x50434456u && rpc_number == 3u && server != nullptr) {
-        // The transfer's byte count is not part of the reply the library
-        // reads (its status word stays zero, which it takes as success).
-        (void)answer_disc_read(state, server->buffer);
+    if (sid == 0x50434456u && server != nullptr) {
+        if (rpc_number == 2u) {
+            // The volume registration: {descriptor block, checksum}.
+            (void)answer_disc_volume(state, server->buffer);
+        } else if (rpc_number == 3u) {
+            // The transfer's byte count is not part of the reply the library
+            // reads (its status word stays zero, which it takes as success).
+            (void)answer_disc_read(state, server->buffer);
+        }
     }
     std::uint8_t result[576] = {};
     std::uint32_t result_size = 0;
@@ -1578,6 +1658,9 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
         result_size = answer_file_open(state, server->buffer,
                                        state.memory().read_word(command_buffer + 36),
                                        result, sizeof result);
+    } else if (sid == 0x50434456u && rpc_number == 4u && server != nullptr) {
+        // The volume query: the registered volume's "volume space size".
+        result_size = answer_disc_volume_size(result, sizeof result);
     } else {
         result_size = sif_rpc_result(state, sid, rpc_number, result,
                                      sizeof result);

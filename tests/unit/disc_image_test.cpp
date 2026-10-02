@@ -63,6 +63,12 @@ std::vector<std::uint8_t> make_synthetic_iso() {
     image[pvd + 6] = 1;
     put_u16(image, pvd + 128, block_size);
     put_u32(image, pvd + 80, 24);
+    // ISO9660 stores the volume space size twice; the sector reader checks
+    // both copies.
+    image[pvd + 84] = 0;
+    image[pvd + 85] = 0;
+    image[pvd + 86] = 0;
+    image[pvd + 87] = 24;
     const std::size_t root = pvd + 156;
     image[root + 0] = 34;
     put_u32(image, root + 2, 20);
@@ -82,6 +88,36 @@ std::vector<std::uint8_t> make_synthetic_iso() {
     std::memcpy(image.data() + 22 * block_size, text, 10);
     const char module[] = "ABCDEF";
     std::memcpy(image.data() + 23 * block_size, module, 6);
+    return image;
+}
+
+std::vector<std::uint8_t> make_synthetic_dual_layer_image() {
+    // Two ISO9660 volumes: the first occupies the file's blocks 0..31 and
+    // declares its size (32), so the second volume's logical block 0 is 32.
+    // The file stores the second volume from its own block 16 on, sixteen
+    // blocks early — its system area is left out — so its descriptor sits at
+    // the file's block 32 where the logical block is 48. The file ends at
+    // block 64 and the second volume declares 48 blocks, so the volumes tile
+    // the logical image exactly (32 + 48 == 64 + 16).
+    std::vector<std::uint8_t> image(64 * block_size, 0);
+    const auto write_descriptor = [&image](std::size_t block, std::uint32_t size) {
+        const std::size_t pvd = block * block_size;
+        image[pvd + 0] = 1;
+        std::memcpy(image.data() + pvd + 1, "CD001", 5);
+        image[pvd + 6] = 1;
+        put_u16(image, pvd + 128, block_size);
+        put_u32(image, pvd + 80, size);
+        image[pvd + 84] = static_cast<std::uint8_t>(size >> 24);
+        image[pvd + 85] = static_cast<std::uint8_t>(size >> 16);
+        image[pvd + 86] = static_cast<std::uint8_t>(size >> 8);
+        image[pvd + 87] = static_cast<std::uint8_t>(size);
+    };
+    write_descriptor(16, 32);  // the first volume's descriptor
+    write_descriptor(32, 48);  // the second volume's, sixteen blocks early
+    // Markers the mapping tests look for.
+    image[32 * block_size + 64] = 'S';  // the second volume's descriptor
+    image[33 * block_size + 5] = 'T';   // the logical block 49
+    image[40 * block_size + 0] = 'B';   // the logical block 56
     return image;
 }
 
@@ -149,6 +185,56 @@ int main(int argc, char** argv) {
         check(threw, "a non-ISO image is rejected");
     }
 
+    // The logical sector reader: a single-volume image maps blocks straight
+    // through.
+    {
+        DiscSectors sectors(make_memory_disc_source(make_synthetic_iso()));
+        check(sectors.second_volume_lba() == 0
+                  && sectors.second_volume_shift() == 0,
+              "a single-volume image reports no second volume");
+        check(sectors.size() == 24 * block_size,
+              "a single-volume image keeps the file's logical size");
+        std::vector<std::uint8_t> descriptor(6, 0);
+        sectors.read(16 * block_size, descriptor);
+        check(descriptor[0] == 1 && descriptor[1] == 'C' && descriptor[5] == '1',
+              "a single-volume read lands on the file's own block");
+    }
+
+    // The dual-layer image: the second volume's logical blocks map sixteen
+    // blocks back into the file and the logical size grows by the shift.
+    {
+        DiscSectors sectors(
+            make_memory_disc_source(make_synthetic_dual_layer_image()));
+        check(sectors.second_volume_lba() == 32
+                  && sectors.second_volume_shift() == 16,
+              "the dual-layer image derives the second volume and its shift");
+        check(sectors.size() == 80 * block_size,
+              "the dual-layer logical size includes the left-out blocks");
+        std::vector<std::uint8_t> descriptor(6, 0);
+        sectors.read(48 * block_size, descriptor);
+        check(descriptor[0] == 1 && descriptor[1] == 'C' && descriptor[5] == '1',
+              "the second volume's descriptor reads through the mapping");
+        std::vector<std::uint8_t> marker(1, 0);
+        sectors.read(49 * block_size + 5, marker);
+        check(marker[0] == 'T',
+              "a second-volume block one past the descriptor maps");
+        sectors.read(56 * block_size, marker);
+        check(marker[0] == 'B', "a second-volume data block maps sixteen back");
+    }
+
+    // An image whose tail is not a second volume stops loudly.
+    {
+        std::vector<std::uint8_t> image = make_synthetic_iso();
+        image.resize(image.size() + 4 * block_size, 0);
+        bool threw = false;
+        try {
+            DiscSectors sectors(make_memory_disc_source(std::move(image)));
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw, "an unexplained tail is rejected");
+    }
+
     // The pinned ISO, when the caller named it: the real root, the real IRX
     // modules and the ELF magic at the start of one of them.
     if (argc > 1) {
@@ -175,6 +261,32 @@ int main(int argc, char** argv) {
                 image.file_size("cdrom0:\\GT4.VOL;1");
             check(volume_size == 2459502592ull,
                   "GT4.VOL has the size the directory record declares");
+
+            // The same image through the sector reader: the pinned disc is
+            // dual-layer and its second volume is stored sixteen blocks early.
+            {
+                DiscSectors sectors(open_disc_file(argv[1]));
+                const std::uint64_t raw_size = open_disc_file(argv[1])->size();
+                check(sectors.second_volume_lba() == 0x1418C0u
+                          && sectors.second_volume_shift() == 16,
+                      "the pinned disc's second volume is derived at 0x1418C0");
+                check(sectors.size() == raw_size + 16 * block_size,
+                      "the pinned disc's logical size adds the left-out blocks");
+                std::vector<std::uint8_t> descriptor(6, 0);
+                sectors.read(0x1418D0ull * block_size, descriptor);
+                check(descriptor[0] == 1 && descriptor[1] == 'C'
+                          && descriptor[5] == '1',
+                      "the pinned second descriptor reads at its logical block");
+                std::vector<std::uint8_t> record(34, 0);
+                sectors.read(0x1419C5ull * block_size, record);
+                check(record[0] == 0x30 && record[32] == 1 && record[33] == 0,
+                      "the pinned second root holds its self record");
+                std::vector<std::uint8_t> magic(4, 0);
+                sectors.read(0x1419CBull * block_size, magic);
+                check(magic[0] == 0xAD && magic[1] == 0x90 && magic[2] == 0xB9
+                          && magic[3] == 0xAC,
+                      "GT4L1.VOL's archive header reads at its logical block");
+            }
         } catch (const std::exception& error) {
             std::cerr << "pinned ISO check failed: " << error.what() << '\n';
             ++failures;

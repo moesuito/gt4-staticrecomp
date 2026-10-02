@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 21 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 22 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -158,15 +158,22 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   descriptor, LBA 0x105 the root directory) with the external GT4FS
   reference corroborating the archive format family; slice 21 then traces
   that walk (the driver reads the ISO's volume descriptor and root
-  directory and stops, so the library's parse of the root block is the next
-  frontier, and the pinned volume is confirmed as the uncompressed 2.2
-  variant the GT4FS packer also writes); `--threads`
+  directory and stops, and the pinned volume is confirmed as the
+  uncompressed 2.2 variant the GT4FS packer also writes); slice 22 then
+  finds the disc's **two volumes** (the live cache's blocks prove a second
+  ISO9660 volume at logical block 0x1418C0, stored sixteen blocks early in
+  the image) and answers the CD driver's volume protocol (RPC 2 registers
+  the descriptor with an index-weighted checksum; RPC 4 answers the
+  registered volume's size), so the boot mounts both layers, reads the
+  inner archives (version 3.1) and stops at an unaligned guest access while
+  parsing them; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 22 — the library's parse of the root directory block (the
-  scan at 0x00548E20 and the five-byte comparison at 0x00548E90) to see
-  what the driver expects after the ISO's volume descriptor and root
-  directory, and answer it from the disc.
+- Next: M30 slice 23 — the archive parser's frontier: the boot mounts both
+  volumes, reads the inner archives (version 3.1) and faults on an
+  unaligned guest access (pc 0x00462670, address 0x008475EB, after 83,783
+  services) while parsing that data; trace what the parser expected (the
+  streaming pool class at 0x00462670 and the pointer source 0x0044D740).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

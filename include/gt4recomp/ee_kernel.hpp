@@ -191,7 +191,9 @@ public:
     // service): its requests carry an LBA, a byte count and an EE
     // destination, and the model copies the sectors straight from the
     // image, exactly as the drive would (decision 0019). Null means no
-    // disc: reads answer nothing. The source must outlive the kernel.
+    // disc: reads answer nothing. The source must outlive the kernel. A
+    // DiscSectors source presents the logical blocks of a dual-layer disc;
+    // the requests name logical blocks and the source maps them.
     void set_disc_sectors(const DiscByteSource* sectors) noexcept;
     [[nodiscard]] const DiscByteSource* disc_sectors() const noexcept;
 
@@ -222,6 +224,25 @@ public:
     // unit tests.
     [[nodiscard]] std::uint32_t answer_disc_read(GuestState& state,
                                                  std::uint32_t request);
+    // Answers the game's CD driver volume registration (sid 0x50434456,
+    // RPC 2): the request is {block, checksum}, where the checksum is the
+    // library's index-weighted byte sum (0x00548D20) over the 0x800-byte
+    // block its scan accepted as the volume descriptor. The model recomputes
+    // it from the same image the reads come from and stops loudly on a
+    // mismatch, then records the block. Returns the bytes consumed. Exposed
+    // for unit tests.
+    [[nodiscard]] std::uint32_t answer_disc_volume(GuestState& state,
+                                                   std::uint32_t request);
+    // Answers the game's CD driver volume query (sid 0x50434456, RPC 4):
+    // the reply is {status, value}, where the value is the registered
+    // volume's "volume space size" read from the image (the engine stores
+    // it at [task+0xEC] and uses it as the logical block where the next
+    // volume begins, so the pinned disc's second layer is found through it).
+    // Without a disc or a registration the reply is zeros, which the library
+    // reports as a failure and the engine retries. Returns the reply's
+    // length in bytes. Exposed for unit tests.
+    [[nodiscard]] std::uint32_t answer_disc_volume_size(std::uint8_t* result,
+                                                        std::uint32_t capacity) const;
     [[nodiscard]] std::uint32_t sif_register_index_address(std::uint32_t index) const noexcept;
     // The IOP image path named by the last reset command, empty when none.
     [[nodiscard]] const std::string& sif_iop_image() const noexcept;
@@ -498,6 +519,9 @@ private:
     const DiscFiles* disc_files_ = nullptr;
     // The disc's raw byte source for the PCDV read service (decision 0019).
     const DiscByteSource* disc_sectors_ = nullptr;
+    // The volume descriptor block the game's CD library registered (RPC 2);
+    // zero when none has been registered.
+    std::uint32_t disc_volume_lba_ = 0;
     std::map<std::uint32_t, std::string> disc_files_by_handle_;
     std::uint32_t next_disc_handle_ = 1;
 };

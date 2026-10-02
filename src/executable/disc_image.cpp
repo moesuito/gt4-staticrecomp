@@ -106,6 +106,31 @@ std::uint16_t read_u16(const std::uint8_t* bytes) {
         | (static_cast<std::uint16_t>(bytes[1]) << 8);
 }
 
+// The drive's sector size: every read the disc services make covers a whole
+// number of these.
+constexpr std::uint32_t sector_size = 2048;
+
+// A primary volume descriptor is block 16 and starts with the type byte 1
+// followed by "CD001".
+bool is_primary_volume_descriptor(const std::uint8_t* block) {
+    return block[0] == 1 && std::memcmp(block + 1, volume_identifier, 5) == 0;
+}
+
+// The volume space size: ISO9660 stores 32-bit values twice, little-endian
+// at +0x50 and big-endian at +0x54. Both copies must agree.
+std::uint32_t read_volume_space_size(const std::uint8_t* block) {
+    const std::uint32_t little = read_u32(block + 0x50);
+    const std::uint32_t big = (static_cast<std::uint32_t>(block[0x54]) << 24)
+        | (static_cast<std::uint32_t>(block[0x55]) << 16)
+        | (static_cast<std::uint32_t>(block[0x56]) << 8)
+        | static_cast<std::uint32_t>(block[0x57]);
+    if (little != big) {
+        throw std::runtime_error(
+            "The volume descriptor's space size is not both-endian");
+    }
+    return little;
+}
+
 } // namespace
 
 std::unique_ptr<DiscByteSource> open_disc_file(const std::string& path) {
@@ -115,6 +140,103 @@ std::unique_ptr<DiscByteSource> open_disc_file(const std::string& path) {
 std::unique_ptr<DiscByteSource> make_memory_disc_source(
     std::vector<std::uint8_t> bytes) {
     return std::make_unique<MemoryDiscSource>(std::move(bytes));
+}
+
+DiscSectors::DiscSectors(std::unique_ptr<DiscByteSource> source)
+    : source_(std::move(source)) {
+    if (source_ == nullptr) {
+        throw std::runtime_error("The disc sector reader needs a byte source");
+    }
+    const std::uint64_t file_size = source_->size();
+    logical_size_ = file_size;
+    if (file_size < (volume_descriptor_block + 1) * sector_size) {
+        throw std::runtime_error(
+            "The disc image is too small for an ISO9660 volume descriptor");
+    }
+    std::vector<std::uint8_t> block(sector_size, 0);
+    source_->read(volume_descriptor_block * sector_size, block);
+    if (!is_primary_volume_descriptor(block.data())) {
+        throw std::runtime_error(
+            "The disc image's block 16 is not an ISO9660 primary volume "
+            "descriptor");
+    }
+    const std::uint32_t first_volume_size = read_volume_space_size(block.data());
+    const std::uint64_t file_blocks = file_size / sector_size;
+    if (file_blocks <= first_volume_size) {
+        // The file ends with the first volume: a single-layer image.
+        return;
+    }
+    // The file holds more than the first volume, so a second volume must
+    // explain the tail. Its descriptor sits at its own block 16, which the
+    // file stores in [first size, first size + 16]: leaving the second
+    // volume's system area out shifts it down by up to sixteen blocks.
+    for (std::uint32_t shift = 0; shift <= volume_descriptor_block; ++shift) {
+        const std::uint64_t file_block =
+            first_volume_size + volume_descriptor_block - shift;
+        if (file_block + 1 > file_blocks) {
+            continue;
+        }
+        source_->read(file_block * sector_size, block);
+        if (!is_primary_volume_descriptor(block.data())) {
+            continue;
+        }
+        const std::uint32_t second_volume_size =
+            read_volume_space_size(block.data());
+        const std::uint64_t logical_blocks = file_blocks + shift;
+        if (file_block + second_volume_size != logical_blocks) {
+            continue;
+        }
+        second_volume_lba_ = first_volume_size;
+        second_volume_shift_ = shift;
+        logical_size_ = logical_blocks * sector_size;
+        return;
+    }
+    throw std::runtime_error(
+        "The disc image's tail is not a second ISO9660 volume");
+}
+
+std::uint64_t DiscSectors::size() const {
+    return logical_size_;
+}
+
+std::uint32_t DiscSectors::second_volume_lba() const noexcept {
+    return second_volume_lba_;
+}
+
+std::uint32_t DiscSectors::second_volume_shift() const noexcept {
+    return second_volume_shift_;
+}
+
+std::uint32_t DiscSectors::file_lba(std::uint32_t lba) const noexcept {
+    // Logical blocks of the second volume map back by the number of its head
+    // blocks the file leaves out.
+    if (second_volume_lba_ != 0 && lba >= second_volume_lba_) {
+        return lba - second_volume_shift_;
+    }
+    return lba;
+}
+
+void DiscSectors::read(std::uint64_t offset,
+                       std::span<std::uint8_t> destination) const {
+    if (offset + destination.size() > logical_size_) {
+        throw std::runtime_error(
+            "A disc read leaves the image's logical blocks (offset "
+            + std::to_string(offset) + ", size "
+            + std::to_string(destination.size()) + ")");
+    }
+    // Map whole sectors so a read that starts mid-sector still lands on the
+    // right file blocks.
+    std::size_t done = 0;
+    while (done < destination.size()) {
+        const std::uint64_t position = offset + done;
+        const std::uint32_t lba = static_cast<std::uint32_t>(position / sector_size);
+        const std::uint32_t within = static_cast<std::uint32_t>(position % sector_size);
+        const std::size_t chunk = std::min<std::size_t>(
+            sector_size - within, destination.size() - done);
+        source_->read(static_cast<std::uint64_t>(file_lba(lba)) * sector_size + within,
+                      destination.subspan(done, chunk));
+        done += chunk;
+    }
 }
 
 DiscFileSliceSource::DiscFileSliceSource(const DiscFiles* files,

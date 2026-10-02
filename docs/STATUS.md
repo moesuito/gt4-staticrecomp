@@ -1,17 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 21 — the driver's disc walk and the
-volume's version family: with the CD read service in place the game's own
-driver reads the ISO's **primary volume descriptor (LBA 0x10)** and its
-**root directory (LBA 0x105)** and then stops, so the next slice reads the
-library's parse of the root block; the pinned volume is confirmed as the
-**uncompressed 2.2 variant** of the RoFS family the GT4FS packer also
-writes (none of its pages inflate; its pages are the intervals of the
-`count - 1` offset table at +0x20). No model behavior changed; the
-differential passes at 3,000 services (interpreter reference at 7,570,583
-instructions, full state identical). This is the first document to read in
-a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-02 after M30 slice 22 — the disc's two volumes and the CD
+driver's volume protocol: the live PCSX2 dump's block cache proved the game
+reads a **second ISO9660 volume** (its descriptor and root at logical
+blocks 0x1418D0/0x1419C5, byte-identical to the image's 0x1418C0/0x1419B5),
+the image stores that volume **sixteen blocks early** (its system area is
+left out), and the library's protocol settled: **RPC 2** registers the
+descriptor block with an index-weighted checksum and **RPC 4** answers the
+registered volume's "volume space size", which the engine uses as the next
+volume's start. The model now presents the disc's **logical blocks**
+(`DiscSectors` derives and validates the volumes from the image itself),
+answers both operations, and the boot **mounts both layers and reads the
+inner archives** (version 3.1), stopping at a new frontier: an unaligned
+guest access while parsing archive data. The differential passes at 3,000
+services (interpreter reference at 7,570,583 instructions, full state
+identical). This is the first document to read in a new session; it is kept
+current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -599,6 +603,29 @@ linked evidence documents.
   skip); the differential passes at 3,000 services with the interpreter
   reference at 7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice21-driver-disc-walk.md`).
+- M30 slice 22 (2026-10-02): **the disc's two volumes and the CD driver's
+  volume protocol** — the live dump's library cache holds four blocks
+  (keys 0x10, 0x105, 0x1418D0, 0x1419C5), each byte-identical to the
+  image's sectors at 0x10, 0x105, 0x1418C0 and 0x1419B5: the game reads a
+  **second ISO9660 volume** whose logical block 0 is 0x1418C0, and the
+  image stores it **sixteen blocks early** (its system area is left out).
+  The library's protocol: **RPC 2** registers the descriptor block with an
+  index-weighted byte checksum (only for the first volume), **RPC 4**
+  answers the registered volume's "volume space size" (which the engine
+  stores at [task+0xEC] and uses as the next volume's start). The model now
+  presents the disc's **logical blocks** (`DiscSectors` derives and
+  validates the volumes from the image, rejecting an unexplained tail and
+  passing single-volume images through), answers RPC 2 by recomputing the
+  checksum from the served image (a mismatch stops loudly) and RPC 4 with
+  the registered volume's size. **The boot now mounts both layers and reads
+  the inner archives** (magic 0xACB990AD, version 3.1) — the layer-1 reads
+  land exactly on the live cache's blocks — and stops at a new frontier: a
+  guest fault (an unaligned word access at 0x008475EB, pc 0x00462670, after
+  83,783 services) while the engine parses archive data. CTest 34/34;
+  Python 73 (67 run, 6 skip); the differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical (`docs/reverse-engineering/m30-slice22-dual-layer-and-pcdv-volume.md`,
+  `docs/decisions/0020-dual-layer-disc-and-pcdv-volume-ops.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -608,12 +635,13 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the library's parse of the root
-  directory block** — the driver reads the ISO's volume descriptor and root
-  directory and then stops; the next slice reads the library's parse
-  (0x00548E20 onward, including the five-byte comparison at 0x00548E90
-  whose target 0x006D83D8 is not written by any address-built store) to
-  find what it expects next, and answers it from the disc.
+- Next technical milestone work: **the archive parser's frontier** — the
+  boot mounts both volumes and reads the inner archives (version 3.1) and
+  then faults on an unaligned guest access (pc 0x00462670, address
+  0x008475EB, after 83,783 services) while parsing that data; the next
+  slice traces what the parser expected (the streaming pool class at
+  0x00462670 and the pointer source 0x0044D740) and answers it from the
+  model or the disc.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

@@ -864,6 +864,70 @@ int main() {
               "a machine without a disc answers zeros");
     }
 
+    // The volume registration (RPC 2) and the volume query (RPC 4): the
+    // model recomputes the library's checksum over the same block it serves
+    // and answers the registered volume's "volume space size" (decision
+    // 0020).
+    {
+        std::vector<std::uint8_t> descriptor(2048, 0);
+        descriptor[0] = 1;
+        std::memcpy(descriptor.data() + 1, "CD001", 5);
+        descriptor[0x50] = 0x00;
+        descriptor[0x51] = 0x01;  // the volume space size 0x100
+        std::uint32_t checksum = 0;
+        for (std::uint32_t index = 0; index < descriptor.size(); ++index) {
+            checksum += static_cast<std::uint32_t>(descriptor[index]) * (index + 1);
+        }
+
+        class FakeVolume final : public gt4recomp::DiscByteSource {
+        public:
+            explicit FakeVolume(std::vector<std::uint8_t> block)
+                : block_(std::move(block)) {}
+            [[nodiscard]] std::uint64_t size() const override {
+                return 32 * 2048;
+            }
+            void read(std::uint64_t offset,
+                      std::span<std::uint8_t> destination) const override {
+                std::fill(destination.begin(), destination.end(), 0);
+                if (offset == 16 * 2048 && destination.size() >= block_.size()) {
+                    std::memcpy(destination.data(), block_.data(), block_.size());
+                }
+            }
+
+        private:
+            std::vector<std::uint8_t> block_;
+        };
+
+        Kernel kernel;
+        GuestState state = make_state();
+        FakeVolume volume(descriptor);
+        kernel.set_disc_sectors(&volume);
+        constexpr std::uint32_t request = 0x00100800;
+        state.memory().write_word(request + 0, 16);  // the descriptor block
+        state.memory().write_word(request + 4, checksum);
+        check(kernel.answer_disc_volume(state, request) == 2048,
+              "the volume registration accepts the library's checksum");
+        std::uint8_t reply[8] = {};
+        check(kernel.answer_disc_volume_size(reply, sizeof reply) == 8
+                  && reply[0] == 1 && reply[1] == 0 && reply[2] == 0
+                  && reply[3] == 0 && reply[4] == 0x00 && reply[5] == 0x01
+                  && reply[6] == 0 && reply[7] == 0,
+              "the volume query answers the registered volume's size");
+        state.memory().write_word(request + 4, checksum + 1);
+        bool threw = false;
+        try {
+            (void)kernel.answer_disc_volume(state, request);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw, "a checksum the image does not produce stops loudly");
+        std::uint8_t none[8] = {};
+        Kernel empty_kernel;
+        check(empty_kernel.answer_disc_volume_size(none, sizeof none) == 8
+                  && none[0] == 0 && none[4] == 0,
+              "a machine without a disc answers no volume");
+    }
+
     // A run with no runnable thread is the NoRunnableThread outcome.
     {
         Kernel kernel;

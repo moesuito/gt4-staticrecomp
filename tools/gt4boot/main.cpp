@@ -331,17 +331,28 @@ int wmain(int argc, wchar_t* argv[]) {
         // like a console without a disc.
         std::unique_ptr<gt4recomp::DiscByteSource> disc_source;
         std::unique_ptr<gt4recomp::Iso9660Image> disc_image;
-        std::unique_ptr<gt4recomp::DiscByteSource> disc_sectors;
+        std::unique_ptr<gt4recomp::DiscSectors> disc_sectors;
         if (!disc_path.empty()) {
             disc_source = gt4recomp::open_disc_file(disc_path.string());
             disc_image = std::make_unique<gt4recomp::Iso9660Image>(
                 std::move(disc_source));
             // The game's own CD driver reads raw sectors, so the tool keeps
-            // a second handle on the image for it.
-            disc_sectors = gt4recomp::open_disc_file(disc_path.string());
+            // a second handle on the image for it. The sector source derives
+            // the disc's volumes, so a dual-layer disc's second volume is
+            // found by its logical blocks (decision 0020).
+            disc_sectors = std::make_unique<gt4recomp::DiscSectors>(
+                gt4recomp::open_disc_file(disc_path.string()));
             std::cout << "disc: " << disc_path.string() << " ("
                       << disc_image->directory_names("").size()
-                      << " root entries)\n";
+                      << " root entries";
+            if (disc_sectors->second_volume_lba() != 0) {
+                std::cout << "; a second volume begins at logical block 0x"
+                          << std::hex << disc_sectors->second_volume_lba()
+                          << std::dec << ", stored "
+                          << disc_sectors->second_volume_shift()
+                          << " blocks early";
+            }
+            std::cout << ")\n";
         }
 
         Kernel driver_kernel;

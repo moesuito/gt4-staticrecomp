@@ -79,6 +79,47 @@ private:
     std::uint64_t size_ = 0;
 };
 
+// Presents a disc image's sectors by the logical block addresses the
+// console's drive reports. The pinned disc is dual-layer and carries two
+// ISO9660 volumes: the first volume's descriptor (logical block 16) declares
+// its "volume space size" (ISO9660's both-endian field at +0x50), which is
+// also the logical block where the second volume begins; the second volume's
+// own descriptor then sits at that block plus 16. The image file stores the
+// second volume from the block the file actually holds it in — for the
+// pinned image sixteen blocks before its logical place, because the file
+// leaves the second volume's system area (its first sixteen blocks) out.
+// The mapping is derived and verified at construction: the descriptor must
+// be a primary volume descriptor, and the two volumes' sizes must tile the
+// image's logical blocks exactly (the second volume's descriptor block plus
+// its size equals the file's blocks plus the shift). An image whose file
+// ends with the first volume stays single, and an unexplained tail stops
+// loudly instead of guessing.
+class DiscSectors final : public DiscByteSource {
+public:
+    // Parses the first volume's descriptor and derives the second volume;
+    // throws std::runtime_error when the image is not ISO9660 or its tail is
+    // not a second volume.
+    explicit DiscSectors(std::unique_ptr<DiscByteSource> source);
+
+    // The logical image size in bytes (the file's bytes plus the shift).
+    [[nodiscard]] std::uint64_t size() const override;
+    void read(std::uint64_t offset,
+              std::span<std::uint8_t> destination) const override;
+
+    // The logical block where the second volume begins and how many of its
+    // head blocks the file leaves out; both zero for a single volume.
+    [[nodiscard]] std::uint32_t second_volume_lba() const noexcept;
+    [[nodiscard]] std::uint32_t second_volume_shift() const noexcept;
+
+private:
+    [[nodiscard]] std::uint32_t file_lba(std::uint32_t lba) const noexcept;
+
+    std::unique_ptr<DiscByteSource> source_;
+    std::uint64_t logical_size_ = 0;
+    std::uint32_t second_volume_lba_ = 0;
+    std::uint32_t second_volume_shift_ = 0;
+};
+
 // ISO9660 image reader. The pinned disc is a plain ISO9660 volume ("GRANTU-
 // RISMO4", 2048-byte blocks) whose root holds SYSTEM.CNF, SCUS_973.28,
 // CORE.GT4, IOPRP300.IMG, IRX/, NET/, EPSON/ and GT4.VOL. Lookups walk the
