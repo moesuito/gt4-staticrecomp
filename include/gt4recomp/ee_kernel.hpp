@@ -150,12 +150,18 @@ public:
     // true while the handler context is live. False when none is pending.
     [[nodiscard]] bool start_interrupt(GuestState& state);
 
+    // A device (a DMA channel, a timer) reports a completion: the INTC
+    // cause joins the pending queue and the driver delivers it at the next
+    // unit boundary.
+    void raise_interrupt(std::uint32_t cause);
+
     // The idle-time interrupt source: when no thread can run, the model
-    // delivers one VBlank interrupt (the periodic source of a real console)
-    // if the game registered a handler for it. The handler may wake
-    // threads; its return re-dispatches. A bounded budget of consecutive
-    // idle interrupts without a runnable thread stops the model instead of
-    // spinning forever.
+    // advances the enabled EE timers by one frame (queueing their compare
+    // interrupts) and delivers one VBlank interrupt (the periodic source of
+    // a real console) if the game registered a handler for it. The handlers
+    // may wake threads; their return re-dispatches. A bounded budget of
+    // consecutive idle interrupts without a runnable thread stops the model
+    // instead of spinning forever.
     [[nodiscard]] bool deliver_idle_interrupt(GuestState& state);
 
     // Model introspection for tests and tools.
@@ -180,6 +186,7 @@ public:
     [[nodiscard]] const std::vector<KernelThread>& threads() const noexcept;
     [[nodiscard]] const std::vector<KernelSemaphore>& semaphores() const noexcept;
     [[nodiscard]] const std::vector<KernelInterruptHandler>& interrupt_handlers() const noexcept;
+    [[nodiscard]] const std::vector<KernelInterruptHandler>& dmac_handlers() const noexcept;
     // The guest handler a SetSyscall installed for the number, or zero.
     [[nodiscard]] std::uint32_t patched_handler(std::uint32_t number) const noexcept;
     // The OSD configuration word the services read and write.
@@ -208,7 +215,25 @@ public:
     // consecutive idle interrupts without a runnable thread.
     static constexpr std::uint32_t vblank_cause = 2;
     static constexpr std::uint32_t intc_stat_physical = 0x1000F000;
-    static constexpr std::uint32_t idle_interrupt_budget = 60;
+    static constexpr std::uint32_t idle_interrupt_budget = 6000;
+    // The EE timers: four register blocks at 0x10000000 + index * 0x800,
+    // COUNT at +0x00, MODE at +0x10, COMP at +0x20. The model stores what
+    // the guest writes (TimerUnit) and, at each idle frame, advances an
+    // enabled timer's count by one frame of its clock source and raises its
+    // compare interrupt (INTC causes 9/10/11/12 for T0/T1/T2/T3).
+    static constexpr std::uint32_t timer_window_physical = 0x10000000;
+    static constexpr std::uint32_t timer_stride = 0x800;
+    static constexpr std::uint32_t timer_count_offset = 0x00;
+    static constexpr std::uint32_t timer_mode_offset = 0x10;
+    static constexpr std::uint32_t timer_compare_offset = 0x20;
+    static constexpr std::uint32_t timer_count_enable = 0x00000080;  // CUE
+    static constexpr std::uint32_t timer_compare_enable = 0x00000100;  // CMPE
+    static constexpr std::uint32_t timer_overflow_enable = 0x00000200;  // OVFE
+    static constexpr std::uint32_t timer_compare_flag = 0x00000400;  // EQUF
+    static constexpr std::uint32_t timer_overflow_flag = 0x00000800;  // OVFF
+    // The DMAC's status register: one bit per channel; a completion sets the
+    // channel's bit and the handler clears it by writing back.
+    static constexpr std::uint32_t dmac_stat_physical = 0x1000E010;
     // The SIF register block: hardware indices 1-4 map to
     // SIF_MSCOM/SMCOM/MSFLG/SMFLG at 0x1000F200 + (index-1)*0x10; the
     // software system registers (0x80000000+) live in the kernel. The
@@ -264,14 +289,20 @@ private:
     // Seeds the model's initialized-IOP register values the first time a SIF
     // service runs.
     void ensure_sif_ready(GuestState& state);
-    // Appends a pending SIF interrupt; the driver delivers it through
+    // Appends a pending interrupt cause; the driver delivers it through
     // start_interrupt at the next unit boundary.
     void queue_interrupt(std::uint32_t cause);
+    // Appends a pending DMAC channel completion; the channel's registered
+    // handlers run with the channel's status bit set.
+    void queue_dmac_completion(std::uint32_t channel);
     // Saves the live context on the deferred stack and installs the first
     // handler's frame; shared by the queued and idle interrupt sources. The
     // handler chain runs each registered handler for the cause in turn.
     bool inject_interrupt(GuestState& state, std::uint32_t cause,
                           std::vector<std::uint32_t> handlers);
+    // Advances the enabled EE timers by one idle frame and queues their
+    // compare interrupts (see the constants above).
+    void advance_timers(GuestState& state);
     // Installs one handler call frame over the saved interrupted context.
     void install_handler_frame(GuestState& state, std::uint32_t cause,
                                std::uint32_t handler,
@@ -355,12 +386,19 @@ private:
         RegisterContext context;
     };
     std::vector<DeferredCall> deferred_calls_;
-    std::vector<KernelInterruptHandler> interrupt_handlers_;
     std::uint32_t next_handler_id_ = 1;
     // The SIF layer: software system registers, the model IOP's pending
     // interrupts and the transfer id handed out by SifSetDma.
     std::map<std::uint32_t, std::uint32_t> sif_software_registers_;
-    std::vector<std::uint32_t> interrupt_queue_;
+    // One pending interrupt: an INTC cause or a DMAC channel completion.
+    struct InterruptRequest {
+        enum class Kind { Intc, Dmac };
+        Kind kind = Kind::Intc;
+        std::uint32_t number = 0;
+    };
+    std::vector<InterruptRequest> interrupt_queue_;
+    std::vector<KernelInterruptHandler> interrupt_handlers_;  // INTC causes
+    std::vector<KernelInterruptHandler> dmac_handlers_;       // DMA channels
     std::uint32_t next_dma_id_ = 1;
     bool sif_ready_ = false;
     // The EE's SIFCMD receive buffer, learned from the init handshake; the

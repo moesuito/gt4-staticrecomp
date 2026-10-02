@@ -1,12 +1,13 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 8 — the model IOP's RPC layer, the
-peripheral windows and idle VBlank delivery: the boot answers the RPC binds
-and calls, survives the IOP reset, wakes its threads under a VBlank source,
-and reaches the game's running state (3,000 services handled) with the state
-identical to the interpreter at 7,515,389 instructions. This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 9 — timer ticks and DMA channel
+completions: the game's TIM2 handler runs every idle frame and reprograms
+COMP, the VIF1/GIF chains complete, the SIF replies dispatch through the DMAC
+channel 5 path, and the differential passes at 3,000 services with the
+interpreter reference at 7,508,945 instructions. The open frontier is the
+game's delay/software-timer callback chain. This is the first document to
+read in a new session; it is kept current as work proceeds. Details live in
+the linked evidence documents.
 
 ## Where we are
 
@@ -359,6 +360,20 @@ Details live in the linked evidence documents.
   6 skip)
   (`docs/reverse-engineering/m30-slice8-rpc-and-vblank.md`,
   `docs/decisions/0010-rpc-vblank-and-device-windows.md`).
+- M30 slice 9 (2026-10-02): **timer ticks and DMA channel completions at
+  idle** — enabled timers advance one frame of their clock source per idle
+  interrupt, set the compare flag and raise their INTC cause (T0-T3 =
+  9-12); the VIF0/VIF1/GIF DMA channels complete a started transfer at once
+  (STR clears; TIE raises causes 4/5/9); the INTC and DMAC handler tables
+  are separate and the model IOP's SIF replies dispatch through the DMAC
+  channel 5 path with the DMAC status bit, matching `sceSifInitCmd`; the
+  idle budget rises to 6,000. **The game's TIM2 handler now runs every idle
+  frame and reprograms COMP; the differential passes at 3,000 services with
+  the interpreter reference at 7,508,945 instructions and the full state
+  identical.** The open frontier is the game's delay/software-timer callback
+  chain. CTest 32/32; Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice9-timer-and-dma-completions.md`,
+  `docs/decisions/0011-timer-ticks-and-dma-completions.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -368,13 +383,14 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the game's first real IOP service call** —
-  the boot now runs the game's runtime under VBlank-driven wakeups; the
-  model IOP answers the version query and empty results for everything else.
-  The next wall is the first RPC call whose reply the game acts on (its file
-  or disc loading path), which needs per-function evidence from the game's
-  client code and the live emulator. Then a periodic tick that can interrupt
-  long-running computation, not only idle waits.
+- Next technical milestone work: **the game's delay/software-timer callback
+  chain** — the waiters are inside the delay helper (0x005AED18) and the
+  library's semaphore-signaling callbacks are identified (0x005BEC94 and
+  neighbors), but the delay node never enters the active list at the stop.
+  The next experiment is to find which library path links and fires the
+  delay node (or the real waker of the delay semaphores) and satisfy it from
+  the model's timer/event sources. Then the first RPC call whose reply the
+  game acts on.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -424,7 +440,7 @@ Details live in the linked evidence documents.
   step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
-  module entries (correctness first; 285,290 instructions in the boot run).
+  module entries (correctness first; 278,120 instructions in the boot run).
   The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
 - **The boot now reaches the game's running state**: the model IOP answers
@@ -432,21 +448,21 @@ Details live in the linked evidence documents.
   constant; empty results otherwise), survives the IOP reset, and the
   **idle VBlank source** (decision 0010) wakes the game's threads. The run
   hits the 3,000-service limit inside the runtime with the state identical
-  to the interpreter at 7,515,389 instructions. With a larger limit
-  (`--services 12000 --threads`) the model stops at 3,645 services as a
-  **no-runnable-thread**: all three threads wait on semaphores (main on 36,
-  the RPC thread on 3, the loader on 37) and the idle VBlank handlers keep
-  running without waking them. The recorded next hypothesis is a **DMA
-  completion interrupt** (VIF1/GIF/SIF) that the model never raises: the
-  channels are storage, so a started transfer never completes and the
-  handler that would signal those semaphores never fires.
+  to the interpreter at 7,508,945 instructions. The **timer tick and DMA
+  completion** sources of decision 0011 now run the game's TIM2 handler
+  every idle frame (it reprograms COMP) and complete the VIF1/GIF chains.
+  The remaining frontier: all three threads wait on semaphores created by
+  the game's delay helper (main on 36, the RPC thread on 3, the loader on
+  37); the library's semaphore-signaling callbacks are identified
+  (0x005BEC94 and neighbors) but the delay node never enters the library's
+  active list at the stop.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs three threads under VBlank wakeups. No
   timer preemption is modeled (decision 0005); equal-priority dispatch is
   creation order, not the kernel's rotation; interrupts are delivered only
   when every thread waits, never during a long-running computation, and the
-  60-interrupt idle budget is a guard rather than a modeled frequency.
+  6,000-interrupt idle budget is a guard rather than a modeled frequency.
 - The `jr ra` fall-through bug found in the fifth slice shows the limit of
   hand-picked differential modules: widen the verified surface
   (`gt4boot --compare-interpreter`) when new control-flow shapes appear.
@@ -456,17 +472,13 @@ Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 9: **DMA channel completions** — the game waits on semaphores
-   that a completion interrupt should signal (see the open items). Model a
-   channel start (CHCR's STR bit) as an immediate completion: clear the bit
-   and raise the channel's completion interrupt (cause or DMAC handler), so
-   the waiting threads wake. Evidence: which channels the game starts and
-   which handler signals which semaphore, from the service trace and the
-   handler disassembly; the acceptance evidence is
-   `gt4boot --compare-interpreter` past 3,645 services with the state
-   identical.
+1. M30 slice 10: **the game's delay/software-timer callback chain** — find
+   which library path links and fires the delay node (or the real waker of
+   the delay semaphores) and satisfy it from the model's timer/event
+   sources; the acceptance evidence is `gt4boot --compare-interpreter` past
+   the sema-36/37 waits with the state identical.
 2. A periodic tick that can interrupt long-running computation, not only
-   idle waits (the VBlank source is idle-triggered today).
+   idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 4. The M9-M30 lessons and retroactive M2-M5 notes if useful.
@@ -521,4 +533,7 @@ Details live in the linked evidence documents.
   slice 8 is the model IOP's RPC layer with the peripheral windows and idle
   VBlank delivery (the boot reaches the game's running state; 3,000
   services handled with the state identical to the interpreter at 7,515,389
-  instructions).
+  instructions), and slice 9 is the timer ticks and DMA channel completions
+  (the game's TIM2 handler runs every idle frame and the VIF1/GIF chains
+  complete; the differential passes at 3,000 services with the interpreter
+  reference at 7,508,945 instructions).

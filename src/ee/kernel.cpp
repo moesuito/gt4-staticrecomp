@@ -243,6 +243,10 @@ const std::vector<KernelInterruptHandler>& Kernel::interrupt_handlers() const no
     return interrupt_handlers_;
 }
 
+const std::vector<KernelInterruptHandler>& Kernel::dmac_handlers() const noexcept {
+    return dmac_handlers_;
+}
+
 ServiceOutcome Kernel::setup_thread(GuestState& state) {
     // SetupThread(gp, stack, stack_size, args, root): the crt0 calls this
     // before any thread exists to register the current execution as the root
@@ -926,9 +930,23 @@ ServiceOutcome Kernel::add_intc_handler(GuestState& state) {
 }
 
 ServiceOutcome Kernel::add_dmac_handler(GuestState& state) {
-    // AddDmacHandler has the same shape as AddIntcHandler; the model keeps
-    // both registrations in one list because neither can fire.
-    return add_intc_handler(state);
+    // AddDmacHandler(channel, handler, next): the channel's completions are
+    // dispatched from the DMAC's own list, separate from the INTC causes.
+    const std::uint32_t channel = state.read_gpr32(4);
+    const std::uint32_t handler = state.read_gpr32(5);
+    const std::uint32_t argument = state.read_gpr32(7);
+    if (handler == 0 || channel >= 32) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    KernelInterruptHandler registration;
+    registration.id = next_handler_id_++;
+    registration.cause = channel;
+    registration.handler = handler;
+    registration.argument = argument;
+    dmac_handlers_.push_back(registration);
+    state.write_gpr64(2, registration.id);
+    return ServiceOutcome::Handled;
 }
 
 ServiceOutcome Kernel::remove_intc_handler(GuestState& state) {
@@ -947,7 +965,18 @@ ServiceOutcome Kernel::remove_intc_handler(GuestState& state) {
 }
 
 ServiceOutcome Kernel::remove_dmac_handler(GuestState& state) {
-    return remove_intc_handler(state);
+    const std::uint32_t channel = state.read_gpr32(4);
+    const std::uint32_t id = state.read_gpr32(5);
+    for (auto entry = dmac_handlers_.begin(); entry != dmac_handlers_.end();
+         ++entry) {
+        if (entry->id == id && entry->cause == channel) {
+            dmac_handlers_.erase(entry);
+            state.write_gpr64(2, 0);
+            return ServiceOutcome::Handled;
+        }
+    }
+    write_error(state);
+    return ServiceOutcome::Handled;
 }
 
 ServiceOutcome Kernel::enable_intc(GuestState& state) {
@@ -1002,18 +1031,54 @@ void Kernel::ensure_sif_ready(GuestState& state) {
 }
 
 void Kernel::queue_interrupt(std::uint32_t cause) {
-    interrupt_queue_.push_back(cause);
+    InterruptRequest request;
+    request.kind = InterruptRequest::Kind::Intc;
+    request.number = cause;
+    interrupt_queue_.push_back(request);
+}
+
+void Kernel::queue_dmac_completion(std::uint32_t channel) {
+    InterruptRequest request;
+    request.kind = InterruptRequest::Kind::Dmac;
+    request.number = channel;
+    interrupt_queue_.push_back(request);
+}
+
+void Kernel::raise_interrupt(std::uint32_t cause) {
+    queue_interrupt(cause);
 }
 
 bool Kernel::start_interrupt(GuestState& state) {
     if (interrupt_queue_.empty()) {
         return false;
     }
-    const std::uint32_t cause = interrupt_queue_.front();
+    const InterruptRequest request = interrupt_queue_.front();
     interrupt_queue_.erase(interrupt_queue_.begin());
     std::vector<std::uint32_t> handlers;
+    if (request.kind == InterruptRequest::Kind::Dmac) {
+        for (const KernelInterruptHandler& registration : dmac_handlers_) {
+            if (registration.cause == request.number) {
+                handlers.push_back(registration.handler);
+            }
+        }
+        if (handlers.empty()) {
+            // No handler registered for the channel: like the hardware, the
+            // completion happens and nothing is called.
+            return false;
+        }
+        // The DMAC status register carries one bit per channel; the handler
+        // reads it to tell the sources apart and clears it by writing back.
+        if (request.number < 32
+            && state.memory().contains(dmac_stat_physical, 4)) {
+            state.memory().write_word(
+                dmac_stat_physical,
+                state.memory().read_word(dmac_stat_physical)
+                    | (1u << request.number));
+        }
+        return inject_interrupt(state, request.number, std::move(handlers));
+    }
     for (const KernelInterruptHandler& registration : interrupt_handlers_) {
-        if (registration.cause == cause) {
+        if (registration.cause == request.number) {
             handlers.push_back(registration.handler);
         }
     }
@@ -1022,7 +1087,13 @@ bool Kernel::start_interrupt(GuestState& state) {
         // happens; the interrupt is dropped and the model records nothing.
         return false;
     }
-    return inject_interrupt(state, cause, std::move(handlers));
+    // The INTC status register holds the pending cause bits.
+    if (request.number < 32 && state.memory().contains(intc_stat_physical, 4)) {
+        state.memory().write_word(
+            intc_stat_physical,
+            state.memory().read_word(intc_stat_physical) | (1u << request.number));
+    }
+    return inject_interrupt(state, request.number, std::move(handlers));
 }
 
 bool Kernel::deliver_idle_interrupt(GuestState& state) {
@@ -1031,24 +1102,57 @@ bool Kernel::deliver_idle_interrupt(GuestState& state) {
         // nothing; the driver reports the no-runnable-thread boundary.
         return false;
     }
-    std::vector<std::uint32_t> handlers;
+    advance_timers(state);
+    // The frame's VBlank joins the queue when a handler is registered.
     for (const KernelInterruptHandler& registration : interrupt_handlers_) {
         if (registration.cause == vblank_cause) {
-            handlers.push_back(registration.handler);
+            queue_interrupt(vblank_cause);
+            break;
         }
     }
-    if (handlers.empty()) {
+    if (interrupt_queue_.empty()) {
         return false;
     }
     ++idle_interrupts_;
-    // The INTC status register holds the pending cause bits; the handler
-    // reads it to tell the sources apart and clears it by writing back.
-    if (state.memory().contains(intc_stat_physical, 4)) {
-        state.memory().write_word(
-            intc_stat_physical,
-            state.memory().read_word(intc_stat_physical) | (1u << vblank_cause));
+    return start_interrupt(state);
+}
+
+void Kernel::advance_timers(GuestState& state) {
+    // One frame of the timer's clock source: BUSCLK, BUSCLK/16, BUSCLK/256
+    // and the horizontal blank rate (NTSC) for CLKS values 0-3.
+    static constexpr std::uint32_t frame_clocks[4] = {
+        2457600u,  // 147456000 / 60
+        153600u,   // 147456000 / 16 / 60
+        9600u,     // 147456000 / 256 / 60
+        262u,      // 15734 / 60
+    };
+    for (std::uint32_t index = 0; index < 4; ++index) {
+        const std::uint32_t base = timer_window_physical + index * timer_stride;
+        if (!state.memory().contains(base + timer_mode_offset, 4)) {
+            continue;  // the timer window is not mapped
+        }
+        std::uint32_t mode = state.memory().read_word(base + timer_mode_offset);
+        if ((mode & timer_count_enable) == 0) {
+            continue;  // not counting
+        }
+        const std::uint32_t count = state.memory().read_word(base + timer_count_offset);
+        const std::uint32_t step = frame_clocks[mode & 3u];
+        const std::uint64_t next = static_cast<std::uint64_t>(count) + step;
+        state.memory().write_word(base + timer_count_offset,
+                                  static_cast<std::uint32_t>(next));
+        // The model fires one compare per idle frame (no cycle-accurate
+        // clock); the compare flag tells the handler a period elapsed.
+        mode |= timer_compare_flag;
+        bool fires = (mode & timer_compare_enable) != 0;
+        if (next > 0xFFFFFFFFull) {
+            mode |= timer_overflow_flag;
+            fires = fires || (mode & timer_overflow_enable) != 0;
+        }
+        state.memory().write_word(base + timer_mode_offset, mode);
+        if (fires) {
+            queue_interrupt(9u + index);
+        }
     }
-    return inject_interrupt(state, vblank_cause, std::move(handlers));
 }
 
 bool Kernel::inject_interrupt(GuestState& state, std::uint32_t cause,
@@ -1134,7 +1238,7 @@ void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
     state.memory().write_word(reply_buffer + 12, 0);  // opt
     state.memory().write_word(reply_buffer + 16, sif_sreg_rpcinit);
     state.memory().write_word(reply_buffer + 20, 1);
-    queue_interrupt(sif_channel_dmac);
+    queue_dmac_completion(sif_channel_dmac);
 }
 
 Kernel::SifRpcServer& Kernel::find_or_create_sif_server(std::uint32_t sid) {
@@ -1204,7 +1308,7 @@ void Kernel::answer_sif_rpc_bind(GuestState& state, std::uint32_t command_buffer
     for (std::uint32_t offset = 48; offset < 64; offset += 4) {
         state.memory().write_word(ee_command_buffer_ + offset, 0);
     }
-    queue_interrupt(sif_channel_dmac);
+    queue_dmac_completion(sif_channel_dmac);
 }
 
 void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer,
@@ -1260,7 +1364,7 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     for (std::uint32_t offset = 48; offset < 64; offset += 4) {
         state.memory().write_word(ee_command_buffer_ + offset, 0);
     }
-    queue_interrupt(sif_channel_dmac);
+    queue_dmac_completion(sif_channel_dmac);
 }
 
 void Kernel::answer_sif_reset(GuestState& state, std::uint32_t command_buffer,
@@ -1409,3 +1513,6 @@ ServiceOutcome Kernel::sif_set_dma(GuestState& state) {
 }
 
 } // namespace gt4recomp::ee
+
+
+

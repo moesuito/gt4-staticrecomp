@@ -64,4 +64,57 @@ std::uint32_t RegisterBank::size() const noexcept {
     return size_;
 }
 
+DmaChannel::DmaChannel(std::uint32_t base, std::uint32_t size,
+                       std::uint32_t cause,
+                       std::function<void(std::uint32_t)> raise)
+    : bank_(base, size), base_(base), cause_(cause), raise_(std::move(raise)) {
+    if (!raise_) {
+        throw std::runtime_error("A DMA channel needs a completion callback");
+    }
+}
+
+void DmaChannel::map_into(GuestMemory& memory) {
+    memory.map_mmio(
+        base_, bank_.size(),
+        [this](std::uint32_t address, std::size_t width) {
+            return read_register(address, width);
+        },
+        [this](std::uint32_t address, std::size_t width, std::uint32_t value) {
+            write_register(address, width, value);
+        });
+}
+
+std::uint32_t DmaChannel::register_value(std::uint32_t address) const {
+    return bank_.register_value(address);
+}
+
+std::uint32_t DmaChannel::base() const noexcept {
+    return base_;
+}
+
+std::uint32_t DmaChannel::size() const noexcept {
+    return bank_.size();
+}
+
+std::uint32_t DmaChannel::read_register(std::uint32_t address,
+                                        std::size_t width) const {
+    return bank_.read_register(address, width);
+}
+
+void DmaChannel::write_register(std::uint32_t address, std::size_t width,
+                                std::uint32_t value) {
+    if (address == base_ + chcr_offset && width == 4
+        && (value & start_bit) != 0) {
+        // The model has no transfer engine: a started transfer completes at
+        // once. The start bit clears so polling code sees it finish; the
+        // transfer interrupt, when enabled, reports the channel's cause.
+        bank_.write_register(address, width, value & ~start_bit);
+        if ((value & interrupt_enable) != 0) {
+            raise_(cause_);
+        }
+        return;
+    }
+    bank_.write_register(address, width, value);
+}
+
 } // namespace gt4recomp::ee

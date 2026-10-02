@@ -395,6 +395,31 @@ int main() {
               "SetGsCrt is accepted");
     }
 
+    // The idle source advances an enabled timer by one frame of its clock
+    // and raises its compare interrupt.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        RegisterBank timers(0x10000000u, 0x2000u);
+        timers.map_into(state.memory());
+        state.memory().write_word(0x10001010u, 0x00000182u);  // CLKS=2, CUE, CMPE
+        state.write_gpr32(4, 11);  // INTC_TIM2
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(6, 0xFFFFFFFFu);
+        state.write_gpr32(7, 0);
+        kernel.add_intc_handler(state);
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.deliver_idle_interrupt(state),
+              "the timer interrupt starts");
+        check(state.pc() == 0x00100400u && state.read_gpr32(4) == 11
+                  && state.memory().read_word(0x10001000u) == 9600u
+                  && (state.memory().read_word(0x10001010u) & 0x400u) != 0,
+              "the timer advanced one frame and set the compare flag");
+    }
+
     // The idle interrupt source: when no thread can run, the model raises a
     // VBlank, records it in INTC_STAT, runs its handler chain and restores
     // the interrupted context; the budget bounds deliveries that change
@@ -462,6 +487,19 @@ int main() {
         check(kernel.remove_intc_handler(state) == ServiceOutcome::Handled
                   && state.read_gpr32(2) == 0xFFFFFFFFu,
               "removing an unknown handler fails");
+        // The DMAC registrations live in their own list, keyed by channel.
+        state.write_gpr32(4, 5);  // channel: SIF0
+        state.write_gpr32(5, 0x005B5678);
+        check(kernel.add_dmac_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 2
+                  && kernel.dmac_handlers().size() == 1
+                  && kernel.dmac_handlers()[0].cause == 5
+                  && kernel.interrupt_handlers().empty(),
+              "AddDmacHandler stores the registration separately");
+        state.write_gpr32(5, 2);
+        check(kernel.remove_dmac_handler(state) == ServiceOutcome::Handled
+                  && kernel.dmac_handlers().empty(),
+              "RemoveDmacHandler removes the registration");
     }
 
     // The SIF layer: the register round trip, the model IOP's SIFCMD init
@@ -475,6 +513,8 @@ int main() {
         sif_registers.map_into(state.memory());
         RegisterBank sif0(0x1000C000u, 0x100u);
         sif0.map_into(state.memory());
+        RegisterBank dmac(0x1000E000u, 0x100u);
+        dmac.map_into(state.memory());
 
         check(kernel.sif_set_d_chain(state) == ServiceOutcome::Handled
                   && sif0.register_value(0x1000C000u) == 0x184u,
@@ -523,25 +563,28 @@ int main() {
               "the reply queued the SIF0 interrupt");
 
         // The handlers are injected with their frames; each return runs the
-        // next registered handler for the cause, and the last one restores
-        // the interrupted context.
+        // next registered handler for the channel, and the last one restores
+        // the interrupted context. The SIF0 reply is a DMAC channel 5
+        // completion, so its handlers come from the DMAC list.
         state.write_gpr32(4, 5);  // DMAC channel 5
         state.write_gpr32(5, 0x00100400u);
         state.write_gpr32(6, 0xFFFFFFFFu);
         state.write_gpr32(7, 0);
-        kernel.add_intc_handler(state);
+        kernel.add_dmac_handler(state);
         state.write_gpr32(4, 5);
         state.write_gpr32(5, 0x00100480u);
         state.write_gpr32(6, 0xFFFFFFFFu);
         state.write_gpr32(7, 0);
-        kernel.add_intc_handler(state);
+        kernel.add_dmac_handler(state);
         const std::uint32_t interrupted_pc = 0x00100020u;
         state.set_pc(interrupted_pc);
         check(kernel.start_interrupt(state), "the pending interrupt starts");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 5
                   && state.read_gpr32(31) == Kernel::patch_return_stub_physical
-                  && (state.read_cp0(12) & 0x10000u) == 0,
-              "the first handler frame has the cause, the stub and EIE clear");
+                  && (state.read_cp0(12) & 0x10000u) == 0
+                  && (dmac.register_value(0x1000E010u) & (1u << 5)) != 0,
+              "the first handler frame has the channel, the stub, EIE clear "
+              "and the DMAC status bit");
         const ServiceHandler* return_handler =
             services.find(Kernel::patch_return_service);
         check(return_handler != nullptr

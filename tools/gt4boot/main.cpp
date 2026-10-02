@@ -48,11 +48,17 @@ constexpr std::uint64_t default_step_limit = 200'000'000;
 
 // The device register windows the boot touches so far: the timer block, the
 // DMAC and SIF0 channel control, the SIF register block, the GS register
-// block (a memory region), and the GIF/VIF0/VIF1 register and FIFO windows
-// (all plain storage; decisions 0007/0008 and this slice). No transfer
-// engine, FIFO behavior or display is modeled; reads return what was last
-// written, or zero.
+// block (a memory region), and the GIF/VIF0/VIF1 register and FIFO windows.
+// The VIF0/VIF1/GIF DMA channels complete a started transfer at once (the
+// model has no transfer engine) and report the channel's interrupt cause;
+// the other windows are plain storage (decisions 0007/0008 and 0010/0011).
 struct BootDevices {
+    explicit BootDevices(std::function<void(std::uint32_t)> raise)
+        : vif0_dma(0x10008000u, 0x1000u, 4, raise),
+          vif1_dma(0x10009000u, 0x1000u, 5, raise),
+          gif_dma(0x1000A000u, 0x1000u, 9, raise) {
+    }
+
     TimerUnit timer;
     RegisterBank dmac{0x1000E000u, 0x100u};
     RegisterBank sif0{0x1000C000u, 0x100u};
@@ -65,9 +71,9 @@ struct BootDevices {
     RegisterBank gif_fifo{0x10006000u, 0x1000u};
     RegisterBank ipu{0x10002000u, 0x1000u};
     RegisterBank ipu_fifo{0x10007000u, 0x1000u};
-    RegisterBank vif0_dma{0x10008000u, 0x1000u};
-    RegisterBank vif1_dma{0x10009000u, 0x1000u};
-    RegisterBank gif_dma{0x1000A000u, 0x1000u};
+    DmaChannel vif0_dma;
+    DmaChannel vif1_dma;
+    DmaChannel gif_dma;
     RegisterBank ipu_port{0x1000B000u, 0x1000u};
     RegisterBank spr_dma{0x1000D000u, 0x1000u};
     RegisterBank intc{0x1000F000u, 0x100u};
@@ -311,7 +317,9 @@ int wmain(int argc, wchar_t* argv[]) {
 
         Kernel driver_kernel;
         ServiceTable services = make_boot_services(driver_kernel);
-        BootDevices driver_devices;
+        BootDevices driver_devices([&driver_kernel](std::uint32_t cause) {
+            driver_kernel.raise_interrupt(cause);
+        });
         auto driver_state = make_boot_state(image, driver_devices);
         RunOptions options;
         options.step_limit = default_step_limit;
@@ -353,13 +361,45 @@ int wmain(int argc, wchar_t* argv[]) {
                           << thread.function << ", pc 0x" << std::setw(8)
                           << thread.context.pc << std::dec << std::setfill(' ') << '\n';
             }
+            // The DMA channel control registers: a channel with the STR bit
+            // (0x100) still set was started and never completed.
+            const auto print_channel = [](const char* name, std::uint32_t chcr) {
+                std::cout << "dma " << name << " chcr 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << chcr << std::dec
+                          << std::setfill(' ') << '\n';
+            };
+            print_channel("vif0", driver_devices.vif0_dma.register_value(0x10008000u));
+            print_channel("vif1", driver_devices.vif1_dma.register_value(0x10009000u));
+            print_channel("gif", driver_devices.gif_dma.register_value(0x1000A000u));
+            print_channel("sif0", driver_devices.sif0.register_value(0x1000C000u));
+            print_channel("spr0", driver_devices.spr_dma.register_value(0x1000D000u));
+            print_channel("spr1", driver_devices.spr_dma.register_value(0x1000D400u));
+            // The four timers: count, mode and compare as the guest left
+            // them.
+            for (std::uint32_t index = 0; index < TimerUnit::timer_count; ++index) {
+                const std::uint32_t timer_base =
+                    TimerUnit::window_base + index * TimerUnit::timer_stride;
+                std::cout << "timer " << index << ": count 0x" << std::hex
+                          << std::setfill('0') << std::setw(8)
+                          << driver_devices.timer.register_value(
+                                 timer_base + TimerUnit::count_offset)
+                          << ", mode 0x" << std::setw(8)
+                          << driver_devices.timer.register_value(
+                                 timer_base + TimerUnit::mode_offset)
+                          << ", comp 0x" << std::setw(8)
+                          << driver_devices.timer.register_value(
+                                 timer_base + TimerUnit::compare_offset)
+                          << std::dec << std::setfill(' ') << '\n';
+            }
         }
 
         if (compare_interpreter) {
-            BootDevices reference_devices;
-            auto reference_state = make_boot_state(image, reference_devices);
             Kernel reference_kernel;
             ServiceTable reference_services = make_boot_services(reference_kernel);
+            BootDevices reference_devices([&reference_kernel](std::uint32_t cause) {
+                reference_kernel.raise_interrupt(cause);
+            });
+            auto reference_state = make_boot_state(image, reference_devices);
             const ReferenceResult reference = run_reference(
                 reference_state, reference_services, reference_kernel,
                 default_step_limit, service_limit);

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 using namespace gt4recomp::ee;
 
@@ -94,6 +95,29 @@ int main() {
               "the two windows stay independent");
         check(throws_runtime([&] { (void)memory.read_byte(0x1000E010u); }),
               "the register bank rejects non-32-bit widths");
+    }
+
+    // A DMA channel completes a started transfer at once and reports the
+    // channel's interrupt cause when the transfer interrupt is enabled.
+    {
+        GuestMemory memory(ram_base, ram_size);
+        std::vector<std::uint32_t> causes;
+        DmaChannel vif1(0x10009000u, 0x1000u, 5,
+                        [&causes](std::uint32_t cause) { causes.push_back(cause); });
+        vif1.map_into(memory);
+        check(memory.is_mmio(0x10009000u, 4) && !memory.is_mmio(0x1000A000u, 4),
+              "the channel window is mapped and bounded");
+        memory.write_word(0x10009010u, 0x00100000u);  // TADR stores normally
+        check(memory.read_word(0x10009010u) == 0x00100000u,
+              "the transfer address register stores");
+        memory.write_word(0x10009000u, 0x000001C5u);  // TIE | STR and mode bits
+        check(memory.read_word(0x10009000u) == 0x000000C5u
+                  && causes.size() == 1 && causes[0] == 5,
+              "a started transfer completes and raises the cause");
+        memory.write_word(0x10009000u, 0x00000145u);  // STR without TIE
+        check(memory.read_word(0x10009000u) == 0x00000045u
+                  && causes.size() == 1,
+              "a transfer without the interrupt enable stays silent");
     }
 
     if (failures != 0) {
