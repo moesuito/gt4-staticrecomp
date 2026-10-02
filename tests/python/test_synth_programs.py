@@ -66,5 +66,52 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(text.count("expect r0 "), 2)  # r0 is always checked
 
 
+class BranchingGeneratorTests(unittest.TestCase):
+    def test_committed_branching_fixture_matches_the_generator(self):
+        fixture = (ROOT / "tests/data/synth-branching.txt").read_text(encoding="utf-8")
+        header = fixture.splitlines()[0]
+        match = re.fullmatch(r"# synth-branching v1 seed=(\d+) count=(\d+)", header)
+        self.assertIsNotNone(match, header)
+        regenerated = synth.generate_branching(int(match.group(1)), int(match.group(2)),
+                                               require_full_coverage=True)
+        self.assertEqual(regenerated, fixture)
+
+    def test_branching_programs_terminate_and_expose_steps(self):
+        text = synth.generate_branching(11, 30, require_full_coverage=True)
+        self.assertEqual(text.count("program b"), 30)
+        self.assertEqual(text.count("steps "), 30)
+        self.assertEqual(text.count("expect r0 "), 30)
+
+    def test_hand_computed_taken_branch_keeps_the_delay_slot(self):
+        machine = synth.Machine(bytes(synth.DATA_BYTES))
+        effects = {}
+        target = synth.CODE_BASE + 12
+        effects[synth.CODE_BASE + 0] = synth.conditional_branch_effect(
+            lambda m: m.read_reg64(0) == m.read_reg64(0), False, False, target)
+        effects[synth.CODE_BASE + 4] = synth.plain_step(synth.addiu_effect(0, 1, 1))
+        effects[synth.CODE_BASE + 8] = synth.plain_step(synth.addiu_effect(0, 2, 2))
+        effects[synth.CODE_BASE + 12] = synth.plain_step(synth.addiu_effect(0, 3, 3))
+        steps = synth.simulate(machine, effects, synth.CODE_BASE + 16)
+        self.assertEqual(steps, 3)
+        self.assertEqual(machine.read_reg64(1), 1)  # the delay slot ran
+        self.assertEqual(machine.read_reg64(2), 0)  # skipped by the branch
+        self.assertEqual(machine.read_reg64(3), 3)
+
+    def test_hand_computed_likely_not_taken_nulls_the_delay_slot(self):
+        machine = synth.Machine(bytes(synth.DATA_BYTES))
+        effects = {}
+        target = synth.CODE_BASE + 12
+        effects[synth.CODE_BASE + 0] = synth.conditional_branch_effect(
+            lambda m: False, False, True, target)
+        effects[synth.CODE_BASE + 4] = synth.plain_step(synth.addiu_effect(0, 1, 1))
+        effects[synth.CODE_BASE + 8] = synth.plain_step(synth.addiu_effect(0, 2, 2))
+        effects[synth.CODE_BASE + 12] = synth.plain_step(synth.addiu_effect(0, 3, 3))
+        steps = synth.simulate(machine, effects, synth.CODE_BASE + 16)
+        self.assertEqual(steps, 3)
+        self.assertEqual(machine.read_reg64(1), 0)  # nullified
+        self.assertEqual(machine.read_reg64(2), 2)  # continues after the skip
+        self.assertEqual(machine.read_reg64(3), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
