@@ -51,6 +51,21 @@ std::int32_t DecodedInstruction::signed_immediate() const {
     return immediate >= 0x8000 ? value - 0x10000 : value;
 }
 
+std::uint32_t relative_branch_target(std::uint32_t pc,
+                                     const DecodedInstruction& instruction) noexcept {
+    // Multiplication, not shifting a negative signed value; the conversion back
+    // to uint32_t intentionally wraps within the guest address model.
+    const std::int64_t target = static_cast<std::int64_t>(pc) + 4
+        + static_cast<std::int64_t>(instruction.signed_immediate()) * 4;
+    return static_cast<std::uint32_t>(target);
+}
+
+std::uint32_t absolute_jump_target(std::uint32_t pc,
+                                   const DecodedInstruction& instruction) noexcept {
+    const std::uint32_t next_pc = pc + 4;
+    return (next_pc & 0xf0000000u) | (instruction.jump_index << 2);
+}
+
 std::uint32_t read_instruction_word(std::span<const std::uint8_t, 4> bytes) {
     // Promote before shifting: the top byte must remain unsigned.
     return static_cast<std::uint32_t>(bytes[0])

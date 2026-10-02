@@ -44,6 +44,13 @@ struct DecodedInstruction {
 // The fixed extent requires exactly four bytes. Callers check buffer bounds.
 [[nodiscard]] std::uint32_t read_instruction_word(
     std::span<const std::uint8_t, 4> bytes);
+// Branch target: PC+4 plus the signed immediate scaled by four, wrapped within
+// the 32-bit guest address model.
+[[nodiscard]] std::uint32_t relative_branch_target(
+    std::uint32_t pc, const DecodedInstruction& instruction) noexcept;
+// Jump target: the upper four bits of PC+4 combined with the 26-bit index.
+[[nodiscard]] std::uint32_t absolute_jump_target(
+    std::uint32_t pc, const DecodedInstruction& instruction) noexcept;
 [[nodiscard]] DecodedInstruction decode(std::uint32_t word);
 [[nodiscard]] std::string_view mnemonic(Operation operation);
 

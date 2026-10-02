@@ -1,7 +1,8 @@
 # Project status
 
-Updated 2026-10-01. This is the first document to read in a new session; it is
-kept current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-01 after M7 slice 1. This is the first document to read in a
+new session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -15,15 +16,19 @@ kept current as work proceeds. Details live in the linked evidence documents.
   - The decoder covers 39 operations. Ghidra re-verification 2026-10-01:
     417 matched (352 non-NOP), 71 unsupported, 0 mismatches
     (`docs/reverse-engineering/m6-disassembly.md`).
-- EXPLAIN (owner tutoring) pending for M2-M6; `docs/lessons/` is tracked in
-  this fork and lessons are to be drafted.
-- Next technical milestone: M7 — delay slots, basic blocks, CFG, function map.
+- M7 slice 1 (2026-10-01): flow classification and delay-slot-aware basic
+  blocks; new `gt4blocks` frontend; Ghidra re-run identical after the shared
+  target-helper refactor (`docs/reverse-engineering/m7-control-flow.md`).
+- EXPLAIN: `docs/lessons/m6.md` written; lesson for M7 pending after its
+  remaining slices.
+- Next technical milestone work: M7 slice 2 — CFG traversal over block
+  successors, then the evidence-backed function map (M8).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 5/5 CTest; Python suite 28 collected (22 run, 6 skip without the M3
+- Tests: 6/6 CTest; Python suite 31 collected (25 run, 6 skip without the M3
   reference ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -39,18 +44,17 @@ kept current as work proceeds. Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- `docs/lessons/m6.md` (and retroactive notes for M2-M5) to be drafted as the
-  EXPLAIN trail.
+- Retroactive lesson notes for M2-M5 are not written; M6 has a lesson.
 - 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
   deferred to M15-M17 by the curriculum.
 
 ## Next actions
 
-1. Draft `docs/lessons/m6.md` (EXPLAIN for M6 and the decoder expansion).
-2. Start the M7 slice: flow classification and delay-slot-aware basic blocks.
+1. M7 slice 2: CFG traversal over block successors with uniqueness and counts.
+2. Evidence-backed function map (M8), then the M7 lesson.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
 
 - [2026-10-01](journal/2026-10-01.md) — fork setup, environment validation,
-  decoder expansion, Ghidra verification, working rules adopted.
+  decoder expansion, Ghidra verification, working rules, M6 lesson, M7 slice 1.

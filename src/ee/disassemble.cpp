@@ -34,13 +34,8 @@ std::string signed_hex(std::int32_t value) {
     return "0x" + hex_value(static_cast<std::uint32_t>(value));
 }
 
-// Branch targets use PC+4 plus a signed offset scaled by four. The
-// multiplication avoids shifting a negative signed value, and the final
-// conversion back to uint32_t deliberately wraps the guest address.
-std::string relative_branch_target(std::uint32_t pc, const DecodedInstruction& instruction) {
-    const std::int64_t target = static_cast<std::int64_t>(pc) + 4
-        + static_cast<std::int64_t>(instruction.signed_immediate()) * 4;
-    return "0x" + hex_value(static_cast<std::uint32_t>(target), 8);
+std::string target_text(std::uint32_t target) {
+    return "0x" + hex_value(target, 8);
 }
 
 std::string unsupported_family(const DecodedInstruction& instruction) {
@@ -97,7 +92,8 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Bne:
     case Operation::Beql:
     case Operation::Bnel:
-        output << ' ' << rs << ", " << rt << ", " << relative_branch_target(pc, instruction);
+        output << ' ' << rs << ", " << rt << ", "
+               << target_text(relative_branch_target(pc, instruction));
         break;
     case Operation::Blez:
     case Operation::Bgtz:
@@ -109,15 +105,12 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Bgezal:
     case Operation::Bltzall:
     case Operation::Bgezall:
-        output << ' ' << rs << ", " << relative_branch_target(pc, instruction);
+        output << ' ' << rs << ", " << target_text(relative_branch_target(pc, instruction));
         break;
     case Operation::J:
-    case Operation::Jal: {
-        const std::uint32_t next_pc = pc + std::uint32_t{4};
-        const auto target = (next_pc & 0xf0000000u) | (instruction.jump_index << 2);
-        output << " 0x" << hex_value(target, 8);
+    case Operation::Jal:
+        output << ' ' << target_text(absolute_jump_target(pc, instruction));
         break;
-    }
     case Operation::Jr:
         output << ' ' << rs;
         break;
