@@ -1,21 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 34 — the archive open handler's flow: the
-vtable-0x688C58 open method **0x004B1730** allocates a stream
-(0x004AC660 — returning 0 is its only early exit), builds the full path
-from the handler's **+0xAC ("/")** and the requested path, then **enqueues
-the stream via 0x004AD300**, which locks the handler's queue (+0x40), sets
-the stream's state (+0x80 = 0) and **waits on the condition 0x0057CB00** —
-the open is processed by the handler's own worker under the lock. The
-result the caller reads lives in the **stream's +0x94**, and the worker
-step **0x004AD4A0** walks a **sorted tree at the handler's +0x58**
-comparing the stream's key pair (+0xA0, +0xA4) — the archive's page tree
-(the GT4FS reference's B-tree). So the failure is either the stream
-allocation returning 0 or the worker leaving the result at 0. No model
-behavior changed. The differential passes at 3,000 services (interpreter
-reference at 7,570,583 instructions, full state identical). This is the
-first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 35 — the stream pool and the queued open:
+the stream factory 0x004AC660 pops from the **free list at 0x0084B528**
+(the raw-disc handler +0xA8), and at the fault that list is **identical to
+the console's** (`0x0084B528 → 0x62A0B4 → 0x62A078 → 0`; the streams are a
+static array at 0x0062A0xx) — so the allocation is **not** the failure. The
+handler's third argument is the **formatter's context**, and its enqueue
+call **0x0057CB00 is a doubly linked-list append**, not a wait: the stream
+is **queued to the handler's pending list at +0x40** and the handler's own
+**worker thread** processes it later; the formatter then reads the result
+from the **stream's +0x94**. So the failure is the worker leaving +0x94 at
+0 — its search over the tree at the handler's +0x58 (the archive's page
+tree) finding nothing, or the worker never processing the queued stream.
+No model behavior changed. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -849,6 +849,24 @@ proceeds. Details live in the linked evidence documents.
   differential passes at 3,000 services with the interpreter reference at
   7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice34-archive-open-handler.md`).
+- M30 slice 35 (2026-10-02): **the stream pool and the queued open** — the
+  stream factory 0x004AC660 pops from the **free list at 0x0084B528** (the
+  raw-disc handler +0xA8) under a lock; at the fault that list is
+  **identical to the console's** (`0x0084B528 → 0x62A0B4 → 0x62A078 → 0`;
+  the streams are a static array at 0x0062A0xx) — so the **allocation is
+  not the failure**. The handler's third argument is the **formatter's
+  context** (the "stream"), and its enqueue call **0x0057CB00 is a doubly
+  linked-list append**, not a wait: the stream is **queued to the
+  handler's pending list at +0x40** and the handler's own **worker thread**
+  processes it later; the formatter then reads the result from the
+  **stream's +0x94**. So the failure is the worker leaving +0x94 at 0 —
+  its search over the tree at the handler's +0x58 (the archive's page
+  tree) finding nothing, or the worker never processing the queued stream;
+  the stream's search key (+0xA0/+0xA4) is zeroed by the context
+  constructor. No model behavior changed: CTest 34/34; Python 73 (67 run, 6
+  skip); the differential passes at 3,000 services with the interpreter
+  reference at 7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice35-stream-pool-and-queued-open.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -858,13 +876,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the stream's result or the allocation** —
-  the open handler 0x004B1730 either fails its stream allocation
-  (0x004AC660 → 0) or the worker leaves the result (stream +0x94) at 0; the
-  next slice watches the stream's +0x94/+0x80 (keyed on the handler's queue
-  or the allocation's return, since the stream is dynamic) and checks the
-  worker's tree search key (the path-derived pair at +0xA0/+0xA4) against
-  the archive's page tree.
+- Next technical milestone work: **the worker's result** — the open is
+  queued to the handler's pending list (+0x40) and the worker thread should
+  set the stream's +0x94; the next slice instruments the worker's search
+  (0x004AD4A0: its key comparison and descent over the tree at the
+  handler's +0x58) and the pending list at the fault, and compares the
+  stream's path buffer (+0x48, built by the open) with the archive's tree.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

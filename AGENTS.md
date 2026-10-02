@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 34 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 35 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -212,15 +212,18 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   allocates a stream, builds the path from the handler's "/" prefix,
   enqueues the stream to the handler's worker under a condition wait, and
   the result lives in the stream's +0x94; the worker searches a sorted tree
-  at the handler's +0x58 — the archive's page tree); `--threads`
+  at the handler's +0x58 — the archive's page tree); slice 35 then rules out
+  the stream allocation (its free list at 0x0084B528 is identical to the
+  console's) and shows the enqueue is a plain list append (0x0057CB00), so
+  the failure is the worker leaving the stream's +0x94 at 0; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 35 — the stream's result or the allocation: the open
-  handler 0x004B1730 either fails its stream allocation (0x004AC660 → 0) or
-  the worker leaves the result (stream +0x94) at 0; watch the stream's
-  +0x94/+0x80 (keyed on the handler's queue or the allocation's return,
-  since the stream is dynamic) and check the worker's tree search key (the
-  path-derived pair at +0xA0/+0xA4) against the archive's page tree.
+- Next: M30 slice 36 — the worker's result: the open is queued to the
+  handler's pending list (+0x40) and the worker thread should set the
+  stream's +0x94; instrument the worker's search (0x004AD4A0: its key
+  comparison and descent over the tree at the handler's +0x58) and the
+  pending list at the fault, and compare the stream's path buffer (+0x48,
+  built by the open) with the archive's tree.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
