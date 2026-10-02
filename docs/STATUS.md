@@ -1,8 +1,8 @@
 # Project status
 
-Updated 2026-10-01 after M8 and the M7/M8 lessons. This is the first document
-to read in a new session; it is kept current as work proceeds. Details live in
-the linked evidence documents.
+Updated 2026-10-01 after M9. This is the first document to read in a new
+session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -26,15 +26,20 @@ the linked evidence documents.
   `direct-call` evidence and bounded reachable sets; new `gt4funcs` frontend.
   Real seeded closure: 10 functions, 8 direct calls, `pending=0`
   (`docs/reverse-engineering/m8-function-map.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); retroactive
-  notes for M2-M5 and tutoring review remain open.
-- Next technical milestone work: M9 — explicit guest state and memory model.
+- M9 (2026-10-01): explicit guest state and memory model — a 32×64-bit register
+  file with the 32-bit sign-extension rule and a little-endian memory region
+  whose invalid accesses throw with context; synthetic fixtures only
+  (`docs/reverse-engineering/m9-guest-state.md`).
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9 lesson
+  and retroactive M2-M5 notes remain open.
+- Next technical milestone work: M10 — a small test interpreter over the M9
+  state, starting with straight-line synthetic programs.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 8/8 CTest; Python suite 37 collected (31 run, 6 skip without the M3
+- Tests: 9/9 CTest; Python suite 37 collected (31 run, 6 skip without the M3
   reference ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -50,19 +55,19 @@ the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written.
+- Retroactive lesson notes for M2-M5 are not written; the M9 lesson is pending.
 - 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
   deferred to M15-M17 by the curriculum.
 
 ## Next actions
 
-1. Start M9: explicit guest state and memory model (registers, guest
-   addresses, deterministic tests) per the curriculum.
-2. Retroactive lesson notes for M2-M5 if useful.
+1. Start M10: a small test interpreter over the M9 state, running
+   straight-line synthetic programs against hand-computed expected results.
+2. The M9 lesson and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
 
 - [2026-10-01](journal/2026-10-01.md) — fork setup, environment validation,
   decoder expansion, Ghidra verification, working rules, M6-M8 lessons, M7
-  slices 1-2, M8 function map.
+  slices 1-2, M8 function map, M9 state model.

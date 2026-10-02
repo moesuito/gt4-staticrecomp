@@ -23,6 +23,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/disassemble.cpp
     src/ee/flow.cpp
     src/ee/functions.cpp
+    src/ee/state.cpp
 )
 target_include_directories(gt4recomp_decode PUBLIC include)
 target_compile_features(gt4recomp_decode PUBLIC cxx_std_20)
@@ -75,6 +76,9 @@ if(BUILD_TESTING)
     add_executable(ee_functions_tests tests/unit/ee_functions_test.cpp)
     target_link_libraries(ee_functions_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_functions COMMAND ee_functions_tests)
+    add_executable(ee_state_tests tests/unit/ee_state_test.cpp)
+    target_link_libraries(ee_state_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_state COMMAND ee_state_tests)
     add_executable(ee_decode_tests tests/unit/ee_decode_test.cpp)
     target_link_libraries(ee_decode_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_decode COMMAND ee_decode_tests)

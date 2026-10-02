@@ -11,9 +11,9 @@ selected real GT4 ranges. Ten regions were inspected: after the 2026-10-01
 decoder expansion and Ghidra re-verification, 417 of 488 words match Ghidra
 (352 non-NOP) and 71 remain explicitly unsupported. The decoder now supports 39
 operations, including the REGIMM branch family, JALR/SYSCALL, LD/SD/SB/LH and
-SLT/SLTU/DADDU. All five CTest tests passed; of 28 Python tests, 22 ran here
-and 6 optional native comparisons skipped without the M3 reference ELF. Tutoring
-remains pending; see the local [M6 lesson](docs/lessons/m6.md).
+SLT/SLTU/DADDU. The full CTest set and the Python suite pass locally; 6
+optional native Python checks skip without the M3 reference ELF. Tutoring
+remains pending; see the [M6 lesson](docs/lessons/m6.md).
 
 [M4 native reconstruction](docs/lessons/m4.md) now reads the pinned CORE into
 our own C++ executable-image model and writes an analysis ELF. All three payloads,
