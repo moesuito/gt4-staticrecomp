@@ -1,19 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 28 — the stream's writers by call site: a
-temporary watch reported pc/ra/a1 with every write into the sound library's
-buffers: the assign body (0x00462670, called at 0x00462778 inside
-0x00462738) writes 69 bytes, the string method 0x00462900 twelve, the sound
-function 0x00463600 ten, the statics/setters the rest — **and 148 writes
-come from pc 0x00100008, the patched syscall stubs (the SDK's own string
-code writes into the same region)**. Lesson recorded: the driver's watch
-globals are set only at module entries it starts, so the ra is reliable but
-the argument registers can be stale for inner calls; the next instrument
-must read arguments at a boundary or watch the formatter's arena. No model
-behavior changed. The differential passes at 3,000 services (interpreter
-reference at 7,570,583 instructions, full state identical). This is the
-first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 29 — instruments and the formatter: a
+second instrument that read the guest argument registers from a state
+pointer at every write captured **zero** copies — the translated module
+keeps values in host registers and synchronizes the guest file only at
+boundaries, so mid-execution register reads are stale (the same reason the
+slice-28 a1 read zero). The assign chain's formatter (0x0044D740) is mapped
+as the SDK printf: context init 0x004AEFF0, format parse 0x004AE1F8, format
+0x004AF3E8, result at `*(context+0x94)`. The three sound-bank assignments
+advance the stream by **13 bytes each** — not by the names' lengths — so
+the copied objects are not the formatted names; identifying them needs the
+source object's content or the two sound functions that also write the
+stream (0x00462900, 0x00463600). No model behavior changed. The
+differential passes at 3,000 services (interpreter reference at 7,570,583
+instructions, full state identical). This is the first document to read in
+a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -733,6 +735,24 @@ proceeds. Details live in the linked evidence documents.
   interpreter reference at 7,570,583 instructions and the full state
   identical
   (`docs/reverse-engineering/m30-slice28-stream-writers-by-call-site.md`).
+- M30 slice 29 (2026-10-02): **instruments and the formatter** — a second
+  instrument read the guest argument registers (r4/r5/r6) from a temporary
+  state pointer at every write and captured **zero** copies: the translated
+  module keeps values in host registers and synchronizes the guest file
+  only at boundaries, so mid-execution register reads are stale (the same
+  reason the slice-28 a1 read zero). The assign chain's formatter
+  (0x0044D740) is mapped as the SDK printf: context init 0x004AEFF0,
+  format parse 0x004AE1F8, format 0x004AF3E8, result at `*(context+0x94)`,
+  context release 0x004AF568/0x0044D460/0x004AF0A0. The three sound-bank
+  assignments advance the stream by **13 bytes each** (not the names'
+  lengths 17/18/19), so the copied objects are not the formatted names;
+  identifying them needs the source object's content (observable in memory)
+  or a static trace of the two sound functions that also write the stream
+  (0x00462900 and 0x00463600, 22 of the 247 watched writes). No model
+  behavior changed: CTest 34/34; Python 73 (67 run, 6 skip); the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice29-instruments-and-the-formatter.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -742,13 +762,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the formatter's output, seen properly** —
-  the stream's writers are mapped (the assign chain plus the SDK string
-  code reached through the patched syscall stubs), but the argument
-  registers read stale for inner calls; the next instrument must read the
-  guest arguments at a boundary where the register file is current or watch
-  the formatter's arena (0x0044D740's result) to identify each copied
-  record and why 39 bytes precede the fault against the console's 32.
+- Next technical milestone work: **the copied objects' identity** — the
+  sound library's three bank assignments advance its stream by 13 bytes
+  each, so the copied objects are not the formatted names; identify them
+  from the source object's content in memory (reliable) or by tracing the
+  two sound functions that also write the stream (0x00462900, 0x00463600)
+  — register reads are not reliable on translated code.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
