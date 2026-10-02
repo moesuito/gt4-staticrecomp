@@ -222,7 +222,9 @@ proceeds. Details live in the linked evidence documents.
   one module); direct calls leaving the text stop as boundaries; the COP1
   branch conditions joined the emitter. **The whole game generates: 15,068
   functions, 924,991 instructions, 146.4 MB in 136 s, and passes an MSVC
-  syntax check in 27.5 s.** The survey with the policy lifted translates
+  syntax check in 27.5 s.** A full Debug compile of the whole module (dispatch
+  referenced, `/bigobj`) takes **38.9 s at 0.53 GB peak RAM** (96.7 MB
+  object). The survey with the policy lifted translates
   14,991 of 15,067 entries (99.5%), covering 871,317 instructions (65.3%);
   the remaining rejections are the survey's own per-tree budget. CTest 25/25;
   Python 73 (`docs/reverse-engineering/m29-whole-program-build.md`).

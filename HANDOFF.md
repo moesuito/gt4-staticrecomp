@@ -134,12 +134,15 @@ $env:JAVA_HOME = "$PWD/private/tooling/jdk-21"
   924,991 instructions, 146.4 MB) in ~136 s; an MSVC **syntax check passes in
   27.5 s**.
 - **Next (M30)**, in priority order:
-  1. **Full code generation** of the whole-program module (or split/stream it
-     first). Expect: `/bigobj` will likely be required (15k+ inline functions
-     produce many COMDAT sections), many GB of RAM, a long single-TU compile;
-     if it is impractical, add a split/stream mode to `gt4translate` (write
-     chunks of functions to several headers) — that is a translator change,
-     not a semantic one.
+  1. **Full code generation** of the whole-program module. **Measured here**
+     (Debug, `/Od`, `/bigobj`, single TU, with the dispatch referenced so
+     every function is emitted): **38.9 s, peak 0.53 GB RAM, 96.7 MB object,
+     45,345 sections** — light enough that a 32 GB machine is comfortable.
+     Two gotchas: (a) reference the module's dispatch (`detail::call_entry`)
+     from the TU or the compiler drops every `inline` function and produces a
+     2.5 KB empty object; (b) `/bigobj` is advised (the sections count is
+     already ~45k). A **Release `/O2`** build was not measured and will be
+     heavier; measure before committing to it.
   2. Then the **driver and BIOS services**: turn the stopped boundaries
      (syscalls, jump-table dispatch, VCALLMS, the five out-of-text calls)
      into execution. See the M29 doc's "Reading the numbers" section.
@@ -153,8 +156,10 @@ $env:JAVA_HOME = "$PWD/private/tooling/jdk-21"
 - `build/` must be recreated after moving the folder (absolute paths).
 - The whole-program module is derived from game code: keep it in
   `generated/` and never commit it.
-- Resource guidance for the heavy compile: 64 GB RAM and a fast NVMe make
-  the difference; the generator itself builds the 146 MB text in memory
-  (a few GB) and takes ~2.5 minutes.
+- Resource guidance for the heavy compile (all measured on this machine):
+  the whole-program module is a 146 MB single TU; a Debug `/Od` compile with
+  the dispatch referenced emits everything in **~39 s at 0.53 GB peak RAM**
+  (96.7 MB object, 45,345 sections). 32 GB is comfortable; a Release `/O2`
+  build is unmeasured and will be heavier.
 - If the machine's Windows SDK/MSVC differ, keep the build **warning-free**:
   the project treats warnings as signals, not noise.

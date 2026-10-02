@@ -62,6 +62,9 @@ reason: 76 x The call tree exceeds the instruction budget
 
 - The whole-program module is a single 146 MB translation unit; a real build
   will want splitting or streaming (the tool builds the text in memory).
+  **Measured on 2026-10-02**: a Debug `/Od` compile with `/bigobj` and the
+  dispatch referenced emits all 15,068 functions in 38.9 s at 0.53 GB peak
+  RAM (96.7 MB object, 45,345 sections). A Release `/O2` build is unmeasured.
 - Five calls leave the text (the data-segment region); they stop as
   boundaries until the data region is understood.
 - The 76 survey rejections only exist because each tree is walked with a
