@@ -321,6 +321,14 @@ std::string call_expression(std::uint32_t target) {
 std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit) {
     std::ostringstream body;
     std::set<std::uint32_t> consumed_delay_slots;
+    // Branch decisions are evaluated once, before their delay slots; the
+    // variables live at the top of the function so a forward goto can never
+    // skip an initialization (which C++ forbids when the variable has one).
+    for (const auto address : unit.reachable) {
+        if (classify(decode(word_at(text, address)), address).kind == FlowKind::Branch) {
+            body << "    bool taken_" << hex_value(address, 8) << " = false;\n";
+        }
+    }
     if (unit.scan_start < unit.entry) {
         // The scan begins below the entry (a tail thunk's target); a caller
         // must still start executing at the entry address.
@@ -377,11 +385,15 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                     + hex_value(at, 8));
             }
         };
-        if (consumed_delay_slots.contains(address)) {
+        if (consumed_delay_slots.contains(address) && !unit.labels.contains(address)) {
             body << "    // 0x" << hex_value(address, 8) << ": " << hex_value(word, 8)
                  << "  delay slot handled above\n\n";
             continue;
         }
+        // A label-targeted delay slot falls through to a standalone copy: the
+        // transfer keeps its inline execution for the normal path (and jumps
+        // past this copy), while the edge path executes the copy and then
+        // continues at the next word.
 
         switch (flow.kind) {
         case FlowKind::FallThrough:
@@ -391,8 +403,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         case FlowKind::Branch: {
             const auto taken = "taken_" + hex_value(address, 8);
             comment(address, word);
-            body << "    const bool " << taken << " = " << condition_for(instruction)
-                 << ";\n";
+            body << "    " << taken << " = " << condition_for(instruction) << ";\n";
             if (is_likely_branch(instruction.operation)) {
                 body << "    if (" << taken << ") {\n";
                 if (writes_link_register(instruction.operation)) {
@@ -414,6 +425,10 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                      << " // delay slot (always executes)\n";
                 body << "    if (" << taken << ") goto " << label_for(flow.target)
                      << ";\n\n";
+            }
+            if (unit.labels.contains(address + 4)) {
+                body << "    goto " << label_for(address + 8)
+                     << "; // skip the standalone delay-slot copy\n\n";
             }
             consumed_delay_slots.insert(address + 4);
             break;
@@ -440,6 +455,10 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             body << "    " << call_expression(flow.target) << "\n";
             body << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
                  << "u) { return; } // a service boundary stopped the callee\n\n";
+            if (unit.labels.contains(address + 4)) {
+                body << "    goto " << label_for(address + 8)
+                     << "; // skip the standalone delay-slot copy\n\n";
+            }
             consumed_delay_slots.insert(address + 4);
             break;
         }
@@ -613,11 +632,13 @@ int wmain(int argc, wchar_t* argv[]) {
             for (const auto address : unit.reachable) {
                 const auto instruction = decode(word_at(text, address));
                 const auto flow = classify(instruction, address);
-                if ((flow.kind == FlowKind::Branch || flow.kind == FlowKind::Jump
-                     || flow.kind == FlowKind::Call || flow.kind == FlowKind::Return)
-                    && unit.labels.contains(address + 4)) {
-                    throw std::runtime_error("A branch targets a delay slot at 0x"
-                                             + hex_value(address + 4, 8));
+                if (flow.kind == FlowKind::Branch || flow.kind == FlowKind::Call) {
+                    if (unit.labels.contains(address + 4)) {
+                        // The delay slot is also a transfer target: it gets a
+                        // standalone copy at its own address, so this transfer
+                        // must jump past that copy on its normal path.
+                        unit.labels.insert(address + 8);
+                    }
                 }
             }
 
