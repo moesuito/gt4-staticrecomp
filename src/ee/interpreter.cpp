@@ -2,6 +2,7 @@
 #include "gt4recomp/ee_flow.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -182,6 +183,47 @@ std::uint64_t sign_extend_32_to_64(std::uint32_t value) {
     return (value & 0x80000000u) != 0 ? (0xffffffff00000000ull | value) : value;
 }
 
+// Unaligned load/store merge tables from the reference implementation: LWL
+// and SWL shift the incoming word left through the low bytes (24..0), LWR and
+// SWR shift it right into the low bytes (0..24), and the masks preserve the
+// register or memory bytes that are not replaced.
+constexpr std::array<std::uint32_t, 4> lwl_mask = {
+    0x00ffffffu, 0x0000ffffu, 0x000000ffu, 0x00000000u
+};
+constexpr std::array<std::uint32_t, 4> lwr_mask = {
+    0x00000000u, 0xff000000u, 0xffff0000u, 0xffffff00u
+};
+constexpr std::array<std::uint32_t, 4> swl_mask = {
+    0xffffff00u, 0xffff0000u, 0xff000000u, 0x00000000u
+};
+constexpr std::array<std::uint32_t, 4> swr_mask = {
+    0x00000000u, 0x000000ffu, 0x0000ffffu, 0x00ffffffu
+};
+constexpr std::array<std::uint8_t, 4> merge_shift = { 24, 16, 8, 0 };
+constexpr std::array<std::uint8_t, 4> place_shift = { 0, 8, 16, 24 };
+
+// PLZCW counts the leading bits equal to the sign (excluding the sign bit
+// itself): the reference inverts negative values, counts 32 for zero, and the
+// instruction stores one less than the count of leading equal bits.
+std::uint32_t count_leading_sign_bits(std::uint32_t value) {
+    if ((value & 0x80000000u) != 0) {
+        value = ~value;
+    }
+    return value == 0 ? 32u : static_cast<std::uint32_t>(std::countl_zero(value));
+}
+
+// The multiply and divide results store each 32-bit half sign-extended into
+// its 64-bit HI/LO register, in both banks.
+void write_hilo_low(GuestState& state, std::uint64_t bits) {
+    state.set_lo(sign_extend_32_to_64(static_cast<std::uint32_t>(bits)));
+    state.set_hi(sign_extend_32_to_64(static_cast<std::uint32_t>(bits >> 32)));
+}
+
+void write_hilo_high(GuestState& state, std::uint64_t bits) {
+    state.set_lo1(sign_extend_32_to_64(static_cast<std::uint32_t>(bits)));
+    state.set_hi1(sign_extend_32_to_64(static_cast<std::uint32_t>(bits >> 32)));
+}
+
 // MMI results fill all four 32-bit lanes of the 128-bit register; the low 64
 // bits hold lanes 0..1 (words), 0..3 (halfwords) and 0..7 (bytes), the stored
 // upper half holds the remainder.
@@ -272,6 +314,150 @@ bool execute_special_register(const DecodedInstruction& instruction, GuestState&
     case Operation::Mtlo1:
         state.set_lo1(state.read_gpr64(instruction.rs));
         break;
+    case Operation::Mult: {
+        const std::int64_t product = static_cast<std::int64_t>(
+            static_cast<std::int32_t>(state.read_gpr32(instruction.rs)))
+            * static_cast<std::int64_t>(static_cast<std::int32_t>(state.read_gpr32(instruction.rt)));
+        write_hilo_low(state, static_cast<std::uint64_t>(product));
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo());
+        }
+        break;
+    }
+    case Operation::Multu: {
+        const std::uint64_t product = static_cast<std::uint64_t>(state.read_gpr32(instruction.rs))
+            * static_cast<std::uint64_t>(state.read_gpr32(instruction.rt));
+        write_hilo_low(state, product);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo());
+        }
+        break;
+    }
+    case Operation::Div: {
+        const std::uint32_t dividend_bits = state.read_gpr32(instruction.rs);
+        const std::uint32_t divisor_bits = state.read_gpr32(instruction.rt);
+        const auto dividend = static_cast<std::int32_t>(dividend_bits);
+        const auto divisor = static_cast<std::int32_t>(divisor_bits);
+        if (dividend_bits == 0x80000000u && divisor_bits == 0xffffffffu) {
+            // The one overflowing quotient has the documented saturated result.
+            state.set_lo(sign_extend_32_to_64(0x80000000u));
+            state.set_hi(0);
+        } else if (divisor != 0) {
+            state.set_lo(sign_extend_32_to_64(static_cast<std::uint32_t>(dividend / divisor)));
+            state.set_hi(sign_extend_32_to_64(static_cast<std::uint32_t>(dividend % divisor)));
+        } else {
+            // Division by zero: LO signals the dividend's sign, HI the dividend.
+            state.set_lo(sign_extend_32_to_64(dividend < 0 ? 1u : 0xffffffffu));
+            state.set_hi(sign_extend_32_to_64(dividend_bits));
+        }
+        break;
+    }
+    case Operation::Divu: {
+        const std::uint32_t dividend_bits = state.read_gpr32(instruction.rs);
+        const std::uint32_t divisor_bits = state.read_gpr32(instruction.rt);
+        if (divisor_bits != 0) {
+            state.set_lo(sign_extend_32_to_64(dividend_bits / divisor_bits));
+            state.set_hi(sign_extend_32_to_64(dividend_bits % divisor_bits));
+        } else {
+            state.set_lo(sign_extend_32_to_64(0xffffffffu));
+            state.set_hi(sign_extend_32_to_64(dividend_bits));
+        }
+        break;
+    }
+    case Operation::Madd: {
+        const std::uint64_t accumulated = (state.lo() & 0xffffffffull)
+            | ((state.hi() & 0xffffffffull) << 32);
+        const std::int64_t product = static_cast<std::int64_t>(
+            static_cast<std::int32_t>(state.read_gpr32(instruction.rs)))
+            * static_cast<std::int64_t>(static_cast<std::int32_t>(state.read_gpr32(instruction.rt)));
+        write_hilo_low(state, accumulated + static_cast<std::uint64_t>(product));
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo());
+        }
+        break;
+    }
+    case Operation::Maddu: {
+        const std::uint64_t accumulated = (state.lo() & 0xffffffffull)
+            | ((state.hi() & 0xffffffffull) << 32);
+        const std::uint64_t product = static_cast<std::uint64_t>(state.read_gpr32(instruction.rs))
+            * static_cast<std::uint64_t>(state.read_gpr32(instruction.rt));
+        write_hilo_low(state, accumulated + product);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo());
+        }
+        break;
+    }
+    case Operation::Mult1: {
+        const std::int64_t product = static_cast<std::int64_t>(
+            static_cast<std::int32_t>(state.read_gpr32(instruction.rs)))
+            * static_cast<std::int64_t>(static_cast<std::int32_t>(state.read_gpr32(instruction.rt)));
+        write_hilo_high(state, static_cast<std::uint64_t>(product));
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo1());
+        }
+        break;
+    }
+    case Operation::Multu1: {
+        const std::uint64_t product = static_cast<std::uint64_t>(state.read_gpr32(instruction.rs))
+            * static_cast<std::uint64_t>(state.read_gpr32(instruction.rt));
+        write_hilo_high(state, product);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo1());
+        }
+        break;
+    }
+    case Operation::Div1: {
+        const std::uint32_t dividend_bits = state.read_gpr32(instruction.rs);
+        const std::uint32_t divisor_bits = state.read_gpr32(instruction.rt);
+        const auto dividend = static_cast<std::int32_t>(dividend_bits);
+        const auto divisor = static_cast<std::int32_t>(divisor_bits);
+        if (dividend_bits == 0x80000000u && divisor_bits == 0xffffffffu) {
+            state.set_lo1(sign_extend_32_to_64(0x80000000u));
+            state.set_hi1(0);
+        } else if (divisor != 0) {
+            state.set_lo1(sign_extend_32_to_64(static_cast<std::uint32_t>(dividend / divisor)));
+            state.set_hi1(sign_extend_32_to_64(static_cast<std::uint32_t>(dividend % divisor)));
+        } else {
+            state.set_lo1(sign_extend_32_to_64(dividend < 0 ? 1u : 0xffffffffu));
+            state.set_hi1(sign_extend_32_to_64(dividend_bits));
+        }
+        break;
+    }
+    case Operation::Divu1: {
+        const std::uint32_t dividend_bits = state.read_gpr32(instruction.rs);
+        const std::uint32_t divisor_bits = state.read_gpr32(instruction.rt);
+        if (divisor_bits != 0) {
+            state.set_lo1(sign_extend_32_to_64(dividend_bits / divisor_bits));
+            state.set_hi1(sign_extend_32_to_64(dividend_bits % divisor_bits));
+        } else {
+            state.set_lo1(sign_extend_32_to_64(0xffffffffu));
+            state.set_hi1(sign_extend_32_to_64(dividend_bits));
+        }
+        break;
+    }
+    case Operation::Madd1: {
+        const std::uint64_t accumulated = (state.lo1() & 0xffffffffull)
+            | ((state.hi1() & 0xffffffffull) << 32);
+        const std::int64_t product = static_cast<std::int64_t>(
+            static_cast<std::int32_t>(state.read_gpr32(instruction.rs)))
+            * static_cast<std::int64_t>(static_cast<std::int32_t>(state.read_gpr32(instruction.rt)));
+        write_hilo_high(state, accumulated + static_cast<std::uint64_t>(product));
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo1());
+        }
+        break;
+    }
+    case Operation::Maddu1: {
+        const std::uint64_t accumulated = (state.lo1() & 0xffffffffull)
+            | ((state.hi1() & 0xffffffffull) << 32);
+        const std::uint64_t product = static_cast<std::uint64_t>(state.read_gpr32(instruction.rs))
+            * static_cast<std::uint64_t>(state.read_gpr32(instruction.rt));
+        write_hilo_high(state, accumulated + product);
+        if (instruction.rd != 0) {
+            state.write_gpr64(instruction.rd, state.lo1());
+        }
+        break;
+    }
     case Operation::Mtsa:
         state.set_shift_amount_cache(static_cast<std::uint32_t>(state.read_gpr64(instruction.rs)));
         break;
@@ -1470,6 +1656,18 @@ bool execute_mmi(const DecodedInstruction& instruction, GuestState& state) {
         write_wide(state, instruction.rd, result);
         break;
     }
+    case Operation::Plzcw: {
+        // The two output words are the leading-sign counts of the source's
+        // low 64 bits minus one; the register's upper half is untouched.
+        const std::uint32_t low_word = state.read_gpr32(instruction.rs);
+        const std::uint32_t high_word =
+            static_cast<std::uint32_t>(state.read_gpr64(instruction.rs) >> 32);
+        const std::uint32_t low_count = count_leading_sign_bits(low_word) - 1;
+        const std::uint32_t high_count = count_leading_sign_bits(high_word) - 1;
+        state.write_gpr64(instruction.rd,
+                          (static_cast<std::uint64_t>(high_count) << 32) | low_count);
+        break;
+    }
     default:
         return false;
     }
@@ -1621,6 +1819,66 @@ void execute_plain(const DecodedInstruction& instruction, GuestState& state) {
         const std::uint32_t address = effective_address(state, instruction) & ~0xfu;
         state.memory().write_doubleword(address, state.read_gpr64(instruction.rt));
         state.memory().write_doubleword(address + 8, state.read_gpr_high64(instruction.rt));
+        break;
+    }
+    case Operation::Lhu: {
+        const auto address = effective_address(state, instruction);
+        state.write_gpr64(instruction.rt, state.memory().read_halfword(address));
+        break;
+    }
+    case Operation::Lwu: {
+        const auto address = effective_address(state, instruction);
+        state.write_gpr64(instruction.rt, state.memory().read_word(address));
+        break;
+    }
+    case Operation::Sh: {
+        const auto address = effective_address(state, instruction);
+        state.memory().write_halfword(address, static_cast<std::uint16_t>(
+            state.read_gpr64(instruction.rt) & 0xffffu));
+        break;
+    }
+    case Operation::Lwl: {
+        // Unaligned word assembly: the addressed bytes merge into the low
+        // word and the result sign-extends (the reference's mask/shift tables).
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 3u;
+        const std::uint32_t word = state.memory().read_word(address & ~3u);
+        state.write_gpr32(instruction.rt,
+                          (state.read_gpr32(instruction.rt) & lwl_mask[shift])
+                              | (word << merge_shift[shift]));
+        break;
+    }
+    case Operation::Lwr: {
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 3u;
+        const std::uint32_t word = state.memory().read_word(address & ~3u);
+        const std::uint32_t merged = (state.read_gpr32(instruction.rt) & lwr_mask[shift])
+            | (word >> place_shift[shift]);
+        if (shift == 0) {
+            // The aligned case sign-extends the whole register; the others
+            // replace only the low 32-bit word and keep the upper half.
+            state.write_gpr32(instruction.rt, merged);
+        } else {
+            state.write_gpr_low32(instruction.rt, merged);
+        }
+        break;
+    }
+    case Operation::Swl: {
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 3u;
+        const std::uint32_t aligned = address & ~3u;
+        const std::uint32_t word = state.memory().read_word(aligned);
+        state.memory().write_word(aligned,
+            (state.read_gpr32(instruction.rt) >> merge_shift[shift]) | (word & swl_mask[shift]));
+        break;
+    }
+    case Operation::Swr: {
+        const std::uint32_t address = effective_address(state, instruction);
+        const std::uint32_t shift = address & 3u;
+        const std::uint32_t aligned = address & ~3u;
+        const std::uint32_t word = state.memory().read_word(aligned);
+        state.memory().write_word(aligned,
+            (state.read_gpr32(instruction.rt) << place_shift[shift]) | (word & swr_mask[shift]));
         break;
     }
     default:

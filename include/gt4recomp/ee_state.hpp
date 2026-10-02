@@ -60,6 +60,11 @@ public:
     [[nodiscard]] std::uint32_t read_gpr32(std::uint8_t index) const;
     void write_gpr32(std::uint8_t index, std::uint32_t value);
 
+    // LWR with a non-aligned address replaces only the low 32 bits and keeps
+    // the upper half, which neither 32-bit nor 64-bit writes express; that
+    // rule is why this accessor exists.
+    void write_gpr_low32(std::uint8_t index, std::uint32_t value);
+
     // The R5900 register file is 128 bits wide; the accesses above view the
     // low half. MMI instructions read and write all four 32-bit lanes, so the
     // upper half is addressable separately. The alias register r0 is zero for

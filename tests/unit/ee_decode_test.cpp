@@ -44,6 +44,10 @@ int main() {
         {0x012a402d, Operation::Daddu, "daddu", 9, 10, 8, 0, 0x2d},
         {0x012a400a, Operation::Movz, "movz", 9, 10, 8, 0, 0x0a},
         {0x012a400b, Operation::Movn, "movn", 9, 10, 8, 0, 0x0b},
+        {0x012a0018, Operation::Mult, "mult", 9, 10, 0, 0, 0x18},
+        {0x012a0019, Operation::Multu, "multu", 9, 10, 0, 0, 0x19},
+        {0x012a001a, Operation::Div, "div", 9, 10, 0, 0, 0x1a},
+        {0x012a001b, Operation::Divu, "divu", 9, 10, 0, 0, 0x1b},
         {0x00022103, Operation::Sra, "sra", 0, 2, 4, 4, 0x03},
         {0x0040f809, Operation::Jalr, "jalr", 2, 0, 31, 0, 0x09},
         {0x0000000c, Operation::Syscall, "syscall", 0, 0, 0, 0, 0x0c},
@@ -127,6 +131,22 @@ int main() {
         {0xc4800010, Operation::Lwc1, "lwc1", 0x31, 4, 0, 0x0010, 16},
         {0x7c400000, Operation::Sq, "sq", 0x1f, 2, 0, 0x0000, 0},
         {0x78220000, Operation::Lq, "lq", 0x1e, 1, 2, 0x0000, 0},
+        {0x9c820000, Operation::Lwu, "lwu", 0x27, 4, 2, 0x0000, 0},
+        {0x94820000, Operation::Lhu, "lhu", 0x25, 4, 2, 0x0000, 0},
+        {0xa4820000, Operation::Sh, "sh", 0x29, 4, 2, 0x0000, 0},
+        {0x88830003, Operation::Lwl, "lwl", 0x22, 4, 3, 0x0003, 3},
+        {0x98830003, Operation::Lwr, "lwr", 0x26, 4, 3, 0x0003, 3},
+        {0xa8830003, Operation::Swl, "swl", 0x2a, 4, 3, 0x0003, 3},
+        {0xb8830003, Operation::Swr, "swr", 0x2e, 4, 3, 0x0003, 3},
+        {0x70000000, Operation::Madd, "madd", 0x1c, 0, 0, 0x0000, 0},
+        {0x70000001, Operation::Maddu, "maddu", 0x1c, 0, 0, 0x0001, 1},
+        {0x70000004, Operation::Plzcw, "plzcw", 0x1c, 0, 0, 0x0004, 4},
+        {0x70000018, Operation::Mult1, "mult1", 0x1c, 0, 0, 0x0018, 24},
+        {0x70000019, Operation::Multu1, "multu1", 0x1c, 0, 0, 0x0019, 25},
+        {0x7000001a, Operation::Div1, "div1", 0x1c, 0, 0, 0x001a, 26},
+        {0x7000001b, Operation::Divu1, "divu1", 0x1c, 0, 0, 0x001b, 27},
+        {0x70000020, Operation::Madd1, "madd1", 0x1c, 0, 0, 0x0020, 32},
+        {0x70000021, Operation::Maddu1, "maddu1", 0x1c, 0, 0, 0x0021, 33},
     };
     for (const auto& expected : immediate_cases) {
         const auto actual = decode(expected.word);
@@ -164,7 +184,7 @@ int main() {
     // Outside the implemented subset, plus nonzero fixed fields. Unsupported
     // is our policy; it makes no claim about a hardware reserved-instruction trap.
     const std::uint32_t unsupported[] = {
-        0x0000000d, 0x70000000, 0x46800000, 0x40036000, 0x041a0000,
+        0x0000000d, 0x70000002, 0x46800000, 0x40036000, 0x041a0000,
         0x00294100, 0x00294102, 0x03e10008, 0x03e00808, 0x03e00048,
         0x012a4061, 0x012a4063, 0x012a4064, 0x012a4065, 0x012a4066,
         0x3c281234, 0x19280004, 0x1d280004, 0x0120f849,

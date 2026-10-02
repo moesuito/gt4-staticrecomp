@@ -13,7 +13,8 @@ enum class Operation {
     // Immediates, shifts and upper immediates.
     Addiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
     // Memory access.
-    Lb, Lbu, Lh, Lw, Sw, Ld, Sd, Sb, Lq, Sq,
+    Lb, Lbu, Lh, Lhu, Lw, Lwu, Sw, Sh, Ld, Sd, Sb, Lq, Sq,
+    Lwl, Lwr, Swl, Swr,
     // Relative branches; the REGIMM family compares rs against zero.
     Beq, Bne, Beql, Bnel, Blez, Bgtz,
     Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall,
@@ -23,6 +24,9 @@ enum class Operation {
     Syscall,
     // Special register moves, synchronization and the MMI shift cache.
     Mfhi, Mthi, Mflo, Mtlo, Sync, Mfhi1, Mthi1, Mflo1, Mtlo1, Mtsa, Mtsab, Mtsah,
+    // Multiply and divide, including the second HI/LO bank used by the MMI
+    // compact forms and the accumulate variants.
+    Mult, Multu, Div, Divu, Madd, Maddu, Mult1, Multu1, Div1, Divu1, Madd1, Maddu1,
     // COP1: register moves, FPU memory access, single-precision arithmetic,
     // accumulator forms, comparisons, conversions and conditional branches.
     Mfc1, Cfc1, Mtc1, Ctc1, Lwc1, Swc1,
@@ -42,7 +46,7 @@ enum class Operation {
     Ppacw, Ppach, Ppacb, Pext5, Ppac5, Padsbh,
     Pinth, Pinteh, Pcpyld, Pcpyud, Pcpyh, Pexeh, Prevh, Pexew, Pexch, Pexcw, Prot3w,
     // MMI: HI/LO moves and the state-backed shift.
-    Pmfhi, Pmflo, Pmthi, Pmtlo, Pmfhl, Pmthl, Qfsrv
+    Pmfhi, Pmflo, Pmthi, Pmtlo, Pmfhl, Pmthl, Qfsrv, Plzcw
 };
 
 // These are overlapping views of the encoded bits, not a list of operands.

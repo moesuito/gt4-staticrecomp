@@ -80,8 +80,24 @@ int main() {
         {0x71281c08, 0, "paddsw v1, t1, t0"},
         {0x7c400000, 0, "sq zero, 0x0(v0)"},
         {0x78220000, 0, "lq v0, 0x0(at)"},
+        {0x9c820000, 0, "lwu v0, 0x0(a0)"},
+        {0x94820000, 0, "lhu v0, 0x0(a0)"},
+        {0xa4820000, 0, "sh v0, 0x0(a0)"},
+        {0x88830003, 0, "lwl v1, 0x3(a0)"},
+        {0x98830003, 0, "lwr v1, 0x3(a0)"},
+        {0xa8830003, 0, "swl v1, 0x3(a0)"},
+        {0xb8830003, 0, "swr v1, 0x3(a0)"},
+        {0x012a0018, 0, "mult t1, t2"},
+        {0x012a0019, 0, "multu t1, t2"},
+        {0x012a001a, 0, "div t1, t2"},
+        {0x012a001b, 0, "divu t1, t2"},
+        {0x70000000, 0, "madd zero, zero"},
+        {0x70000004, 0, "plzcw zero, zero"},
+        {0x70430018, 0, "mult1 v0, v1"},
+        {0x7043001a, 0, "div1 v0, v1"},
+        {0x70430020, 0, "madd1 v0, v1"},
         {0, 0, "sll zero, zero, 0x0"},
-        {0x70000000, 0, "unsupported 0x70000000 ; opcode=0x1c function=0x00"},
+        {0x70000002, 0, "unsupported 0x70000002 ; opcode=0x1c function=0x02"},
     };
     for (const auto& item : cases) {
         const auto actual = format_instruction(item.word, item.pc);
@@ -91,14 +107,14 @@ int main() {
             ++failures;
         }
     }
-    gt4recomp::ImageRecord text{0x100000, {0xf0, 0xff, 0xbd, 0x27, 0, 0, 0, 0x70}};
+    gt4recomp::ImageRecord text{0x100000, {0xf0, 0xff, 0xbd, 0x27, 0x02, 0, 0, 0x70}};
     std::ostringstream listing, report;
     disassemble_region(text, 0x100000, 2, listing, report);
     check(listing.str() == "00100000: 27bdfff0  addiu sp, sp, -0x10\n"
-                          "00100004: 70000000  unsupported 0x70000000 ; opcode=0x1c function=0x00\n",
+                          "00100004: 70000002  unsupported 0x70000002 ; opcode=0x1c function=0x02\n",
           "complete sequential listing");
     check(report.str() == "region=0x00100000 words=2 supported=1 unsupported=1\n"
-                         "unsupported opcode=0x1c function=0x00 count=1\n", "opcode report");
+                         "unsupported opcode=0x1c function=0x02 count=1\n", "opcode report");
     for (const auto& [start, count] : {
         std::pair{0x100000u, 0u}, {0x100001u, 1u}, {0xffffcu, 1u},
         {0x100004u, 2u}, {0x100008u, 1u}, {0x100000u, 0xffffffffu}}) {

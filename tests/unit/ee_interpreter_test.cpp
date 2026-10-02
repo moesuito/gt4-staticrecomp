@@ -207,7 +207,7 @@ int run_tests() {
     // unchanged, and the stop is stable when stepped again.
     {
         auto state = make_state();
-        load_program(state.memory(), base, {0x70000000});
+        load_program(state.memory(), base, {0x70000002});
         state.set_pc(base);
         Interpreter interpreter(state);
         const auto first = interpreter.step();
@@ -397,6 +397,113 @@ int run_tests() {
         check(state.read_gpr64(2) == 1, "movz moves when rt is zero");
         check(state.read_gpr64(3) == 0, "movn does not move when rt is zero");
         check(state.read_gpr64(4) == 0, "movz does not move when rt is nonzero");
+    }
+
+    // Multiplication and division with hand-computed results: 7 * -3 = -21
+    // (LO holds -21 sign-extended, HI the high part), -7 / 3 truncates toward
+    // zero (LO = -2, HI = -1) and division by zero signals through LO/HI.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24080007,    // addiu t0, zero, 7
+                      0x2409FFFD,    // addiu t1, zero, -3
+                      0x01090018,    // mult t0, t1
+                      0x240AFFF9,    // addiu t2, zero, -7
+                      0x240B0003,    // addiu t3, zero, 3
+                      0x014B001A,    // div t2, t3
+                      0x240C0005,    // addiu t4, zero, 5
+                      0x0180001A});  // div t4, zero
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 3);
+        check(state.lo() == 0xffffffffffffffebull, "mult LO holds the signed product");
+        check(state.hi() == 0xffffffffffffffffull, "mult HI holds the high part");
+        run_steps(interpreter, 3);
+        check(state.lo() == 0xfffffffffffffffeull, "div truncates toward zero");
+        check(state.hi() == 0xffffffffffffffffull, "div remainder keeps the sign");
+        run_steps(interpreter, 2);
+        check(state.lo() == 0xffffffffffffffffull, "div by zero signals in LO");
+        check(state.hi() == 5ull, "div by zero keeps the dividend in HI");
+    }
+
+    // The MMI compact forms write the second HI/LO bank: 3 * 5 through
+    // multu1, read back with mflo1/mfhi1.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24080003,    // addiu t0, zero, 3
+                      0x24090005,    // addiu t1, zero, 5
+                      0x71090019,    // multu1 t0, t1
+                      0x70001012,    // mflo1 v0
+                      0x70001810});  // mfhi1 v1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 5);
+        check(state.lo1() == 15 && state.hi1() == 0, "multu1 wrote the second bank");
+        check(state.lo() == 0 && state.hi() == 0, "the first bank stayed clear");
+        check(state.read_gpr64(2) == 15, "mflo1 read the second bank");
+        check(state.read_gpr64(3) == 0, "mfhi1 read the second bank");
+    }
+
+    // Unaligned loads and stores with hand-computed merges. The data window
+    // sits at +0x100 (beyond the program): 0x11223344 at +0x100 and
+    // 0xDEADBEEF at +0x108. The lwl/lwr results follow the reference
+    // mask/shift tables, and lwr with a nonzero shift keeps the register's
+    // upper half (the lwr a2 check at the end).
+    {
+        auto state = make_state();
+        state.memory().write_word(base + 0x100, 0x11223344);
+        state.memory().write_word(base + 0x108, 0xDEADBEEF);
+        load_program(state.memory(), base,
+                     {0x3C090010,    // lui t1, 0x10
+                      0x25290100,    // addiu t1, t1, 0x100
+                      0x89220000,    // lwl v0, 0x0(t1)
+                      0x89230002,    // lwl v1, 0x2(t1)
+                      0x99240001,    // lwr a0, 0x1(t1)
+                      0x99270000,    // lwr a3, 0x0(t1)
+                      0x3C0B8000,    // lui t3, 0x8000
+                      0x016B582D,    // daddu t3, t3, t3   (0xffffffff00000000)
+                      0x3C0C2ABB,    // lui a4, 0x2abb
+                      0x358CCCDD,    // ori a4, a4, 0xccdd
+                      0x016C302D,    // daddu a2, t3, a4   (0xffffffff2abbccdd)
+                      0x99260002,    // lwr a2, 0x2(t1)
+                      0x3C08AABB,    // lui t0, 0xaabb
+                      0x3508CCDD,    // ori t0, t0, 0xccdd
+                      0xA9280008,    // swl t0, 0x8(t1)
+                      0xB9280009,    // swr t0, 0x9(t1)
+                      0xB928000B});  // swr t0, 0xb(t1)
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 17);
+        check(state.read_gpr64(2) == 0x0000000044000000ull, "lwl shift 0");
+        check(state.read_gpr64(3) == 0x0000000022334400ull, "lwl shift 2");
+        check(state.read_gpr64(4) == 0x0000000000112233ull, "lwr shift 1");
+        check(state.read_gpr64(7) == 0x0000000011223344ull, "lwr shift 0 sign-extends");
+        check(state.read_gpr64(6) == 0xffffffff2abb1122ull,
+              "lwr shift 2 keeps the register's upper half");
+        check(state.memory().read_word(base + 0x108) == 0xddccddaaull,
+              "swl/swr merge the stored bytes");
+    }
+
+    // PLZCW counts the leading sign-equal bits minus one for each of the low
+    // two source words: zero counts 31, 0x80000000 counts 0, 1 counts 30.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x24080000,    // addiu t0, zero, 0
+                      0x71001004,    // plzcw v0, t0
+                      0x3C098000,    // lui t1, 0x8000
+                      0x71201804,    // plzcw v1, t1
+                      0x240A0001,    // addiu t2, zero, 1
+                      0x71401004});  // plzcw v0, t2
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 2);
+        check(state.read_gpr64(2) == 0x0000001f0000001full, "plzcw of zero words");
+        run_steps(interpreter, 2);
+        check(state.read_gpr64(3) == 0x0000001f00000000ull, "plzcw of the sign bit");
+        run_steps(interpreter, 2);
+        check(state.read_gpr64(2) == 0x0000001f0000001eull, "plzcw of one");
     }
 
     // Fetching outside the mapped region propagates the memory error.

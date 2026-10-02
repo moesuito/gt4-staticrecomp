@@ -93,13 +93,20 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Lb:
     case Operation::Lbu:
     case Operation::Lh:
+    case Operation::Lhu:
     case Operation::Lw:
+    case Operation::Lwu:
     case Operation::Sw:
+    case Operation::Sh:
     case Operation::Ld:
     case Operation::Sd:
     case Operation::Sb:
     case Operation::Lq:
     case Operation::Sq:
+    case Operation::Lwl:
+    case Operation::Lwr:
+    case Operation::Swl:
+    case Operation::Swr:
         output << ' ' << rt << ", " << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
     case Operation::Beq:
@@ -325,6 +332,23 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     }
     case Operation::Pmthl:
         output << " pmthl.lw " << rs;
+        break;
+    case Operation::Mult:
+    case Operation::Multu:
+    case Operation::Div:
+    case Operation::Divu:
+    case Operation::Madd:
+    case Operation::Maddu:
+    case Operation::Mult1:
+    case Operation::Multu1:
+    case Operation::Div1:
+    case Operation::Divu1:
+    case Operation::Madd1:
+    case Operation::Maddu1:
+        output << ' ' << rs << ", " << rt;
+        break;
+    case Operation::Plzcw:
+        output << ' ' << rd << ", " << rs;
         break;
     case Operation::Unsupported:
         output << " 0x" << hex_value(word, 8) << " ; " << unsupported_family(instruction);
