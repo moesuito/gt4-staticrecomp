@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 37 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 38 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -218,12 +218,13 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   the failure is the worker leaving the stream's +0x94 at 0; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 38 — the formatter's context fields: the archive content,
-  the registry and the handler state all match, so the difference is in the
-  stream's dynamic fields (the formatter's context, whose +0x94 the
-  formatter reads as the result); expose the guest sp from the driver and
-  follow a narrow stack window around the current sp, reporting the
-  context's field writes (+0x94, +0x80, +0x3C) during the open.
+- Next: M30 slice 39 — who drains the +0x4C list: the open advances to the
+  state-1 step (the stream appended to the handler's +0x4C list) and the
+  completion (vtable+0x24 → 0x004AD868 → 0x004AD808, which sets the
+  stream's +0x94) never runs; find which code drains that list and calls
+  the completion, and why the model's run stops before it (the handler's
+  worker thread and the cooperative scheduler's ordering, or the
+  formatter's own pump).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

@@ -1,21 +1,23 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 37 — the archive buffers are identical;
-the worker's insert: the live dump's handler buffers hold **the same
-archives the model serves, byte for byte** (0x0090EA80/0x59440 == the
-image's logical 0x1BEF0; 0x00905B00/0xF00 == the image's logical 0x143B24,
-with the -16 layer shift) — so the difference is not the archive content.
-The sound names appear plainly XOR-0xFF in the **outer** archives' name
-tables (GT4.VOL/GT4L1.VOL at 0xC01B/0xC025/0xC059); the inner archives'
-names are not raw-searchable (compressed, inconclusive). The worker step
-**0x004AD4A0** with an **empty list** (the state in both) takes the insert
-path **0x004AD53C**: it locks, sets the stream's state (+0x80) to 2 and
-inserts the stream into the handler's list (0x0057CB28 with the stream's
-condition node at +0x3C). No model behavior changed. The differential
-passes at 3,000 services (interpreter reference at 7,570,583 instructions,
-full state identical). This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-02 after M30 slice 38 — the stack watch captures the open;
+the completion never runs: a temporary write watch followed a narrow window
+around the guest sp (the driver publishes the current sp) and reported each
+new (pc, address) pair. The trace shows the open running through the
+formatter's context at 0x1FFFDB0 in order: the handler store
+(0x004B176C), the enqueue (0x004AD330 sets the state +0x80 to 0, 0x0057CB00
+appends to the pending list), the formatter's bookkeeping (0x0044D7C0/8),
+the **next-stage step (0x004AD690 sets the state to 1 and appends to the
++0x4C list)** and the path string `'gt4sys.ins` built at 0x96DAF2 — then the
+formatter's cleanup runs and it reads the result. **The stream's +0x94 is
+never written** (only its initial clear). The completion function is
+**0x004AD890 → 0x004AD808** (`*(stream+0x94) = the vtable+0x20 method's
+result`), a virtual method of the handler (vtable+0x24 = 0x004AD868) that
+the worker pipeline invokes when the open finishes — in the model it never
+runs. No model behavior changed. The differential passes at 3,000 services
+(interpreter reference at 7,570,583 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -906,6 +908,27 @@ documents.
   with the interpreter reference at 7,570,583 instructions and the full
   state identical
   (`docs/reverse-engineering/m30-slice37-archive-buffers-and-the-worker-insert.md`).
+- M30 slice 38 (2026-10-02): **the stack watch captures the open; the
+  completion never runs** — a temporary write watch followed a narrow
+  window around the guest sp (the driver publishes the current sp) and
+  reported each *new* (pc, address) pair (deduplicated against the idle
+  loops). The trace shows the open through the formatter's context at
+  0x1FFFDB0 in order: the handler store (0x004B176C), the enqueue
+  (0x004AD330 sets the state +0x80 to 0; 0x0057CB00 appends to the pending
+  list), the formatter's bookkeeping (0x0044D7C0/8), the **next-stage step
+  (0x004AD690 sets the state to 1 and appends the stream to the +0x4C
+  list)** and the **path string `'gt4sys.ins`** built at 0x96DAF2 (the
+  bytes 27 ac 67 74 34 73 79 73 2e 69 6e 73 73) — then the formatter's
+  cleanup (0x004AF568/0x0044D460/0x004AF0A0) runs and it reads the result.
+  **The stream's +0x94 is never written** (only its initial clear). The
+  completion function is **0x004AD890 → 0x004AD808** — `*(stream+0x94) =
+  the vtable+0x20 method's result` (wrapped by 0x005750C0) — a virtual
+  method of the handler (vtable+0x24 = 0x004AD868) that the worker pipeline
+  invokes when the open finishes; in the model it never runs. No model
+  behavior changed: CTest 34/34; Python 73 (67 run, 6 skip); the
+  differential passes at 3,000 services with the interpreter reference at
+  7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice38-stack-watch-and-the-missing-completion.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -915,13 +938,13 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the formatter's context fields** — the
-  archive content, the registry and the handler state all match, so the
-  difference is in the stream's dynamic fields (the formatter's context,
-  whose +0x94 the formatter reads as the result); the next instrument
-  exposes the guest sp from the driver and follows a narrow stack window
-  around the current sp, reporting the context's field writes (+0x94,
-  +0x80, +0x3C) during the open.
+- Next technical milestone work: **who drains the +0x4C list** — the open
+  advances to the state-1 step (the stream appended to the handler's +0x4C
+  list) and the completion (vtable+0x24 → 0x004AD868 → 0x004AD808, which
+  sets the stream's +0x94) never runs; the next slice finds which code
+  drains that list and calls the completion, and why the model's run stops
+  before it (the handler's worker thread and the cooperative scheduler's
+  ordering, or the formatter's own pump).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
