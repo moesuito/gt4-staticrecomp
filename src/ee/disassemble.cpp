@@ -71,6 +71,8 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
         output << ' ' << rd << ", " << rs << ", " << rt;
         break;
     case Operation::Addiu:
+    case Operation::Slti:
+    case Operation::Sltiu:
         output << ' ' << rt << ", " << rs << ", " << signed_hex(instruction.signed_immediate());
         break;
     case Operation::Lui:
@@ -78,8 +80,11 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
         break;
     case Operation::Andi:
     case Operation::Ori:
+    case Operation::Xori:
         output << ' ' << rt << ", " << rs << ", 0x" << hex_value(instruction.immediate);
         break;
+    case Operation::Lb:
+    case Operation::Lbu:
     case Operation::Lh:
     case Operation::Lw:
     case Operation::Sw:
@@ -126,6 +131,7 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     }
     case Operation::Sll:
     case Operation::Srl:
+    case Operation::Sra:
         output << ' ' << rd << ", " << rt << ", 0x" << hex_value(instruction.shift_amount);
         break;
     case Operation::Unsupported:

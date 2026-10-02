@@ -46,6 +46,29 @@ class ModelTests(unittest.TestCase):
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_hand_computed_64_bit_comparisons_and_new_ops(self):
+        machine = synth.Machine(bytes(synth.DATA_BYTES))
+        machine.write_reg64(13, 0xFFFFFFFF00000000)  # negative as a 64-bit signed value
+        machine.write_reg64(14, 0)
+        synth.slt_effect(13, 14, 10)(machine)
+        self.assertEqual(machine.read_reg64(10), 1)  # 64-bit signed comparison
+        synth.sltu_effect(13, 14, 10)(machine)
+        self.assertEqual(machine.read_reg64(10), 0)  # unsigned: huge value is not below 0
+        synth.slti_effect(13, 11, 1)(machine)
+        self.assertEqual(machine.read_reg64(11), 1)  # negative is below 1
+        synth.sltiu_effect(13, 11, 1)(machine)
+        self.assertEqual(machine.read_reg64(11), 0)  # unsigned: no
+        machine.write_reg32(9, 0x80000000)
+        synth.sra_effect(9, 10, 4)(machine)
+        self.assertEqual(machine.read_reg64(10), 0xFFFFFFFFF8000000)
+        machine.write_memory(synth.DATA_BASE, 1, 0x80)
+        machine.write_reg64(synth.BASE_REGISTER, synth.DATA_BASE)
+        synth.lbu_effect(12, 0)(machine)
+        self.assertEqual(machine.read_reg64(12), 0x80)  # lbu: zero-extended
+        synth.lb_effect(12, 0)(machine)
+        self.assertEqual(machine.read_reg64(12), 0xFFFFFFFFFFFFFF80)  # lb: sign-extended
+        self.assertEqual(synth.sign_extend_8(0x80), -0x80)
+
     def test_deterministic_for_a_seed(self):
         self.assertEqual(synth.generate(1234, 3), synth.generate(1234, 3))
         self.assertNotEqual(synth.generate(1234, 3), synth.generate(4321, 3))

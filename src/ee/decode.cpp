@@ -9,6 +9,8 @@ Operation decode_special(const DecodedInstruction& instruction) {
         return instruction.rs == 0 ? Operation::Sll : Operation::Unsupported;
     case 0x02:
         return instruction.rs == 0 ? Operation::Srl : Operation::Unsupported;
+    case 0x03:
+        return instruction.rs == 0 ? Operation::Sra : Operation::Unsupported;
     case 0x08:
         if (instruction.rt == 0 && instruction.rd == 0 && instruction.shift_amount == 0) {
             return Operation::Jr;
@@ -117,8 +119,11 @@ DecodedInstruction decode(std::uint32_t word) {
         }
         break;
     case 0x09: result.operation = Operation::Addiu; break;
+    case 0x0a: result.operation = Operation::Slti; break;
+    case 0x0b: result.operation = Operation::Sltiu; break;
     case 0x0c: result.operation = Operation::Andi; break;
     case 0x0d: result.operation = Operation::Ori; break;
+    case 0x0e: result.operation = Operation::Xori; break;
     case 0x0f:
         if (result.rs == 0) {
             result.operation = Operation::Lui;
@@ -126,8 +131,10 @@ DecodedInstruction decode(std::uint32_t word) {
         break;
     case 0x14: result.operation = Operation::Beql; break;
     case 0x15: result.operation = Operation::Bnel; break;
+    case 0x20: result.operation = Operation::Lb; break;
     case 0x21: result.operation = Operation::Lh; break;
     case 0x23: result.operation = Operation::Lw; break;
+    case 0x24: result.operation = Operation::Lbu; break;
     case 0x28: result.operation = Operation::Sb; break;
     case 0x2b: result.operation = Operation::Sw; break;
     case 0x37: result.operation = Operation::Ld; break;
@@ -157,8 +164,14 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Jr: return "jr";
     case Operation::Sll: return "sll";
     case Operation::Srl: return "srl";
+    case Operation::Sra: return "sra";
     case Operation::Slt: return "slt";
     case Operation::Sltu: return "sltu";
+    case Operation::Slti: return "slti";
+    case Operation::Sltiu: return "sltiu";
+    case Operation::Xori: return "xori";
+    case Operation::Lb: return "lb";
+    case Operation::Lbu: return "lbu";
     case Operation::Daddu: return "daddu";
     case Operation::Lh: return "lh";
     case Operation::Sb: return "sb";

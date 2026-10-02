@@ -11,9 +11,9 @@ enum class Operation {
     // Register arithmetic and logic.
     Addu, Subu, And, Or, Xor, Slt, Sltu, Daddu,
     // Immediates, shifts and upper immediates.
-    Addiu, Andi, Ori, Sll, Srl, Lui,
+    Addiu, Andi, Ori, Xori, Slti, Sltiu, Sll, Srl, Sra, Lui,
     // Memory access.
-    Lh, Lw, Sw, Ld, Sd, Sb,
+    Lb, Lbu, Lh, Lw, Sw, Ld, Sd, Sb,
     // Relative branches; the REGIMM family compares rs against zero.
     Beq, Bne, Beql, Bnel, Blez, Bgtz,
     Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall,

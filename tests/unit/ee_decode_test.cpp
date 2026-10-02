@@ -42,6 +42,7 @@ int main() {
         {0x012a402a, Operation::Slt, "slt", 9, 10, 8, 0, 0x2a},
         {0x012a402b, Operation::Sltu, "sltu", 9, 10, 8, 0, 0x2b},
         {0x012a402d, Operation::Daddu, "daddu", 9, 10, 8, 0, 0x2d},
+        {0x00022103, Operation::Sra, "sra", 0, 2, 4, 4, 0x03},
         {0x0040f809, Operation::Jalr, "jalr", 2, 0, 31, 0, 0x09},
         {0x0000000c, Operation::Syscall, "syscall", 0, 0, 0, 0, 0x0c},
     };
@@ -91,6 +92,12 @@ int main() {
         {0xffbf0000, Operation::Sd, "sd", 63, 29, 31, 0x0000, 0},
         {0x50400004, Operation::Beql, "beql", 20, 2, 0, 0x0004, 4},
         {0x54600005, Operation::Bnel, "bnel", 21, 3, 0, 0x0005, 5},
+        {0x90820003, Operation::Lbu, "lbu", 36, 4, 2, 0x0003, 3},
+        {0x80820003, Operation::Lb, "lb", 32, 4, 2, 0x0003, 3},
+        {0x2c820006, Operation::Sltiu, "sltiu", 11, 4, 2, 0x0006, 6},
+        {0x28820006, Operation::Slti, "slti", 10, 4, 2, 0x0006, 6},
+        {0x38420054, Operation::Xori, "xori", 14, 2, 2, 0x0054, 84},
+        {0x38081234, Operation::Xori, "xori", 14, 0, 8, 0x1234, 4660},
         {0x1840000c, Operation::Blez, "blez", 6, 2, 0, 0x000c, 12},
         {0x1d200004, Operation::Bgtz, "bgtz", 7, 9, 0, 0x0004, 4},
         {0x06000009, Operation::Bltz, "bltz", 1, 16, 0, 0x0009, 9},
@@ -138,7 +145,7 @@ int main() {
     // Outside the implemented subset, plus nonzero fixed fields. Unsupported
     // is our policy; it makes no claim about a hardware reserved-instruction trap.
     const std::uint32_t unsupported[] = {
-        0x0000000d, 0x70000000, 0x46000000, 0x38081234, 0x04190000,
+        0x0000000d, 0x70000000, 0x46000000, 0x40036000, 0x04190000,
         0x00294100, 0x00294102, 0x03e10008, 0x03e00808, 0x03e00048,
         0x012a4061, 0x012a4063, 0x012a4064, 0x012a4065, 0x012a4066,
         0x3c281234, 0x19280004, 0x1d280004, 0x0120f849,
