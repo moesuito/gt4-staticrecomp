@@ -409,6 +409,26 @@ std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     case Operation::Ei:
     case Operation::Di:
     case Operation::Eret:
+    case Operation::Vnop:
+        break;
+    case Operation::Qmfc2:
+    case Operation::Qmtc2:
+    case Operation::Cfc2:
+    case Operation::Ctc2:
+        // The GPR operand is rt; the vector or control register is it.
+        output << ' ' << rt << ", " << (instruction.operation == Operation::Qmfc2
+                                            || instruction.operation == Operation::Qmtc2
+                                        ? "vf"
+                                        : "vi")
+               << static_cast<unsigned>(instruction.rd);
+        break;
+    case Operation::Lqc2:
+        output << " vf" << static_cast<unsigned>(instruction.rt) << ", "
+               << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
+        break;
+    case Operation::Sqc2:
+        output << " vf" << static_cast<unsigned>(instruction.rt) << ", "
+               << signed_hex(instruction.signed_immediate()) << '(' << rs << ')';
         break;
     case Operation::Break: {
         // The 20-bit code occupies bits 25-6, like SYSCALL's.

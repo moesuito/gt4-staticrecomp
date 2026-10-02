@@ -1,8 +1,9 @@
 # Project status
 
-Updated 2026-10-01 after M14 slice 2 — live observation and savestate parsing.
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M22 part 1 — the VU0 macro-mode state, its moves and
+the quad memory accesses. This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -13,11 +14,12 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 217 operations (line-filtered count; earlier documents
-    cited 175, which counted comment fragments). Whole-text scan, corrected:
-    2,269 unsupported of 1,334,917 words (0.17%), dominated by VU0 macro
-    (COP2, ~1,250), LQC2/SQC2 (378) and the trapping arithmetic forms (123);
-    the first 350,000 words — every sampled region — decode cleanly. (An
+  - The decoder covers 224 operations (line-filtered count; earlier documents
+    cited 175, which counted comment fragments). Whole-text scan, corrected
+    after M22 part 1: 1,426 unsupported of 1,334,917 words (0.11%),
+    dominated by the VU0 macro arithmetic (~770) and the trapping arithmetic
+    forms (123); the first 350,000 words — every sampled region — decode
+    cleanly. (An
     earlier "zero unsupported" claim was a false positive from chunk ranges
     beyond the text end; the ERET sighting exposed it. Lesson: check the
     tool's exit status, not only its output.) Ghidra verification: the M6
@@ -138,6 +140,20 @@ work proceeds. Details live in the linked evidence documents.
   (4 states, lazy-initializer runs stopping at the first BIOS service).
   The whole-text scan correction is recorded above and in the M20 doc
   (`docs/reverse-engineering/m21-trap-slots-and-the-largest-module.md`).
+- M22 part 1 (2026-10-02): VU0 macro-mode state — 32 vector registers of four
+  32-bit lanes with register 0 hardwired to the constant (0, 0, 0, 1.0), the
+  integer file with VI0 zero, and the clip flag — plus the moves and memory:
+  QMFC2/QMTC2 (the full 128 bits through both GPR halves), CFC2/CTC2 with the
+  reference's exact special cases (the reciprocal register's mantissa mask
+  and constant exponent, read-only MAC_FLAG/TPC/VPU_STAT, the FBRST mask
+  whose VU0-reset clears the file, CLIP_FLAG's double write, context stops
+  for the VU1 controls), LQC2/SQC2 (16-byte alignment, constant-register
+  loads access and discard) and VNOP (the most frequent macro word). 224
+  operations; unsupported words over the whole text: 2,269 → **1,426**. The
+  macro dispatch is decoded for the next slice: functions 0x00-0x3B through
+  the standard table, 0x3C-0x3F through the packed `(word & 3) | ((word >> 4)
+  & 0x7C)` index; VMULAx/y/z/w and VNOP dominate the observed families
+  (`docs/reverse-engineering/m22-vu0-macro-moves.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -145,17 +161,17 @@ work proceeds. Details live in the linked evidence documents.
   registers (the savestate's own eeMemory re-verifies the text image with 0
   differences). Savestate anchors: PINE slot 9 and the owner's slot 1
   (`docs/reverse-engineering/m14-live-observation.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M14
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M21
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: M14 continuation — broader decoding
-  (COP1/MMI) so the interpreter can run real code; differential execution
-  needs step control (open question).
+- Next technical milestone work: M22 part 2 — the VU0 macro arithmetic
+  (VADD/VMUL/VMADD/VDIV/... with the vector flag semantics); differential
+  execution still needs step control (open question).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 16/16 CTest (the translation tests exist only where the local CORE
+- Tests: 23/23 CTest (the translation tests exist only where the local CORE
   does); Python suite 71 collected (65 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
@@ -180,23 +196,25 @@ work proceeds. Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M14 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M21 lessons are
   pending.
-- The multiply/divide family (MULT/DIV/MADD/MADDU, PMULT*/PMADD*/PHM*/PDIV*,
-  PLZCW), COP0 (`ei`/`eret`) and BREAK remain unmodeled; in the sampled
-  regions only those encodings are left.
+- Unmodeled families left in the sampled text: the VU0 macro arithmetic
+  (~770 words, part 2 of M22), the trapping arithmetic/DADDI forms (123+23,
+  they need the exception path), the MMI2/MMI3 parallel multiply (14), and
+  VCALLMS/VU1 controls (micro execution, out of scope by design).
 - Live single-stepping is unsolved (savestate parsing covers offline
   snapshots); the freeze layout is coupled to the emulator build.
 
 ## Next actions
 
-1. M22 next: VU0 macro mode (COP2, the dominant remaining family: ~1,250
-   macro words plus 378 quad loads/stores) with its own vector register file
-   and semantics; then the MMI2/MMI3 parallel-multiply remainder and the
-   trapping arithmetic/DADDI forms (they need the exception path); then
-   indirect-call dispatch for jr-based tables; differential execution needs
-   step control (open).
-2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
+1. M22 part 2: the VU0 macro arithmetic (VADD/VMUL/VMADD/VDIV/... with the
+   reference's vector flag semantics) through the decoded dispatch — the
+   standard table for functions 0x00-0x3B and the packed index for
+   0x3C-0x3F; VMULAx/y/z/w dominate. Then the MMI2/MMI3 parallel-multiply
+   remainder and the trapping arithmetic/DADDI forms (they need the
+   exception path); then indirect-call dispatch for jr-based tables;
+   differential execution needs step control (open).
+2. The M9-M21 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal

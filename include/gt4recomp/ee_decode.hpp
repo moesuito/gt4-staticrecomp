@@ -33,6 +33,9 @@ enum class Operation {
     Mult, Multu, Div, Divu, Madd, Maddu, Mult1, Multu1, Div1, Divu1, Madd1, Maddu1,
     // CP0: system-coprocessor moves and the interrupt-enable pair.
     Mfc0, Mtc0, Ei, Di, Eret,
+    // COP2: VU0 macro-mode moves, the quad memory accesses and the reference
+    // no-operation. The arithmetic tables land in later slices.
+    Qmfc2, Qmtc2, Cfc2, Ctc2, Lqc2, Sqc2, Vnop,
     // COP1: register moves, FPU memory access, single-precision arithmetic,
     // accumulator forms, comparisons, conversions and conditional branches.
     Mfc1, Cfc1, Mtc1, Ctc1, Lwc1, Swc1,

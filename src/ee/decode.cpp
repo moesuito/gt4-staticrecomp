@@ -226,6 +226,38 @@ Operation decode_cop0(const DecodedInstruction& instruction) {
     }
 }
 
+Operation decode_cop2_special(const DecodedInstruction& instruction) {
+    // The VU macro encoding: functions 0x00-0x3B dispatch through the
+    // standard table (the arithmetic land in later slices); 0x3C-0x3F go
+    // through the packed secondary index the reference computes from bits
+    // 1-0 and 9-4 of the word.
+    if (instruction.function < 0x3c) {
+        return Operation::Unsupported;
+    }
+    const std::uint32_t index =
+        (instruction.word & 0x3u) | ((instruction.word >> 4) & 0x7cu);
+    if (index == 47) {
+        return Operation::Vnop;  // the table's full no-operation
+    }
+    return Operation::Unsupported;
+}
+
+Operation decode_cop2(const DecodedInstruction& instruction) {
+    switch (instruction.rs) {
+    case 0x01: return Operation::Qmfc2;
+    case 0x02: return Operation::Cfc2;
+    case 0x05: return Operation::Qmtc2;
+    case 0x06: return Operation::Ctc2;
+    case 0x10: case 0x11: case 0x12: case 0x13:
+    case 0x14: case 0x15: case 0x16: case 0x17:
+    case 0x18: case 0x19: case 0x1a: case 0x1b:
+    case 0x1c: case 0x1d: case 0x1e: case 0x1f:
+        return decode_cop2_special(instruction);
+    default:
+        return Operation::Unsupported;
+    }
+}
+
 Operation decode_cop1(const DecodedInstruction& instruction) {
     switch (instruction.rs) {
     case 0x00: return Operation::Mfc1;
@@ -389,6 +421,9 @@ DecodedInstruction decode(std::uint32_t word) {
     case 0x2c: result.operation = Operation::Sdl; break;
     case 0x2d: result.operation = Operation::Sdr; break;
     case 0x31: result.operation = Operation::Lwc1; break;
+    case 0x36: result.operation = Operation::Lqc2; break;
+    case 0x3e: result.operation = Operation::Sqc2; break;
+    case 0x12: result.operation = decode_cop2(result); break;
     case 0x2f: result.operation = Operation::Cache; break;
     case 0x33: result.operation = Operation::Pref; break;
     case 0x37: result.operation = Operation::Ld; break;
@@ -499,6 +534,13 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Ei: return "ei";
     case Operation::Di: return "di";
     case Operation::Eret: return "eret";
+    case Operation::Qmfc2: return "qmfc2";
+    case Operation::Qmtc2: return "qmtc2";
+    case Operation::Cfc2: return "cfc2";
+    case Operation::Ctc2: return "ctc2";
+    case Operation::Lqc2: return "lqc2";
+    case Operation::Sqc2: return "sqc2";
+    case Operation::Vnop: return "vnop";
     case Operation::Mfhi: return "mfhi";
     case Operation::Mthi: return "mthi";
     case Operation::Mflo: return "mflo";

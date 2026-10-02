@@ -277,6 +277,61 @@ void GuestState::write_cp0(std::uint8_t index, std::uint32_t value) {
     cp0_[index] = value;
 }
 
+std::uint32_t GuestState::read_vf_lane(std::uint8_t index, std::uint8_t lane) const {
+    if (index >= 32 || lane >= 4) {
+        throw std::runtime_error("VU0 register or lane index out of range");
+    }
+    if (index == 0) {
+        // The constant register reads as (0, 0, 0, 1.0).
+        return lane == 3 ? 0x3f800000u : 0u;
+    }
+    return vu0_vf_[index][lane];
+}
+
+void GuestState::write_vf_lane(std::uint8_t index, std::uint8_t lane, std::uint32_t value) {
+    if (index >= 32 || lane >= 4) {
+        throw std::runtime_error("VU0 register or lane index out of range");
+    }
+    if (index == 0) {
+        return;  // the constant register ignores writes
+    }
+    vu0_vf_[index][lane] = value;
+}
+
+std::uint32_t GuestState::read_vi(std::uint8_t index) const {
+    if (index >= 32) {
+        throw std::runtime_error("VU0 integer register index out of range");
+    }
+    return index == 0 ? 0 : vu0_vi_[index];
+}
+
+void GuestState::write_vi(std::uint8_t index, std::uint32_t value) {
+    if (index >= 32) {
+        throw std::runtime_error("VU0 integer register index out of range");
+    }
+    if (index == 0) {
+        return;  // VI0 is hardwired zero
+    }
+    vu0_vi_[index] = value;
+}
+
+std::uint32_t GuestState::vu0_clip_flag() const noexcept {
+    return vu0_clip_flag_;
+}
+
+void GuestState::set_vu0_clip_flag(std::uint32_t value) noexcept {
+    vu0_clip_flag_ = value;
+}
+
+void GuestState::reset_vu0_registers() noexcept {
+    // VF0 stays the constant through the accessors; the storage clears.
+    for (auto& vector : vu0_vf_) {
+        vector.fill(0);
+    }
+    vu0_vi_.fill(0);
+    vu0_clip_flag_ = 0;
+}
+
 std::uint32_t GuestState::pc() const noexcept {
     return pc_;
 }
