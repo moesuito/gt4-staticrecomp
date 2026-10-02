@@ -1,0 +1,57 @@
+"""Optional M13 translator CLI checks using the pinned private CORE."""
+
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOL = ROOT / "build/gt4translate.exe"
+CORE = ROOT / "private/fingerprint-check/CORE.GT4"
+
+
+@unittest.skipUnless(TOOL.exists() and CORE.exists(), "Requires native build and private CORE")
+class TranslateCliTests(unittest.TestCase):
+    def run_tool(self, start, limit=64, output=None):
+        command = [str(TOOL), str(CORE), start, str(limit)]
+        if output is not None:
+            command.append(str(output))
+        return subprocess.run(command, capture_output=True, text=True)
+
+    def test_deterministic_translation_of_the_first_function(self):
+        first = self.run_tool("0x577878")
+        second = self.run_tool("0x577878")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertIn("inline void function_00577878(ee::GuestState& state)", first.stdout)
+        self.assertIn("state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)))",
+                      first.stdout)
+        # The delay slot statement must appear before the return statement.
+        delay = first.stdout.index("sw a2, 0x4(a0)")
+        ret = first.stdout.index("return to ra")
+        self.assertLess(delay, ret)
+
+    def test_output_file_matches_stdout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "translated.hpp"
+            result = self.run_tool("0x577878", output=path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(path.read_text(encoding="utf-8"),
+                             self.run_tool("0x577878").stdout)
+
+    def test_rejects_unsupported_words(self):
+        result = self.run_tool("0x100008")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("ERROR:", result.stderr)
+        self.assertIn("unsupported", result.stderr)
+
+    def test_rejects_internal_transfers(self):
+        result = self.run_tool("0x5a3140")  # reaches a beq after the prologue
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Only a final 'jr ra' transfer is supported", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
