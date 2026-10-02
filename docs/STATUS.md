@@ -431,10 +431,15 @@ Details live in the linked evidence documents.
   the RPC binds and calls (version query with the game's compatibility
   constant; empty results otherwise), survives the IOP reset, and the
   **idle VBlank source** (decision 0010) wakes the game's threads. The run
-  hits the 3,000-service limit inside the runtime (WaitSema/SleepThread/
-  handler-return cycles) with the state identical to the interpreter at
-  7,515,389 instructions. The recorded next wall is the first RPC call whose
-  reply the game acts on.
+  hits the 3,000-service limit inside the runtime with the state identical
+  to the interpreter at 7,515,389 instructions. With a larger limit
+  (`--services 12000 --threads`) the model stops at 3,645 services as a
+  **no-runnable-thread**: all three threads wait on semaphores (main on 36,
+  the RPC thread on 3, the loader on 37) and the idle VBlank handlers keep
+  running without waking them. The recorded next hypothesis is a **DMA
+  completion interrupt** (VIF1/GIF/SIF) that the model never raises: the
+  channels are storage, so a started transfer never completes and the
+  handler that would signal those semaphores never fires.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs three threads under VBlank wakeups. No
@@ -451,12 +456,15 @@ Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 9: **the game's first real IOP service call** — identify the
-   RPC function the game's loading path calls next, and answer it from
-   evidence (the game's client code at the call site plus the live PCSX2
-   emulator as the oracle); the acceptance evidence is
-   `gt4boot --compare-interpreter` past the new frontier (the 3,000-service
-   limit is raised with the same comparison).
+1. M30 slice 9: **DMA channel completions** — the game waits on semaphores
+   that a completion interrupt should signal (see the open items). Model a
+   channel start (CHCR's STR bit) as an immediate completion: clear the bit
+   and raise the channel's completion interrupt (cause or DMAC handler), so
+   the waiting threads wake. Evidence: which channels the game starts and
+   which handler signals which semaphore, from the service trace and the
+   handler disassembly; the acceptance evidence is
+   `gt4boot --compare-interpreter` past 3,645 services with the state
+   identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the VBlank source is idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the

@@ -265,11 +265,12 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
 }
 
 void usage() {
-    std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--compare-interpreter]\n"
+    std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--compare-interpreter] [--threads]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
                  "  --compare-interpreter repeat the run in the interpreter and require the\n"
-                 "                        stop and the full final state to match\n";
+                 "                        stop and the full final state to match\n"
+                 "  --threads             print the kernel's thread table after the run\n";
 }
 
 } // namespace
@@ -283,10 +284,13 @@ int wmain(int argc, wchar_t* argv[]) {
     bool compare_interpreter = false;
     std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
     std::filesystem::path core_path;
+    bool print_threads = false;
     for (int index = 1; index < argc; ++index) {
         const std::wstring argument = argv[index];
         if (argument == L"--compare-interpreter") {
             compare_interpreter = true;
+        } else if (argument == L"--threads") {
+            print_threads = true;
         } else if (argument == L"--services" && index + 1 < argc) {
             service_limit = std::stoull(argv[++index]);
         } else if (core_path.empty()) {
@@ -338,6 +342,18 @@ int wmain(int argc, wchar_t* argv[]) {
                   << "stats: module calls " << result.stats.module_calls
                   << ", interpreted steps " << result.stats.interpreted_steps
                   << ", services handled " << result.stats.services_handled << '\n';
+        if (print_threads) {
+            // The kernel's thread table at the stop: id, status bits, the
+            // wait reason when waiting, priority, entry and resume pc.
+            for (const KernelThread& thread : driver_kernel.threads()) {
+                std::cout << "thread " << thread.id << ": status 0x" << std::hex
+                          << thread.status << std::dec << ", wait " << thread.wait_type
+                          << "/" << thread.wait_id << ", prio " << thread.current_priority
+                          << ", entry 0x" << std::hex << std::setfill('0') << std::setw(8)
+                          << thread.function << ", pc 0x" << std::setw(8)
+                          << thread.context.pc << std::dec << std::setfill(' ') << '\n';
+            }
+        }
 
         if (compare_interpreter) {
             BootDevices reference_devices;

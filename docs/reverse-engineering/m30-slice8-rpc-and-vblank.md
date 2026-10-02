@@ -116,7 +116,13 @@ VBlank, its INTC status bit and the delivery budget); Python 73 (67 run,
 
 - The model IOP answers only the version query; every other RPC function
   returns empty results. The first call that expects real data (the game's
-  file/cdvd loading) is the recorded next wall.
+  file/cdvd loading) is a recorded wall.
+- The run's true frontier, past the 3,000-service comparison point: with
+  `--services 12000 --threads` the model stops at 3,645 services with all
+  three threads waiting on semaphores (main 36, the RPC thread 3, the loader
+  37) while idle VBlanks keep running. The next hypothesis is a **DMA
+  completion interrupt** (VIF1/GIF/SIF): the channels are storage, so a
+  started transfer never completes and no handler fires.
 - Interrupts are delivered only at idleness; no periodic tick interrupts a
   long-running computation.
 - No transfer engine, FIFO behavior, GS behavior or display is modeled; the
