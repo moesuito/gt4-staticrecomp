@@ -45,6 +45,11 @@ int main() {
         {0x00022103, Operation::Sra, "sra", 0, 2, 4, 4, 0x03},
         {0x0040f809, Operation::Jalr, "jalr", 2, 0, 31, 0, 0x09},
         {0x0000000c, Operation::Syscall, "syscall", 0, 0, 0, 0, 0x0c},
+        {0x0000040f, Operation::Sync, "sync", 0, 0, 0, 16, 0x0f},
+        {0x00001010, Operation::Mfhi, "mfhi", 0, 0, 2, 0, 0x10},
+        {0x00400011, Operation::Mthi, "mthi", 2, 0, 0, 0, 0x11},
+        {0x00001012, Operation::Mflo, "mflo", 0, 0, 2, 0, 0x12},
+        {0x00400013, Operation::Mtlo, "mtlo", 2, 0, 0, 0, 0x13},
     };
     for (const auto& expected : register_cases) {
         const auto actual = decode(expected.word);
@@ -108,6 +113,18 @@ int main() {
         {0x05310004, Operation::Bgezal, "bgezal", 1, 9, 17, 0x0004, 4},
         {0x05320004, Operation::Bltzall, "bltzall", 1, 9, 18, 0x0004, 4},
         {0x05330004, Operation::Bgezall, "bgezall", 1, 9, 19, 0x0004, 4},
+        {0x70000c28, Operation::Padduw, "padduw", 0x1c, 0, 0, 0x0c28, 3112},
+        {0x70000011, Operation::Mthi1, "mthi1", 0x1c, 0, 0, 0x0011, 17},
+        {0x70000013, Operation::Mtlo1, "mtlo1", 0x1c, 0, 0, 0x0013, 19},
+        {0x70431008, Operation::Paddw, "paddw", 0x1c, 2, 3, 0x1008, 4104},
+        {0x04190000, Operation::Mtsah, "mtsah", 0x01, 0, 25, 0x0000, 0},
+        {0x44800000, Operation::Mtc1, "mtc1", 0x11, 4, 0, 0x0000, 0},
+        {0x44c0f800, Operation::Ctc1, "ctc1", 0x11, 6, 0, 0xf800, -2048},
+        {0x46010018, Operation::AddaS, "adda.s", 0x11, 16, 1, 0x0018, 24},
+        {0x45010002, Operation::Bc1t, "bc1t", 0x11, 8, 1, 0x0002, 2},
+        {0xc4800010, Operation::Lwc1, "lwc1", 0x31, 4, 0, 0x0010, 16},
+        {0x7c400000, Operation::Sq, "sq", 0x1f, 2, 0, 0x0000, 0},
+        {0x78220000, Operation::Lq, "lq", 0x1e, 1, 2, 0x0000, 0},
     };
     for (const auto& expected : immediate_cases) {
         const auto actual = decode(expected.word);
@@ -145,7 +162,7 @@ int main() {
     // Outside the implemented subset, plus nonzero fixed fields. Unsupported
     // is our policy; it makes no claim about a hardware reserved-instruction trap.
     const std::uint32_t unsupported[] = {
-        0x0000000d, 0x70000000, 0x46000000, 0x40036000, 0x04190000,
+        0x0000000d, 0x70000000, 0x46800000, 0x40036000, 0x041a0000,
         0x00294100, 0x00294102, 0x03e10008, 0x03e00808, 0x03e00048,
         0x012a4061, 0x012a4063, 0x012a4064, 0x012a4065, 0x012a4066,
         0x3c281234, 0x19280004, 0x1d280004, 0x0120f849,

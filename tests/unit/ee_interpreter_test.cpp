@@ -21,7 +21,7 @@ constexpr std::uint32_t base = 0x00100000;
 constexpr std::size_t region_size = 0x1000;
 
 void load_program(GuestMemory& memory, std::uint32_t address,
-                  std::initializer_list<std::uint32_t> words) {
+                  const std::vector<std::uint32_t>& words) {
     std::vector<std::uint8_t> bytes;
     bytes.reserve(words.size() * 4);
     for (const auto word : words) {
@@ -31,6 +31,11 @@ void load_program(GuestMemory& memory, std::uint32_t address,
         bytes.push_back(static_cast<std::uint8_t>((word >> 24) & 0xff));
     }
     memory.write_bytes(address, bytes);
+}
+
+void load_program(GuestMemory& memory, std::uint32_t address,
+                  std::initializer_list<std::uint32_t> words) {
+    load_program(memory, address, std::vector<std::uint32_t>(words));
 }
 
 GuestState make_state() {
@@ -251,6 +256,130 @@ int run_tests() {
         check(state.read_gpr64(8) == 0, "loop counter reached zero");
         check(state.read_gpr64(9) == 1, "delay slot ran on every iteration");
         check(state.pc() == 0x00100810, "loop exited after the final delay slot");
+    }
+
+    // The game's startup prologue, rebuilt here from its encodings: clear the
+    // working registers (padduw rN, r0, r0 for r1..r29), both HI/LO pairs, the
+    // MMI shift cache, all 32 FPU registers, the FPU accumulator and FCR31.
+    // Every location is preloaded with junk so the clearing is observed.
+    {
+        auto state = make_state();
+        std::vector<std::uint32_t> program;
+        for (std::uint32_t reg = 1; reg <= 29; ++reg) {
+            program.push_back(0x70000028u | (reg << 11) | (0x10u << 6));
+        }
+        program.push_back(0x00000011u);  // mthi r0
+        program.push_back(0x70000011u);  // mthi1 r0
+        program.push_back(0x00000013u);  // mtlo r0
+        program.push_back(0x70000013u);  // mtlo1 r0
+        program.push_back(0x04190000u);  // mtsah r0, 0
+        for (std::uint32_t fpr = 0; fpr < 32; ++fpr) {
+            program.push_back(0x44800000u | (fpr << 11));  // mtc1 r0, fN
+        }
+        program.push_back(0x46010018u);  // adda.s f0, f1: clears the accumulator
+        program.push_back(0x0000040fu);  // sync
+        program.push_back(0x44c0f800u);  // ctc1 r0, f31
+        load_program(state.memory(), base, program);
+
+        for (std::uint8_t reg = 1; reg < 32; ++reg) {
+            state.write_gpr64(reg, 0x1111111111111111ull);
+            state.write_gpr_high64(reg, 0x2222222222222222ull);
+        }
+        state.set_hi(0x3333333333333333ull);
+        state.set_lo(0x4444444444444444ull);
+        state.set_hi1(0x5555555555555555ull);
+        state.set_lo1(0x6666666666666666ull);
+        state.set_shift_amount_cache(31);
+        for (std::uint8_t fpr = 0; fpr < 32; ++fpr) {
+            state.write_fpr(fpr, 0x3f800000u);
+        }
+        state.set_fpu_accumulator(0x40490fdbu);
+        state.set_fpu_control(0xffffffffu);
+
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        const auto result = run_steps(interpreter, 69);
+        check(result.outcome == StepOutcome::Executed && state.pc() == base + 69 * 4,
+              "startup prologue ran to its end");
+        bool registers_cleared = true;
+        for (std::uint8_t reg = 1; reg <= 29; ++reg) {
+            registers_cleared = registers_cleared && state.read_gpr64(reg) == 0
+                && state.read_gpr_high64(reg) == 0;
+        }
+        check(registers_cleared, "padduw cleared r1..r29 in both halves");
+        check(state.read_gpr64(30) == 0x1111111111111111ull
+                  && state.read_gpr64(31) == 0x1111111111111111ull,
+              "r30 and r31 keep their values");
+        check(state.hi() == 0 && state.lo() == 0 && state.hi1() == 0 && state.lo1() == 0,
+              "mthi/mtlo cleared both HI/LO pairs");
+        check(state.shift_amount_cache() == 0, "mtsah cleared the shift cache");
+        bool fpus_cleared = true;
+        for (std::uint8_t fpr = 0; fpr < 32; ++fpr) {
+            fpus_cleared = fpus_cleared && state.read_fpr(fpr) == 0;
+        }
+        check(fpus_cleared, "mtc1 cleared all FPU registers");
+        check(state.fpu_accumulator() == 0, "adda.s cleared the FPU accumulator");
+        check(state.fpu_control() == 0, "ctc1 cleared FCR31");
+    }
+
+    // FPU arithmetic with hand-computed bit patterns: 1.5f + 2.25f = 3.75f,
+    // and the compare drives the FCR31 condition flag (bit 23) that the bc1t
+    // branches read. A taken branch still runs its delay slot and resumes one
+    // word further.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x3C083FC0,    // lui t0, 0x3fc0        (1.5f)
+                      0x3C094010,    // lui t1, 0x4010        (2.25f)
+                      0x44880000,    // mtc1 t0, f0
+                      0x44890800,    // mtc1 t1, f1
+                      0x46010080,    // add.s f2, f0, f1
+                      0x46021032,    // c.eq.s f2, f2
+                      0x45010002,    // bc1t +2               (taken)
+                      0x240A0111,    // addiu t2, zero, 0x111 (delay slot)
+                      0x240B0222,    // addiu t3, zero, 0x222 (skipped)
+                      0x240C0333,    // addiu t4, zero, 0x333 (branch target)
+                      0x45010002,    // bc1t +2               (taken again)
+                      0x240D0444,    // addiu t5, zero, 0x444 (delay slot)
+                      0x240E0555,    // addiu t6, zero, 0x555 (skipped)
+                      0x240F0666});  // addiu t7, zero, 0x666 (target)
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 14);
+        check(state.read_fpr(2) == 0x40700000u, "add.s produced 3.75f");
+        check((state.fpu_control() & 0x00800000u) != 0, "c.eq.s set the condition flag");
+        check(state.read_gpr64(10) == 0x111, "delay slot ran under the taken bc1t");
+        check(state.read_gpr64(11) == 0, "word after the delay slot was skipped");
+        check(state.read_gpr64(12) == 0x333, "execution resumed at the target");
+        check(state.read_gpr64(13) == 0x444, "second delay slot ran");
+        check(state.read_gpr64(14) == 0, "second skip held");
+        check(state.read_gpr64(15) == 0x666, "second target reached");
+    }
+
+    // MMI lanes with hand-computed saturation: padduw clamps unsigned word
+    // adds at 0xffffffff, paddsw clamps signed word adds at 0x7fffffff, and
+    // pextlw interleaves the low halves of rs and rt across all four lanes.
+    {
+        auto state = make_state();
+        load_program(state.memory(), base,
+                     {0x2402FFFF,    // addiu v0, zero, -1     (0xffff...ff)
+                      0x24080001,    // addiu t0, zero, 1
+                      0x2409FFFF,    // addiu t1, zero, -1
+                      0x00094842,    // srl t1, t1, 1          (0x7fffffff)
+                      0x704C1428,    // padduw v0, v0, t0
+                      0x71281C08,    // paddsw v1, t1, t0
+                      0x71092488});  // pextlw a0, t0, t1
+        state.set_pc(base);
+        Interpreter interpreter(state);
+        run_steps(interpreter, 7);
+        check(state.read_gpr64(2) == 0xffffffffffffffffull,
+              "padduw saturated both words of the low half");
+        check(state.read_gpr_high64(2) == 0,
+              "padduw upper lanes held zero plus zero");
+        check(state.read_gpr64(3) == 0x7fffffffull, "paddsw clamped the signed sum");
+        check(state.read_gpr64(4) == 0x000000017fffffffull,
+              "pextlw interleaved the low words");
+        check(state.read_gpr_high64(4) == 0, "pextlw upper lanes came from zero sources");
     }
 
     // Fetching outside the mapped region propagates the memory error.

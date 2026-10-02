@@ -11,11 +11,13 @@ selected real GT4 ranges. Ten regions were inspected: after the 2026-10-01
 decoder expansion and Ghidra re-verification, 417 of 488 words match Ghidra
 (352 non-NOP) and 71 remain explicitly unsupported. The decoder now supports 39
 operations, including the REGIMM branch family, JALR/SYSCALL, LD/SD/SB/LH and
-SLT/SLTU/DADDU. An integer expansion added LB/LBU/SRA/SLTI/SLTIU/XORI and
-corrected SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics (verified
-against Ghidra). The full CTest set and the Python suite pass locally; 6
-optional native Python checks skip without the M3 reference ELF. Tutoring
-remains pending; see the [M6 lesson](docs/lessons/m6.md).
+SLT/SLTU/DADDU. Later expansions added LB/LBU/SRA/SLTI/SLTIU/XORI, corrected
+SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics, and added the
+COP1/MMI extensions (173 operations in total, with PCSX2 used as the semantic
+reference). The game's startup now executes in the interpreter from its ELF
+entry to the first BIOS syscall. The full CTest set and the Python suite pass
+locally; 6 optional native Python checks skip without the M3 reference ELF.
+Tutoring remains pending; see the [M6 lesson](docs/lessons/m6.md).
 
 [M4 native reconstruction](docs/lessons/m4.md) now reads the pinned CORE into
 our own C++ executable-image model and writes an analysis ELF. All three payloads,

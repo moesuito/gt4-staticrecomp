@@ -29,12 +29,15 @@ class BlocksCliTests(unittest.TestCase):
         self.assertIn("005a316c: 0080982d  daddu s3, a0, zero", result.stdout)
 
     def test_unsupported_start_stops_with_context(self):
-        result = self.run_tool("0x100008", "10")
+        # 0x001001f8 holds an `ei` (COP0) word the model still rejects; the
+        # startup prologue at 0x00100008 now decodes and runs.
+        result = self.run_tool("0x1001f8", "10")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("instructions=1 ending=unsupported", result.stderr)
         self.assertIn("reason=unsupported", result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 1)
         self.assertIn("unsupported", result.stdout)
+        self.assertIn("42000038", result.stdout)
 
     def test_bad_arguments_fail_without_listing(self):
         for start, limit in [("-1", "1"), ("0x100001", "1"), ("0x5a3140", "0"),

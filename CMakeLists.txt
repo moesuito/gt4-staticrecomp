@@ -159,5 +159,10 @@ if(BUILD_TESTING)
         target_include_directories(ee_translation_549378_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
         target_link_libraries(ee_translation_549378_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_translation_549378 COMMAND ee_translation_549378_tests "${GT4_LOCAL_CORE}")
+
+        add_executable(ee_startup_run_tests
+            tests/unit/ee_startup_run_test.cpp)
+        target_link_libraries(ee_startup_run_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
+        add_test(NAME ee_startup_run COMMAND ee_startup_run_tests "${GT4_LOCAL_CORE}")
     endif()
 endif()

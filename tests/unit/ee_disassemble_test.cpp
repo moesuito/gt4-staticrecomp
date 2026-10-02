@@ -64,11 +64,30 @@ int main() {
         {0x000048cc, 0, "syscall 0x123"},
         {0x00094100, 0, "sll t0, t1, 0x4"},
         {0x001fffc2, 0, "srl ra, ra, 0x1f"},
+        {0x0000040f, 0, "sync 0x10"},
+        {0x70000c28, 0, "padduw at, zero, zero"},
+        {0x44800000, 0, "mtc1 zero, f0"},
+        {0x44c0f800, 0, "ctc1 zero, fcsr"},
+        {0x46010018, 0, "adda.s f0, f0, f1"},
+        {0x46010080, 0, "add.s f2, f0, f1"},
+        {0x45010002, 0x100100, "bc1t 0x0010010c"},
+        {0xc4800010, 0, "lwc1 f0, 0x10(a0)"},
+        {0xe4800010, 0, "swc1 f0, 0x10(a0)"},
+        {0x00001010, 0, "mfhi v0"},
+        {0x04190000, 0, "mtsah zero, 0x0"},
+        {0x71281c08, 0, "paddsw v1, t1, t0"},
+        {0x7c400000, 0, "sq zero, 0x0(v0)"},
+        {0x78220000, 0, "lq v0, 0x0(at)"},
         {0, 0, "sll zero, zero, 0x0"},
         {0x70000000, 0, "unsupported 0x70000000 ; opcode=0x1c function=0x00"},
     };
     for (const auto& item : cases) {
-        check(format_instruction(item.word, item.pc) == item.expected, item.expected);
+        const auto actual = format_instruction(item.word, item.pc);
+        if (actual != item.expected) {
+            std::cerr << "word 0x" << std::hex << item.word << std::dec << ": expected \""
+                      << item.expected << "\", got \"" << actual << "\"\n";
+            ++failures;
+        }
     }
     gt4recomp::ImageRecord text{0x100000, {0xf0, 0xff, 0xbd, 0x27, 0, 0, 0, 0x70}};
     std::ostringstream listing, report;

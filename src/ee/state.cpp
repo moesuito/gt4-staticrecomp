@@ -163,6 +163,91 @@ void GuestState::write_gpr32(std::uint8_t index, std::uint32_t value) {
     write_gpr64(index, extended);
 }
 
+std::uint64_t GuestState::read_gpr_high64(std::uint8_t index) const {
+    require_gpr_index(index);
+    return index == 0 ? 0 : gpr_high_[index];
+}
+
+void GuestState::write_gpr_high64(std::uint8_t index, std::uint64_t value) {
+    require_gpr_index(index);
+    if (index == 0) {
+        return;  // The upper half of r0 is constant zero as well.
+    }
+    gpr_high_[index] = value;
+}
+
+void GuestState::require_fpr_index(std::uint8_t index) {
+    if (index >= 32) {
+        throw std::runtime_error("Guest FPU register index must be below 32");
+    }
+}
+
+std::uint32_t GuestState::read_fpr(std::uint8_t index) const {
+    require_fpr_index(index);
+    return fpr_[index];
+}
+
+void GuestState::write_fpr(std::uint8_t index, std::uint32_t value) {
+    require_fpr_index(index);
+    fpr_[index] = value;
+}
+
+std::uint32_t GuestState::fpu_accumulator() const noexcept {
+    return fpu_accumulator_;
+}
+
+void GuestState::set_fpu_accumulator(std::uint32_t value) noexcept {
+    fpu_accumulator_ = value;
+}
+
+std::uint32_t GuestState::fpu_control() const noexcept {
+    return fpu_control_;
+}
+
+void GuestState::set_fpu_control(std::uint32_t value) noexcept {
+    fpu_control_ = value;
+}
+
+std::uint64_t GuestState::hi() const noexcept {
+    return hi_;
+}
+
+void GuestState::set_hi(std::uint64_t value) noexcept {
+    hi_ = value;
+}
+
+std::uint64_t GuestState::lo() const noexcept {
+    return lo_;
+}
+
+void GuestState::set_lo(std::uint64_t value) noexcept {
+    lo_ = value;
+}
+
+std::uint64_t GuestState::hi1() const noexcept {
+    return hi1_;
+}
+
+void GuestState::set_hi1(std::uint64_t value) noexcept {
+    hi1_ = value;
+}
+
+std::uint64_t GuestState::lo1() const noexcept {
+    return lo1_;
+}
+
+void GuestState::set_lo1(std::uint64_t value) noexcept {
+    lo1_ = value;
+}
+
+std::uint32_t GuestState::shift_amount_cache() const noexcept {
+    return shift_amount_cache_;
+}
+
+void GuestState::set_shift_amount_cache(std::uint32_t value) noexcept {
+    shift_amount_cache_ = value;
+}
+
 std::uint32_t GuestState::pc() const noexcept {
     return pc_;
 }

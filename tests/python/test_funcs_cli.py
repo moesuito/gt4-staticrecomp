@@ -20,8 +20,13 @@ class FunctionMapCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertGreaterEqual(len(lines), 3)
+        # The entry's own block count grows as decoding coverage grows; the
+        # stable facts are its evidence tag and that the walk stays open only
+        # at the BIOS syscall boundary.
         self.assertTrue(lines[0].startswith(
-            "function=0x00100008 evidence=elf-entry blocks=1 instructions=1"), lines[0])
+            "function=0x00100008 evidence=elf-entry blocks="), lines[0])
+        self.assertIn("instructions=", lines[0])
+        self.assertIn("limited=0", lines[0])
         self.assertIn(
             "function=0x005a3140 evidence=seed blocks=15 instructions=71",
             lines[1])
