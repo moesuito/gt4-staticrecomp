@@ -77,6 +77,7 @@ Operation decode_special(const DecodedInstruction& instruction) {
     case 0x24: return Operation::And;
     case 0x25: return Operation::Or;
     case 0x26: return Operation::Xor;
+    case 0x27: return Operation::Nor;
     case 0x2a: return Operation::Slt;
     case 0x2b: return Operation::Sltu;
     case 0x2d: return Operation::Daddu;
@@ -342,11 +343,14 @@ DecodedInstruction decode(std::uint32_t word) {
             result.operation = Operation::Blez;
         }
         break;
+    case 0x16: result.operation = Operation::Blezl; break;
     case 0x07:
         if (result.rt == 0) {
             result.operation = Operation::Bgtz;
         }
         break;
+    case 0x17: result.operation = Operation::Bgtzl; break;
+    case 0x19: result.operation = Operation::Daddiu; break;
     case 0x09: result.operation = Operation::Addiu; break;
     case 0x0a: result.operation = Operation::Slti; break;
     case 0x0b: result.operation = Operation::Sltiu; break;
@@ -363,6 +367,8 @@ DecodedInstruction decode(std::uint32_t word) {
     case 0x1c: result.operation = decode_mmi(result); break;
     case 0x1e: result.operation = Operation::Lq; break;
     case 0x1f: result.operation = Operation::Sq; break;
+    case 0x1a: result.operation = Operation::Ldl; break;
+    case 0x1b: result.operation = Operation::Ldr; break;
     case 0x14: result.operation = Operation::Beql; break;
     case 0x15: result.operation = Operation::Bnel; break;
     case 0x20: result.operation = Operation::Lb; break;
@@ -378,8 +384,11 @@ DecodedInstruction decode(std::uint32_t word) {
     case 0x2a: result.operation = Operation::Swl; break;
     case 0x2b: result.operation = Operation::Sw; break;
     case 0x2e: result.operation = Operation::Swr; break;
+    case 0x2c: result.operation = Operation::Sdl; break;
+    case 0x2d: result.operation = Operation::Sdr; break;
     case 0x31: result.operation = Operation::Lwc1; break;
     case 0x2f: result.operation = Operation::Cache; break;
+    case 0x33: result.operation = Operation::Pref; break;
     case 0x37: result.operation = Operation::Ld; break;
     case 0x39: result.operation = Operation::Swc1; break;
     case 0x3f: result.operation = Operation::Sd; break;
@@ -437,7 +446,12 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Sd: return "sd";
     case Operation::Lq: return "lq";
     case Operation::Sq: return "sq";
+    case Operation::Ldl: return "ldl";
+    case Operation::Ldr: return "ldr";
+    case Operation::Sdl: return "sdl";
+    case Operation::Sdr: return "sdr";
     case Operation::Cache: return "cache";
+    case Operation::Pref: return "pref";
     case Operation::Lhu: return "lhu";
     case Operation::Lwu: return "lwu";
     case Operation::Sh: return "sh";
@@ -462,6 +476,10 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Bnel: return "bnel";
     case Operation::Blez: return "blez";
     case Operation::Bgtz: return "bgtz";
+    case Operation::Blezl: return "blezl";
+    case Operation::Bgtzl: return "bgtzl";
+    case Operation::Daddiu: return "daddiu";
+    case Operation::Nor: return "nor";
     case Operation::Bltz: return "bltz";
     case Operation::Bgez: return "bgez";
     case Operation::Bltzl: return "bltzl";

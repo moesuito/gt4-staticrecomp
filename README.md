@@ -9,14 +9,17 @@ code ahead of time and supplies the PS2 services that execution requires.
 [M6 disassembly](docs/reverse-engineering/m6-disassembly.md) adds `gt4disasm` for
 selected real GT4 ranges. Ten regions were inspected: after the 2026-10-01
 decoder expansion and Ghidra re-verification, 417 of 488 words match Ghidra
-(352 non-NOP) and 71 remain explicitly unsupported. The decoder now supports 39
-operations, including the REGIMM branch family, JALR/SYSCALL, LD/SD/SB/LH and
+(352 non-NOP) and 71 remained explicitly unsupported. At that milestone the
+decoder supported 39 operations, including the REGIMM branch family,
+JALR/SYSCALL, LD/SD/SB/LH and
 SLT/SLTU/DADDU. Later expansions added LB/LBU/SRA/SLTI/SLTIU/XORI, corrected
 SLT/SLTU/SLTI/SLTIU to their 64-bit comparison semantics, added the COP1/MMI
 extensions, the unaligned-access and multiply/divide families, COP0 with the
-break boundary and the 64-bit shift family (206
-operations in total, with PCSX2 used as the semantic reference; CACHE decodes
-as the no-op hint it is). The game's startup executes in the interpreter from
+break boundary and the 64-bit shift family (215
+operations in total, with PCSX2 used as the semantic reference; CACHE and
+PREF decode as the no-op hints they are, and every word of the pinned
+executable text is now named and classified). The game's startup executes in
+the interpreter from
 its ELF entry to the first BIOS syscall — and, through `gt4translate`, as a
 native C++ module verified identical to the interpreter after 942,695
 instructions; tail thunks and syscall boundaries translate too, stopping at

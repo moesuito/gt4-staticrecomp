@@ -116,6 +116,15 @@ std::string statement_for(const DecodedInstruction& instruction) {
         code << "state.write_gpr32(" << rt << ", state.read_gpr32(" << rs
              << ") + static_cast<std::uint32_t>(" << displacement << "));";
         break;
+    case Operation::Daddiu:
+        code << "state.write_gpr64(" << rt << ", state.read_gpr64(" << rs
+             << ") + static_cast<std::uint64_t>(static_cast<std::int64_t>(" << displacement
+             << ")));";
+        break;
+    case Operation::Nor:
+        code << "state.write_gpr64(" << rd << ", ~(state.read_gpr64(" << rs
+             << ") | state.read_gpr64(" << rt << ")));";
+        break;
     case Operation::Andi:
         code << "state.write_gpr64(" << rt << ", state.read_gpr64(" << rs
              << ") & 0x" << hex_value(instruction.immediate, 4) << "ull);";
@@ -285,6 +294,100 @@ std::string statement_for(const DecodedInstruction& instruction) {
     case Operation::Cache:
         code << "; // cache hint: no effect in this model";
         break;
+    case Operation::Pref:
+        code << "; // prefetch hint: no effect in this model";
+        break;
+    case Operation::Lwl:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 3u;\n"
+             << "        const std::uint32_t word = state.memory().read_word(address & ~3u);\n"
+             << "        state.write_gpr32(" << rt << ", (state.read_gpr32(" << rt
+             << ") & detail::lwl_mask[shift]) | (word << detail::merge_shift[shift]));\n"
+             << "    }";
+        break;
+    case Operation::Lwr:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 3u;\n"
+             << "        const std::uint32_t word = state.memory().read_word(address & ~3u);\n"
+             << "        const std::uint32_t merged = (state.read_gpr32(" << rt
+             << ") & detail::lwr_mask[shift]) | (word >> detail::place_shift[shift]);\n"
+             << "        if (shift == 0) {\n"
+             << "            state.write_gpr32(" << rt << ", merged);\n"
+             << "        } else {\n"
+             << "            state.write_gpr_low32(" << rt << ", merged);\n"
+             << "        }\n"
+             << "    }";
+        break;
+    case Operation::Swl:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 3u;\n"
+             << "        const std::uint32_t aligned = address & ~3u;\n"
+             << "        const std::uint32_t word = state.memory().read_word(aligned);\n"
+             << "        state.memory().write_word(aligned, (state.read_gpr32(" << rt
+             << ") >> detail::merge_shift[shift]) | (word & detail::swl_mask[shift]));\n"
+             << "    }";
+        break;
+    case Operation::Swr:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 3u;\n"
+             << "        const std::uint32_t aligned = address & ~3u;\n"
+             << "        const std::uint32_t word = state.memory().read_word(aligned);\n"
+             << "        state.memory().write_word(aligned, (state.read_gpr32(" << rt
+             << ") << detail::place_shift[shift]) | (word & detail::swr_mask[shift]));\n"
+             << "    }";
+        break;
+    case Operation::Ldl:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 7u;\n"
+             << "        const std::uint64_t word = state.memory().read_doubleword(address & ~7u);\n"
+             << "        state.write_gpr64(" << rt << ", (state.read_gpr64(" << rt
+             << ") & detail::ldl_mask[shift])\n"
+             << "            | (word << detail::doubleword_merge_shift[shift]));\n"
+             << "    }";
+        break;
+    case Operation::Ldr:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 7u;\n"
+             << "        const std::uint64_t word = state.memory().read_doubleword(address & ~7u);\n"
+             << "        state.write_gpr64(" << rt << ", (state.read_gpr64(" << rt
+             << ") & detail::ldr_mask[shift])\n"
+             << "            | (word >> detail::doubleword_place_shift[shift]));\n"
+             << "    }";
+        break;
+    case Operation::Sdl:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 7u;\n"
+             << "        const std::uint32_t aligned = address & ~7u;\n"
+             << "        const std::uint64_t word = state.memory().read_doubleword(aligned);\n"
+             << "        state.memory().write_doubleword(aligned, (state.read_gpr64(" << rt
+             << ") >> detail::doubleword_merge_shift[shift]) | (word & detail::sdl_mask[shift]));\n"
+             << "    }";
+        break;
+    case Operation::Sdr:
+        code << "{\n"
+             << "        const std::uint32_t address = detail::effective_address(state, "
+             << rs << ", " << displacement << ");\n"
+             << "        const std::uint32_t shift = address & 7u;\n"
+             << "        const std::uint32_t aligned = address & ~7u;\n"
+             << "        const std::uint64_t word = state.memory().read_doubleword(aligned);\n"
+             << "        state.memory().write_doubleword(aligned, (state.read_gpr64(" << rt
+             << ") << detail::doubleword_place_shift[shift]) | (word & detail::sdr_mask[shift]));\n"
+             << "    }";
+        break;
     case Operation::Plzcw:
         code << "state.write_gpr64(" << rd
              << ", detail::plzcw_words(state.read_gpr64(" << rs << ")));";
@@ -352,10 +455,12 @@ std::string condition_for(const DecodedInstruction& instruction) {
         code << "(state.read_gpr64(" << rs << ") != state.read_gpr64(" << rt << "))";
         break;
     case Operation::Blez:
+    case Operation::Blezl:
         code << "((state.read_gpr64(" << rs
              << ") & 0x8000000000000000ull) != 0 || state.read_gpr64(" << rs << ") == 0)";
         break;
     case Operation::Bgtz:
+    case Operation::Bgtzl:
         code << "((state.read_gpr64(" << rs
              << ") & 0x8000000000000000ull) == 0 && state.read_gpr64(" << rs << ") != 0)";
         break;
@@ -852,6 +957,48 @@ int wmain(int argc, wchar_t* argv[]) {
                << "                                    : (status & ~0x00010000u));\n"
                << "    }\n"
                << "}\n\n"
+               << "// Unaligned merge tables from the reference implementation, for the\n"
+               << "// word and doubleword families alike.\n"
+               << "constexpr std::uint32_t lwl_mask[4] = {\n"
+               << "    0x00ffffffu, 0x0000ffffu, 0x000000ffu, 0x00000000u\n"
+               << "};\n"
+               << "constexpr std::uint32_t lwr_mask[4] = {\n"
+               << "    0x00000000u, 0xff000000u, 0xffff0000u, 0xffffff00u\n"
+               << "};\n"
+               << "constexpr std::uint32_t swl_mask[4] = {\n"
+               << "    0xffffff00u, 0xffff0000u, 0xff000000u, 0x00000000u\n"
+               << "};\n"
+               << "constexpr std::uint32_t swr_mask[4] = {\n"
+               << "    0x00000000u, 0x000000ffu, 0x0000ffffu, 0x00ffffffu\n"
+               << "};\n"
+               << "constexpr std::uint8_t merge_shift[4] = { 24, 16, 8, 0 };\n"
+               << "constexpr std::uint8_t place_shift[4] = { 0, 8, 16, 24 };\n"
+               << "constexpr std::uint64_t ldl_mask[8] = {\n"
+               << "    0x00ffffffffffffffull, 0x0000ffffffffffffull, 0x000000ffffffffffull,\n"
+               << "    0x00000000ffffffffull, 0x0000000000ffffffull, 0x000000000000ffffull,\n"
+               << "    0x00000000000000ffull, 0x0000000000000000ull\n"
+               << "};\n"
+               << "constexpr std::uint64_t ldr_mask[8] = {\n"
+               << "    0x0000000000000000ull, 0xff00000000000000ull, 0xffff000000000000ull,\n"
+               << "    0xffffff0000000000ull, 0xffffffff00000000ull, 0xffffffffff000000ull,\n"
+               << "    0xffffffffffff0000ull, 0xffffffffffffff00ull\n"
+               << "};\n"
+               << "constexpr std::uint64_t sdl_mask[8] = {\n"
+               << "    0xffffffffffffff00ull, 0xffffffffffff0000ull, 0xffffffffff000000ull,\n"
+               << "    0xffffffff00000000ull, 0xffffff0000000000ull, 0xffff000000000000ull,\n"
+               << "    0xff00000000000000ull, 0x0000000000000000ull\n"
+               << "};\n"
+               << "constexpr std::uint64_t sdr_mask[8] = {\n"
+               << "    0x0000000000000000ull, 0x00000000000000ffull, 0x000000000000ffffull,\n"
+               << "    0x0000000000ffffffull, 0x00000000ffffffffull, 0x000000ffffffffffull,\n"
+               << "    0x0000ffffffffffffull, 0x00ffffffffffffffull\n"
+               << "};\n"
+               << "constexpr std::uint8_t doubleword_merge_shift[8] = {\n"
+               << "    56, 48, 40, 32, 24, 16, 8, 0\n"
+               << "};\n"
+               << "constexpr std::uint8_t doubleword_place_shift[8] = {\n"
+               << "    0, 8, 16, 24, 32, 40, 48, 56\n"
+               << "};\n\n"
                << "// The PS2 FPU has no denormals and saturates at the largest finite\n"
                << "// value; this mirrors the interpreter's hardware_float exactly.\n"
                << "[[nodiscard]] inline float hardware_float(std::uint32_t bits) {\n"
