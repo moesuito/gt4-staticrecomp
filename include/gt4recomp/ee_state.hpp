@@ -48,12 +48,41 @@ private:
     std::vector<std::uint8_t> bytes_;
 };
 
+// The whole per-thread register state a context switch must carry: the
+// register files, the pc and the coprocessor state, but not memory, which the
+// threads share. The kernel saves and restores one of these per thread.
+struct RegisterContext {
+    std::array<std::uint64_t, 32> gpr{};
+    std::array<std::uint64_t, 32> gpr_high{};
+    std::array<std::uint32_t, 32> fpr{};
+    std::uint64_t hi = 0;
+    std::uint64_t lo = 0;
+    std::uint64_t hi1 = 0;
+    std::uint64_t lo1 = 0;
+    std::uint32_t fpu_accumulator = 0;
+    std::uint32_t fpu_control = 0;
+    std::uint32_t shift_amount_cache = 0;
+    std::array<std::uint32_t, 32> cp0{};
+    std::array<std::array<std::uint32_t, 4>, 32> vu0_vf{};
+    std::array<std::uint32_t, 32> vu0_vi{};
+    std::uint32_t vu0_clip_flag = 0;
+    std::array<std::uint32_t, 4> vu0_acc{};
+    std::uint32_t vu0_mac_flag = 0;
+    std::uint32_t vu0_status_flag = 0;
+    std::uint32_t pc = 0;
+};
+
 // The register file and program counter. R0 reads as zero and ignores writes;
 // 32-bit writes sign-extend into the 64-bit register, matching the CPU's rule
 // for all 32-bit results.
 class GuestState {
 public:
     explicit GuestState(GuestMemory memory);
+
+    // The register state as one value; restore_registers puts one back.
+    // Together they are the thread-switch primitive the kernel uses.
+    [[nodiscard]] RegisterContext save_registers() const noexcept;
+    void restore_registers(const RegisterContext& context) noexcept;
 
     [[nodiscard]] std::uint64_t read_gpr64(std::uint8_t index) const;
     void write_gpr64(std::uint8_t index, std::uint64_t value);

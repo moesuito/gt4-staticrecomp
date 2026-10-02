@@ -48,32 +48,7 @@ const ServiceHandler* ServiceTable::find(std::uint32_t number) const noexcept {
     return nullptr;
 }
 
-void setup_thread(GuestState& state) {
-    const std::uint32_t stack = register_argument(state, 5);       // a1
-    const std::uint32_t stack_size = register_argument(state, 6);  // a2
-    // a0 (gp), a3 (args) and t0 (root function) are recorded by the BIOS;
-    // the model has no scheduler that could consult them.
-    if (stack_size == 0) {
-        throw std::runtime_error("SetupThread with a zero stack size");
-    }
-    const std::uint64_t region_end =
-        static_cast<std::uint64_t>(stack) + stack_size;
-    if (region_end > 0x100000000ull) {
-        throw std::runtime_error(
-            "SetupThread stack region " + unsigned_hex(stack) + " + "
-            + unsigned_hex(stack_size) + " leaves the 32-bit address space");
-    }
-    if (!state.memory().contains(stack, stack_size)) {
-        throw std::runtime_error(
-            "SetupThread stack region " + unsigned_hex(stack) + " + "
-            + unsigned_hex(stack_size) + " is outside the mapped guest memory");
-    }
-    const std::uint32_t stack_pointer =
-        static_cast<std::uint32_t>(region_end & ~0xfull);
-    state.write_gpr64(2, stack_pointer);  // v0
-}
-
-void setup_heap(GuestState& state) {
+ServiceOutcome setup_heap(GuestState& state) {
     const std::uint32_t heap_start = register_argument(state, 4);  // a0
     const std::uint32_t heap_size = register_argument(state, 5);   // a1
     if (heap_start == 0) {
@@ -88,10 +63,12 @@ void setup_heap(GuestState& state) {
     }
     // -1 means "to the end of memory" (the crt0's own convention). The heap
     // structure is not created yet: no verified path reads it back.
+    return ServiceOutcome::Handled;
 }
 
-void flush_cache(GuestState&) {
+ServiceOutcome flush_cache(GuestState&) {
     // No caches in the model; the operation completes.
+    return ServiceOutcome::Handled;
 }
 
 } // namespace gt4recomp::ee

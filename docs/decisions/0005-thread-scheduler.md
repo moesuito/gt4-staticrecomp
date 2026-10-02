@@ -1,8 +1,10 @@
 # 0005 — Threads and semaphores: a deterministic cooperative scheduler
 
-Status: proposed 2026-10-02; implementation not started. The M30 second slice
-stops at CreateSema (0x40) in the InitThread tree; this record fixes the
-design before code is written.
+Status: implemented 2026-10-02 for the M30 third slice; the boot now passes
+the two CreateSema calls and stops at the kernel-patch wall (SetSyscall),
+before its first CreateThread, so the scheduler is unit-verified and not yet
+exercised by the boot run
+(`docs/reverse-engineering/m30-thread-scheduler.md`).
 
 Context: the EE kernel multiplexes threads and semaphores. The boot's
 InitThread-equivalent (0x005B7310, reached from the init function 0x005B7560)

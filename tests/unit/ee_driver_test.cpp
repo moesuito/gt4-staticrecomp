@@ -89,6 +89,7 @@ ServiceHandler make_fake_service(FakeService& service) {
     return [&service](GuestState& state) {
         ++service.calls;
         state.write_gpr64(2, service.answer);
+        return ServiceOutcome::Handled;
     };
 }
 

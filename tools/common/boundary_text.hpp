@@ -19,6 +19,7 @@ inline const char* boundary_kind_name(ee::BoundaryKind kind) {
     case ee::BoundaryKind::InstructionStop: return "instruction-stop";
     case ee::BoundaryKind::IllegalDelaySlot: return "illegal-delay-slot";
     case ee::BoundaryKind::Unmapped: return "unmapped";
+    case ee::BoundaryKind::NoRunnableThread: return "no-runnable-thread";
     case ee::BoundaryKind::StepLimit: return "step-limit";
     }
     return "unknown";

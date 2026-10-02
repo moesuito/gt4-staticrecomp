@@ -12,6 +12,7 @@
 #include "boundary_text.hpp"
 #include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
+#include "gt4recomp/ee_kernel.hpp"
 #include "gt4recomp/ee_services.hpp"
 #include "gt4recomp/executable_image.hpp"
 #include "verified_core.hpp"
@@ -56,11 +57,11 @@ GuestState make_boot_state(const ExecutableImage& image) {
     return state;
 }
 
-ServiceTable make_boot_services() {
+ServiceTable make_boot_services(Kernel& kernel) {
     ServiceTable services;
-    services.add(0x3Cu, setup_thread);
     services.add(0x3Du, setup_heap);
     services.add(0x64u, flush_cache);
+    kernel.register_services(services);  // includes SetupThread (0x3C)
     return services;
 }
 
@@ -169,10 +170,22 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
             && result.services_handled < service_limit) {
             const std::uint32_t service = state.read_gpr32(3);
             if (const ServiceHandler* handler = services.find(service)) {
-                (*handler)(state);
-                ++result.services_handled;
-                state.set_pc(step.pc + 4);
-                continue;
+                const ServiceOutcome outcome = (*handler)(state);
+                if (outcome == ServiceOutcome::Handled) {
+                    ++result.services_handled;
+                    state.set_pc(step.pc + 4);
+                    continue;
+                }
+                if (outcome == ServiceOutcome::Switched) {
+                    ++result.services_handled;
+                    continue;
+                }
+                if (outcome == ServiceOutcome::NoRunnableThread) {
+                    ++result.services_handled;
+                    result.boundary = boundary_from_step(step, state);
+                    result.boundary.kind = BoundaryKind::NoRunnableThread;
+                    return result;
+                }
             }
         }
         result.boundary = boundary_from_step(step, state);
@@ -221,7 +234,8 @@ int wmain(int argc, wchar_t* argv[]) {
         const auto core = gt4recomp::tools::read_verified_core(core_path);
         const auto image = reconstruct_core(core);
 
-        ServiceTable services = make_boot_services();
+        Kernel driver_kernel;
+        ServiceTable services = make_boot_services(driver_kernel);
         RunOptions options;
         options.step_limit = default_step_limit;
         options.service_limit = service_limit;
@@ -249,8 +263,10 @@ int wmain(int argc, wchar_t* argv[]) {
 
         if (compare_interpreter) {
             auto reference_state = make_boot_state(image);
-            const ReferenceResult reference =
-                run_reference(reference_state, services, default_step_limit, service_limit);
+            Kernel reference_kernel;
+            ServiceTable reference_services = make_boot_services(reference_kernel);
+            const ReferenceResult reference = run_reference(
+                reference_state, reference_services, default_step_limit, service_limit);
             if (reference.boundary.kind != boundary.kind
                 || reference.boundary.pc != boundary.pc
                 || reference.boundary.service != boundary.service) {

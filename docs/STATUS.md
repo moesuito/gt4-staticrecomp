@@ -1,11 +1,10 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 2 — the BIOS service layer and the
-interpreter bridge: the whole game runs as one translated module from the ELF
-entry through SetupThread and SetupHeap with the state identical to the
-interpreter, stopping at the thread/semaphore scheduler. This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 3 — the thread scheduler: the game's boot
+now runs through SetupThread, SetupHeap and both CreateSema calls with the
+state identical to the interpreter, and stops at the kernel-patch wall
+(SetSyscall). This is the first document to read in a new session; it is kept
+current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -257,6 +256,21 @@ Details live in the linked evidence documents.
   fixture, `gt4boot_services`); Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-bios-services-and-bridge.md`,
   `docs/decisions/0004-driver-boundary-classification.md`).
+- M30 slice 3 (2026-10-02): **the thread scheduler and the semaphore
+  services** — `RegisterContext` save/restore (all per-thread register files;
+  memory shared), the `Kernel` model with the deterministic cooperative
+  scheduler of decision 0005 (priorities 0-127, highest first, creation-order
+  ties, switches on blocking and on a strictly higher-priority thread
+  becoming ready, no timer preemption), `ServiceOutcome` so a handler can
+  report a context switch, and the full thread/semaphore service set (with
+  the negative `i*` aliases). **The boot now handles SetupThread, SetupHeap
+  and both CreateSema calls and stops at the kernel-patch wall: SetSyscall
+  (0x74) at 0x005B7554, with the full state identical to the interpreter
+  after 942,761 instructions.** The scheduler is unit-verified (`ee_kernel`,
+  no game data) and not yet exercised by the boot run: the game's thread
+  creation comes after the patch wall. CTest 30/30; Python 73 (67 run,
+  6 skip) (`docs/reverse-engineering/m30-thread-scheduler.md`,
+  `docs/decisions/0005-thread-scheduler.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -266,18 +280,20 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the EE thread and semaphore scheduler** —
-  the boot stops at CreateSema (0x40) in the InitThread tree, and the public
-  ps2sdk `InitThread` shows the shape (CreateThread/StartThread/
-  ChangeThreadPriority/GetThreadId plus a WaitSema loop), so the next unit is
-  a deterministic cooperative scheduler; then the kernel-patch services
-  (Copy/FindAddress/SetSyscall) and the remaining boundaries.
+- Next technical milestone work: **the kernel-patch services** — the boot
+  stops at SetSyscall (0x74) in the InitTLBFunctions-equivalent, which also
+  uses FindAddress (0x83) over the kernel range and Copy (0x5A); the host is
+  the kernel in this model, so a patch that rewrites kernel code needs its
+  own decision (record guest handler mappings and jump to guest handlers on
+  patched syscalls; settle FindAddress's return contract from the
+  disassembly first). That also unblocks the game's thread creation
+  (0x005AEA78), which will exercise the cooperative scheduler end to end.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 29/29 CTest (the translation tests, `gt4run` and `gt4boot` exist
+- Tests: 30/30 CTest (the translation tests, `gt4run` and `gt4boot` exist
   only where the local CORE does; `gt4boot_build` builds the whole-program
   module on demand, 140 s); Python suite 73 collected (67 run, 6 skip without
   the M3 reference ELF; the savestate test finds the repository copy first).
@@ -321,32 +337,36 @@ Details live in the linked evidence documents.
   step outcome instead and is exact. Recorded in
   `docs/decisions/0004-driver-boundary-classification.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
-  module entries (correctness first; nine instructions in the boot run). The
+  module entries (correctness first; 24 instructions in the boot run). The
   two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now stops at the thread and semaphore scheduler**: CreateSema
-  (0x40) at 0x005ADCA4, called from the InitThread-equivalent at 0x005B7310.
-  A single-threaded model cannot answer WaitSema, so the next unit needs a
-  deterministic cooperative scheduler; the public ps2sdk `thread.c` documents
-  the shape. FlushCache is registered but was not reached before this stop.
+- **The boot now stops at the kernel-patch wall**: SetSyscall (0x74) at
+  0x005B7554 in the InitTLBFunctions-equivalent at 0x005B7450, which also
+  searches the kernel range through FindAddress (0x83) and later uses Copy
+  (0x5A). The host is the kernel in this model, so the patch semantics need
+  their own decision before the boot can pass. FlushCache is registered but
+  still not reached.
+- The cooperative scheduler is unit-verified but **not yet exercised by the
+  boot run**: the game's thread creation (0x005AEA78) comes after the patch
+  wall. No timer preemption is modeled (decision 0005). Equal-priority
+  dispatch is creation order, not the kernel's rotation.
 - A module call runs to its own boundary and cannot be interrupted; the work
   budget counts interpreted instructions and module calls, so a loop inside a
   module is not bounded by it. No such loop has been hit before a boundary.
 
 ## Next actions
 
-1. M30 slice 3: **the EE thread and semaphore scheduler** — CreateSema,
-   CreateThread/StartThread/ExitThread, GetThreadId/ChangeThreadPriority,
-   SignalSema/WaitSema/PollSema, modeled with the deterministic cooperative
-   scheduler of `docs/decisions/0005-thread-scheduler.md`; the acceptance
-   evidence is the same differential harness (`gt4boot --compare-interpreter`)
-   extended past 0x005ADCA4.
-2. The kernel-patch services (Copy/FindAddress/SetSyscall) and what they mean
-   when the model is the kernel.
-3. Performance: resume entries or inline syscall calls to shrink the
+1. M30 slice 4: **the kernel-patch services** (SetSyscall 0x74, FindAddress
+   0x83, Copy 0x5A) — settle FindAddress's contract from the disassembly of
+   0x005B7450/0x005B7408 and the SDK's InitTLBFunctions shape, then record
+   the decision (the model is the kernel) and implement; the acceptance
+   evidence is `gt4boot --compare-interpreter` past 0x005B7554, which also
+   unblocks the game's thread creation and exercises the scheduler end to
+   end.
+2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
-4. The M9-M30 lessons and retroactive M2-M5 notes if useful.
-5. Keep the journal and this file current after every working session.
+3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
+4. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -377,7 +397,9 @@ Details live in the linked evidence documents.
   syntax-checked), plus the scan correction trail. M30 followed the same day:
   slice 1 is the boundary driver (the translated startup reaches the first
   BIOS syscall with state identical to the interpreter; `gt4run` runs it as a
-  program), and slice 2 is the BIOS service layer plus the interpreter bridge
+  program), slice 2 is the BIOS service layer plus the interpreter bridge
   (`gt4boot` runs the whole game as one module through SetupThread and
   SetupHeap with state identical to the interpreter, stopping at CreateSema
-  in the thread/semaphore init).
+  in the thread/semaphore init), and slice 3 is the thread scheduler and the
+  semaphore services (the boot now passes both CreateSema calls and stops at
+  the kernel-patch wall, SetSyscall).

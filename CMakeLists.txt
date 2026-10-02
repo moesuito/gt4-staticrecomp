@@ -27,6 +27,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/interpreter.cpp
     src/ee/driver.cpp
     src/ee/services.cpp
+    src/ee/kernel.cpp
     src/ee/vu_macro.cpp
 )
 target_include_directories(gt4recomp_decode PUBLIC include)
@@ -91,6 +92,9 @@ if(BUILD_TESTING)
     add_executable(ee_driver_tests tests/unit/ee_driver_test.cpp)
     target_link_libraries(ee_driver_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_driver COMMAND ee_driver_tests)
+    add_executable(ee_kernel_tests tests/unit/ee_kernel_test.cpp)
+    target_link_libraries(ee_kernel_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_kernel COMMAND ee_kernel_tests)
     add_executable(ee_synth_tests tests/unit/ee_synth_test.cpp)
     target_link_libraries(ee_synth_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_synth COMMAND ee_synth_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/synth-straight.txt")
@@ -214,10 +218,10 @@ if(BUILD_TESTING)
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target gt4boot)
         set_tests_properties(gt4boot_build PROPERTIES FIXTURES_SETUP gt4boot)
         add_test(NAME gt4boot_services
-            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 2 --compare-interpreter)
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 4 --compare-interpreter)
         set_tests_properties(gt4boot_services PROPERTIES
             FIXTURES_REQUIRED gt4boot
-            PASS_REGULAR_EXPRESSION "services handled 2")
+            PASS_REGULAR_EXPRESSION "services handled 4")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(

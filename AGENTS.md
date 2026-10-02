@@ -105,21 +105,24 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 2 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 3 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
   direct-call targets, and `--all` generates the whole game as one module
   (15,068 functions, 924,991 instructions, 146 MB, MSVC syntax-checked). The
   boundary driver executes translated modules as programs; the BIOS service
-  layer models SetupThread, SetupHeap and FlushCache, and the step-by-step
-  interpreter bridges the boundaries a module cannot pass. `gt4boot` runs
-  the whole game as one module from the ELF entry through the two setup
-  services with the state identical to the interpreter (942,726
-  instructions), stopping at CreateSema in the thread/semaphore init.
-- Next: M30 slice 3 — the EE thread and semaphore scheduler (CreateSema,
-  CreateThread/StartThread, SignalSema/WaitSema, priorities), then the
-  kernel-patch services and the remaining boundaries.
+  layer models SetupThread, SetupHeap and FlushCache; the step-by-step
+  interpreter bridges the boundaries a module cannot pass; and the kernel
+  model runs a deterministic cooperative thread/semaphore scheduler.
+  `gt4boot` runs the whole game as one module from the ELF entry through
+  SetupThread, SetupHeap and both CreateSema calls with the state identical
+  to the interpreter (942,761 instructions), stopping at the kernel-patch
+  wall (SetSyscall).
+- Next: M30 slice 4 — the kernel-patch services (SetSyscall, FindAddress,
+  Copy; the model is the kernel, so the patch contract needs its own
+  decision first), which also unblocks the game's thread creation and
+  exercises the scheduler end to end.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

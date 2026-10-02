@@ -15,7 +15,17 @@
 
 namespace gt4recomp::ee {
 
-using ServiceHandler = std::function<void(GuestState& state)>;
+// What a service handler did. The driver uses this to decide whether the
+// program continues at pc + 4, another thread's context became live, or the
+// run cannot continue.
+enum class ServiceOutcome {
+    Handled,           // the service completed; continue at pc + 4
+    Switched,          // the current thread blocked; another context is live
+    NoRunnableThread,  // the current thread blocked and nothing can run
+    Unhandled          // no handler: the syscall stays a boundary
+};
+
+using ServiceHandler = std::function<ServiceOutcome(GuestState& state)>;
 
 // The registered services, looked up by the number in v1.
 class ServiceTable {
@@ -31,27 +41,16 @@ private:
     std::vector<Entry> entries_;
 };
 
-// SetupThread(gp, stack, stack_size, args, root): registers the caller as
-// the root thread and returns the thread's stack pointer in v0, which
-// ps2sdk's crt0 stores into sp. The model returns the top of the
-// caller-provided stack region aligned down to 16 bytes: the region must be
-// mapped, and the exact offset below the region top that the BIOS applies is
-// not observable in the verified paths (the menu RAM dump shows the boot
-// stack anchored at the top of the region). High confidence, from the public
-// ps2sdk ABI plus the preserved boot frames; the thread bookkeeping the BIOS
-// also performs (TCB, args, root function) is not modeled.
-void setup_thread(GuestState& state);  // 0x3C
-
 // SetupHeap(heap_start, heap_size): validates the heap request. No verified
 // path reads the kernel heap structure back yet, so the model records
 // nothing; EndOfHeap and the allocator become services when a caller needs
 // them. The boot call passes the end of .bss and -1 ("to the end of
 // memory"). High confidence on the call contract (public ps2sdk ABI); the
 // heap structure itself is Unknown.
-void setup_heap(GuestState& state);  // 0x3D
+ServiceOutcome setup_heap(GuestState& state);  // 0x3D
 
 // FlushCache(operation): the model has no caches, so the call completes with
 // no effect, exactly like the reference's CACHE hint (M15/M17 policy).
-void flush_cache(GuestState& state);  // 0x64
+ServiceOutcome flush_cache(GuestState& state);  // 0x64
 
 } // namespace gt4recomp::ee

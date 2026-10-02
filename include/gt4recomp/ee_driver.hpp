@@ -33,6 +33,7 @@ enum class BoundaryKind {
                        // translator this is a trapping arithmetic overflow
     IllegalDelaySlot,  // a transfer inside a delay slot; stopped before it
     Unmapped,          // pc outside the guest memory window or misaligned
+    NoRunnableThread,  // the kernel has no thread that can run
     StepLimit          // the work budget ran out
 };
 
@@ -103,10 +104,13 @@ public:
     [[nodiscard]] RunResult run(ServiceTable& services, const RunOptions& options);
 
 private:
-    // Runs a registered service for the syscall at pc; true when handled.
-    bool handle_syscall(std::uint32_t pc, std::uint32_t service,
-                        ServiceTable& services, const RunOptions& options,
-                        DriverStats& stats);
+    // Runs a registered service for the syscall at pc. Handled continues at
+    // pc + 4; Switched means the kernel already restored another thread's
+    // context; NoRunnableThread stops the run; Unhandled leaves the boundary
+    // for the caller.
+    ServiceOutcome handle_syscall(std::uint32_t pc, std::uint32_t service,
+                                  ServiceTable& services, const RunOptions& options,
+                                  DriverStats& stats);
 
     GuestState& state_;
     Module module_;

@@ -136,6 +136,50 @@ GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {
     cp0_[12] = 0x40000000u;
 }
 
+RegisterContext GuestState::save_registers() const noexcept {
+    RegisterContext context;
+    context.gpr = gpr_;
+    context.gpr_high = gpr_high_;
+    context.fpr = fpr_;
+    context.hi = hi_;
+    context.lo = lo_;
+    context.hi1 = hi1_;
+    context.lo1 = lo1_;
+    context.fpu_accumulator = fpu_accumulator_;
+    context.fpu_control = fpu_control_;
+    context.shift_amount_cache = shift_amount_cache_;
+    context.cp0 = cp0_;
+    context.vu0_vf = vu0_vf_;
+    context.vu0_vi = vu0_vi_;
+    context.vu0_clip_flag = vu0_clip_flag_;
+    context.vu0_acc = vu0_acc_;
+    context.vu0_mac_flag = vu0_mac_flag_;
+    context.vu0_status_flag = vu0_status_flag_;
+    context.pc = pc_;
+    return context;
+}
+
+void GuestState::restore_registers(const RegisterContext& context) noexcept {
+    gpr_ = context.gpr;
+    gpr_high_ = context.gpr_high;
+    fpr_ = context.fpr;
+    hi_ = context.hi;
+    lo_ = context.lo;
+    hi1_ = context.hi1;
+    lo1_ = context.lo1;
+    fpu_accumulator_ = context.fpu_accumulator;
+    fpu_control_ = context.fpu_control;
+    shift_amount_cache_ = context.shift_amount_cache;
+    cp0_ = context.cp0;
+    vu0_vf_ = context.vu0_vf;
+    vu0_vi_ = context.vu0_vi;
+    vu0_clip_flag_ = context.vu0_clip_flag;
+    vu0_acc_ = context.vu0_acc;
+    vu0_mac_flag_ = context.vu0_mac_flag;
+    vu0_status_flag_ = context.vu0_status_flag;
+    pc_ = context.pc;
+}
+
 void GuestState::require_gpr_index(std::uint8_t index) {
     if (index >= 32) {
         throw std::runtime_error("Guest register index must be below 32");

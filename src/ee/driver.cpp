@@ -106,23 +106,28 @@ Boundary boundary_from_step(const StepResult& step, const GuestState& state) {
 Driver::Driver(GuestState& state, Module module)
     : state_(state), module_(std::move(module)), interpreter_(state) {}
 
-bool Driver::handle_syscall(std::uint32_t pc, std::uint32_t service,
-                            ServiceTable& services, const RunOptions& options,
-                            DriverStats& stats) {
+ServiceOutcome Driver::handle_syscall(std::uint32_t pc, std::uint32_t service,
+                                      ServiceTable& services, const RunOptions& options,
+                                      DriverStats& stats) {
     if (stats.services_handled >= options.service_limit) {
-        return false;
+        return ServiceOutcome::Unhandled;
     }
     const ServiceHandler* handler = services.find(service);
     if (handler == nullptr) {
-        return false;
+        return ServiceOutcome::Unhandled;
     }
     if (options.on_service) {
         options.on_service(service, pc);
     }
-    (*handler)(state_);
+    const ServiceOutcome outcome = (*handler)(state_);
+    if (outcome == ServiceOutcome::Unhandled) {
+        return ServiceOutcome::Unhandled;
+    }
     ++stats.services_handled;
-    state_.set_pc(pc + 4);
-    return true;
+    if (outcome == ServiceOutcome::Handled) {
+        state_.set_pc(pc + 4);
+    }
+    return outcome;
 }
 
 RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
@@ -140,10 +145,21 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
             module_.call_entry(state_, entry_pc);
             ++result.stats.module_calls;
             const Boundary boundary = classify_boundary(state_);
-            if (boundary.kind == BoundaryKind::Syscall
-                && handle_syscall(boundary.pc, boundary.service, services,
-                                  options, result.stats)) {
-                continue;
+            if (boundary.kind == BoundaryKind::Syscall) {
+                const ServiceOutcome outcome = handle_syscall(
+                    boundary.pc, boundary.service, services, options, result.stats);
+                if (outcome == ServiceOutcome::Handled
+                    || outcome == ServiceOutcome::Switched) {
+                    continue;
+                }
+                if (outcome == ServiceOutcome::NoRunnableThread) {
+                    result.boundary = Boundary{BoundaryKind::NoRunnableThread,
+                                               boundary.pc, boundary.word,
+                                               boundary.service};
+                    return result;
+                }
+                result.boundary = boundary;
+                return result;
             }
             switch (boundary.kind) {
             case BoundaryKind::Returned:
@@ -174,10 +190,18 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
         }
         if (step.outcome == StepOutcome::Exception
             && step.operation == Operation::Syscall
-            && !interpreter_.pending_transfer()
-            && handle_syscall(step.pc, state_.read_gpr32(3), services, options,
-                              result.stats)) {
-            continue;
+            && !interpreter_.pending_transfer()) {
+            const ServiceOutcome outcome = handle_syscall(
+                step.pc, state_.read_gpr32(3), services, options, result.stats);
+            if (outcome == ServiceOutcome::Handled
+                || outcome == ServiceOutcome::Switched) {
+                continue;
+            }
+            if (outcome == ServiceOutcome::NoRunnableThread) {
+                result.boundary = boundary_from_step(step, state_);
+                result.boundary.kind = BoundaryKind::NoRunnableThread;
+                return result;
+            }
         }
         result.boundary = boundary_from_step(step, state_);
         return result;
