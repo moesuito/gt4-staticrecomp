@@ -38,6 +38,8 @@ struct ProgramFixture {
     std::vector<std::pair<std::uint8_t, std::uint64_t>> expected_registers;
     std::vector<MemoryExpectation> expected_memory;
     std::uint32_t expected_pc = 0;
+    std::uint32_t steps = 0;
+    bool has_steps = false;
 };
 
 std::uint64_t parse_hex(const std::string& token) {
@@ -116,6 +118,11 @@ std::vector<ProgramFixture> read_fixture(const std::string& path) {
                 expectation.width = std::stoi(width_text);
                 expectation.value = parse_hex(value_text);
                 current.expected_memory.push_back(expectation);
+            } else if (keyword == "steps") {
+                std::string steps_text;
+                tokens >> steps_text;
+                current.steps = static_cast<std::uint32_t>(std::stoul(steps_text));
+                current.has_steps = true;
             } else if (keyword == "expect_pc") {
                 std::string value_text;
                 tokens >> value_text;
@@ -157,7 +164,12 @@ bool run_program(const ProgramFixture& program) {
 
     Interpreter interpreter(state);
     bool failed = false;
-    for (std::size_t index = 0; index < program.words.size(); ++index) {
+    // Branching programs declare the exact instruction count they need; the
+    // straight-line fixtures run their word count.
+    const std::uint32_t step_count = program.has_steps
+        ? program.steps
+        : static_cast<std::uint32_t>(program.words.size());
+    for (std::uint32_t index = 0; index < step_count; ++index) {
         const auto result = interpreter.step();
         if (result.outcome != StepOutcome::Executed) {
             std::cerr << program.name << ": unexpected stop at 0x" << std::hex
