@@ -351,7 +351,14 @@ private:
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
     std::uint32_t next_thread_id_ = 1;
-    std::uint32_t next_semaphore_id_ = 1;
+    // Semaphore ids carry bits 0 and 1 set. Evidence: the game's timer
+    // library ORs 0x2 into the "common" value it was handed (a semaphore id)
+    // and tests bit 0 of the same value to decide whether to activate the
+    // node (0x005B8B68). Both operations are only harmless when the kernel's
+    // handle already has those bits, so the model hands out ids that do:
+    // 3, 7, 11, ... The exact real-kernel handle format is not documented in
+    // the pinned sources; this is the shape the game's own code requires.
+    std::uint32_t next_semaphore_id_ = 3;
     std::uint32_t current_thread_id_ = 0;  // 0 = no thread has run yet
     ServiceTable* service_table_ = nullptr;  // set by register_services
     bool syscall_table_ready_ = false;

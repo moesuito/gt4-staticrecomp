@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 9 — timer ticks and DMA channel
-completions: the game's TIM2 handler runs every idle frame and reprograms
-COMP, the VIF1/GIF chains complete, the SIF replies dispatch through the DMAC
-channel 5 path, and the differential passes at 3,000 services with the
-interpreter reference at 7,508,945 instructions. The open frontier is the
-game's delay/software-timer callback chain. This is the first document to
-read in a new session; it is kept current as work proceeds. Details live in
-the linked evidence documents.
+Updated 2026-10-02 after M30 slice 10 — semaphore handle bits and the delay
+library: tracing the delay helper's callback path showed the game's own code
+manipulates the low bits of kernel semaphore handles, so the model now hands
+out ids 3, 7, 11, ... and the boot advances from 3,645 to 9,765 services
+(672,586 interpreted steps) with the differential still passing. The
+remaining frontier is the timer library's node processing. This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -374,6 +374,19 @@ the linked evidence documents.
   chain. CTest 32/32; Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-slice9-timer-and-dma-completions.md`,
   `docs/decisions/0011-timer-ticks-and-dma-completions.md`).
+- M30 slice 10 (2026-10-02): **semaphore handle bits and the delay library**
+  — the delay helper's callback path was traced end to end (0x005AED18 →
+  0x005B8F38 → 0x005B8C60 → 0x005B8B68 → the dispatcher 0x005B8ED8 →
+  0x005AEF58 `iSignalSema`); the library ORs 2 into the semaphore handle and
+  tests its bit 0, so the model hands out ids **3, 7, 11, ...** (decision
+  0012). **The long run advances from 3,645 to 9,765 services (672,586
+  interpreted steps)** with the differential passing at 3,000 services
+  (interpreter 7,508,945 instructions, state identical). The remaining
+  frontier is the timer library's node processing: at the stop the active
+  list holds two nodes whose descriptor handler fields are 5 and 7, and the
+  delay descriptors are not active. CTest 32/32; Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice10-semaphore-handles-and-the-delay-library.md`,
+  `docs/decisions/0012-semaphore-handle-bits.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -383,14 +396,14 @@ the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the game's delay/software-timer callback
-  chain** — the waiters are inside the delay helper (0x005AED18) and the
-  library's semaphore-signaling callbacks are identified (0x005BEC94 and
-  neighbors), but the delay node never enters the active list at the stop.
-  The next experiment is to find which library path links and fires the
-  delay node (or the real waker of the delay semaphores) and satisfy it from
-  the model's timer/event sources. Then the first RPC call whose reply the
-  game acts on.
+- Next technical milestone work: **the timer library's node processing** —
+  the delay callback is 0x005AEF58 (`iSignalSema`) and the handle shape is
+  fixed (decision 0012), but at the stop the active list (0x006592F0+0x18)
+  holds only two nodes (handler fields 5 and 7) and the delay descriptors
+  are not active. The next experiment is to log the guest writes to the
+  active-list head as the delay schedules and to see whether the TIM2
+  handler's dispatch condition is reached for those nodes. Then the first
+  RPC call whose reply the game acts on.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -449,13 +462,15 @@ the linked evidence documents.
   **idle VBlank source** (decision 0010) wakes the game's threads. The run
   hits the 3,000-service limit inside the runtime with the state identical
   to the interpreter at 7,508,945 instructions. The **timer tick and DMA
-  completion** sources of decision 0011 now run the game's TIM2 handler
-  every idle frame (it reprograms COMP) and complete the VIF1/GIF chains.
-  The remaining frontier: all three threads wait on semaphores created by
-  the game's delay helper (main on 36, the RPC thread on 3, the loader on
-  37); the library's semaphore-signaling callbacks are identified
-  (0x005BEC94 and neighbors) but the delay node never enters the library's
-  active list at the stop.
+  completion** sources of decision 0011 run the game's TIM2 handler every
+  idle frame (it reprograms COMP) and complete the VIF1/GIF chains, and the
+  **semaphore handle shape** of decision 0012 (ids 3, 7, 11, ...) carries
+  the long run from 3,645 to **9,765 services** (672,586 interpreted steps).
+  The remaining frontier: the three threads wait on semaphores created by
+  the game's delay helper (main on 143, the RPC thread on 11, the loader on
+  147); the delay callback is 0x005AEF58 (`iSignalSema`) and the dispatcher
+  0x005B8ED8 is reached through the timer library's nodes, but the delay
+  descriptors are not in the active list at the stop.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs three threads under VBlank wakeups. No
@@ -472,11 +487,11 @@ the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 10: **the game's delay/software-timer callback chain** — find
-   which library path links and fires the delay node (or the real waker of
-   the delay semaphores) and satisfy it from the model's timer/event
-   sources; the acceptance evidence is `gt4boot --compare-interpreter` past
-   the sema-36/37 waits with the state identical.
+1. M30 slice 11: **the timer library's node processing** — watch the guest
+   writes to the active-list head (0x006592F0+0x18) as the delay schedules
+   and check whether the TIM2 handler's dispatch is reached for the delay
+   nodes; the acceptance evidence is `gt4boot --compare-interpreter` past
+   the current waits (semaphores 143/147/11) with the state identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -536,4 +551,6 @@ the linked evidence documents.
   instructions), and slice 9 is the timer ticks and DMA channel completions
   (the game's TIM2 handler runs every idle frame and the VIF1/GIF chains
   complete; the differential passes at 3,000 services with the interpreter
-  reference at 7,508,945 instructions).
+  reference at 7,508,945 instructions), and slice 10 is the semaphore
+  handle bits and the delay library (ids 3, 7, 11, ... carry the long run
+  from 3,645 to 9,765 services).

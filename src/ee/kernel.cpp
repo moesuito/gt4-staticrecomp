@@ -612,7 +612,8 @@ ServiceOutcome Kernel::create_sema(GuestState& state) {
         write_error(state);
         return ServiceOutcome::Handled;
     }
-    semaphore.id = next_semaphore_id_++;
+    semaphore.id = next_semaphore_id_;
+    next_semaphore_id_ += 4;
     semaphore.count = semaphore.init_count;
     semaphore.wait_threads = 0;
     // The kernel is the writer of count and wait_threads; mirror them into

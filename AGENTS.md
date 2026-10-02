@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 9 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 10 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -127,11 +127,12 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   the RPC initialization and the game's runtime threads (the cooperative
   scheduler and the injected interrupts exercised end to end) with the state
   identical to the interpreter (7,508,945 instructions at the 3,000-service
-  comparison point); `--threads` prints the kernel's thread table and the
-  DMA/timer state after a run.
-- Next: M30 slice 10 — the game's delay/software-timer callback chain (the
-  semaphore waiters at the frontier), then the first RPC call the game's
-  loading path acts on.
+  comparison point; a long run reaches 9,765 services with semaphore ids
+  3, 7, 11, ... per decision 0012); `--threads` prints the kernel's thread
+  table and the DMA/timer state after a run.
+- Next: M30 slice 11 — the timer library's node processing (why the delay
+  descriptors are not in the active list), then the first RPC call the
+  game's loading path acts on.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

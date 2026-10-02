@@ -109,8 +109,8 @@ int main() {
         write_sema_struct(state, 2, 1);
         state.write_gpr32(4, sema_struct);
         check(kernel.create_sema(state) == ServiceOutcome::Handled
-                  && state.read_gpr32(2) == 1,
-              "CreateSema returns the first id");
+                  && state.read_gpr32(2) == 3,
+              "CreateSema returns the first id (bits 0 and 1 set)");
         check(kernel.semaphores().size() == 1
                   && kernel.semaphores()[0].count == 1
                   && kernel.semaphores()[0].max_count == 2,
@@ -119,7 +119,7 @@ int main() {
                   && state.memory().read_word(sema_struct + 0x0C) == 0,
               "the kernel mirrors count and wait_threads into the structure");
 
-        state.write_gpr32(4, 1);
+        state.write_gpr32(4, 3);
         check(kernel.poll_sema(state) == ServiceOutcome::Handled
                   && state.read_gpr32(2) == 0,
               "PollSema takes the available count");
@@ -135,7 +135,7 @@ int main() {
         check(kernel.semaphores()[0].count == 2,
               "SignalSema stops at max_count");
 
-        state.write_gpr32(4, 1);
+        state.write_gpr32(4, 3);
         state.write_gpr32(5, sema_struct);
         check(kernel.refer_sema_status(state) == ServiceOutcome::Handled
                   && state.memory().read_word(sema_struct + 0x00) == 2
@@ -189,10 +189,10 @@ int main() {
         check(start_second_thread(kernel, state, 0, 0), "second thread ready");
         write_sema_struct(state, 1, 0);
         state.write_gpr32(4, sema_struct);
-        kernel.create_sema(state);  // id 1, count 0
+        kernel.create_sema(state);  // id 3, count 0
 
         state.set_pc(0x00100040);
-        state.write_gpr32(4, 1);
+        state.write_gpr32(4, 3);
         check(kernel.wait_sema(state) == ServiceOutcome::Switched,
               "Waiting on an empty semaphore blocks");
         check(kernel.current_thread_id() == 2, "the other thread runs");
@@ -204,7 +204,7 @@ int main() {
               "the blocked root resumes after its syscall");
 
         state.set_pc(0x00100050);
-        state.write_gpr32(4, 1);
+        state.write_gpr32(4, 3);
         check(kernel.signal_sema(state) == ServiceOutcome::Handled,
               "signaling from an equal-priority thread does not preempt");
         check(kernel.semaphores()[0].wait_threads == 0
@@ -667,3 +667,4 @@ int main() {
     std::cout << "kernel threads, semaphores and the cooperative scheduler behave as specified\n";
     return 0;
 }
+
