@@ -689,6 +689,36 @@ int main() {
         check(kernel.sif_rpc_result(state, 0x80000006u, 1u, file_answer,
                                     sizeof file_answer) == 0,
               "an unknown RPC function answers an empty result");
+
+        // A SET_SREG command is mirrored back: the acknowledgement the game's
+        // command-layer init spins on (register 1 in the array at 0x008869C0
+        // is only written by the incoming command's handler).
+        const std::uint32_t pending_before = kernel.pending_interrupts();
+        state.memory().write_word(packet + 0, 24);           // psize
+        state.memory().write_word(packet + 8, 0x80000001u);  // SET_SREG
+        state.memory().write_word(packet + 16, 1);           // sreg
+        state.memory().write_word(packet + 20, 1);           // value
+        state.memory().write_word(descriptors + 8, 24);
+        state.write_gpr32(4, descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled,
+              "a SET_SREG command transfers");
+        check(state.memory().read_word(ee_buffer + 0) == 24
+                  && state.memory().read_word(ee_buffer + 8) == 0x80000001u
+                  && state.memory().read_word(ee_buffer + 16) == 1
+                  && state.memory().read_word(ee_buffer + 20) == 1,
+              "the model IOP mirrored SET_SREG(1, 1) back");
+        check(kernel.pending_interrupts() == pending_before + 1,
+              "the SET_SREG reply queued its SIF0 interrupt");
+
+        // The liblgdev device sync answers the completed status word
+        // 0x010B2400, the value the game's check at 0x005608BC accepts.
+        std::uint8_t lgdev[576] = {};
+        check(kernel.sif_rpc_result(state, 0x046D046Du, 12u, lgdev, sizeof lgdev)
+                      == 576
+                  && lgdev[4] == 0x00 && lgdev[5] == 0x24 && lgdev[6] == 0x0B
+                  && lgdev[7] == 0x01,
+              "the liblgdev device sync answers the completed status");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

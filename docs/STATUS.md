@@ -1,16 +1,16 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 13 — the boot's service handshakes: the
-model answers the file server's version query with the game's own
-compatibility constant, accepts Deci2Call, answers the disc subsystem's
-status query and the fileio/CDVD version negotiation, and holds 80 RPC
-servers. The boot now binds the disc subsystem, passes the fileio/CDVD
-negotiation and creates its worker-thread pool (an 11-thread runtime),
-ending at the step limit inside the 0x0058F000 subsystem init; the
-differential passes at 3,000 services (interpreter reference at 7,573,241
-instructions, full state identical). This is the first document to read in a
-new session; it is kept current as work proceeds. Details live in the linked
-evidence documents.
+Updated 2026-10-02 after M30 slice 14 — the SIF register mirror and the
+loading path: the model mirrors an incoming `SET_SREG` back to the EE (the
+acknowledgement the game's command-layer init spins on) and answers the
+**liblgdev device sync** (server 0x046D046D RPC 12) with the completed
+status 0x010B2400. The boot leaves the command-layer spin, binds the game's
+disc device library and runs its device polling round to the service limit:
+**1,000,000 services, 1,710,779 module calls, 46,608,011 interpreted
+steps**, no step-limit stop. The differential passes at 3,000 services
+(interpreter reference at 7,573,241 instructions, full state identical).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -437,6 +437,24 @@ evidence documents.
   run, 6 skip)
   (`docs/reverse-engineering/m30-slice13-service-handshakes.md`,
   `docs/decisions/0014-service-handshakes.md`).
+- M30 slice 14 (2026-10-02): **the SIF register mirror and the loading
+  path** — the command-layer spin at 0x00590A18 was traced to the software
+  register 1, which only an incoming `SET_SREG` (cid 0x80000001) can write
+  through the library handler at 0x005B0850 (array at 0x008869C0; the live
+  memory shows registers 0 and 1 both set); the model now **mirrors an
+  incoming `SET_SREG` back to the EE** through the command buffer. The next
+  wall, the deliberate trap of the game's device library, is cleared by
+  answering the **liblgdev device sync** (server 0x046D046D RPC 12,
+  576/576 bytes) with the completed status **0x010B2400** the game's check
+  at 0x005608BC accepts (the module banner "liblgdev version 1.11.036" sits
+  at live 0x006C8D40). **The boot now leaves the command-layer spin, binds
+  the disc device library and runs its device polling round to the service
+  limit: 1,000,000 services, 1,710,779 module calls, 46,608,011 interpreted
+  steps — no step-limit stop**; the differential passes at 3,000 services
+  with the interpreter reference at 7,573,241 instructions and the full
+  state identical. CTest 32/32; Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice14-sif-register-mirror.md`,
+  `docs/decisions/0015-sif-register-mirror-and-liblgdev-sync.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -446,12 +464,12 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the 0x0058F000 subsystem init loop** —
-  the run ends at the step limit inside that init (0x00590A18) driving
-  string-coded servers ("Pusb", "PUPS", "MGBP", ...); the next slice
-  characterizes the loop and answers the first of their calls whose reply
-  the game acts on (with the live PCSX2 emulator as the oracle for the real
-  replies).
+- Next technical milestone work: **the device polling round** — the boot now
+  drives the liblgdev RPCs 6, 13 and 15 and the string-coded servers
+  ("Pusb", "PUPS", "MGBP", "PCDV") with a steady polling round; the next
+  slice decides whether it is forward progress or a wait, and answers the
+  first of its calls whose reply the game acts on (with the live PCSX2
+  emulator as the oracle for the real replies).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -523,9 +541,15 @@ evidence documents.
   the boot binds the disc subsystem's server family and creates its
   worker-thread pool — an **11-thread runtime with string-coded servers**
   — reaching the **200,000,000-step limit inside the 0x0058F000 subsystem
-  init** (pc 0x00590A18). The remaining frontier: characterize that init
-  loop and the servers it drives, and answer the first of their calls whose
-  reply the game acts on.
+  init** (pc 0x00590A18). The **register mirror and the liblgdev sync** of
+  decision 0015 then clear that init: the command-layer spin at 0x00590A18
+  ends when the model mirrors the game's `SET_SREG` back, the device library
+  binds (server 0x046D046D) and its sync passes with the completed status
+  0x010B2400 — the boot now runs its **device polling round to the service
+  limit** (1,000,000 services, 1,710,779 module calls, 46,608,011
+  interpreted steps, no step-limit stop). The remaining frontier: the
+  polling round itself (is it progress or a wait?) and its calls' real
+  replies.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs three threads under VBlank and timer
@@ -544,12 +568,12 @@ evidence documents.
 
 ## Next actions
 
-1. M30 slice 14: **the 0x0058F000 subsystem init loop** — characterize the
-   loop around 0x00590A18 and the string-coded servers it drives, and answer
-   the first of their calls whose reply the game acts on (the live PCSX2
-   emulator is the oracle for the real replies); the acceptance evidence is
-   `gt4boot --compare-interpreter` past the current step-limit boundary with
-   the state identical.
+1. M30 slice 15: **the device polling round** — decide whether the steady
+   liblgdev (RPCs 6/13/15) and string-coded server (RPCs 1/3/4/8) round is
+   forward progress or a wait, and answer the first of its calls whose reply
+   the game acts on (the live PCSX2 emulator is the oracle for the real
+   replies); the acceptance evidence is `gt4boot --compare-interpreter`
+   through the round with the state identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -616,9 +640,13 @@ evidence documents.
   condition never passes; the idle budget rose to 200,000), and slice 12 is
   the handler execution fix (no nested injections, no preemption inside a
   handler; the delay callbacks fire and the boot runs continuously —
-  1,000,000 services, 33,650,798 interpreted steps), and slice 13 is the
+  1,000,000 services, 33,650,798 interpreted steps), slice 13 is the
   boot's service handshakes (the version queries answer the game's
   constants, Deci2Call is accepted, the disc subsystem status and the
   fileio/CDVD negotiation pass, and the RPC server table holds 80 slots; the
   boot runs an 11-thread worker pool to the step limit inside the 0x0058F000
-  subsystem init).
+  subsystem init), and slice 14 is the SIF register mirror and the loading
+  path (the command-layer spin ends when the model mirrors `SET_SREG` back;
+  the liblgdev device sync answers the completed status 0x010B2400 and the
+  boot runs its device polling round to the 1,000,000-service limit —
+  1,710,779 module calls, 46,608,011 interpreted steps).

@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 13 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 14 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -130,14 +130,17 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   comparison point; injected handlers run with no nesting and no preemption
   per decision 0013, the version queries answer the game's compatibility
   constants, Deci2Call is accepted and the model IOP holds 80 RPC servers
-  per decision 0014, so the boot binds the disc subsystem, negotiates the
-  fileio/CDVD versions and runs an **11-thread worker pool to the
-  200,000,000-step limit** inside the 0x0058F000 subsystem init); `--threads`
+  per decision 0014, and the register mirror and the liblgdev device sync
+  of decision 0015 clear the command-layer spin and the device library's
+  trap — so the boot binds the disc subsystem, negotiates the fileio/CDVD
+  versions and runs its **device polling round to the 1,000,000-service
+  limit** (1,710,779 module calls, 46,608,011 interpreted steps, no
+  step-limit stop); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 14 — the 0x0058F000 subsystem init loop and the
-  string-coded servers it drives (the live PCSX2 emulator is the oracle for
-  the real replies).
+- Next: M30 slice 15 — the device polling round (the liblgdev RPCs 6/13/15
+  and the string-coded servers' RPCs 1/3/4/8; is it progress or a wait?) and
+  the real replies the game acts on (the live PCSX2 emulator as the oracle).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

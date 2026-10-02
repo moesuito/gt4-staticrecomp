@@ -1261,6 +1261,8 @@ void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
             answer_sif_rpc_call(state, command_buffer, size);
         } else if (cid == sif_command_cid_reset_cmd) {
             answer_sif_reset(state, command_buffer, size);
+        } else if (cid == sif_command_cid_set_sreg) {
+            answer_sif_set_sreg(state, command_buffer, size);
         }
         return;
     }
@@ -1277,6 +1279,34 @@ void Kernel::run_iop_stub(GuestState& state, std::uint32_t command_buffer,
     state.memory().write_word(reply_buffer + 12, 0);  // opt
     state.memory().write_word(reply_buffer + 16, sif_sreg_rpcinit);
     state.memory().write_word(reply_buffer + 20, 1);
+    queue_dmac_completion(sif_channel_dmac);
+}
+
+void Kernel::answer_sif_set_sreg(GuestState& state, std::uint32_t command_buffer,
+                                 std::uint32_t size) {
+    // The IOP mirrors a software register back to the EE. The game's command
+    // layer init (0x00590978) sends SET_SREG{sreg 1, value 1} and then spins
+    // until its own register 1 is non-zero (0x00590A18); only an incoming
+    // SET_SREG can write it — the library's system handler at 0x005B0850
+    // stores the packet's words into the register array at 0x008869C0. The
+    // reply is the same 24-byte packet through the EE command buffer the
+    // INIT_CMD handshake announced. See decision 0015 and the slice 14
+    // evidence document.
+    if (size < 24 || ee_command_buffer_ == 0) {
+        return;
+    }
+    if (!state.memory().contains(ee_command_buffer_, 24)) {
+        throw std::runtime_error(
+            "The SIFCMD command reply buffer is outside the mapped guest memory");
+    }
+    state.memory().write_word(ee_command_buffer_ + 0, 24);  // psize
+    state.memory().write_word(ee_command_buffer_ + 4, 0);   // dest
+    state.memory().write_word(ee_command_buffer_ + 8, sif_command_cid_set_sreg);
+    state.memory().write_word(ee_command_buffer_ + 12, 0);  // opt
+    state.memory().write_word(ee_command_buffer_ + 16,
+                              state.memory().read_word(command_buffer + 16));
+    state.memory().write_word(ee_command_buffer_ + 20,
+                              state.memory().read_word(command_buffer + 20));
     queue_dmac_completion(sif_channel_dmac);
 }
 
@@ -1371,7 +1401,7 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     const std::uint32_t sd = state.memory().read_word(command_buffer + 52);
     const SifRpcServer* server = find_sif_server_by_handle(sd);
     const std::uint32_t sid = server == nullptr ? 0 : server->sid;
-    std::uint8_t result[160] = {};
+    std::uint8_t result[576] = {};
     const std::uint32_t result_size = sif_rpc_result(state, sid, rpc_number,
                                                      result, sizeof result);
     if (recv_size > 0) {
@@ -1478,6 +1508,18 @@ std::uint32_t Kernel::sif_rpc_result(GuestState& state, std::uint32_t sid,
         put_word(4, 0x20Au);
         put_word(8, 0x20Eu);
         return 12;
+    }
+    if (sid == 0x046D046Du && rpc_number == 12u && capacity >= 576) {
+        // The liblgdev device sync (the call at 0x0056087C): the game's check
+        // at 0x005608BC accepts the status word 0x010B2400 as completed and
+        // any 0x010Bxxxx as a partial one; anything else hangs. The model
+        // answers the completed status with the rest of the 576-byte reply
+        // zero; the real structure comes from the game's IOP module, which
+        // the model does not execute. The module identifies itself in its
+        // banner string "liblgdev version 1.11.036" (live memory 0x006C8D40).
+        clear_result();
+        put_word(4, 0x010B2400u);
+        return 576;
     }
     if (rpc_number != 0xFFu) {
         return 0;

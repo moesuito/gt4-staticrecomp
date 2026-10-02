@@ -361,6 +361,10 @@ private:
     // register read that follows.
     void answer_sif_reset(GuestState& state, std::uint32_t command_buffer,
                           std::uint32_t size);
+    // Handles `SIF_CMD_SET_SREG`: mirrors the register back to the EE, the
+    // acknowledgement the game's command-layer init spins on (decision 0015).
+    void answer_sif_set_sreg(GuestState& state, std::uint32_t command_buffer,
+                             std::uint32_t size);
 
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
