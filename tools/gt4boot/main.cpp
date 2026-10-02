@@ -246,16 +246,19 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
                 const ServiceOutcome outcome = (*handler)(state);
                 if (outcome == ServiceOutcome::Handled) {
                     ++result.services_handled;
+                    kernel.advance_service_time(state);
                     state.set_pc(step.pc + 4);
                     continue;
                 }
                 if (outcome == ServiceOutcome::Switched
                     || outcome == ServiceOutcome::Jumped) {
                     ++result.services_handled;
+                    kernel.advance_service_time(state);
                     continue;
                 }
                 if (outcome == ServiceOutcome::NoRunnableThread) {
                     ++result.services_handled;
+                    kernel.advance_service_time(state);
                     if (kernel.deliver_idle_interrupt(state)) {
                         continue;
                     }
@@ -334,6 +337,9 @@ int wmain(int argc, wchar_t* argv[]) {
         };
         options.start_idle_interrupt = [&driver_kernel](GuestState& state) {
             return driver_kernel.deliver_idle_interrupt(state);
+        };
+        options.advance_time = [&driver_kernel](GuestState& state) {
+            driver_kernel.advance_service_time(state);
         };
 
         Driver driver(driver_state, make_boot_module());

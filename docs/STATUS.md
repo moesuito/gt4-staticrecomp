@@ -1,16 +1,17 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 14 — the SIF register mirror and the
-loading path: the model mirrors an incoming `SET_SREG` back to the EE (the
-acknowledgement the game's command-layer init spins on) and answers the
-**liblgdev device sync** (server 0x046D046D RPC 12) with the completed
-status 0x010B2400. The boot leaves the command-layer spin, binds the game's
-disc device library and runs its device polling round to the service limit:
-**1,000,000 services, 1,710,779 module calls, 46,608,011 interpreted
-steps**, no step-limit stop. The differential passes at 3,000 services
-(interpreter reference at 7,573,241 instructions, full state identical).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 15 — the service clock: the model's time
+base now advances by one millisecond of BUSCLK ticks per handled service
+(the delay library's unit), with both engines calling the same kernel method
+at their service boundaries so the differential stays exact; timers follow
+their CLKS selector and fire on crossing COMP, and one VBlank joins the
+queue per frame of slices. The delays that starved the main thread now
+expire: the 1,000,000-service run ends at a service boundary with the worker
+threads ready (1,193,971 module calls, 32,878,366 interpreted steps). The
+differential passes at 3,000 services (interpreter reference at 7,570,583
+instructions, full state identical). This is the first document to read in a
+new session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -455,6 +456,25 @@ work proceeds. Details live in the linked evidence documents.
   state identical. CTest 32/32; Python 73 (67 run, 6 skip)
   (`docs/reverse-engineering/m30-slice14-sif-register-mirror.md`,
   `docs/decisions/0015-sif-register-mirror-and-liblgdev-sync.md`).
+- M30 slice 15 (2026-10-02): **the service clock** — the model's time base
+  now advances **one millisecond of BUSCLK ticks per handled service**
+  (`Kernel::advance_service_time`, the delay library's unit), called from
+  both engines at their service boundaries through the new
+  `RunOptions::advance_time` hook, so the clock is a function of the guest's
+  service sequence and the differential stays exact. Timers follow their
+  CLKS selector with per-timer fractional remainders, the compare flag sets
+  on **crossing COMP** (a handler that reprograms COMP keeps its period),
+  and one VBlank joins the queue per frame of slices. Measured: TIM2
+  advances **576.05 ticks per service** (one millisecond at CLKS =
+  BUSCLK/256, within 0.01%) and the game's own library reprograms COMP while
+  the run proceeds; the main thread's starved delay semaphore (667) gives
+  way to new delays, and the **1,000,000-service run ends at a service
+  boundary with the worker threads ready** (1,193,971 module calls,
+  32,878,366 interpreted steps). The differential passes at 3,000 services
+  with the interpreter reference at 7,570,583 instructions and the full
+  state identical. CTest 32/32; Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice15-service-clock.md`,
+  `docs/decisions/0016-service-clock.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -464,12 +484,12 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the device polling round** — the boot now
-  drives the liblgdev RPCs 6, 13 and 15 and the string-coded servers
+- Next technical milestone work: **the device polling round's replies** — the
+  boot drives the liblgdev RPCs 6, 13 and 15 and the string-coded servers
   ("Pusb", "PUPS", "MGBP", "PCDV") with a steady polling round; the next
-  slice decides whether it is forward progress or a wait, and answers the
-  first of its calls whose reply the game acts on (with the live PCSX2
-  emulator as the oracle for the real replies).
+  slice decides whether the empty replies hold the game back and answers the
+  first of them whose reply the game acts on (with the live PCSX2 emulator
+  as the oracle for the real replies).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -545,11 +565,14 @@ work proceeds. Details live in the linked evidence documents.
   decision 0015 then clear that init: the command-layer spin at 0x00590A18
   ends when the model mirrors the game's `SET_SREG` back, the device library
   binds (server 0x046D046D) and its sync passes with the completed status
-  0x010B2400 — the boot now runs its **device polling round to the service
-  limit** (1,000,000 services, 1,710,779 module calls, 46,608,011
-  interpreted steps, no step-limit stop). The remaining frontier: the
-  polling round itself (is it progress or a wait?) and its calls' real
-  replies.
+  0x010B2400 — the boot then runs its **device polling round** (1,000,000
+  services, 1,710,779 module calls, 46,608,011 interpreted steps). The
+  **service clock** of decision 0016 gives the model a time base that
+  advances while code runs (one millisecond per handled service, the delay
+  library's unit, called identically by both engines), so the main thread's
+  delays expire and the long run ends at a service boundary with the worker
+  threads ready (1,193,971 module calls, 32,878,366 interpreted steps). The
+  remaining frontier: the polling round's calls' real replies.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs three threads under VBlank and timer
@@ -568,12 +591,13 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M30 slice 15: **the device polling round** — decide whether the steady
-   liblgdev (RPCs 6/13/15) and string-coded server (RPCs 1/3/4/8) round is
-   forward progress or a wait, and answer the first of its calls whose reply
-   the game acts on (the live PCSX2 emulator is the oracle for the real
-   replies); the acceptance evidence is `gt4boot --compare-interpreter`
-   through the round with the state identical.
+1. M30 slice 16: **the device polling round's replies** — decide whether the
+   steady liblgdev (RPCs 6/13/15) and string-coded server (RPCs 1/3/4/8)
+   round is held back by the model's empty replies, and answer the first of
+   its calls whose reply the game acts on (the live PCSX2 emulator is the
+   oracle for the real replies); the acceptance evidence is
+   `gt4boot --compare-interpreter` through the round with the state
+   identical.
 2. A periodic tick that can interrupt long-running computation, not only
    idle waits (the timer and VBlank sources are idle-triggered today).
 3. Performance: resume entries or inline syscall calls to shrink the
@@ -649,4 +673,9 @@ work proceeds. Details live in the linked evidence documents.
   path (the command-layer spin ends when the model mirrors `SET_SREG` back;
   the liblgdev device sync answers the completed status 0x010B2400 and the
   boot runs its device polling round to the 1,000,000-service limit —
-  1,710,779 module calls, 46,608,011 interpreted steps).
+  1,710,779 module calls, 46,608,011 interpreted steps), and slice 15 is the
+  service clock (the time base advances one millisecond of BUSCLK ticks per
+  handled service, called identically by both engines; the main thread's
+  starved delays expire and the long run ends at a service boundary with the
+  worker threads ready — 1,193,971 module calls, 32,878,366 interpreted
+  steps; TIM2 measured at 576.05 ticks per service).

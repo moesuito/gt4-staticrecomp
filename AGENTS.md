@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 14 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 15 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -134,13 +134,17 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   of decision 0015 clear the command-layer spin and the device library's
   trap — so the boot binds the disc subsystem, negotiates the fileio/CDVD
   versions and runs its **device polling round to the 1,000,000-service
-  limit** (1,710,779 module calls, 46,608,011 interpreted steps, no
-  step-limit stop); `--threads`
+  limit**; the **service clock** of decision 0016 then advances the model's
+  time base by one millisecond of BUSCLK ticks per handled service (called
+  identically by both engines), so the delays expire and the run ends at a
+  service boundary with the worker threads ready (1,193,971 module calls,
+  32,878,366 interpreted steps); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 15 — the device polling round (the liblgdev RPCs 6/13/15
-  and the string-coded servers' RPCs 1/3/4/8; is it progress or a wait?) and
-  the real replies the game acts on (the live PCSX2 emulator as the oracle).
+- Next: M30 slice 16 — the device polling round's replies (the liblgdev RPCs
+  6/13/15 and the string-coded servers' RPCs 1/3/4/8; do the empty replies
+  hold the game back?) and the real replies the game acts on (the live
+  PCSX2 emulator as the oracle).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

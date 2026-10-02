@@ -139,6 +139,9 @@ ServiceOutcome Driver::handle_syscall(std::uint32_t pc, std::uint32_t service,
         return ServiceOutcome::Unhandled;
     }
     ++stats.services_handled;
+    if (options.advance_time) {
+        options.advance_time(state_);
+    }
     if (outcome == ServiceOutcome::Handled) {
         state_.set_pc(pc + 4);
     }

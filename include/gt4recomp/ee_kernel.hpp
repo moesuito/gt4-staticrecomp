@@ -167,6 +167,12 @@ public:
     // consecutive idle interrupts without a runnable thread stops the model
     // instead of spinning forever.
     [[nodiscard]] bool deliver_idle_interrupt(GuestState& state);
+    // Advances the model's time base by one handled service: one millisecond
+    // of BUSCLK ticks. Both engines call this exactly once per handled
+    // service, so the time base stays a function of the guest's service
+    // sequence and the differential stays exact; the idle path keeps its
+    // frame-per-interrupt shortcut (decision 0016).
+    void advance_service_time(GuestState& state);
 
     // Model introspection for tests and tools.
     [[nodiscard]] std::uint32_t pending_interrupts() const noexcept;
@@ -233,9 +239,11 @@ public:
     static constexpr std::uint32_t idle_interrupt_budget = 200000;
     // The EE timers: four register blocks at 0x10000000 + index * 0x800,
     // COUNT at +0x00, MODE at +0x10, COMP at +0x20. The model stores what
-    // the guest writes (TimerUnit) and, at each idle frame, advances an
-    // enabled timer's count by one frame of its clock source and raises its
-    // compare interrupt (INTC causes 9/10/11/12 for T0/T1/T2/T3).
+    // the guest writes (TimerUnit) and advances an enabled timer's count in
+    // two ways: at each idle frame it jumps one frame of the timer's clock
+    // source (the idle shortcut), and at each handled service it adds one
+    // service slice (decision 0016). Both raise the compare interrupt
+    // (INTC causes 9/10/11/12 for T0/T1/T2/T3) per the timer's mode.
     static constexpr std::uint32_t timer_window_physical = 0x10000000;
     static constexpr std::uint32_t timer_stride = 0x800;
     static constexpr std::uint32_t timer_count_offset = 0x00;
@@ -246,6 +254,12 @@ public:
     static constexpr std::uint32_t timer_overflow_enable = 0x00000200;  // OVFE
     static constexpr std::uint32_t timer_compare_flag = 0x00000400;  // EQUF
     static constexpr std::uint32_t timer_overflow_flag = 0x00000800;  // OVFF
+    // BUSCLK ticks per frame and per service slice: the slice is one
+    // millisecond, the unit the game's delay library schedules in (its timer
+    // nodes' base values are BUSCLK ticks of elapsed time; slice 14's
+    // evidence). One VBlank per frame of accumulated slices.
+    static constexpr std::uint32_t busclk_per_frame = 2457600;
+    static constexpr std::uint32_t service_time_slice = 147456;
     // The DMAC's status register: one bit per channel; a completion sets the
     // channel's bit and the handler clears it by writing back.
     static constexpr std::uint32_t dmac_stat_physical = 0x1000E010;
@@ -439,6 +453,11 @@ private:
     // interrupts are cheap, so it allows long waits (about an hour of
     // virtual frames) before the driver reports the boundary.
     std::uint32_t idle_interrupts_ = 0;
+    // BUSCLK ticks accumulated by handled services toward the next VBlank,
+    // and the per-timer fractional remainders of the service slice's clock
+    // division (decision 0016).
+    std::uint32_t service_ticks_ = 0;
+    std::uint32_t service_timer_remainders_[4] = {};
 };
 
 } // namespace gt4recomp::ee

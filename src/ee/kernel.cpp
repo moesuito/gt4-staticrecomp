@@ -1194,6 +1194,70 @@ void Kernel::advance_timers(GuestState& state) {
     }
 }
 
+void Kernel::advance_service_time(GuestState& state) {
+    // One handled service advances the model's time base by one millisecond
+    // of BUSCLK ticks — the unit the game's delay library schedules in (its
+    // timer nodes' base values are BUSCLK ticks of elapsed time). The
+    // advance is tied to services because both engines handle the same
+    // service sequence in the same order, which keeps the differential
+    // exact; a cycle-accurate clock is out of scope (decision 0016). The
+    // four clock selectors divide the slice like the idle path's frame
+    // steps: BUSCLK, BUSCLK/16, BUSCLK/256 and the horizontal-blank rate.
+    static constexpr std::uint32_t clock_divisors[4] = {1u, 16u, 256u, 9372u};
+    for (std::uint32_t index = 0; index < 4; ++index) {
+        const std::uint32_t base = timer_window_physical + index * timer_stride;
+        if (!state.memory().contains(base + timer_count_offset, 4)
+            || !state.memory().contains(base + timer_mode_offset, 4)
+            || !state.memory().contains(base + timer_compare_offset, 4)) {
+            continue;  // the timer window is not mapped
+        }
+        std::uint32_t mode = state.memory().read_word(base + timer_mode_offset);
+        if ((mode & timer_count_enable) == 0) {
+            continue;  // not counting
+        }
+        const std::uint32_t divisor = clock_divisors[mode & 3u];
+        service_timer_remainders_[index] += service_time_slice;
+        const std::uint32_t step = service_timer_remainders_[index] / divisor;
+        service_timer_remainders_[index] %= divisor;
+        if (step == 0) {
+            continue;
+        }
+        const std::uint32_t count = state.memory().read_word(base + timer_count_offset);
+        const std::uint64_t next = static_cast<std::uint64_t>(count) + step;
+        state.memory().write_word(base + timer_count_offset,
+                                  static_cast<std::uint32_t>(next));
+        // The compare flag is set when the counter crosses the compare
+        // value, like the hardware, so a handler that reprograms COMP keeps
+        // its period; a compare value already behind the counter does not
+        // fire again.
+        const std::uint32_t compare = state.memory().read_word(base + timer_compare_offset);
+        bool fires = false;
+        if (next > 0xFFFFFFFFull) {
+            mode |= timer_overflow_flag;
+            fires = (mode & timer_overflow_enable) != 0;
+        } else if (next >= compare && count < compare) {
+            mode |= timer_compare_flag;
+            fires = (mode & timer_compare_enable) != 0;
+        }
+        state.memory().write_word(base + timer_mode_offset, mode);
+        if (fires) {
+            queue_interrupt(9u + index);
+        }
+    }
+    // One VBlank per frame of accumulated service slices, with the same
+    // registration rule as the idle source.
+    service_ticks_ += service_time_slice;
+    while (service_ticks_ >= busclk_per_frame) {
+        service_ticks_ -= busclk_per_frame;
+        for (const KernelInterruptHandler& registration : interrupt_handlers_) {
+            if (registration.cause == vblank_cause) {
+                queue_interrupt(vblank_cause);
+                break;
+            }
+        }
+    }
+}
+
 bool Kernel::inject_interrupt(GuestState& state, std::uint32_t cause,
                               std::vector<std::uint32_t> handlers) {
     if (handlers.empty()) {

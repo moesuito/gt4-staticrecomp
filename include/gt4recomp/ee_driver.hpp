@@ -89,6 +89,11 @@ struct RunOptions {
     // thread can run. Returns true when it injected an interrupt (the run
     // continues in the handler's context); false when the model is stuck.
     std::function<bool(GuestState& state)> start_idle_interrupt;
+    // Optional time source: called once per handled service, after the
+    // handler ran, so the model's clocks advance while code runs and not
+    // only at idleness. The reference loop calls the same kernel method at
+    // its own service boundaries, keeping the two runs in step.
+    std::function<void(GuestState& state)> advance_time;
 };
 
 struct DriverStats {

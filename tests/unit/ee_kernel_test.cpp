@@ -4,6 +4,7 @@
 // handlers would, and check the register contexts across switches.
 #include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_kernel.hpp"
+#include "gt4recomp/ee_timer.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -719,6 +720,43 @@ int main() {
                   && lgdev[4] == 0x00 && lgdev[5] == 0x24 && lgdev[6] == 0x0B
                   && lgdev[7] == 0x01,
               "the liblgdev device sync answers the completed status");
+    }
+
+    // Handled services advance the model's clock (decision 0016): a counting
+    // timer moves by its clock's share of one millisecond, its compare fires
+    // when the counter crosses COMP, and a frame of slices raises VBlank.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        TimerUnit timer;
+        timer.map_into(state.memory());
+        constexpr std::uint32_t timer2 =
+            TimerUnit::window_base + 2 * TimerUnit::timer_stride;
+        state.memory().write_word(timer2 + TimerUnit::count_offset, 0);
+        state.memory().write_word(timer2 + TimerUnit::compare_offset, 576);  // one millisecond
+        state.memory().write_word(timer2 + TimerUnit::mode_offset,
+                                  0x00000180u | 2u);  // CUE | CMPE, CLKS = BUSCLK/256
+        kernel.advance_service_time(state);
+        check(state.memory().read_word(timer2 + TimerUnit::count_offset) == 576
+                  && kernel.pending_interrupts() == 1,
+              "one handled service advances a millisecond and fires the compare");
+        kernel.advance_service_time(state);
+        check(kernel.pending_interrupts() == 1,
+              "a compare already behind the counter does not fire again");
+        // A frame takes 2,457,600 / 147,456 = 16.67 slices: the 17th reaches
+        // it, and only then does the registered VBlank handler join the queue.
+        state.write_gpr32(4, 2);  // the VBlank cause
+        state.write_gpr32(5, 0x005B1234);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled,
+              "the VBlank handler registers");
+        for (int index = 0; index < 14; ++index) {
+            kernel.advance_service_time(state);
+        }
+        check(kernel.pending_interrupts() == 1,
+              "VBlank waits for a full frame of slices");
+        kernel.advance_service_time(state);
+        check(kernel.pending_interrupts() == 2,
+              "the frame's VBlank joins the queue");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.
