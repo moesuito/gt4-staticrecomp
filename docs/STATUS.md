@@ -13,7 +13,7 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 188 operations (line-filtered count; earlier documents
+  - The decoder covers 189 operations (line-filtered count; earlier documents
     cited 175, which counted comment fragments). Ghidra verification: the M6
     ten-region run matched 417 with 0 mismatches; the M16 listing (startup
     regions, candidates and the unaligned-access neighborhoods) matched 594
@@ -76,6 +76,16 @@ work proceeds. Details live in the linked evidence documents.
   likely delay slot), 0x58ce48's tree (transfer below the entry at 0x5b27f8),
   the MMI parallel multiply family, BREAK and COP0
   (`docs/reverse-engineering/m16-unaligned-and-multiply.md`).
+- M17 tail thunks and syscall boundaries: the translator walks functions
+  entered above their own transfers (scan from the lowest reachable address,
+  a goto to the entry, empty runs collapsed into one comment) and turns
+  syscalls found by the walk into stop points whose halt propagates through
+  call sites (`if (pc != link) return;`). CACHE decodes as a no-op hint (189
+  operations). New `ee_translation_thunk`: the tail thunk 0x005b27f8 matches
+  the interpreter on 5 states, both stopping at service 0x42. The 0x58ce48
+  call tree advanced through movn, lwl, the thunk and cache; its next gap is
+  a branch targeting a delay slot at 0x005b0fcc
+  (`docs/reverse-engineering/m17-thunks-and-syscall-boundaries.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -128,10 +138,10 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M17 next: the MMI parallel multiply family (PMULT*/PMADD*/PMSUB*/PMULTH/
-   PHMADH/PHMSBH/PDIV*), BREAK and COP0; the translator's structural limit
-   (functions entered above their own back-edges); indirect-call dispatch for
-   jr-based tables; differential execution needs step control (open).
+1. M18 next: the translator's critical-edge handling (a branch targeting a
+   delay slot at 0x005b0fcc), the MMI parallel multiply family, BREAK and
+   COP0; indirect-call dispatch for jr-based tables; differential execution
+   needs step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -144,4 +154,6 @@ work proceeds. Details live in the linked evidence documents.
   observation and savestate register decoding, M15 COP1/MMI decoding and
   execution with the game's startup running in the interpreter and
   recompiled natively (verified identical after 942,695 instructions), M16
-  unaligned access, multiply/divide and PLZCW with a fifth verified function.
+  unaligned access, multiply/divide and PLZCW with a fifth verified function,
+  M17 tail thunks and syscall boundaries (the thunk 0x005b27f8 verified
+  stopping at service 0x42) and the cache hint.

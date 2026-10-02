@@ -138,6 +138,7 @@ int main() {
         {0x98830003, Operation::Lwr, "lwr", 0x26, 4, 3, 0x0003, 3},
         {0xa8830003, Operation::Swl, "swl", 0x2a, 4, 3, 0x0003, 3},
         {0xb8830003, Operation::Swr, "swr", 0x2e, 4, 3, 0x0003, 3},
+        {0xbd180000, Operation::Cache, "cache", 0x2f, 8, 24, 0x0000, 0},
         {0x70000000, Operation::Madd, "madd", 0x1c, 0, 0, 0x0000, 0},
         {0x70000001, Operation::Maddu, "maddu", 0x1c, 0, 0, 0x0001, 1},
         {0x70000004, Operation::Plzcw, "plzcw", 0x1c, 0, 0, 0x0004, 4},
