@@ -43,7 +43,11 @@ explicitly retains responsibility for all commits.
 | M9-M12 | Guest state/memory, small test interpreter, generated straight-line and branching synthetic programs | BUILD/VERIFY passed 2026-10-01 for M9 (state/memory), M10 (interpreter with delay slots), M11 (straight-line suites, 40 programs, all 20 ops) and M12 (branching suites, 30 programs, all 14 branch ops plus jal/jr); EXPLAIN pending |
 | M13 | One real GT4 function compiled natively; at least five valid input states match relevant registers, touched memory, writes and continuation | **BUILD/VERIFY passed 2026-10-01: function 0x00577878 (4-instruction leaf, direct-call evidence) translated by `gt4translate` and identical to the interpreter on 6 input states (all 32 registers, full memory image, continuation); translator slice 2 adds conditional branches, likely/link forms, loops and multiple returns, verified on 0x005c11a8 with 6 states; translator slice 3 translates direct call trees, verified as a 5-function module (0x0010c0c0) on 6 states; EXPLAIN pending** |
 
-After M13: automate snapshots (M14); expand COP1/MMI/VU0 (M15-M17);
+After M13: automate snapshots (M14) — started 2026-10-01: live PCSX2
+observation over PINE; the reconstructed text image matched live RAM
+byte-for-byte (5,339,668 bytes, 0 differences, equal hashes) and reginfo
+24/24, with the data record differing only where the game had written at
+runtime; expand COP1/MMI/VU0 (M15-M17);
 continuous execution and observed OS/file/scheduling/IOP services (M18-M23);
 Adhoc inspection/execution lessons (M24-M25); DMA/VIF/VU/GIF/GS and verified
 pixels (M26-M34); input/audio/menu/car/track/race milestones (M35-M41).

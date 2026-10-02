@@ -94,6 +94,19 @@ tests generate headers into the build tree and compare the translated modules
 against the interpreter on six input states each. See the
 [M13 evidence](docs/reverse-engineering/m13-first-function.md).
 
+## Observe a running PCSX2
+
+```powershell
+& 'private\tooling-venv\Scripts\python.exe' scripts/pcsx2_pine.py info
+& 'private\tooling-venv\Scripts\python.exe' scripts/pcsx2_pine.py verify-elf private/reconstructed/SCUS_973.28.elf 0x100000 0x517a14
+```
+
+Needs a local PCSX2 with PINE enabled (set `EnablePINE = true` in
+`PCSX2.ini`) and the pinned disc running. The tool reads EE memory over PINE
+and never writes it; only the explicit `save-state`/`load-state` commands
+change emulator state. See the
+[M14 evidence](docs/reverse-engineering/m14-live-observation.md).
+
 ## Discover an evidence-backed function map
 
 ```powershell

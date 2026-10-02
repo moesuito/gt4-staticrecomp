@@ -1,7 +1,7 @@
 # Project status
 
-Updated 2026-10-01 after M13 — the first major technical landmark. This is the
-first document to read in a new session; it is kept current as work proceeds.
+Updated 2026-10-01 after M14 slice 1 — live observation. This is the first
+document to read in a new session; it is kept current as work proceeds.
 Details live in the linked evidence documents.
 
 ## Where we are
@@ -43,17 +43,22 @@ Details live in the linked evidence documents.
   direct call trees translated into one module (verified as a 5-function
   chain, `0x0010c0c0`, on 6 states)
   (`docs/reverse-engineering/m13-first-function.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M13
+- M14 slice 1 (2026-10-01): live observation through PCSX2 PINE — the
+  reconstructed text image matches live GT4 RAM byte-for-byte (5,339,668
+  bytes, equal hashes), reginfo 24/24; data-record differences are runtime
+  writes. Savestate anchors (main menu): our PINE slot 9 and the owner's
+  slot 1 (`docs/reverse-engineering/m14-live-observation.md`).
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M14
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: M14 — automate observation/snapshots toward
-  PCSX2 comparison; extend the translator along the M7 CFG shapes.
+- Next technical milestone work: M14 next slices — savestate parsing for CPU
+  registers and broader decoding (COP1/MMI) toward differential execution.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
 - Tests: 15/15 CTest (the translation tests exist only where the local CORE
-  does); Python suite 53 collected (47 run, 6 skip without the M3 reference
+  does); Python suite 64 collected (58 run, 6 skip without the M3 reference
   ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -63,22 +68,31 @@ Details live in the linked evidence documents.
 - Ghidra 12.1.3 + Temurin JDK 21.0.12.1+1 under `private/tooling/`; hashes and
   provenance in `docs/environment.md`.
 - Disposable Ghidra project directory: `%TEMP%\GT4Recomp-M7`.
+- PCSX2 nightly 2.9.93 at `F:\Games\PS2` with BIOS dumps; PINE enabled on
+  port 28011 (`EnablePINE = true`; the original ini is kept as
+  `.bak-gt4recomp`). Savestates in `Documents/PCSX2/sstates`: slot 9 (PINE,
+  ours) and slot 1 (owner) hold the main menu.
+- Live RAM dump (ignored): `private/pcsx2/text-ram.bin`; distributable
+  metadata in `docs/inputs/usa-v2.00-live-ram.json`.
 
 ## Open items
 
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M13 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M14 lessons are
   pending.
 - 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
   deferred to M15-M17 by the curriculum.
+- PINE exposes no CPU registers: register-level observation needs savestate
+  parsing (version-specific `.p2s` format) or the debugger.
 
 ## Next actions
 
-1. M14: automate observation/snapshots toward PCSX2 comparison; extend
-   `gt4translate` further (indirect calls via a runtime dispatch).
-2. The M9-M13 lessons and retroactive M2-M5 notes if useful.
+1. M14 next slices: savestate parsing for CPU registers and broader decoding
+   (COP1/MMI) toward differential execution on live RAM; translator: indirect
+   calls via a runtime dispatch.
+2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
@@ -86,4 +100,5 @@ Details live in the linked evidence documents.
 - [2026-10-01](journal/2026-10-01.md) — fork setup, environment validation,
   decoder expansion, Ghidra verification, working rules, M6-M8 lessons, M7
   slices 1-2, M8 function map, M9 state model, M10 interpreter, M11/M12
-  synthetic suites, M13 first natively compiled function.
+  synthetic suites, M13 first natively compiled function, M14 live PCSX2
+  observation.
