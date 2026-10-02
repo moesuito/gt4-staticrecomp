@@ -91,6 +91,21 @@ int main() {
           && !memory.contains(base + region_size - 3, 4) && !memory.contains(base - 1, 1)
           && !memory.contains(base, 0), "contains bounds");
 
+    // KSEG0 aliasing is opt-in and translates to physical addresses.
+    {
+        GuestMemory aliased(0, 0x1000);
+        check(!aliased.kseg0_alias_enabled() && !aliased.contains(0x80000000u, 4),
+              "KSEG0 is unmapped by default");
+        aliased.enable_kseg0_alias();
+        check(aliased.kseg0_alias_enabled(), "KSEG0 aliasing can be enabled");
+        aliased.write_word(0x80000010u, 0x12345678u);
+        check(aliased.read_word(0x10) == 0x12345678u
+                  && aliased.read_word(0x80000010u) == 0x12345678u,
+              "KSEG0 and physical access the same bytes");
+        check(aliased.contains(0x80000ffcu, 4) && !aliased.contains(0x80001000u, 4),
+              "the alias is bounded by the region");
+    }
+
     // Register file semantics.
     GuestState state(make_memory());
     check(state.read_gpr64(0) == 0 && state.read_gpr64(31) == 0 && state.pc() == 0,

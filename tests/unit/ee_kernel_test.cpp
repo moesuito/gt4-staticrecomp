@@ -12,8 +12,8 @@ using namespace gt4recomp::ee;
 
 namespace {
 
-constexpr std::uint32_t window_base = 0x00100000;
-constexpr std::size_t window_size = 0x10000;
+constexpr std::uint32_t window_base = 0x00000000;
+constexpr std::size_t window_size = 0x00200000;
 
 constexpr std::uint32_t root_stack = 0x00100800;
 constexpr std::uint32_t root_stack_size = 0x800;
@@ -242,6 +242,53 @@ int main() {
         check(kernel.resume_thread(state) == ServiceOutcome::Handled
                   && kernel.threads()[1].status == ThreadReady,
               "ResumeThread clears the suspend bit");
+    }
+
+    // SetSyscall records the patch, mirrors it into the synthetic table the
+    // SDK searches, and dispatches the patched number to guest code.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+
+        state.write_gpr32(4, 0x83);
+        state.write_gpr32(5, 0x5B73C8);
+        check(kernel.set_syscall(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0,
+              "SetSyscall accepts a patch");
+        check(kernel.patched_handler(0x83) == 0x5B73C8u,
+              "the patch is recorded");
+        check(state.memory().read_word(Kernel::syscall_table_physical + 0x83 * 4)
+                  == 0x5B73C8u,
+              "the guest-visible table holds the patched handler");
+        check(state.memory().read_word(Kernel::syscall_table_physical + 0x5A * 4)
+                  != 0,
+              "the synthetic table has an entry for every number");
+
+        const ServiceHandler* handler = services.find(0x83u);
+        check(handler != nullptr, "the patched number gains a dispatch handler");
+        state.set_pc(0x00100060);
+        state.write_gpr64(31, 0x00100040u);
+        const ServiceOutcome outcome = (*handler)(state);
+        check(outcome == ServiceOutcome::Jumped && state.pc() == 0x5B73C8u
+                  && state.read_gpr32(31) == Kernel::patch_return_stub_physical,
+              "a patched syscall jumps to the guest handler through the stub");
+        const ServiceHandler* patch_return =
+            services.find(Kernel::patch_return_service);
+        check(patch_return != nullptr, "the private return service is registered");
+        const ServiceOutcome returned = (*patch_return)(state);
+        check(returned == ServiceOutcome::Jumped && state.pc() == 0x00100064u
+                  && state.read_gpr32(31) == 0x00100040u,
+              "the stub return restores the caller's ra and resume address");
+
+        state.write_gpr32(4, 0x5A);
+        state.write_gpr32(5, 0x5B7390);
+        kernel.set_syscall(state);
+        check(kernel.patched_handler(0x5Au) == 0x5B7390u
+                  && state.memory().read_word(Kernel::syscall_table_physical + 0x5A * 4)
+                      == 0x5B7390u,
+              "a second patch lands in the table");
     }
 
     // A run with no runnable thread is the NoRunnableThread outcome.

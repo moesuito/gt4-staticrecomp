@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 3 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 4 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -113,16 +113,17 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   (15,068 functions, 924,991 instructions, 146 MB, MSVC syntax-checked). The
   boundary driver executes translated modules as programs; the BIOS service
   layer models SetupThread, SetupHeap and FlushCache; the step-by-step
-  interpreter bridges the boundaries a module cannot pass; and the kernel
-  model runs a deterministic cooperative thread/semaphore scheduler.
-  `gt4boot` runs the whole game as one module from the ELF entry through
-  SetupThread, SetupHeap and both CreateSema calls with the state identical
-  to the interpreter (942,761 instructions), stopping at the kernel-patch
-  wall (SetSyscall).
-- Next: M30 slice 4 — the kernel-patch services (SetSyscall, FindAddress,
-  Copy; the model is the kernel, so the patch contract needs its own
-  decision first), which also unblocks the game's thread creation and
-  exercises the scheduler end to end.
+  interpreter bridges the boundaries a module cannot pass; the kernel model
+  runs a deterministic cooperative thread/semaphore scheduler; and the
+  kernel-patch services dispatch patched syscalls to guest handlers through
+  a synthetic table. `gt4boot` runs the whole game as one module from the ELF
+  entry through the setup services, both CreateSema calls, both SetSyscall
+  patches and the SDK's table search, with the state identical to the
+  interpreter (954,146 instructions), stopping at the EE timer hardware
+  (TIM3_MODE read at 0x005B7A40).
+- Next: M30 slice 5 — the EE timer and alarm subsystem (TIM3 registers,
+  SetAlarm 0x18/0xFC, the callback path), which unblocks the game's thread
+  creation and the scheduler's first end-to-end exercise.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

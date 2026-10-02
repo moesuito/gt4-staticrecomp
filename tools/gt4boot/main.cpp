@@ -45,9 +45,12 @@ constexpr std::uint32_t ram_size = 0x2000000;  // the EE's 32 MiB
 constexpr std::uint64_t default_step_limit = 200'000'000;
 
 // The full EE RAM as one flat zero-filled window with the image's own
-// addresses and the junk pre-fill around .bss the startup tests use.
+// addresses and the junk pre-fill around .bss the startup tests use. The
+// KSEG0 alias is on because the SDK's kernel search reads the low 512 KiB
+// through 0x80000000 (the EE maps that segment to physical 0).
 GuestState make_boot_state(const ExecutableImage& image) {
     GuestMemory memory(0, ram_size);
+    memory.enable_kseg0_alias();
     memory.write_bytes(image.text.guest_address, image.text.bytes);
     memory.write_bytes(image.data.guest_address, image.data.bytes);
     std::vector<std::uint8_t> junk(bss_end - bss_start + 2 * junk_margin, 0xAA);
@@ -176,7 +179,8 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
                     state.set_pc(step.pc + 4);
                     continue;
                 }
-                if (outcome == ServiceOutcome::Switched) {
+                if (outcome == ServiceOutcome::Switched
+                    || outcome == ServiceOutcome::Jumped) {
                     ++result.services_handled;
                     continue;
                 }

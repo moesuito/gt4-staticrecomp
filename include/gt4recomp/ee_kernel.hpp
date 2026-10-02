@@ -11,6 +11,7 @@
 #include "gt4recomp/ee_services.hpp"
 #include "gt4recomp/ee_state.hpp"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -99,11 +100,28 @@ public:
     ServiceOutcome wait_sema(GuestState& state);           // 0x44
     ServiceOutcome poll_sema(GuestState& state);           // 0x45
     ServiceOutcome refer_sema_status(GuestState& state);   // 0x47
+    ServiceOutcome set_syscall(GuestState& state);         // 0x74
 
     // Model introspection for tests and tools.
     [[nodiscard]] std::uint32_t current_thread_id() const noexcept;
     [[nodiscard]] const std::vector<KernelThread>& threads() const noexcept;
     [[nodiscard]] const std::vector<KernelSemaphore>& semaphores() const noexcept;
+    // The guest handler a SetSyscall installed for the number, or zero.
+    [[nodiscard]] std::uint32_t patched_handler(std::uint32_t number) const noexcept;
+
+    // The model's synthetic syscall table lives at this physical address, in
+    // the zero-filled low RAM the SDK's kernel search scans. The game only
+    // derives the address by searching, so its exact location is free; the
+    // entries are opaque kernel-range tokens the search never matches, except
+    // the two the boot patches before searching.
+    static constexpr std::uint32_t syscall_table_physical = 0x1000;
+    static constexpr std::uint32_t syscall_table_entries = 256;
+    // A patched handler returns through this stub: it issues the model's
+    // private return service, which restores the caller's ra and the
+    // instruction after the syscall. On real hardware the kernel dispatcher
+    // returns through EPC; the stub is this model's equivalent.
+    static constexpr std::uint32_t patch_return_stub_physical = 0x1600;
+    static constexpr std::uint32_t patch_return_service = 0x100;
 
 private:
     [[nodiscard]] KernelThread* find_thread(std::uint32_t id) noexcept;
@@ -121,15 +139,32 @@ private:
     bool dispatch(GuestState& state);
     // Dispatches when a ready thread strictly outranks the running one.
     bool preempt_if_outranked(GuestState& state);
+    // The model's private return service: a patched handler returns through
+    // the stub, which issues this number; here the caller's ra and the
+    // instruction after the syscall are restored.
+    ServiceOutcome patch_return(GuestState& state);
     // Errors the kernel reports as -1 in v0, like the public ABI's negative
     // error codes.
     static void write_error(GuestState& state);
+    // Fills the synthetic syscall table with one token per number the first
+    // time it is needed.
+    void ensure_syscall_table(GuestState& state);
 
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
     std::uint32_t next_thread_id_ = 1;
     std::uint32_t next_semaphore_id_ = 1;
     std::uint32_t current_thread_id_ = 0;  // 0 = no thread has run yet
+    ServiceTable* service_table_ = nullptr;  // set by register_services
+    bool syscall_table_ready_ = false;
+    std::array<std::uint32_t, syscall_table_entries> patched_handlers_{};
+    // One entry per patched handler call in flight; nested calls are a
+    // stack, exactly like the handlers' returns.
+    struct PendingPatchCall {
+        std::uint32_t resume_pc = 0;  // the syscall's pc + 4
+        std::uint32_t caller_ra = 0;
+    };
+    std::vector<PendingPatchCall> patch_calls_;
 };
 
 } // namespace gt4recomp::ee

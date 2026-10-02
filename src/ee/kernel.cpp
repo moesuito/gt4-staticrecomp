@@ -122,6 +122,7 @@ bool Kernel::block_current(GuestState& state, std::uint32_t wait_type,
 }
 
 void Kernel::register_services(ServiceTable& services) {
+    service_table_ = &services;
     const auto add = [this, &services](
                          std::uint32_t number,
                          ServiceOutcome (Kernel::*method)(GuestState&)) {
@@ -166,10 +167,34 @@ void Kernel::register_services(ServiceTable& services) {
     add(static_cast<std::uint32_t>(-0x46), &Kernel::poll_sema);
     add(0x47u, &Kernel::refer_sema_status);
     add(static_cast<std::uint32_t>(-0x48), &Kernel::refer_sema_status);
+    add(0x74u, &Kernel::set_syscall);
+    add(patch_return_service, &Kernel::patch_return);
 }
 
 std::uint32_t Kernel::current_thread_id() const noexcept {
     return current_thread_id_;
+}
+
+std::uint32_t Kernel::patched_handler(std::uint32_t number) const noexcept {
+    if (number >= syscall_table_entries) {
+        return 0;
+    }
+    return patched_handlers_[number];
+}
+
+void Kernel::ensure_syscall_table(GuestState& state) {
+    if (syscall_table_ready_) {
+        return;
+    }
+    // One opaque token per number: values in the kernel segment so a guest
+    // that range-checks them sees kernel addresses, distinct from the two
+    // game handler addresses the boot patches in before searching.
+    constexpr std::uint32_t token_base = 0x80010000u;
+    for (std::uint32_t index = 0; index < syscall_table_entries; ++index) {
+        state.memory().write_word(syscall_table_physical + index * 4,
+                                  token_base + index * 4);
+    }
+    syscall_table_ready_ = true;
 }
 
 const std::vector<KernelThread>& Kernel::threads() const noexcept {
@@ -655,6 +680,54 @@ ServiceOutcome Kernel::refer_sema_status(GuestState& state) {
     state.memory().write_word(info + sema_option, semaphore->option);
     state.write_gpr64(2, 0);
     return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::set_syscall(GuestState& state) {
+    const std::uint32_t number = state.read_gpr32(4);
+    const std::uint32_t handler = state.read_gpr32(5);
+    if (service_table_ == nullptr) {
+        throw std::logic_error("SetSyscall without a registered service table");
+    }
+    if (number >= syscall_table_entries || handler == 0) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    ensure_syscall_table(state);
+    // The synthetic table is the guest-visible view of the patch: the SDK
+    // locates it by searching for the handler values it just installed, then
+    // reads the other entries through it.
+    state.memory().write_word(syscall_table_physical + number * 4, handler);
+    patched_handlers_[number] = handler;
+    // A patched syscall transfers control to the guest handler. The kernel
+    // dispatcher on real hardware saves the user context and returns through
+    // EPC; the model saves the caller's ra and the resume address, sends the
+    // handler back through the stub, and restores both there. Caller-saved
+    // registers may change, exactly as the o32 ABI allows.
+    service_table_->add(number, [this, handler](GuestState& state) {
+        const std::uint32_t syscall_pc = state.pc();
+        state.memory().write_word(patch_return_stub_physical, 0x24030100u);
+        state.memory().write_word(patch_return_stub_physical + 4, 0x0000000Cu);
+        patch_calls_.push_back(PendingPatchCall{
+            syscall_pc + 4, static_cast<std::uint32_t>(state.read_gpr64(31))});
+        state.write_gpr64(31, patch_return_stub_physical);
+        state.set_pc(handler);
+        return ServiceOutcome::Jumped;
+    });
+    state.write_gpr64(2, 0);
+    return ServiceOutcome::Handled;
+}
+
+ServiceOutcome Kernel::patch_return(GuestState& state) {
+    // The stub's private service: put the caller's ra back and continue
+    // after the syscall the handler was called for.
+    if (patch_calls_.empty()) {
+        throw std::logic_error("The patch return stub fired with no call in flight");
+    }
+    const PendingPatchCall call = patch_calls_.back();
+    patch_calls_.pop_back();
+    state.write_gpr64(31, call.caller_ra);
+    state.set_pc(call.resume_pc);
+    return ServiceOutcome::Jumped;
 }
 
 } // namespace gt4recomp::ee

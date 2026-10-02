@@ -21,6 +21,7 @@ namespace gt4recomp::ee {
 enum class ServiceOutcome {
     Handled,           // the service completed; continue at pc + 4
     Switched,          // the current thread blocked; another context is live
+    Jumped,            // the service set pc and ra: continue in guest code
     NoRunnableThread,  // the current thread blocked and nothing can run
     Unhandled          // no handler: the syscall stays a boundary
 };

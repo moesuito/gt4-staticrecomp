@@ -27,6 +27,14 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] bool contains(std::uint32_t address, std::size_t width) const noexcept;
 
+    // KSEG0 aliasing: the EE maps 0x80000000 to physical 0, and the kernel's
+    // syscall-table search reads through that segment. When enabled, guest
+    // addresses at 0x80000000 + physical access the same bytes as physical
+    // (bounded by the region). The default is strict: nothing outside the
+    // region is mapped unless the caller asks for it.
+    void enable_kseg0_alias() noexcept;
+    [[nodiscard]] bool kseg0_alias_enabled() const noexcept;
+
     [[nodiscard]] std::uint8_t read_byte(std::uint32_t address) const;
     [[nodiscard]] std::uint16_t read_halfword(std::uint32_t address) const;
     [[nodiscard]] std::uint32_t read_word(std::uint32_t address) const;
@@ -43,9 +51,11 @@ public:
 private:
     void require_alignment(std::uint32_t address, std::size_t width) const;
     [[nodiscard]] std::size_t range_offset(std::uint32_t address, std::size_t width) const;
+    [[nodiscard]] std::uint32_t physical_address(std::uint32_t address) const noexcept;
 
     std::uint32_t base_ = 0;
     std::vector<std::uint8_t> bytes_;
+    bool kseg0_alias_ = false;
 };
 
 // The whole per-thread register state a context switch must carry: the

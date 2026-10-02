@@ -1,10 +1,11 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 3 — the thread scheduler: the game's boot
-now runs through SetupThread, SetupHeap and both CreateSema calls with the
-state identical to the interpreter, and stops at the kernel-patch wall
-(SetSyscall). This is the first document to read in a new session; it is kept
-current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 4 — the kernel-patch services: the boot
+patches FindAddress and Copy, locates the synthetic syscall table through the
+game's own search, and stops at the EE timer hardware (TIM3_MODE), with the
+state identical to the interpreter. This is the first document to read in a
+new session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -268,9 +269,26 @@ current as work proceeds. Details live in the linked evidence documents.
   (0x74) at 0x005B7554, with the full state identical to the interpreter
   after 942,761 instructions.** The scheduler is unit-verified (`ee_kernel`,
   no game data) and not yet exercised by the boot run: the game's thread
-  creation comes after the patch wall. CTest 30/30; Python 73 (67 run,
+  creation comes after the walls (now the EE timer hardware). CTest 30/30;
+  Python 73 (67 run,
   6 skip) (`docs/reverse-engineering/m30-thread-scheduler.md`,
   `docs/decisions/0005-thread-scheduler.md`).
+- M30 slice 4 (2026-10-02): **the kernel-patch services** — `SetSyscall`
+  (0x74) records the patch and writes the guest handler into a synthetic
+  syscall table at physical 0x1000; a patched syscall dispatches to the guest
+  handler through a return stub (the model's private service 0x100) that
+  restores the caller's ra and resume address, mirroring the kernel's EPC
+  return; `GuestMemory` gains an opt-in KSEG0 alias (the SDK's search reads
+  0x80000000); guest faults now name the pc. **The boot patches FindAddress
+  (0x83 → 0x005B73C8) and Copy (0x5A → 0x005B7390), runs both searches
+  through the game's own helper — which finds the installed values in the
+  synthetic table and derives its base at 0x80001000 — and stops at the
+  second stub return with the full state identical to the interpreter after
+  954,146 instructions.** The next wall is the **EE timer hardware**:
+  0x005B7A40 reads TIM3_MODE (0x10001810) and stops with the explicit fault;
+  the timer/alarm subsystem needs its own decision. CTest 30/30; Python 73
+  (67 run, 6 skip) (`docs/reverse-engineering/m30-kernel-patches.md`,
+  `docs/decisions/0006-kernel-patches.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -280,14 +298,12 @@ current as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the kernel-patch services** — the boot
-  stops at SetSyscall (0x74) in the InitTLBFunctions-equivalent, which also
-  uses FindAddress (0x83) over the kernel range and Copy (0x5A); the host is
-  the kernel in this model, so a patch that rewrites kernel code needs its
-  own decision (record guest handler mappings and jump to guest handlers on
-  patched syscalls; settle FindAddress's return contract from the
-  disassembly first). That also unblocks the game's thread creation
-  (0x005AEA78), which will exercise the cooperative scheduler end to end.
+- Next technical milestone work: **the EE timer and alarm subsystem** — the
+  boot stops at 0x005B7A40 reading TIM3_MODE (0x10001810); the model maps no
+  hardware registers. The decision must settle register storage, counting
+  (or a deterministic tick policy), SetAlarm (0x18/0xFC), and the alarm
+  callback path; after that the boot reaches the game's thread creation
+  (0x005AEA78) and exercises the cooperative scheduler end to end.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
@@ -340,29 +356,27 @@ current as work proceeds. Details live in the linked evidence documents.
   module entries (correctness first; 24 instructions in the boot run). The
   two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now stops at the kernel-patch wall**: SetSyscall (0x74) at
-  0x005B7554 in the InitTLBFunctions-equivalent at 0x005B7450, which also
-  searches the kernel range through FindAddress (0x83) and later uses Copy
-  (0x5A). The host is the kernel in this model, so the patch semantics need
-  their own decision before the boot can pass. FlushCache is registered but
-  still not reached.
-- The cooperative scheduler is unit-verified but **not yet exercised by the
-  boot run**: the game's thread creation (0x005AEA78) comes after the patch
-  wall. No timer preemption is modeled (decision 0005). Equal-priority
-  dispatch is creation order, not the kernel's rotation.
+- **The boot now stops at the EE timer hardware**: 0x005B7A40 reads
+  TIM3_MODE (0x10001810) and the model maps no hardware registers, so the
+  access fails with the explicit fault (pc and address named). The
+  kernel-patch mechanism before it is verified. FlushCache is still
+  registered but unreached.
+- The cooperative scheduler is unit-verified but still **not yet exercised
+  by the boot run**: the game's thread creation (0x005AEA78) comes after
+  the timer wall. No timer preemption is modeled (decision 0005).
+  Equal-priority dispatch is creation order, not the kernel's rotation.
 - A module call runs to its own boundary and cannot be interrupted; the work
   budget counts interpreted instructions and module calls, so a loop inside a
   module is not bounded by it. No such loop has been hit before a boundary.
 
 ## Next actions
 
-1. M30 slice 4: **the kernel-patch services** (SetSyscall 0x74, FindAddress
-   0x83, Copy 0x5A) — settle FindAddress's contract from the disassembly of
-   0x005B7450/0x005B7408 and the SDK's InitTLBFunctions shape, then record
-   the decision (the model is the kernel) and implement; the acceptance
-   evidence is `gt4boot --compare-interpreter` past 0x005B7554, which also
-   unblocks the game's thread creation and exercises the scheduler end to
-   end.
+1. M30 slice 5: **the EE timer and alarm subsystem** — model the TIM3
+   registers 0x005B7A40 touches (storage plus a deterministic counting
+   policy), SetAlarm (0x18/0xFC), and the callback path; the acceptance
+   evidence is `gt4boot --compare-interpreter` past the timer init,
+   reaching the game's thread creation and exercising the cooperative
+   scheduler.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
@@ -400,6 +414,9 @@ current as work proceeds. Details live in the linked evidence documents.
   program), slice 2 is the BIOS service layer plus the interpreter bridge
   (`gt4boot` runs the whole game as one module through SetupThread and
   SetupHeap with state identical to the interpreter, stopping at CreateSema
-  in the thread/semaphore init), and slice 3 is the thread scheduler and the
+  in the thread/semaphore init), slice 3 is the thread scheduler and the
   semaphore services (the boot now passes both CreateSema calls and stops at
-  the kernel-patch wall, SetSyscall).
+  the kernel-patch wall, SetSyscall), and slice 4 is the kernel-patch
+  services (SetSyscall, the synthetic table and the stub return; the boot
+  patches FindAddress/Copy, runs the SDK's search through the game's own
+  helper, and stops at the EE timer hardware).

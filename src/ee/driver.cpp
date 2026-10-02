@@ -1,11 +1,26 @@
 #include "gt4recomp/ee_driver.hpp"
 
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace gt4recomp::ee {
+namespace {
+
+// A guest access that leaves the mapped window propagates as an error from
+// GuestMemory; naming the pc makes the boundary diagnosable without a
+// debugger.
+std::string fault_context(std::uint32_t pc, const std::exception& error) {
+    std::ostringstream message;
+    message << "Guest fault at pc 0x" << std::hex << std::setfill('0')
+            << std::setw(8) << pc << ": " << error.what();
+    return message.str();
+}
+
+} // namespace
 
 Module module_from_entries(std::span<const ModuleEntry> entries) {
     // The closures own a copy of the list, so the returned module outlives
@@ -142,14 +157,19 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
         // interpreted delay slot is in flight; anything else is the bridge's.
         if (!interpreter_.pending_transfer() && module_.has_entry(state_.pc())) {
             const std::uint32_t entry_pc = state_.pc();
-            module_.call_entry(state_, entry_pc);
+            try {
+                module_.call_entry(state_, entry_pc);
+            } catch (const std::exception& error) {
+                throw std::runtime_error(fault_context(entry_pc, error));
+            }
             ++result.stats.module_calls;
             const Boundary boundary = classify_boundary(state_);
             if (boundary.kind == BoundaryKind::Syscall) {
                 const ServiceOutcome outcome = handle_syscall(
                     boundary.pc, boundary.service, services, options, result.stats);
                 if (outcome == ServiceOutcome::Handled
-                    || outcome == ServiceOutcome::Switched) {
+                    || outcome == ServiceOutcome::Switched
+                    || outcome == ServiceOutcome::Jumped) {
                     continue;
                 }
                 if (outcome == ServiceOutcome::NoRunnableThread) {
@@ -183,7 +203,13 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
             result.boundary = Boundary{BoundaryKind::Unmapped, pc, 0, 0};
             return result;
         }
-        const StepResult step = interpreter_.step();
+        const StepResult step = [&] {
+            try {
+                return interpreter_.step();
+            } catch (const std::exception& error) {
+                throw std::runtime_error(fault_context(pc, error));
+            }
+        }();
         ++result.stats.interpreted_steps;
         if (step.outcome == StepOutcome::Executed) {
             continue;
@@ -194,7 +220,8 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
             const ServiceOutcome outcome = handle_syscall(
                 step.pc, state_.read_gpr32(3), services, options, result.stats);
             if (outcome == ServiceOutcome::Handled
-                || outcome == ServiceOutcome::Switched) {
+                || outcome == ServiceOutcome::Switched
+                || outcome == ServiceOutcome::Jumped) {
                 continue;
             }
             if (outcome == ServiceOutcome::NoRunnableThread) {

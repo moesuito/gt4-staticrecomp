@@ -38,9 +38,25 @@ std::size_t GuestMemory::size() const noexcept {
 }
 
 bool GuestMemory::contains(std::uint32_t address, std::size_t width) const noexcept {
-    const std::uint64_t end = static_cast<std::uint64_t>(address) + width;
-    return width != 0 && address >= base_
+    const std::uint32_t physical = physical_address(address);
+    const std::uint64_t end = static_cast<std::uint64_t>(physical) + width;
+    return width != 0 && physical >= base_
         && end <= static_cast<std::uint64_t>(base_) + bytes_.size();
+}
+
+void GuestMemory::enable_kseg0_alias() noexcept {
+    kseg0_alias_ = true;
+}
+
+bool GuestMemory::kseg0_alias_enabled() const noexcept {
+    return kseg0_alias_;
+}
+
+std::uint32_t GuestMemory::physical_address(std::uint32_t address) const noexcept {
+    if (kseg0_alias_ && address >= 0x80000000u) {
+        return address - 0x80000000u;
+    }
+    return address;
 }
 
 void GuestMemory::require_alignment(std::uint32_t address, std::size_t width) const {
@@ -53,7 +69,7 @@ std::size_t GuestMemory::range_offset(std::uint32_t address, std::size_t width) 
     if (!contains(address, width)) {
         throw std::runtime_error(access_text("is outside the mapped region", address, width));
     }
-    return static_cast<std::size_t>(address - base_);
+    return static_cast<std::size_t>(physical_address(address) - base_);
 }
 
 // All assembly uses explicit unsigned shifts: no host signed overflow and no
