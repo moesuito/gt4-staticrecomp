@@ -2505,6 +2505,10 @@ bool execute_plain_allowing_trap(const DecodedInstruction& instruction, GuestSta
 
 } // namespace
 
+bool execute_plain_effect(GuestState& state, const DecodedInstruction& instruction) {
+    return execute_plain_allowing_trap(instruction, state);
+}
+
 Interpreter::Interpreter(GuestState& state) : state_(state) {}
 
 StepResult Interpreter::step() {

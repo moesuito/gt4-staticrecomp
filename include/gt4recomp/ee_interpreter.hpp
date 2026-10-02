@@ -39,4 +39,13 @@ private:
     std::uint32_t transfer_target_ = 0;
 };
 
+// Executes one already-decoded instruction's register and memory effect
+// without touching the pc. Translated modules use this for the operations
+// whose semantics live in the verified executor rather than in generated code
+// (the VU0 macro table, the COP2 moves and the trapping arithmetic). Returns
+// false when a trapping overflow fired; the caller stops at the instruction's
+// address, exactly where the interpreter stops.
+[[nodiscard]] bool execute_plain_effect(GuestState& state,
+                                        const DecodedInstruction& instruction);
+
 } // namespace gt4recomp::ee

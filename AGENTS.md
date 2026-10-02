@@ -103,11 +103,14 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-01:
+Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M6 BUILD/VERIFY complete; decoder covers 39 operations; Ghidra
-  re-verification: 417 matched, 352 non-NOP, 71 unsupported, 0 mismatches.
-- Next: M7 control flow (delay slots, basic blocks, CFG, function map).
+- M0-M25 BUILD/VERIFY complete; decoder covers 349 operations; the only
+  unsupported words left in the real code region are two DMA-dependent BC0F
+  and two unassigned encodings inside the exception handler (the text's
+  trailing 700 words are a data table).
+- Next: M26 whole-text translation survey (which functions translate today
+  and what blocks the rest).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
