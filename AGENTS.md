@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 22 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 23 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -166,14 +166,18 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   the descriptor with an index-weighted checksum; RPC 4 answers the
   registered volume's size), so the boot mounts both layers, reads the
   inner archives (version 3.1) and stops at an unaligned guest access while
-  parsing them; `--threads`
+  parsing them; slice 23 then diagnoses that fault (the reference
+  interpreter faults at the same address, so it is guest data, not
+  translation: a pointer relocation called on a structure at an odd address
+  in the engine's static name buffer); `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 23 — the archive parser's frontier: the boot mounts both
-  volumes, reads the inner archives (version 3.1) and faults on an
-  unaligned guest access (pc 0x00462670, address 0x008475EB, after 83,783
-  services) while parsing that data; trace what the parser expected (the
-  streaming pool class at 0x00462670 and the pointer source 0x0044D740).
+- Next: M30 slice 24 — the odd structure in the engine's name buffer: the
+  fault is a pointer relocation (0x005595C8) called on a structure at
+  0x008475E7 (odd) inside the static buffer at 0x00847580; find which code
+  builds that structure and from which data (the string before it, the
+  inner archives just read, or a service answer that sizes them), and why
+  the console's copy is aligned at 0x008475E0.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

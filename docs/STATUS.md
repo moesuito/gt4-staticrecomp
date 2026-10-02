@@ -1,21 +1,18 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 22 — the disc's two volumes and the CD
-driver's volume protocol: the live PCSX2 dump's block cache proved the game
-reads a **second ISO9660 volume** (its descriptor and root at logical
-blocks 0x1418D0/0x1419C5, byte-identical to the image's 0x1418C0/0x1419B5),
-the image stores that volume **sixteen blocks early** (its system area is
-left out), and the library's protocol settled: **RPC 2** registers the
-descriptor block with an index-weighted checksum and **RPC 4** answers the
-registered volume's "volume space size", which the engine uses as the next
-volume's start. The model now presents the disc's **logical blocks**
-(`DiscSectors` derives and validates the volumes from the image itself),
-answers both operations, and the boot **mounts both layers and reads the
-inner archives** (version 3.1), stopping at a new frontier: an unaligned
-guest access while parsing archive data. The differential passes at 3,000
-services (interpreter reference at 7,570,583 instructions, full state
-identical). This is the first document to read in a new session; it is kept
-current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 23 — the archive-parser fault diagnosed:
+the boot's new fault (an unaligned word access at 0x008475EB after 83,783
+services) is **not a translation divergence** — the reference interpreter
+faults at the same address — it is a **pointer relocation** (0x005595C8)
+called on a structure the engine placed at an **odd** address (0x008475E7)
+inside its static name buffer (base 0x00847580); the live game's dump holds
+the same kind of structure *aligned* at 0x008475E0, so the placement
+depends on data the engine processed (the string that precedes it). No
+model behavior changed; the next slice finds what builds that structure.
+The differential passes at 3,000 services (interpreter reference at
+7,570,583 instructions, full state identical). This is the first document
+to read in a new session; it is kept current as work proceeds. Details live
+in the linked evidence documents.
 
 ## Where we are
 
@@ -626,6 +623,24 @@ current as work proceeds. Details live in the linked evidence documents.
   with the interpreter reference at 7,570,583 instructions and the full
   state identical (`docs/reverse-engineering/m30-slice22-dual-layer-and-pcdv-volume.md`,
   `docs/decisions/0020-dual-layer-disc-and-pcdv-volume-ops.md`).
+- M30 slice 23 (2026-10-02): **the archive-parser fault diagnosed** — the
+  boot's fault after 83,783 services (an unaligned word access at
+  0x008475EB, reported at pc 0x00462670) is **not a translation
+  divergence**: the reference interpreter faults at the same address and
+  width (temporary instrument), so the cause is the **guest data the model
+  provides**. The module entry 0x00462670 is the engine's string-object
+  class; its assignment body calls 0x005595C8 — a **pointer relocation**
+  (it reads `*(a0 + 4)` as the old base, computes the delta and rebases the
+  pointers at +0xC/+0x14/+0x1C) — with a structure at an **odd** address
+  (0x008475E7). The structure lives in the engine's static name buffer
+  (base 0x00847580); the live dump holds the same kind of structure
+  **aligned** at 0x008475E0, so its placement depends on data the engine
+  processed (the string that precedes it). The engine's library here is its
+  file/name layer (paths `/sound/gt4race2.ins` at 0x006AB850, `.ins` at
+  0x006AB4E0). No model behavior changed: CTest 34/34; Python 73 (67 run, 6
+  skip); the differential passes at 3,000 services with the interpreter
+  reference at 7,570,583 instructions and the full state identical
+  (`docs/reverse-engineering/m30-slice23-archive-parser-fault-diagnosed.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -635,13 +650,13 @@ current as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the archive parser's frontier** — the
-  boot mounts both volumes and reads the inner archives (version 3.1) and
-  then faults on an unaligned guest access (pc 0x00462670, address
-  0x008475EB, after 83,783 services) while parsing that data; the next
-  slice traces what the parser expected (the streaming pool class at
-  0x00462670 and the pointer source 0x0044D740) and answers it from the
-  model or the disc.
+- Next technical milestone work: **the odd structure in the engine's name
+  buffer** — the fault is a pointer relocation (0x005595C8) called on a
+  structure at 0x008475E7 (odd) inside the static buffer at 0x00847580;
+  the next slice finds which code builds that structure and from which
+  data (the string before it, the inner archives just read, or a service
+  answer that sizes them), and why the console's copy is aligned at
+  0x008475E0.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
