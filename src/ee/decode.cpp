@@ -46,6 +46,10 @@ Operation decode_special(const DecodedInstruction& instruction) {
     switch (instruction.function) {
     case 0x0a: return Operation::Movz;
     case 0x0b: return Operation::Movn;
+    case 0x18: return Operation::Mult;
+    case 0x19: return Operation::Multu;
+    case 0x1a: return Operation::Div;
+    case 0x1b: return Operation::Divu;
     case 0x21: return Operation::Addu;
     case 0x23: return Operation::Subu;
     case 0x24: return Operation::And;
@@ -152,6 +156,9 @@ Operation decode_mmi3(const DecodedInstruction& instruction) {
 // amounts elsewhere in the encoding.
 Operation decode_mmi(const DecodedInstruction& instruction) {
     switch (instruction.function) {
+    case 0x00: return Operation::Madd;
+    case 0x01: return Operation::Maddu;
+    case 0x04: return Operation::Plzcw;
     case 0x08: return decode_mmi0(instruction);
     case 0x09: return decode_mmi2(instruction);
     case 0x28: return decode_mmi1(instruction);
@@ -160,6 +167,12 @@ Operation decode_mmi(const DecodedInstruction& instruction) {
     case 0x11: return Operation::Mthi1;
     case 0x12: return Operation::Mflo1;
     case 0x13: return Operation::Mtlo1;
+    case 0x18: return Operation::Mult1;
+    case 0x19: return Operation::Multu1;
+    case 0x1a: return Operation::Div1;
+    case 0x1b: return Operation::Divu1;
+    case 0x20: return Operation::Madd1;
+    case 0x21: return Operation::Maddu1;
     case 0x30: return Operation::Pmfhl;
     case 0x31: return Operation::Pmthl;
     case 0x34: return Operation::Psllh;
@@ -315,10 +328,17 @@ DecodedInstruction decode(std::uint32_t word) {
     case 0x15: result.operation = Operation::Bnel; break;
     case 0x20: result.operation = Operation::Lb; break;
     case 0x21: result.operation = Operation::Lh; break;
+    case 0x22: result.operation = Operation::Lwl; break;
     case 0x23: result.operation = Operation::Lw; break;
     case 0x24: result.operation = Operation::Lbu; break;
+    case 0x25: result.operation = Operation::Lhu; break;
+    case 0x26: result.operation = Operation::Lwr; break;
+    case 0x27: result.operation = Operation::Lwu; break;
     case 0x28: result.operation = Operation::Sb; break;
+    case 0x29: result.operation = Operation::Sh; break;
+    case 0x2a: result.operation = Operation::Swl; break;
     case 0x2b: result.operation = Operation::Sw; break;
+    case 0x2e: result.operation = Operation::Swr; break;
     case 0x31: result.operation = Operation::Lwc1; break;
     case 0x37: result.operation = Operation::Ld; break;
     case 0x39: result.operation = Operation::Swc1; break;
@@ -365,6 +385,26 @@ std::string_view mnemonic(Operation operation) {
     case Operation::Sd: return "sd";
     case Operation::Lq: return "lq";
     case Operation::Sq: return "sq";
+    case Operation::Lhu: return "lhu";
+    case Operation::Lwu: return "lwu";
+    case Operation::Sh: return "sh";
+    case Operation::Lwl: return "lwl";
+    case Operation::Lwr: return "lwr";
+    case Operation::Swl: return "swl";
+    case Operation::Swr: return "swr";
+    case Operation::Plzcw: return "plzcw";
+    case Operation::Mult: return "mult";
+    case Operation::Multu: return "multu";
+    case Operation::Div: return "div";
+    case Operation::Divu: return "divu";
+    case Operation::Madd: return "madd";
+    case Operation::Maddu: return "maddu";
+    case Operation::Mult1: return "mult1";
+    case Operation::Multu1: return "multu1";
+    case Operation::Div1: return "div1";
+    case Operation::Divu1: return "divu1";
+    case Operation::Madd1: return "madd1";
+    case Operation::Maddu1: return "maddu1";
     case Operation::Beql: return "beql";
     case Operation::Bnel: return "bnel";
     case Operation::Blez: return "blez";

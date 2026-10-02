@@ -163,6 +163,16 @@ void GuestState::write_gpr32(std::uint8_t index, std::uint32_t value) {
     write_gpr64(index, extended);
 }
 
+void GuestState::write_gpr_low32(std::uint8_t index, std::uint32_t value) {
+    // Only bits 0-31 change; the rest of the register (including the upper
+    // half) is preserved, matching the unaligned-load rule this serves.
+    require_gpr_index(index);
+    if (index == 0) {
+        return;
+    }
+    gpr_[index] = (gpr_[index] & 0xffffffff00000000ull) | value;
+}
+
 std::uint64_t GuestState::read_gpr_high64(std::uint8_t index) const {
     require_gpr_index(index);
     return index == 0 ? 0 : gpr_high_[index];

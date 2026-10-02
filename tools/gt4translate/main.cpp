@@ -227,6 +227,10 @@ std::string statement_for(const DecodedInstruction& instruction) {
     case Operation::Sync:
         code << "; // sync: the pipeline barrier has no effect in this model";
         break;
+    case Operation::Plzcw:
+        code << "state.write_gpr64(" << rd
+             << ", detail::plzcw_words(state.read_gpr64(" << rs << ")));";
+        break;
     case Operation::AddaS:
         // The casts matter: uint8_t streams as a character, which would emit
         // an invisible control byte instead of the register number.
@@ -653,6 +657,21 @@ int wmain(int argc, wchar_t* argv[]) {
                << "constexpr std::uint32_t fpu_flag_so = 0x00000010u;\n"
                << "constexpr std::uint32_t fpu_flag_su = 0x00000008u;\n"
                << "constexpr std::uint32_t largest_finite_bits = 0x7f7fffffu;\n\n"
+               << "// PLZCW's per-word count: negative values invert, zero counts 32,\n"
+               << "// and the instruction stores one less than the count.\n"
+               << "[[nodiscard]] inline std::uint32_t count_leading_sign_bits(std::uint32_t value) {\n"
+               << "    if ((value & 0x80000000u) != 0) {\n"
+               << "        value = ~value;\n"
+               << "    }\n"
+               << "    return value == 0 ? 32u : static_cast<std::uint32_t>(std::countl_zero(value));\n"
+               << "}\n\n"
+               << "[[nodiscard]] inline std::uint64_t plzcw_words(std::uint64_t source) {\n"
+               << "    const std::uint32_t low_count =\n"
+               << "        count_leading_sign_bits(static_cast<std::uint32_t>(source)) - 1;\n"
+               << "    const std::uint32_t high_count =\n"
+               << "        count_leading_sign_bits(static_cast<std::uint32_t>(source >> 32)) - 1;\n"
+               << "    return (static_cast<std::uint64_t>(high_count) << 32) | low_count;\n"
+               << "}\n\n"
                << "// The PS2 FPU has no denormals and saturates at the largest finite\n"
                << "// value; this mirrors the interpreter's hardware_float exactly.\n"
                << "[[nodiscard]] inline float hardware_float(std::uint32_t bits) {\n"

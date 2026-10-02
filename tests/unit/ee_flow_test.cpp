@@ -52,7 +52,7 @@ int main() {
         {0x01000008, 0x00001000, FlowKind::IndirectJump, true, false, 0},
         {0x0000000c, 0x00001000, FlowKind::Exception, false, false, 0},
         {0x27bdfff0, 0x00001000, FlowKind::FallThrough, false, false, 0},
-        {0x70000000, 0x00001000, FlowKind::Unsupported, false, false, 0},
+        {0x70000002, 0x00001000, FlowKind::Unsupported, false, false, 0},
     };
     for (const auto& expected : classify_cases) {
         const auto actual = classify(decode(expected.word), expected.pc);
@@ -117,14 +117,14 @@ int main() {
           && syscall_block.stop_reason == "exception", "syscall block");
 
     // An unsupported word is included and ends the walk with context.
-    const auto unsupported_text = make_text(base, {0x27bdfff0, 0x70000000, 0x27bdfff0});
+    const auto unsupported_text = make_text(base, {0x27bdfff0, 0x70000002, 0x27bdfff0});
     const auto unsupported_block = build_basic_block(unsupported_text, base, 40);
     check(unsupported_block.instruction_count == 2
           && unsupported_block.ending == FlowKind::Unsupported
           && unsupported_block.stop_reason == "unsupported", "unsupported block");
 
     // An unsupported delay slot keeps the transfer's facts and is flagged.
-    const auto bad_slot_text = make_text(base, {0x11090003, 0x70000000});
+    const auto bad_slot_text = make_text(base, {0x11090003, 0x70000002});
     const auto bad_slot_block = build_basic_block(bad_slot_text, base, 40);
     check(bad_slot_block.instruction_count == 2 && bad_slot_block.ending == FlowKind::Branch
           && bad_slot_block.target_known && bad_slot_block.target == base + 0x10

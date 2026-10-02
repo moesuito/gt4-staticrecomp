@@ -13,12 +13,13 @@ work proceeds. Details live in the linked evidence documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 175 operations. Ghidra verification: the M6 ten-region
-    run matched 417 with 0 mismatches; the M15 listing (ten regions, candidate
-    ranges and the five startup regions) matched 511 with 0 mismatches and 34
-    R5900-only rows verified against the reference tables instead
-    (`docs/reverse-engineering/m6-disassembly.md`,
-    `docs/reverse-engineering/m15-cop1-mmi.md`).
+  - The decoder covers 188 operations (line-filtered count; earlier documents
+    cited 175, which counted comment fragments). Ghidra verification: the M6
+    ten-region run matched 417 with 0 mismatches; the M16 listing (startup
+    regions, candidates and the unaligned-access neighborhoods) matched 594
+    with 0 mismatches and 34 R5900-only rows verified against the reference
+    tables instead (`docs/reverse-engineering/m6-disassembly.md`,
+    `docs/reverse-engineering/m16-unaligned-and-multiply.md`).
 - M7 (2026-10-01): flow classification, delay-slot-aware basic blocks
   (`gt4blocks`) and deterministic CFG traversal (`gt4cfg`); real seeded run:
   15 blocks, 71 instructions, 20 edges
@@ -62,7 +63,19 @@ work proceeds. Details live in the linked evidence documents.
   supports a halt address; the startup now also runs as a 112-instruction
   native module whose final state matches the interpreter exactly after
   942,695 instructions (`ee_translation_startup` CTest). MOVZ/MOVN added from
-  observed use (175 operations in total).
+  observed use.
+- M16 unaligned access and multiply/divide: LWL/LWR/SWL/SWR (reference
+  mask/shift tables; LWR's nonzero shift keeps the register's upper half via
+  the new `write_gpr_low32`), LWU/LHU/SH, MULT/MULTU/DIV/DIVU with the quirk
+  cases, MADD/MADDU, the compact second-bank forms and PLZCW — 188 operations
+  total (corrected count). Hand-computed fixtures cover all four alignments,
+  the load pair, divide-by-zero signalling and the second bank; Ghidra
+  matched=594, mismatched=0. Fifth verified function: 0x00572438 (a
+  plzcw/movn/movz bit-count helper) translates and matches the interpreter on
+  6 states (`ee_translation_572438`). Gaps recorded: 0x579780 (break in a
+  likely delay slot), 0x58ce48's tree (transfer below the entry at 0x5b27f8),
+  the MMI parallel multiply family, BREAK and COP0
+  (`docs/reverse-engineering/m16-unaligned-and-multiply.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -115,10 +128,10 @@ work proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. M16 next: unaligned access (LWL/LWR/SWL/SWR), LWU/LHU/SH, PLZCW and the
-   multiply/divide family (MULT/DIV/MADD, PMULT*/PMADD*/PDIV*), COP0 and
-   BREAK; then indirect-call dispatch for jr-based tables; differential
-   execution needs step control (open).
+1. M17 next: the MMI parallel multiply family (PMULT*/PMADD*/PMSUB*/PMULTH/
+   PHMADH/PHMSBH/PDIV*), BREAK and COP0; the translator's structural limit
+   (functions entered above their own back-edges); indirect-call dispatch for
+   jr-based tables; differential execution needs step control (open).
 2. The M9-M14 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
@@ -130,4 +143,5 @@ work proceeds. Details live in the linked evidence documents.
   synthetic suites, M13 first natively compiled function, M14 live PCSX2
   observation and savestate register decoding, M15 COP1/MMI decoding and
   execution with the game's startup running in the interpreter and
-  recompiled natively (verified identical after 942,695 instructions).
+  recompiled natively (verified identical after 942,695 instructions), M16
+  unaligned access, multiply/divide and PLZCW with a fifth verified function.
