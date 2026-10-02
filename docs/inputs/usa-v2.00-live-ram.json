@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-01",
+  "emulator": {
+    "name": "PCSX2",
+    "version": "2.9.93",
+    "protocol": "PINE (localhost:28011)"
+  },
+  "disc": {
+    "title": "Gran Turismo 4",
+    "serial": "SCUS-97328",
+    "uuid": "77E61C8A"
+  },
+  "comparisons": [
+    {
+      "record": "text",
+      "vaddr": "0x00100000",
+      "size": 5339668,
+      "matching": 5339668,
+      "differing": 0,
+      "sha256": "5a9a9107b146b7d533a2a2421cdf900a913d5ced4e97892798cfa810b3dd2d34"
+    },
+    {
+      "record": "reginfo",
+      "vaddr": "0x006179fc",
+      "size": 24,
+      "matching": 24,
+      "differing": 0
+    },
+    {
+      "record": "data",
+      "vaddr": "0x00617a80",
+      "size": 779132,
+      "matching": 736471,
+      "differing": 42661,
+      "note": "writable data; differences are runtime writes by the game (image pointers and 0xff sentinels). A cold-boot time series showed the count falling from 351057 to the steady state as loading completed."
+    }
+  ],
+  "anchor": {
+    "savestate_slot": 9,
+    "file": "SCUS-97328 (77E61C8A).09.p2s",
+    "size_bytes": 13453263,
+    "state": "main menu"
+  },
+  "limits": "Metadata only; the live RAM dump itself stays in ignored private/. Register-level comparison needs savestate parsing beyond this slice."
+}
