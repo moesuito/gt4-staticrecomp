@@ -1,6 +1,6 @@
 # Project status
 
-Updated 2026-10-01 after M10. This is the first document to read in a new
+Updated 2026-10-01 after M11. This is the first document to read in a new
 session; it is kept current as work proceeds. Details live in the linked
 evidence documents.
 
@@ -34,16 +34,20 @@ evidence documents.
   state — delay slots, likely-branch nullification, link registers and
   context-carrying stops, verified by hand-computed fixtures
   (`docs/reverse-engineering/m10-interpreter.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9 and M10
+- M11 (2026-10-01): generated straight-line suites — a seeded Python generator
+  with an independent reference model emits 40 programs covering all 20
+  straight-line operations; the C++ interpreter reproduces every expectation
+  (`docs/reverse-engineering/m11-synthetic-programs.md`).
+- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M11
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: M11-M12 — generated straight-line and
-  branching synthetic programs over the interpreter.
+- Next technical milestone work: M12 — branching synthetic programs over the
+  interpreter.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 10/10 CTest; Python suite 37 collected (31 run, 6 skip without the M3
+- Tests: 11/11 CTest; Python suite 44 collected (38 run, 6 skip without the M3
   reference ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -59,20 +63,21 @@ evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9/M10 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M11 lessons are
   pending.
 - 71 unsupported words: COP1 (34), MMI (31) and five single encodings,
   deferred to M15-M17 by the curriculum.
 
 ## Next actions
 
-1. Start M11: synthetic program suites (straight-line, then branching) over
-   the interpreter, with hand-computed expected states.
-2. The M9/M10 lessons and retroactive M2-M5 notes if useful.
+1. Start M12: branching synthetic programs (loops, likely branches, calls)
+   with the reference model extended to control flow and delay slots.
+2. The M9-M11 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
 
 - [2026-10-01](journal/2026-10-01.md) — fork setup, environment validation,
   decoder expansion, Ghidra verification, working rules, M6-M8 lessons, M7
-  slices 1-2, M8 function map, M9 state model, M10 interpreter.
+  slices 1-2, M8 function map, M9 state model, M10 interpreter, M11 synthetic
+  suites.
