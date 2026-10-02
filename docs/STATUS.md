@@ -26,8 +26,15 @@ is **identical** (24,114,381 interpreter instructions, full state): the
 zero result is what the guest code produces from these inputs, so the next
 slice must find which step should write the context's +0x94 (the lookup's
 request field is only zeroed) and which input differs from the console.
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Slice 42 (paused mid-investigation) found the writer — the descriptor
+callback **0x44D540** runs **0x44D6BC (`stream+0x94 = the file object`)**
+after the header read and its magic check — and that the file's disc read
+(LBA 0x1C2C0, size 0x1A830) is **never sent** (a trace of every PCDV RPC
+ends at the archive block); the next experiment is a write watch on the
+descriptor (0x01FFFE60) and stream (0x01FFFDB0) windows to see which
+callback branch ran. This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -1018,16 +1025,17 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **who writes the context's +0x94** — the
-  worker pipeline runs end to end (state 3, lists drained, the differential
-  identical at 83,782 services), but the formatter's context keeps
-  result +0x94 = 0; the lookup work (0x004B0B48) copies it from the search
-  request's +0x10, which the search (0x004B1F90) never writes and 0x004AF6B8
-  zeroes; the next slice finds which step is supposed to fill that field
-  (the search's result at handler+0xC4, the entry pointer or the completion's
-  file object) and which input differs from the console — comparing the
-  request, the path string and the directory object with the console's live
-  state.
+- Next technical milestone work: **why the open's read never reaches the
+  disc** — the writer of the formatter context's +0x94 is found: the
+  descriptor callback **0x44D540** runs **0x44D6BC (`stream+0x94 = the
+  file object`)** after reading the file header (0x4AFA20) and validating
+  its magic; in the model the descriptor ends with +0 = 2 (an error) and
+  +0xC = 0 (no object), so the callback never got there. A temporary trace
+  of every PCDV RPC shows the file data read (LBA 0x1C2C0, size 0x1A830)
+  was **never sent** — the last PCDV activity is the archive block. The
+  next experiment is a write watch on the descriptor (0x01FFFE60) and the
+  stream (0x01FFFDB0) windows to see which callback branch ran (0x44D5B0 /
+  0x44D6C0 / 0x44D6E8) and whether 0x44D6BC was reached.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
