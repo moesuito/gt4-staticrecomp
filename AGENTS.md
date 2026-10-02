@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 32 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 33 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -203,15 +203,21 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   dispatch (the list at 0x006318B0 matches the console's) and the failure
   is the handler's path-prefix state: the live handler carries +0xAC = "/"
   while the model's points its prefix list (+0xF4) at the `/mpeg` global;
-  `--threads`
+  slice 33 then finds the registration code (the game's own early init
+  0x00100D30 constructs the handlers, the first with t0 = 0x00617AA8) and
+  **corrects slice 32**: the field comparison shows the model's handlers
+  match the console's (vtable, +0xAC = "/", the archive bindings), so the
+  match chain reaches the layer-0 archive handler and the failure is inside
+  its open method 0x004B1730; `--threads`
   prints the kernel's thread table, the handler tables, the DMA/timer state
   and the deferred-call counts after a run.
-- Next: M30 slice 33 — the handler's prefix registration: which code
-  constructs (or re-registers) the handler 0x00617BB0 with the "/" prefix,
-  and why the model's instance ends up with 0x00617AA8 (the `/mpeg` global)
-  instead — the candidates are the engine's mount paths (the ISO, the
-  GT4.VOL archives and the PCDV) and the order in which the model runs
-  them.
+- Next: M30 slice 34 — the archive open handler 0x004B1730: the match chain
+  reaches the layer-0 archive handler (whose +0xAC = "/" matches), so the
+  failure is inside the handler method 0x004B1730 returning 0 (the
+  archive's file open for `/sound/gt4sys.ins`); disassemble it and follow
+  its failure path — the archive buffer at 0x90EA80 holds the same bytes as
+  the console's, so the difference is likely in a state field or a service
+  the open depends on.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

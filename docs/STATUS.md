@@ -1,22 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 32 — the resolver's handler registry: the
-failing parse (0x004AE1F8 → 0x004ACE58) is a **handler-registry dispatch**
-over the global list at 0x006318B0 (match at vtable+0x38, handler at
-vtable+0x40), and the model's registry at the fault is **identical** to the
-live dump's (nodes 0x617BB0/0x84B480/0x617AB0 with the same vtables). The
-match (0x004ACBA0) compares the path against the handler's string list at
-**+0xF4** (or the single string at **+0xAC** when that is zero); the live
-handler 0x617BB0 carries **+0xAC = "/"** (the string built at 0x004ACA68,
-0x006B00D0 — the constructor 0x004ACA40's own constant), so the console
-matches any path starting with "/", while the model's handler has
-**+0xF4 = 0x00617AA8** (the global holding the `/mpeg` pointer) — a
-different prefix list — so the sound-bank paths match no handler and the
-parse returns 0. The name strings were verified intact at the fault. No
-model behavior changed. The differential passes at 3,000 services
-(interpreter reference at 7,570,583 instructions, full state identical).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 33 — the handler registration, and a
+correction: the game's own early init (0x00100D30–0x00100DB4) constructs
+and registers the two archive handlers through 0x004ACC28 → 0x004ACA40 —
+0x00617AB0 with no prefix list and **0x00617BB0 with t0 = 0x00617AA8**
+(the game's own registration, whose array starts with `/mpeg`). The field
+comparison at the fault shows the model's and the live handlers are nearly
+identical (vtable, **+0xAC = "/"**, the archive bindings 0x1BEF0/0x59440/
+0x90EA80, +0xF4), so **slice 32's reading was wrong**: the prefix state
+matches the console's and the match chain reaches the third handler (the
+layer-0 archive handler, +0xAC = "/" matches any "/" path). The failure is
+inside the **handler method 0x004B1730** returning 0 — the archive's file
+open for `/sound/gt4sys.ins`. No model behavior changed. The differential
+passes at 3,000 services (interpreter reference at 7,570,583 instructions,
+full state identical). This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -811,6 +810,27 @@ work proceeds. Details live in the linked evidence documents.
   differential passes at 3,000 services with the interpreter reference at
   7,570,583 instructions and the full state identical
   (`docs/reverse-engineering/m30-slice32-resolver-handler-registry.md`).
+- M30 slice 33 (2026-10-02): **the handler registration, and a correction** —
+  the game's own early init (0x00100D30–0x00100DB4) constructs and
+  registers the two archive handlers through the wrapper 0x004ACC28 (which
+  calls the constructor 0x004ACA40): **0x00617AB0** with no prefix list
+  (t0 = 0) and **0x00617BB0 with t0 = 0x00617AA8** — the game's own
+  registration, whose array starts with `/mpeg`; the constructor also
+  builds "/" (0x006B00D0) and passes it to the init 0x004B1C10. The field
+  comparison at the fault shows the model's and the live handlers are
+  **nearly identical** (vtable 0x688C58, **+0xAC = "/"**, the archive
+  bindings +0xB8 = 0x1BEF0 / +0xC8 = 0x90EA80 / +0xCC = 0x59440, the first
+  handler's +0xF4 = 0x617AA8), so **slice 32's reading was wrong**: the
+  prefix state matches the console's. The match chain is: node 0x617BB0's
+  list {"/mpeg"} misses, node 0x84B480's match is a stub, and node
+  0x617AB0's fallback (+0xAC = "/") **matches** any "/" path — so the
+  parse finds a handler and the failure is inside the **handler method
+  0x004B1730** returning 0 (the archive's file open for
+  `/sound/gt4sys.ins`). No model behavior changed: CTest 34/34; Python 73
+  (67 run, 6 skip); the differential passes at 3,000 services with the
+  interpreter reference at 7,570,583 instructions and the full state
+  identical
+  (`docs/reverse-engineering/m30-slice33-handler-registration.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -820,12 +840,13 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the handler's prefix registration** —
-  which code constructs (or re-registers) the handler 0x00617BB0 with the
-  "/" prefix, and why the model's instance ends up with 0x00617AA8 (the
-  `/mpeg` global) instead — the candidates are the engine's mount paths
-  (the ISO, the GT4.VOL archives and the PCDV) and the order in which the
-  model runs them.
+- Next technical milestone work: **the archive open handler 0x004B1730** —
+  the match chain reaches the layer-0 archive handler (whose +0xAC = "/"
+  matches), so the failure is inside the handler method 0x004B1730
+  returning 0 (the archive's file open for `/sound/gt4sys.ins`); the next
+  slice disassembles it and follows its failure path (the archive buffer at
+  0x90EA80 holds the same bytes as the console's, so the difference is
+  likely in a state field or a service the open depends on).
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
