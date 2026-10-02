@@ -43,7 +43,23 @@ public class CompareDisassembly extends GhidraScript {
         "pinth", "pinteh", "pcpyld", "pcpyud", "pcpyh",
         "pexeh", "prevh", "pexew", "pexch", "pexcw", "prot3w",
         "pmfhi", "pmflo", "pmthi", "pmtlo", "pmfhl", "pmthl", "qfsrv",
-        "qmfc2", "qmtc2", "cfc2", "ctc2", "lqc2", "sqc2", "vnop");
+        "qmfc2", "qmtc2", "cfc2", "ctc2", "lqc2", "sqc2", "vnop",
+        "vaddx", "vaddy", "vaddz", "vaddw", "vsubx", "vsuby", "vsubz", "vsubw",
+        "vmaddx", "vmaddy", "vmaddz", "vmaddw", "vmsubx", "vmsuby", "vmsubz", "vmsubw",
+        "vmaxx", "vmaxy", "vmaxz", "vmaxw", "vminix", "vminiy", "vminiz", "vminiw",
+        "vmulx", "vmuly", "vmulz", "vmulw", "vmulq", "vmaxi", "vmuli", "vminii",
+        "vaddq", "vmaddq", "vaddi", "vmaddi", "vsubq", "vmsubq", "vsubi", "vmsubi",
+        "vadd", "vmadd", "vmul", "vmax", "vsub", "vmsub", "vopmsub", "vmini",
+        "viadd", "visub", "viaddi", "viand", "vior",
+        "vaddax", "vadday", "vaddaz", "vaddaw", "vsubax", "vsubay", "vsubaz", "vsubaw",
+        "vmaddax", "vmadday", "vmaddaz", "vmaddaw", "vmsubax", "vmsubay", "vmsubaz", "vmsubaw",
+        "vitof0", "vitof4", "vitof12", "vitof15",
+        "vftoi0", "vftoi4", "vftoi12", "vftoi15",
+        "vmulax", "vmulay", "vmulaz", "vmulaw", "vmulaq", "vabs", "vmulai", "vclipw",
+        "vaddaq", "vmaddaq", "vaddai", "vmaddai", "vsubaq", "vmsubaq", "vsubai", "vmsubai",
+        "vadda", "vmadda", "vmula", "vsuba", "vmsuba", "vopmula",
+        "vmove", "vmr32", "vdiv", "vsqrt", "vrsqrt", "vwaitq", "vmtir", "vmfir",
+        "vrnext", "vrget", "vrinit", "vrxor");
 
     private String normalize(String assembly) {
         String normalized = assembly.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");

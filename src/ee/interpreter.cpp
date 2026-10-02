@@ -1,6 +1,8 @@
 #include "gt4recomp/ee_interpreter.hpp"
 #include "gt4recomp/ee_flow.hpp"
 
+#include "vu_macro.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -924,10 +926,10 @@ bool execute_cop2(const DecodedInstruction& instruction, GuestState& state) {
         break;
     }
     case Operation::Vnop:
-        // The reference treats it as a full no-operation.
-        break;
     default:
-        return false;
+        // The VU macro arithmetic and the no-operation live in their own
+        // module next to the flag model they share.
+        return execute_vu_macro(instruction, state);
     }
     return true;
 }

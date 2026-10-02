@@ -1,9 +1,8 @@
 # Project status
 
-Updated 2026-10-02 after M22 part 1 — the VU0 macro-mode state, its moves and
-the quad memory accesses. This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-02 after M23 — the full VU0 macro instruction set. This is the
+first document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -14,12 +13,14 @@ documents.
   - M0 core/CLI/CMake; M2 disc verification; M3 reference ELF (upstream run);
     M4 native image and analysis ELF (byte-identical to the pinned hash here);
     M5 decoder; M6 disassembler.
-  - The decoder covers 224 operations (line-filtered count; earlier documents
+  - The decoder covers 335 operations (line-filtered count; earlier documents
     cited 175, which counted comment fragments). Whole-text scan, corrected
-    after M22 part 1: 1,426 unsupported of 1,334,917 words (0.11%),
-    dominated by the VU0 macro arithmetic (~770) and the trapping arithmetic
-    forms (123); the first 350,000 words — every sampled region — decode
-    cleanly. (An
+    after M23: 672 unsupported of 1,334,917 words — of which 555 are inside
+    the 700-word **data table** that occupies the text section's last bytes
+    (0x616F28..0x617A14) and only 81 are real code, all in known families
+    (trapping arithmetic 70, MMI2/MMI3 parallel multiply 7, COP0 BC0F 2,
+    unassigned function 0x28 2); the first 350,000 words — every sampled
+    region — decode cleanly. (An
     earlier "zero unsupported" claim was a false positive from chunk ranges
     beyond the text end; the ERET sighting exposed it. Lesson: check the
     tool's exit status, not only its output.) Ghidra verification: the M6
@@ -154,6 +155,20 @@ documents.
   the standard table, 0x3C-0x3F through the packed `(word & 3) | ((word >> 4)
   & 0x7C)` index; VMULAx/y/z/w and VNOP dominate the observed families
   (`docs/reverse-engineering/m22-vu0-macro-moves.md`).
+- M23 (2026-10-02): the **full VU0 macro instruction set** — 111 new
+  operations (335 total) filling both dispatch tables: the float model
+  (denormal flush, overflow clamp at the reference's default settings), the
+  MAC/status flag registers with their exact syncs, the element/broadcast/
+  accumulator arithmetic (VADD/VSUB/VMUL/VMADD/VMSUB in every variant),
+  VMAX/VMINI by integer representation, VOPMULA/VOPMSUB, the conversions,
+  VCLIPw, VMOVE/VMR32, the division unit with Q publication, VMTIR/VMFIR,
+  the random generator and the 16-bit integer forms. VCALLMS/VCALLMSR and
+  the VU0-memory forms stay Unsupported with context. The unsupported word
+  count drops from 1,426 to 672, and the scan exposed that the text
+  section's last **700 words (0x616F28..0x617A14) are a data table** — not
+  code; excluding it, the real code region holds only **81 unsupported
+  words** in known families. CTest 23/23; Python 71
+  (`docs/reverse-engineering/m23-vu0-macro-arithmetic.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -196,25 +211,24 @@ documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M21 lessons are
+- Retroactive lesson notes for M2-M5 are not written; the M9-M23 lessons are
   pending.
-- Unmodeled families left in the sampled text: the VU0 macro arithmetic
-  (~770 words, part 2 of M22), the trapping arithmetic/DADDI forms (123+23,
-  they need the exception path), the MMI2/MMI3 parallel multiply (14), and
-  VCALLMS/VU1 controls (micro execution, out of scope by design).
+- Unmodeled words left in the real code region (81): the trapping arithmetic
+  (70 — DADDI, DSUB, ADDI, SUB, DADD, ADD; they need the exception path),
+  the MMI2/MMI3 parallel multiply (7), COP0's BC0F (2) and two words at
+  unassigned function 0x28. The text section's trailing 700 words are a data
+  table and are excluded from instruction counting. VCALLMS/VU0-memory
+  forms stay out of scope by design (VU micro execution).
 - Live single-stepping is unsolved (savestate parsing covers offline
   snapshots); the freeze layout is coupled to the emulator build.
 
 ## Next actions
 
-1. M22 part 2: the VU0 macro arithmetic (VADD/VMUL/VMADD/VDIV/... with the
-   reference's vector flag semantics) through the decoded dispatch — the
-   standard table for functions 0x00-0x3B and the packed index for
-   0x3C-0x3F; VMULAx/y/z/w dominate. Then the MMI2/MMI3 parallel-multiply
-   remainder and the trapping arithmetic/DADDI forms (they need the
-   exception path); then indirect-call dispatch for jr-based tables;
-   differential execution needs step control (open).
-2. The M9-M21 lessons and retroactive M2-M5 notes if useful.
+1. M24 next: the trapping arithmetic forms (ADD/SUB/DADD/DSUB/ADDI/DADDI
+   with the overflow exception outcome) and the MMI2/MMI3 parallel-multiply
+   remainder; then COP0's BC0F; then indirect-call dispatch for jr-based
+   tables; differential execution needs step control (open).
+2. The M9-M23 lessons and retroactive M2-M5 notes if useful.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
@@ -233,6 +247,7 @@ documents.
   M19 COP0/BREAK and the 64-bit shift family, M20 the unaligned 64-bit
   family and the last decode gaps, M21 trap slots in likely delay slots,
   ERET and the largest verified module (57 functions, 2,588 instructions).
-- [2026-10-02](journal/2026-10-02.md) — M19 was developed across the day
-  boundary (its entry lives in the 2026-10-01 tail); state checks and the
-  next recorded work.
+- [2026-10-02](journal/2026-10-02.md) — M20, M21, M22 (the VU0 macro state,
+  its moves and the quad memory accesses) and M23 (the full VU0 macro
+  instruction set; the text's trailing data table discovered; 81 unsupported
+  words left in real code), plus the scan correction trail.

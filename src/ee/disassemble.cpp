@@ -4,6 +4,7 @@
 #include <array>
 #include <iomanip>
 #include <map>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -90,12 +91,153 @@ std::string unsupported_family(const DecodedInstruction& instruction) {
     return family;
 }
 
+std::string vu_register(std::uint8_t index) {
+    return "vf" + std::to_string(index);
+}
+
+std::string vi_register(std::uint8_t index) {
+    return "vi" + std::to_string(index);
+}
+
+// The macro arithmetic carries its write mask in the low bits of rs; the
+// full-mask form (the usual one) prints no suffix, and a fully-empty mask
+// still says something, so it prints as ".".
+std::string lane_suffix(std::uint8_t mask) {
+    std::string suffix;
+    if ((mask & 0x8u) != 0) {
+        suffix += 'x';
+    }
+    if ((mask & 0x4u) != 0) {
+        suffix += 'y';
+    }
+    if ((mask & 0x2u) != 0) {
+        suffix += 'z';
+    }
+    if ((mask & 0x1u) != 0) {
+        suffix += 'w';
+    }
+    if (mask == 0xfu) {
+        return "";
+    }
+    return "." + suffix;
+}
+
+std::string element_suffix(std::uint32_t element) {
+    static constexpr std::array<std::string_view, 4> names = {"x", "y", "z", "w"};
+    return "." + std::string(names[element & 3u]);
+}
+
+// Formats the operands of a VU macro instruction; returns no value for every
+// other operation. VWAITQ returns an empty string because it has no
+// operands. The operand shapes follow the reference's operand
+// roles: fd-destination arithmetic, accumulator arithmetic, conversions into
+// ft, the moves, the division unit and the integer forms.
+std::optional<std::string> vu_macro_operands(const DecodedInstruction& instruction) {
+    const auto fs = static_cast<std::uint8_t>(instruction.rd);
+    const auto ft = static_cast<std::uint8_t>(instruction.rt);
+    const auto fd = static_cast<std::uint8_t>(instruction.shift_amount);
+    const std::string suffix = lane_suffix(instruction.rs & 0xfu);
+    const std::uint32_t fs_element = (instruction.word >> 21) & 3u;
+    const std::uint32_t ft_element = (instruction.word >> 23) & 3u;
+    const std::string fs_operand = vu_register(fs);
+    const std::string ft_operand = vu_register(ft);
+    switch (instruction.operation) {
+    // Float arithmetic writing fd; the element or broadcast source is named by
+    // the mnemonic itself.
+    case Operation::Vaddx: case Operation::Vaddy: case Operation::Vaddz: case Operation::Vaddw:
+    case Operation::Vsubx: case Operation::Vsuby: case Operation::Vsubz: case Operation::Vsubw:
+    case Operation::Vmaddx: case Operation::Vmaddy: case Operation::Vmaddz: case Operation::Vmaddw:
+    case Operation::Vmsubx: case Operation::Vmsuby: case Operation::Vmsubz: case Operation::Vmsubw:
+    case Operation::Vmaxx: case Operation::Vmaxy: case Operation::Vmaxz: case Operation::Vmaxw:
+    case Operation::Vminix: case Operation::Vminiy: case Operation::Vminiz: case Operation::Vminiw:
+    case Operation::Vmulx: case Operation::Vmuly: case Operation::Vmulz: case Operation::Vmulw:
+    case Operation::Vadd: case Operation::Vmadd: case Operation::Vmul: case Operation::Vmax:
+    case Operation::Vsub: case Operation::Vmsub: case Operation::Vmini:
+        return suffix + " " + vu_register(fd) + ", " + fs_operand + ", " + ft_operand;
+    // The Q and I broadcast forms read their scalar from the integer file.
+    case Operation::Vmulq: case Operation::Vaddq: case Operation::Vmaddq:
+    case Operation::Vsubq: case Operation::Vmsubq:
+        return suffix + " " + vu_register(fd) + ", " + fs_operand + ", Q";
+    case Operation::Vmuli: case Operation::Vmaxi: case Operation::Vminii:
+    case Operation::Vaddi: case Operation::Vmaddi: case Operation::Vsubi: case Operation::Vmsubi:
+        return suffix + " " + vu_register(fd) + ", " + fs_operand + ", I";
+    case Operation::Vopmsub:
+        return " " + vu_register(fd) + ", " + fs_operand + ", " + ft_operand;
+    // Accumulator arithmetic: the destination is the accumulator.
+    case Operation::Vaddax: case Operation::Vadday: case Operation::Vaddaz: case Operation::Vaddaw:
+    case Operation::Vsubax: case Operation::Vsubay: case Operation::Vsubaz: case Operation::Vsubaw:
+    case Operation::Vmaddax: case Operation::Vmadday: case Operation::Vmaddaz: case Operation::Vmaddaw:
+    case Operation::Vmsubax: case Operation::Vmsubay: case Operation::Vmsubaz: case Operation::Vmsubaw:
+    case Operation::Vmulax: case Operation::Vmulay: case Operation::Vmulaz: case Operation::Vmulaw:
+    case Operation::Vadda: case Operation::Vmadda: case Operation::Vmula:
+    case Operation::Vsuba: case Operation::Vmsuba:
+        return suffix + " acc, " + fs_operand + ", " + ft_operand;
+    case Operation::Vmulaq: case Operation::Vaddaq: case Operation::Vmaddaq:
+    case Operation::Vsubaq: case Operation::Vmsubaq:
+        return suffix + " acc, " + fs_operand + ", Q";
+    case Operation::Vmulai: case Operation::Vaddai: case Operation::Vmaddai:
+    case Operation::Vsubai: case Operation::Vmsubai:
+        return suffix + " acc, " + fs_operand + ", I";
+    case Operation::Vopmula:
+        return " acc, " + fs_operand + ", " + ft_operand;
+    // Conversions and the absolute value write ft; VCLIPw has no register
+    // destination.
+    case Operation::Vitof0: case Operation::Vitof4: case Operation::Vitof12: case Operation::Vitof15:
+    case Operation::Vftoi0: case Operation::Vftoi4: case Operation::Vftoi12: case Operation::Vftoi15:
+    case Operation::Vabs:
+        return suffix + " " + vu_register(ft) + ", " + fs_operand;
+    case Operation::Vclipw:
+        return " " + fs_operand + ", " + ft_operand;
+    // VMOVE and VMR32 write ft.
+    case Operation::Vmove: case Operation::Vmr32:
+        return suffix + " " + vu_register(ft) + ", " + fs_operand;
+    // The division unit reads named operand elements and writes Q.
+    case Operation::Vdiv:
+        return " Q, " + fs_operand + element_suffix(fs_element) + ", "
+               + ft_operand + element_suffix(ft_element);
+    case Operation::Vsqrt:
+        return " Q, " + ft_operand + element_suffix(ft_element);
+    case Operation::Vrsqrt:
+        return " Q, " + fs_operand + element_suffix(fs_element) + ", "
+               + ft_operand + element_suffix(ft_element);
+    case Operation::Vwaitq:
+        return std::string();
+    // VMTIR writes a half of an integer register, VMFIR fills ft from one.
+    case Operation::Vmtir:
+        return " " + vi_register(ft & 0xfu) + ", " + fs_operand + element_suffix(fs_element);
+    case Operation::Vmfir:
+        return suffix + " " + vu_register(ft) + ", " + vi_register(fs & 0xfu);
+    // The random generator reads and writes the reciprocal register.
+    case Operation::Vrnext: case Operation::Vrget:
+        return suffix + " " + vu_register(ft);
+    case Operation::Vrinit: case Operation::Vrxor:
+        return " " + fs_operand + element_suffix(fs_element);
+    // The integer forms reach the low halves of the integer file.
+    case Operation::Viadd: case Operation::Visub: case Operation::Viand: case Operation::Vior:
+        return " " + vi_register(fd & 0xfu) + ", " + vi_register(fs & 0xfu) + ", "
+               + vi_register(ft & 0xfu);
+    case Operation::Viaddi: {
+        const std::uint32_t raw = (instruction.word >> 6) & 0x1fu;
+        const auto immediate = static_cast<std::int32_t>(
+            (raw & 0x10u) != 0 ? (raw | 0xfffffff0u) : raw);
+        return " " + vi_register(ft & 0xfu) + ", " + vi_register(fs & 0xfu) + ", "
+               + signed_hex(immediate);
+    }
+    default:
+        return std::nullopt;
+    }
+}
+
 } // namespace
 
 std::string format_instruction(std::uint32_t word, std::uint32_t pc) {
     const auto instruction = decode(word);
     std::ostringstream output;
     output << mnemonic(instruction.operation);
+    if (const auto macro = vu_macro_operands(instruction)) {
+        output << *macro;
+        return output.str();
+    }
     const auto rs = register_names[instruction.rs];
     const auto rt = register_names[instruction.rt];
     const auto rd = register_names[instruction.rd];
