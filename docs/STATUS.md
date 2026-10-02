@@ -1,7 +1,7 @@
 # Project status
 
-Updated 2026-10-01 after M7 slice 1. This is the first document to read in a
-new session; it is kept current as work proceeds. Details live in the linked
+Updated 2026-10-01 after M8. This is the first document to read in a new
+session; it is kept current as work proceeds. Details live in the linked
 evidence documents.
 
 ## Where we are
@@ -22,16 +22,18 @@ evidence documents.
 - M7 slice 2 (2026-10-01): deterministic CFG traversal over static successors
   with recorded direct call targets and bounded work; new `gt4cfg` frontend.
   Real seeded run: 15 blocks, 71 instructions, 20 edges, 1 open end.
-- EXPLAIN: `docs/lessons/m6.md` written; lesson for M7 pending after its
-  remaining slices.
-- Next technical milestone work: M7 slice 2 — CFG traversal over block
-  successors, then the evidence-backed function map (M8).
+- M8 (2026-10-01): evidence-backed function map with `elf-entry`, `seed` and
+  `direct-call` evidence and bounded reachable sets; new `gt4funcs` frontend.
+  Real seeded closure: 10 functions, 8 direct calls, `pending=0`
+  (`docs/reverse-engineering/m8-function-map.md`).
+- EXPLAIN: `docs/lessons/m6.md` written; lessons for M7/M8 pending.
+- Next technical milestone work: M9 — explicit guest state and memory model.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 7/7 CTest; Python suite 34 collected (28 run, 6 skip without the M3
+- Tests: 8/8 CTest; Python suite 37 collected (31 run, 6 skip without the M3
   reference ELF).
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
@@ -53,12 +55,13 @@ evidence documents.
 
 ## Next actions
 
-1. Evidence-backed function map (M8): seed traversal from recorded call
-   targets and known entry points, then classify the discovered regions.
-2. M7 lesson after the slice set stabilizes.
+1. Write the M7 and M8 EXPLAIN lessons (`docs/lessons/m7.md`, `m8.md`).
+2. Start M9: explicit guest state and memory model (registers, addresses,
+  deterministic tests) per the curriculum.
 3. Keep the journal and this file current after every working session.
 
 ## Journal
 
 - [2026-10-01](journal/2026-10-01.md) — fork setup, environment validation,
-  decoder expansion, Ghidra verification, working rules, M6 lesson, M7 slice 1.
+  decoder expansion, Ghidra verification, working rules, M6 lesson, M7 slices
+  1-2, M8 function map.

@@ -77,6 +77,19 @@ and a stderr summary (blocks, instructions, edges, call targets, open ends,
 outside-text edges, limit flag). See the
 [M7 evidence](docs/reverse-engineering/m7-control-flow.md).
 
+## Discover an evidence-backed function map
+
+```powershell
+.\build\gt4funcs.exe private/fingerprint-check/CORE.GT4 0x5a3140 50 500
+```
+
+Seeds are the ELF entry address plus the given start; every direct `jal` target
+found inside an analyzed function becomes a new candidate. Returns, indirect
+calls and unsupported words never invent entries. Each line reports one
+function's bounded reachable set; the stderr summary aggregates counts and the
+pending queue. See the
+[M8 evidence](docs/reverse-engineering/m8-function-map.md).
+
 ## Reconstruct an analysis ELF
 
 With the verified CORE copy from M2:
