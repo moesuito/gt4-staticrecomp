@@ -275,10 +275,12 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
 }
 
 void usage() {
-    std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--disc IMAGE] "
+    std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--steps N] [--disc IMAGE] "
                  "[--compare-interpreter] [--threads] [--dump ADDRESS LENGTH]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
+                 "  --steps N             stop after N translated calls plus interpreted\n"
+                 "                        instructions (default: 200000000)\n"
                  "  --disc IMAGE          serve the game's file requests from an ISO9660\n"
                  "                        disc image (the pinned ISO); without it file\n"
                  "                        opens answer \"not found\"\n"
@@ -300,6 +302,7 @@ int wmain(int argc, wchar_t* argv[]) {
 #endif
     bool compare_interpreter = false;
     std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t step_limit = default_step_limit;
     std::filesystem::path core_path;
     bool print_threads = false;
     // The stop-time memory views the caller asked for, as address and byte
@@ -323,6 +326,8 @@ int wmain(int argc, wchar_t* argv[]) {
             disc_path = argv[++index];
         } else if (argument == L"--services" && index + 1 < argc) {
             service_limit = std::stoull(argv[++index]);
+        } else if (argument == L"--steps" && index + 1 < argc) {
+            step_limit = std::stoull(argv[++index]);
         } else if (core_path.empty()) {
             core_path = argument;
         } else {
@@ -381,7 +386,7 @@ int wmain(int argc, wchar_t* argv[]) {
         });
         auto driver_state = make_boot_state(image, driver_devices);
         RunOptions options;
-        options.step_limit = default_step_limit;
+        options.step_limit = step_limit;
         options.service_limit = service_limit;
         options.on_service = [](std::uint32_t service, std::uint32_t pc) {
             std::cout << "service 0x" << std::hex << service << std::dec

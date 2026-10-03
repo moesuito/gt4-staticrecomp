@@ -284,6 +284,13 @@ if(BUILD_TESTING)
         set_tests_properties(gt4boot_dump PROPERTIES
             FIXTURES_REQUIRED gt4boot
             PASS_REGULAR_EXPRESSION "dump 0x00100000 \\(32 bytes\\):")
+        # The step budget flag: a tiny budget stops at the step limit right
+        # away, so --steps stays exercised without a disc or a long run.
+        add_test(NAME gt4boot_steps
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --steps 1000)
+        set_tests_properties(gt4boot_steps PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            PASS_REGULAR_EXPRESSION "boundary: step-limit")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(
