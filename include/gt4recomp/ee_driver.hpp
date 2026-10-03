@@ -117,6 +117,10 @@ public:
 
     [[nodiscard]] RunResult run(ServiceTable& services, const RunOptions& options);
 
+    // True while an interpreted delay slot is in flight. Snapshot and
+    // resume only happen at clean unit boundaries, where this is false.
+    [[nodiscard]] bool pending_transfer() const noexcept;
+
 private:
     // Runs a registered service for the syscall at pc. Handled continues at
     // pc + 4; Switched means the kernel already restored another thread's

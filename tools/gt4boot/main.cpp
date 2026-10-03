@@ -11,6 +11,7 @@
 
 #include "boundary_text.hpp"
 #include "gt4recomp/disc_image.hpp"
+#include "gt4recomp/ee_checkpoint.hpp"
 #include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
@@ -22,6 +23,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -134,6 +136,81 @@ ServiceTable make_boot_services(Kernel& kernel) {
     services.add(0x64u, flush_cache);
     kernel.register_services(services);  // includes SetupThread (0x3C)
     return services;
+}
+
+// The device banks in map_into order: the snapshot order is code, so the
+// same binary restores exactly what it saved.
+std::vector<BankRegisters> snapshot_banks(const BootDevices& devices) {
+    return {
+        devices.timer.registers_snapshot(),
+        devices.dmac.registers_snapshot(),
+        devices.sif0.registers_snapshot(),
+        devices.sif_registers.registers_snapshot(),
+        devices.gif.registers_snapshot(),
+        devices.vif0.registers_snapshot(),
+        devices.vif1.registers_snapshot(),
+        devices.vif0_fifo.registers_snapshot(),
+        devices.vif1_fifo.registers_snapshot(),
+        devices.gif_fifo.registers_snapshot(),
+        devices.ipu.registers_snapshot(),
+        devices.ipu_fifo.registers_snapshot(),
+        devices.vif0_dma.registers_snapshot(),
+        devices.vif1_dma.registers_snapshot(),
+        devices.gif_dma.registers_snapshot(),
+        devices.ipu_port.registers_snapshot(),
+        devices.spr_dma.registers_snapshot(),
+        devices.intc.registers_snapshot(),
+        devices.sio.registers_snapshot(),
+    };
+}
+
+void restore_banks(BootDevices& devices,
+                    const std::vector<BankRegisters>& banks) {
+    if (banks.size() != 19) {
+        throw std::runtime_error("The checkpoint holds the wrong bank count");
+    }
+    devices.timer.restore_registers(banks[0]);
+    devices.dmac.restore_registers(banks[1]);
+    devices.sif0.restore_registers(banks[2]);
+    devices.sif_registers.restore_registers(banks[3]);
+    devices.gif.restore_registers(banks[4]);
+    devices.vif0.restore_registers(banks[5]);
+    devices.vif1.restore_registers(banks[6]);
+    devices.vif0_fifo.restore_registers(banks[7]);
+    devices.vif1_fifo.restore_registers(banks[8]);
+    devices.gif_fifo.restore_registers(banks[9]);
+    devices.ipu.restore_registers(banks[10]);
+    devices.ipu_fifo.restore_registers(banks[11]);
+    devices.vif0_dma.restore_registers(banks[12]);
+    devices.vif1_dma.restore_registers(banks[13]);
+    devices.gif_dma.restore_registers(banks[14]);
+    devices.ipu_port.restore_registers(banks[15]);
+    devices.spr_dma.restore_registers(banks[16]);
+    devices.intc.restore_registers(banks[17]);
+    devices.sio.restore_registers(banks[18]);
+}
+
+std::vector<std::uint8_t> read_file_bytes(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Cannot open " + path.string());
+    }
+    return {std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>()};
+}
+
+void write_file_bytes(const std::filesystem::path& path,
+                      std::span<const std::uint8_t> bytes) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        throw std::runtime_error("Cannot write " + path.string());
+    }
+    file.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    file.flush();
+    if (!file) {
+        throw std::runtime_error("Failed writing " + path.string());
+    }
 }
 
 Module make_boot_module() {
@@ -277,6 +354,7 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
 void usage() {
     std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--steps N] [--disc IMAGE] "
                  "[--compare-interpreter] [--threads] [--dump ADDRESS LENGTH]\n"
+                 "       [--checkpoint-at N PATH] [--resume PATH] [--verify-resume PATH]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
                  "  --steps N             stop after N translated calls plus interpreted\n"
@@ -289,7 +367,15 @@ void usage() {
                  "  --threads             print the kernel's thread table after the run\n"
                  "  --dump ADDRESS LENGTH print LENGTH bytes of guest memory at the stop,\n"
                  "                        eight words per line (both values hexadecimal;\n"
-                 "                        may be repeated)\n";
+                 "                        may be repeated)\n"
+                 "  --checkpoint-at N PATH\n"
+                 "                        when a run stops at exactly N services, save a\n"
+                 "                        checkpoint file (pair with --services N)\n"
+                 "  --resume PATH         rebuild the boot and resume it from a checkpoint\n"
+                 "                        file (counters recount from zero)\n"
+                 "  --verify-resume PATH  resume from a checkpoint, run --services more,\n"
+                 "                        run the same total fresh, and require identical\n"
+                 "                        states (uses --services for the resumed leg)\n";
 }
 
 } // namespace
@@ -305,7 +391,14 @@ int wmain(int argc, wchar_t* argv[]) {
     std::uint64_t step_limit = default_step_limit;
     std::filesystem::path core_path;
     bool print_threads = false;
-    // The stop-time memory views the caller asked for, as address and byte
+    // Checkpointing: --checkpoint-at saves after exactly N services (pair
+    // with --services N); --resume restarts from a file (counters recount
+    // from zero); --verify-resume replays both ways and requires identical
+    // states, using --services for the resumed leg.
+    std::uint64_t checkpoint_at = std::numeric_limits<std::uint64_t>::max();
+    std::filesystem::path checkpoint_path;
+    std::filesystem::path resume_path;
+    std::filesystem::path verify_resume_path;    // The stop-time memory views the caller asked for, as address and byte
     // count. They are read after the run, so they show the state the run
     // stopped in.
     std::vector<std::pair<std::uint32_t, std::uint32_t>> dumps;
@@ -328,6 +421,13 @@ int wmain(int argc, wchar_t* argv[]) {
             service_limit = std::stoull(argv[++index]);
         } else if (argument == L"--steps" && index + 1 < argc) {
             step_limit = std::stoull(argv[++index]);
+        } else if (argument == L"--checkpoint-at" && index + 2 < argc) {
+            checkpoint_at = std::stoull(argv[++index]);
+            checkpoint_path = argv[++index];
+        } else if (argument == L"--resume" && index + 1 < argc) {
+            resume_path = argv[++index];
+        } else if (argument == L"--verify-resume" && index + 1 < argc) {
+            verify_resume_path = argv[++index];
         } else if (core_path.empty()) {
             core_path = argument;
         } else {
@@ -336,6 +436,22 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
     if (core_path.empty()) {
+        usage();
+        return 2;
+    }
+    const bool want_checkpoint = checkpoint_at
+        != std::numeric_limits<std::uint64_t>::max();
+    const bool want_resume = !resume_path.empty();
+    const bool want_verify = !verify_resume_path.empty();
+    if ((want_checkpoint && want_resume)
+        || (want_verify && (want_checkpoint || want_resume))) {
+        std::cerr << "checkpoint, resume and verify-resume do not combine\n";
+        usage();
+        return 2;
+    }
+    if (want_verify && compare_interpreter) {
+        std::cerr << "verify-resume states its own verdict; it does not combine "
+                     "with compare-interpreter\n";
         usage();
         return 2;
     }
@@ -373,6 +489,111 @@ int wmain(int argc, wchar_t* argv[]) {
             std::cout << ")\n";
         }
 
+        // Verify-resume runs the checkpoint file's leg and the same total
+        // fresh, then requires identical stops and states. --services sets
+        // the resumed leg; the direct leg runs the file's count plus that.
+        // Both legs need budgets that let them finish their services.
+        if (want_verify) {
+            const CheckpointFile verify_file =
+                load_checkpoint_file(read_file_bytes(verify_resume_path));
+            const std::uint64_t base_services = verify_file.services_handled;
+            if (service_limit
+                > std::numeric_limits<std::uint64_t>::max() - base_services) {
+                throw std::runtime_error("The verify-resume total overflows");
+            }
+            const std::uint64_t total_services = base_services + service_limit;
+            const auto wire_options = [](Kernel& kernel, RunOptions& options,
+                                         std::uint64_t leg_services,
+                                         std::uint64_t leg_steps) {
+                options.step_limit = leg_steps;
+                options.service_limit = leg_services;
+                options.start_interrupt = [&kernel](GuestState& running) {
+                    return kernel.start_interrupt(running);
+                };
+                options.start_idle_interrupt =
+                    [&kernel](GuestState& running) {
+                        return kernel.deliver_idle_interrupt(running);
+                    };
+                options.advance_time = [&kernel](GuestState& running) {
+                    kernel.advance_service_time(running);
+                };
+            };
+            const auto relink_disc = [&](Kernel& kernel) {
+                if (disc_image != nullptr) {
+                    kernel.set_disc_files(disc_image.get());
+                }
+                if (disc_sectors != nullptr) {
+                    kernel.set_disc_sectors(disc_sectors.get());
+                }
+            };
+            // The resumed leg: rebuild identically, apply the snapshot, run
+            // the requested extra services.
+            Kernel resumed_kernel;
+            relink_disc(resumed_kernel);
+            ServiceTable resumed_services = make_boot_services(resumed_kernel);
+            BootDevices resumed_devices(
+                [&resumed_kernel](std::uint32_t cause) {
+                    resumed_kernel.raise_interrupt(cause);
+                });
+            GuestState resumed_state = make_boot_state(image, resumed_devices);
+            {
+                const Snapshot snapshot =
+                    load_snapshot(verify_file.context_memory);
+                resumed_state.restore_registers(snapshot.context);
+                restore_memory(resumed_state.memory(), snapshot);
+                resumed_kernel.load_kernel_state(verify_file.kernel);
+                restore_banks(resumed_devices,
+                              load_bank_section(verify_file.banks));
+            }
+            RunOptions resumed_options;
+            wire_options(resumed_kernel, resumed_options, service_limit,
+                         step_limit);
+            Driver resumed_driver(resumed_state, make_boot_module());
+            const RunResult resumed_result =
+                resumed_driver.run(resumed_services, resumed_options);
+            // The direct leg: the same total from the entry, uninterrupted.
+            Kernel direct_kernel;
+            relink_disc(direct_kernel);
+            ServiceTable direct_services = make_boot_services(direct_kernel);
+            BootDevices direct_devices(
+                [&direct_kernel](std::uint32_t cause) {
+                    direct_kernel.raise_interrupt(cause);
+                });
+            GuestState direct_state = make_boot_state(image, direct_devices);
+            RunOptions direct_options;
+            wire_options(direct_kernel, direct_options, total_services,
+                         step_limit);
+            Driver direct_driver(direct_state, make_boot_module());
+            const RunResult direct_result =
+                direct_driver.run(direct_services, direct_options);
+            const Boundary& resumed_boundary = resumed_result.boundary;
+            const Boundary& direct_boundary = direct_result.boundary;
+            if (resumed_boundary.kind != direct_boundary.kind
+                || resumed_boundary.pc != direct_boundary.pc
+                || resumed_boundary.service != direct_boundary.service) {
+                std::cerr << "the resumed run stopped at "
+                          << gt4recomp::tools::boundary_kind_name(
+                                 resumed_boundary.kind)
+                          << " 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << resumed_boundary.pc << std::dec
+                          << std::setfill(' ')
+                          << " but the direct run stopped at "
+                          << gt4recomp::tools::boundary_kind_name(
+                                 direct_boundary.kind)
+                          << " 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << direct_boundary.pc << std::dec
+                          << std::setfill(' ') << '\n';
+                throw std::runtime_error("Resumed and direct stops differ");
+            }
+            if (!states_match(resumed_state, direct_state)) {
+                throw std::runtime_error("Resumed and direct states differ");
+            }
+            std::cout << "resume states identical (" << total_services
+                      << " services, digest 0x" << std::hex
+                      << memory_digest(resumed_state) << std::dec << ")\n";
+            return 0;
+        }
+
         Kernel driver_kernel;
         if (disc_image != nullptr) {
             driver_kernel.set_disc_files(disc_image.get());
@@ -385,6 +606,22 @@ int wmain(int argc, wchar_t* argv[]) {
             driver_kernel.raise_interrupt(cause);
         });
         auto driver_state = make_boot_state(image, driver_devices);
+        // Resuming rebuilds everything identically, then applies the
+        // snapshot over it: registers, RAM bytes, kernel state and device
+        // registers in map order. Counters recount from zero, so --services
+        // on a resumed run means that many more services.
+        std::uint64_t resume_services = 0;
+        if (want_resume) {
+            const CheckpointFile file =
+                load_checkpoint_file(read_file_bytes(resume_path));
+            const Snapshot snapshot = load_snapshot(file.context_memory);
+            driver_state.restore_registers(snapshot.context);
+            restore_memory(driver_state.memory(), snapshot);
+            driver_kernel.load_kernel_state(file.kernel);
+            restore_banks(driver_devices, load_bank_section(file.banks));
+            resume_services = file.services_handled;
+            std::cout << "resumed at " << resume_services << " services\n";
+        }
         RunOptions options;
         options.step_limit = step_limit;
         options.service_limit = service_limit;
@@ -449,6 +686,31 @@ int wmain(int argc, wchar_t* argv[]) {
                   << "stats: module calls " << result.stats.module_calls
                   << ", interpreted steps " << result.stats.interpreted_steps
                   << ", services handled " << result.stats.services_handled << '\n';
+        // Checkpointing saves the whole stop state, but only from a clean
+        // service stop at exactly the requested count: a fault, a step
+        // limit, or a transfer in flight refuses loudly instead of writing
+        // a snapshot the resume could not faithfully continue.
+        if (want_checkpoint) {
+            if (result.stats.services_handled != checkpoint_at
+                || boundary.kind != BoundaryKind::Syscall
+                || driver.pending_transfer()) {
+                throw std::runtime_error(
+                    "Checkpoint requested, but the run stopped elsewhere");
+            }
+            CheckpointFile file;
+            file.services_handled = checkpoint_at;
+            file.context_memory = save_snapshot(
+                driver_state.save_registers(),
+                driver_state.memory().segment_alias_enabled(),
+                driver_state.memory().regions_snapshot());
+            file.kernel = driver_kernel.save_kernel_state();
+            file.banks = save_bank_section(snapshot_banks(driver_devices));
+            const std::vector<std::uint8_t> framed = save_checkpoint_file(file);
+            write_file_bytes(checkpoint_path, framed);
+            std::cout << "checkpoint saved at " << checkpoint_at
+                      << " services: " << checkpoint_path.string() << " ("
+                      << framed.size() << " bytes)\n";
+        }
         if (print_threads) {
             // The kernel's thread table at the stop: id, status bits, the
             // wait reason when waiting, priority, entry and resume pc.
@@ -525,9 +787,21 @@ int wmain(int argc, wchar_t* argv[]) {
                 reference_kernel.raise_interrupt(cause);
             });
             auto reference_state = make_boot_state(image, reference_devices);
+            // A resumed run sits N services in: the reference must run the
+            // same total from the entry.
+            std::uint64_t reference_total = service_limit;
+            if (want_resume) {
+                if (service_limit
+                    > std::numeric_limits<std::uint64_t>::max()
+                          - resume_services) {
+                    throw std::runtime_error(
+                        "The compare total overflows after resume");
+                }
+                reference_total = resume_services + service_limit;
+            }
             const ReferenceResult reference = run_reference(
                 reference_state, reference_services, reference_kernel,
-                default_step_limit, service_limit);
+                default_step_limit, reference_total);
             if (reference.boundary.kind != boundary.kind
                 || reference.boundary.pc != boundary.pc
                 || reference.boundary.service != boundary.service) {

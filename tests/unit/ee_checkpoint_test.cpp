@@ -140,5 +140,31 @@ int main() {
     check(throws([&] { restore_memory(other_geometry, snapshot); }),
           "a geometry mismatch throws");
 
+    // The checkpoint file frames the three sections with the service count.
+    {
+        CheckpointFile file;
+        file.services_handled = 90000;
+        file.context_memory = blob;
+        file.kernel = {1, 2, 3};
+        file.banks = {4, 5};
+        const std::vector<std::uint8_t> framed = save_checkpoint_file(file);
+        const CheckpointFile parsed = load_checkpoint_file(framed);
+        check(parsed.services_handled == 90000
+                  && parsed.context_memory == blob
+                  && parsed.kernel == std::vector<std::uint8_t>{1, 2, 3}
+                  && parsed.banks == std::vector<std::uint8_t>{4, 5},
+              "the checkpoint file parses back");
+        std::vector<std::uint8_t> bad_file_magic = framed;
+        bad_file_magic[0] = 'X';
+        check(throws([&] { (void)load_checkpoint_file(bad_file_magic); }),
+              "a bad file magic throws");
+        check(throws([&] { (void)load_checkpoint_file({framed.data(), 9}); }),
+              "a truncated file throws");
+        std::vector<std::uint8_t> trailing = framed;
+        trailing.push_back(0);
+        check(throws([&] { (void)load_checkpoint_file(trailing); }),
+              "trailing file bytes throw");
+    }
+
     return failures == 0 ? 0 : 1;
 }

@@ -67,4 +67,20 @@ using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 [[nodiscard]] std::vector<BankRegisters> load_bank_section(
     std::span<const std::uint8_t> bytes);
 
+// The checkpoint file: the services count at the save point, then three
+// length-prefixed sections (context+memory, kernel, banks). Each section
+// keeps its own magic, so a section decodes standalone; the file only
+// frames them.
+struct CheckpointFile {
+    std::uint64_t services_handled = 0;
+    std::vector<std::uint8_t> context_memory;
+    std::vector<std::uint8_t> kernel;
+    std::vector<std::uint8_t> banks;
+};
+
+[[nodiscard]] std::vector<std::uint8_t> save_checkpoint_file(
+    const CheckpointFile& file);
+[[nodiscard]] CheckpointFile load_checkpoint_file(
+    std::span<const std::uint8_t> bytes);
+
 } // namespace gt4recomp::ee

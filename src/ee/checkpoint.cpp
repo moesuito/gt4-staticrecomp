@@ -231,4 +231,53 @@ std::vector<BankRegisters> load_bank_section(
     return banks;
 }
 
+std::vector<std::uint8_t> save_checkpoint_file(const CheckpointFile& file) {
+    std::vector<std::uint8_t> out;
+    for (const char letter : {'G', 'T', '4', 'C', 'P', 'T', '1'}) {
+        out.push_back(static_cast<std::uint8_t>(letter));
+    }
+    put_u64(out, file.services_handled);
+    const auto put_section = [&out](const std::vector<std::uint8_t>& section) {
+        if (section.size() > 0xFFFFFFFFu) {
+            throw std::runtime_error("The checkpoint section is too large");
+        }
+        put_u32(out, static_cast<std::uint32_t>(section.size()));
+        out.insert(out.end(), section.begin(), section.end());
+    };
+    put_section(file.context_memory);
+    put_section(file.kernel);
+    put_section(file.banks);
+    return out;
+}
+
+CheckpointFile load_checkpoint_file(std::span<const std::uint8_t> bytes) {
+    Reader reader{bytes, 0};
+    constexpr char magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '1'};
+    for (const char letter : magic) {
+        if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
+            throw std::runtime_error("The checkpoint file has a bad magic");
+        }
+    }
+    CheckpointFile file;
+    file.services_handled = reader.take_u64();
+    const auto take_section = [&reader]() {
+        const std::uint32_t size = reader.take_u32();
+        if (size > reader.bytes.size() - reader.offset) {
+            throw std::runtime_error("The checkpoint section overruns the file");
+        }
+        std::vector<std::uint8_t> section(reader.bytes.begin() + reader.offset,
+                                          reader.bytes.begin() + reader.offset
+                                              + size);
+        reader.offset += size;
+        return section;
+    };
+    file.context_memory = take_section();
+    file.kernel = take_section();
+    file.banks = take_section();
+    if (reader.offset != reader.bytes.size()) {
+        throw std::runtime_error("The checkpoint file has trailing bytes");
+    }
+    return file;
+}
+
 } // namespace gt4recomp::ee

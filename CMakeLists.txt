@@ -298,6 +298,24 @@ if(BUILD_TESTING)
         set_tests_properties(gt4boot_steps PROPERTIES
             FIXTURES_REQUIRED gt4boot
             PASS_REGULAR_EXPRESSION "boundary: step-limit")
+        # Checkpoint and resume: a tiny run saves at 400 services, then a
+        # second invocation resumes it for 400 more and requires the same
+        # stop and state as an uninterrupted 800-service run. The file
+        # holds guest RAM, so it lives in the (ignored) build directory.
+        set(GT4_CHECKPOINT_FILE "${CMAKE_CURRENT_BINARY_DIR}/ckpt-test.bin")
+        add_test(NAME gt4boot_checkpoint
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 400
+                    --checkpoint-at 400 "${GT4_CHECKPOINT_FILE}")
+        set_tests_properties(gt4boot_checkpoint PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            FIXTURES_SETUP gt4boot_checkpoint
+            PASS_REGULAR_EXPRESSION "checkpoint saved at 400 services")
+        add_test(NAME gt4boot_resume_verify
+            COMMAND gt4boot "${GT4_LOCAL_CORE}"
+                    --verify-resume "${GT4_CHECKPOINT_FILE}" --services 400)
+        set_tests_properties(gt4boot_resume_verify PROPERTIES
+            FIXTURES_REQUIRED "gt4boot;gt4boot_checkpoint"
+            PASS_REGULAR_EXPRESSION "resume states identical")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(
