@@ -293,6 +293,18 @@ void GuestMemory::write_bytes(std::uint32_t address, std::span<const std::uint8_
               region.bytes.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
+std::vector<MemoryRegion> GuestMemory::regions_snapshot() const {
+    std::vector<MemoryRegion> snapshot;
+    snapshot.reserve(regions_.size());
+    for (const Region& region : regions_) {
+        MemoryRegion copy;
+        copy.base = region.base;
+        copy.bytes = region.bytes;
+        snapshot.push_back(std::move(copy));
+    }
+    return snapshot;
+}
+
 GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {
     // The M14 menu capture (private/pcsx2/menu-registers.txt) shows the
     // running game's Status as 0x70030c11: IE and EIE set, the interrupt

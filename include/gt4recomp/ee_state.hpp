@@ -14,12 +14,19 @@
 
 namespace gt4recomp::ee {
 
+// One RAM region's bytes with its base, as regions_snapshot reports them.
+// MMIO windows are not regions: device registers belong to the devices
+// and are snapshotted with them (a later slice), never here.
+struct MemoryRegion {
+    std::uint32_t base = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
 // One contiguous region of the guest address space. Loads and stores require
 // natural alignment for their width and must lie entirely inside the region;
 // anything else throws std::runtime_error naming the address instead of
 // silently wrapping or touching host memory.
-class GuestMemory {
-public:
+class GuestMemory {public:
     // size_bytes must be nonzero, and base + size_bytes must fit the 32-bit
     // guest address space.
     GuestMemory(std::uint32_t base, std::size_t size_bytes);
@@ -69,6 +76,11 @@ public:
     // Bulk copy for loading images and test fixtures. Byte granularity: no
     // alignment requirement beyond the region bounds. An empty source is a no-op.
     void write_bytes(std::uint32_t address, std::span<const std::uint8_t> source);
+
+    // A copy of every RAM region (base plus bytes) in map order, for
+    // snapshots. MMIO windows are skipped: their contents are captured
+    // with the devices, not with RAM.
+    [[nodiscard]] std::vector<MemoryRegion> regions_snapshot() const;
 
 private:
     struct MmioWindow {

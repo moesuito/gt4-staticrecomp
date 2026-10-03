@@ -24,6 +24,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/flow.cpp
     src/ee/functions.cpp
     src/ee/state.cpp
+    src/ee/checkpoint.cpp
     src/ee/interpreter.cpp
     src/ee/driver.cpp
     src/ee/services.cpp
@@ -90,6 +91,9 @@ if(BUILD_TESTING)
     add_executable(ee_state_tests tests/unit/ee_state_test.cpp)
     target_link_libraries(ee_state_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_state COMMAND ee_state_tests)
+    add_executable(ee_checkpoint_tests tests/unit/ee_checkpoint_test.cpp)
+    target_link_libraries(ee_checkpoint_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_checkpoint COMMAND ee_checkpoint_tests)
     add_executable(ee_interpreter_tests tests/unit/ee_interpreter_test.cpp)
     target_link_libraries(ee_interpreter_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_interpreter COMMAND ee_interpreter_tests)
