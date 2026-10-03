@@ -1,20 +1,18 @@
 # Project status
 
-Updated 2026-10-03 after M30 slice 48 — the wait-for graph: event-starved,
-not deadlocked. Resuming from the 243.7M checkpoint, the final ~11.7k
-services show 3,123 handler injections with **zero unblocks and zero
-signal/wakeup/release calls** — VBlank (134,917 queued) and timer-2
-compare (110,119) deliver and run effect-free chains (the VBlank chained
-slot is empty). 10 threads sleep, 7 wait on semaphores nobody signals;
-no cycle exists, so the stop needs an event the model never generates
-(leading: async IOP completions — the model IOP answers purely
-synchronously — then controller input, then GS-side sync); the stuck
-SIF0 CHCR is vestigial (zero addresses). The resumed leg reproduces the
-original ending bit-for-bit (same boundary, thread table, 245,036
-pending, 243,711,723 total) — the large-N checkpoint proof in passing.
-No model change ships. CTest 40/40 and Python 73 (67 run, 6 skip). This
-is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after M30 slice 49 — the missing event per waiter
+class. The stop holds 46 live semaphores; the 7 waited ones are all
+count 0 with one waiter each (no scheduler anomaly): thread 2 (SIF/RPC)
+on ancient counting sema 11, six engine workers on late binary semaphores
+sharing one creator, plus 10 sleepers incl. main. No cycle anywhere, so
+not a deadlock: the SIF/RPC dispatcher is starved of async arrivals (the
+model IOP answers purely synchronously) and the workers of dispatch;
+the menu-shaped wait (fonts, timers) keeps controller input a live
+alternative. Next discriminates with the smallest stimulus: a pad probe,
+then a synthesized async SIF completion. CTest 40/40 and Python 73 (67
+run, 6 skip). This is the first document to read in a new session; it is
+kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -1037,6 +1035,15 @@ work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M30 slice 49 (2026-10-04): **the missing event per waiter class**. 46
+  live semaphores; the 7 waited ones all count 0 with one waiter each
+  (no scheduler anomaly): thread 2 (SIF/RPC) on ancient counting sema
+  11, six engine workers on late binary semaphores sharing one creator,
+  plus 10 sleepers incl. main. No cycle: the dispatcher is starved of
+  async arrivals (model IOP purely synchronous), workers of dispatch;
+  input stays a live alternative for the menu-shaped wait. Next: pad
+  probe, then synthesized async SIF completion
+  (`docs/reverse-engineering/m30-slice49-waiter-classes.md`).
 - M30 slice 48 (2026-10-03): **the wait-for graph — event-starved, not
   deadlocked**. From the 243.7M checkpoint, the final leg shows 3,123
   injections with zero unblocks and zero signal/wakeup/release calls;
@@ -1094,13 +1101,15 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **identify the missing event per waiter
-  class** — which subsystem created each waited semaphore (11, 11482435,
-  10388483, 4245855, 11235775, 6407847, 11235727) and what hardware event
-  feeds it (async IOP completion vs controller input vs GS-side sync);
-  and the curriculum's remaining units (the OSD configuration services, a
-  counting timer with interrupt delivery, the remaining BIOS services and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **the smallest external stimulus** —
+  first a pad probe (connected-with-no-buttons, then scripted buttons)
+  watching for selective wakeups (menu advance proves input-wait), then
+  a synthesized async SIF completion (dispatcher waking workers proves
+  the IOP drought); whichever wakes the machine names the missing event
+  and scopes its model; and the curriculum's remaining units (the OSD
+  configuration services, a counting timer with interrupt delivery, the
+  remaining BIOS services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

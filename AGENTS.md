@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-03:
 
-- M0-M30 slice 48 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 49 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -279,14 +279,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-03:
   timer-2 chains effect-free; no cycle among 10 sleepers and 7
   sema-waiters), with the resumed leg reproducing the original ending
   bit-for-bit. CTest 40/40 and Python 73 (67 run, 6 skip).
-- Next: M30 slice 49 — **identify the missing event per waiter class**:
-  which subsystem created each waited semaphore
-  (11/11482435/10388483/4245855/11235775/6407847/11235727) and what
-  hardware event feeds it (async IOP completion vs controller input vs
-  GS-side sync). The curriculum's remaining units (the OSD configuration
-  services, a counting timer with interrupt delivery, the remaining BIOS
-  services and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+  Slice 49 then maps every waited semaphore to its subsystem (46 live;
+  all 7 waited ones count 0 with one waiter each: SIF/RPC on ancient
+  counting sema 11, engine workers on late binary semaphores sharing one
+  creator) — no cycle, no in-model signaler — and ranks the missing
+  events (async IOP drought, then input, then GS-side). CTest 40/40 and
+  Python 73 (67 run, 6 skip).
+- Next: M30 slice 50 — **the smallest external stimulus**: first a pad
+  probe (connected-with-no-buttons, then scripted buttons) watching for
+  selective wakeups, then a synthesized async SIF completion; whichever
+  wakes the machine names the missing event and scopes its model. The
+  curriculum's remaining units (the OSD configuration services, a
+  counting timer with interrupt delivery, the remaining BIOS services
+  and the jump-table dispatch) stay listed in `docs/requirements.md`.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
