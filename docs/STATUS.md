@@ -1,15 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 6 — the honest maturation path.
-Ships chained checkpoints (`--resume` + `--checkpoint-at`, new CTest)
-and the idle budget at 2M (decision 0024): three chained 60k legs run
-to their limits and save cleanly, TIM2 COUNT advancing ~190M per leg
-toward the slice-5 threshold (~7–8 legs to go). A stale-binary false
-alarm is documented with its lesson. Next is slice 7: keep chaining
-from `ckpt-180k.bin` until a node fires (or the call mix is
-understood). This is the first document to read in a new session; it is
-kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-03 after M32 slice 7 — who fired. The full chain is
+mapped node → descriptor → worker (6/6, sema words name the waiters);
+the poked leg consumed node `0x0088a000` one-shot (flags cleared,
+unlinked, new tail), waking thread 3 — correcting slice 5's reschedule
+guess. The base clock shares the handler's units by construction
+(`0x005B8400`); leading hypothesis is a pre-wrap fuse missed during
+the backlog stall. One tick-math non-reconciliation is recorded
+honestly with checked numbers. Next is slice 8: keep chaining from
+`ckpt-180k.bin`, watching for the predicted signature (a node's flags
+`3 → 0`, waiter readied, COMP reprogrammed). This is the first document
+to read in a new session; it is kept current as work proceeds. Details
+live in the linked evidence documents.
 
 ## Where we are
 
@@ -1032,6 +1034,14 @@ documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 7 (2026-10-03): **who fired**. Node → descriptor → worker
+  mapped 6/6 (callback `0x005AEF58`, sema words name the waiters); the
+  poked leg consumed `0x0088a000` one-shot (flags `3 → 0`, unlinked,
+  `0x00889f80` the new tail), waking thread 3 — correcting slice 5's
+  reschedule guess. Base clock `0x005B8400` shares the handler's units;
+  leading hypothesis is a missed pre-wrap fuse; one tick-math
+  non-reconciliation recorded honestly. Probes removed
+  (`docs/reverse-engineering/m32-slice7-who-fired.md`).
 - M32 slice 6 (2026-10-03): **the honest maturation path**. Ships
   `--resume` + `--checkpoint-at` (new `gt4boot_checkpoint_chain`
   CTest, 41 total) and the idle budget at 2M (decision 0024): three
@@ -1166,13 +1176,12 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — keep chaining to the firing
-  (slice 7)**. Slice 6 proved long legs run and save (frontier
-  `ckpt-180k.bin`, COUNT +~190M/leg, ~7–8 legs to the threshold) and
-  left two puzzles with numbers: the unmapped call mix (loop-top
-  drainage vs. servicing vs. the stuck deferred frame) and the delay
-  base scale. Slice 7 chains on until a node fires or the mix is
-  understood. M35 pad stays queued (no PADMAN bound at this phase); and
+- Next technical milestone work: **M32 — chain to the natural firing
+  (slice 8)**. Slice 7 attributed the poke firing completely (node
+  `0x0088a000` → thread 3, one-shot) and gave slice 8 its signature to
+  watch for: a node's flags `3 → 0`, its waiter readied, COMP
+  reprogrammed. Chain from `ckpt-180k.bin` until that signature appears
+  naturally. M35 pad stays queued (no PADMAN bound at this phase); and
   the curriculum's remaining units (the OSD configuration services, the
   remaining BIOS services and the jump-table dispatch) stay listed in
   `docs/requirements.md`.
