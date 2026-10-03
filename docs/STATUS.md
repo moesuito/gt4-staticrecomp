@@ -1,18 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 16 — every completion path mapped.
-By code reading: the unlink is pure list surgery (no signal); four
-unlink callers exist (walk dispatch — the only signaling context,
-re-arm cancel, delete/cancel, update/refresh) and none of the six waits
-suffered cancellation (nodes intact, workers still waiting); the
-iSignalSema endpoint is reachable only via the walk's indirect dispatcher
-call. So the due test plus walk dispatch is the only signaling path in
-the codebase — the paradox is about its inputs/runs, not hidden
-signalers. Next is slice 17: a temporary pc-triggered trace in the
-reference interpreter at `0x005b822c` logging current, target, COUNT,
-overflow, and head per walk test. This is the first document to read in
-a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-03 after M32 slice 17 — the walk traced live. A
+temporary pc-triggered trace watched every due test with live
+operands: 2,000 runs per 2k leg, target exactly the mapped
+`sched + base - acc`, current matching the formula exactly — and the
+firing edge sits single-digits below the 32-bit ceiling while frames
+advance thousands-to-hundreds-of-thousands per service. Verdict: the
+lottery account holds both directions (freak slow alignments explain
+the two historical firings); timeouts are vestigial as a completion
+path. Next is slice 18: map each worker's "issue request, then wait"
+chain to name the event whose arrival retires it. This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1035,6 +1034,12 @@ linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 17 (2026-10-03): **the walk traced live**. Temporary
+  pc-triggered trace: 2,000 runs per 2k leg, target exactly the mapped
+  fields, current matching the formula — firing edge single-digits
+  under the ceiling while frames advance thousands+; lottery confirmed
+  both directions, field mapping vindicated, timeouts vestigial
+  (`docs/reverse-engineering/m32-slice17-walk-traced-live.md`).
 - M32 slice 16 (2026-10-03): **every completion path mapped**. The
   unlink is pure list surgery; four callers (walk dispatch — the only
   signaling context — plus re-arm cancel, delete/cancel,
@@ -1244,15 +1249,14 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — trace the walk live
-  (slice 17)**. Slice 16 proved due test + dispatch is the only
-  signaling path (unlink callers mapped, no cancellation suffered, no
-  hidden signalers): instrument the reference interpreter with a
-  temporary pc-triggered trace at `0x005b822c` logging current, target,
-  COUNT, overflow, and head per test. M35 pad stays queued (no PADMAN
-  bound at this phase); and the curriculum's remaining units (the OSD
-  configuration services, the remaining BIOS services and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **M32 — map each worker's request
+  (slice 18)**. Slice 17 proved timeouts are vestigial (walk runs
+  constantly, lottery both directions): disassemble the shared worker
+  dispatch chain to name the event whose arrival retires each wait.
+  M35 pad stays queued (no PADMAN bound at this phase); and the
+  curriculum's remaining units (the OSD configuration services, the
+  remaining BIOS services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
