@@ -1,19 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M30 slice 46 — the font file's load path: the
-copy-out cursor. The whole boot's disc traffic is 12 block reads; the
-font loads as 3 late PRTS reads (the last: 186 KB at 14,991,629 services)
-with no fileio involvement, and its block streams out as seven 0x4000-byte
-copy-outs into alternating buffers — but the request carries no offset
-and the model re-served chunk zero every time, building the loaded object
-from one chunk repeated seven times (hence the patterned buffer and the
-odd "pointer"). `PrtsBlock` gains a per-handle cursor that the copy-out
-serves from and advances (decision 0021 extended; unit tests cover
-sequential chunks and exhaustion). The verification run sails past the
-15,010,045-service fault to its step limit with **41,919,339 services
-handled**, stopping cleanly. CTest 36/36 and Python 73 (67 run, 6 skip).
-This is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-03 after M30 slice 47 — no wall through 243M: the machine
+idles. A 5x run (10B steps) ends early with **243,711,723 services
+handled** (241.8M module calls, 7.1B interpreted steps), exit 0, no
+fault: the boundary is **no-runnable-thread at 0x00001604** — every
+thread parked, idle delivery waking nothing, 245,036 interrupts pending.
+Either the boot at rest (waiting on something external) or a distributed
+stall; the wait-for graph decides (slice 48). Same-day housekeeping: the
+per-service logs outgrew SSD comfort (~14 GB of ~25 GB free), so scratch
+logs are deleted after evidence extraction and long runs want a `--quiet`
+mode. CTest 37/37 and Python 73 (67 run, 6 skip). This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1036,6 +1034,13 @@ work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M30 slice 47 (2026-10-03): **no wall through 243M — the machine idles**.
+  A 5x run (10B steps) ends early with **243,711,723 services handled**
+  (241.8M module calls, 7.1B interpreted steps), exit 0, no fault: the
+  boundary is **no-runnable-thread at 0x00001604** — every thread parked,
+  idle delivery waking nothing, 245,036 interrupts pending. Either the
+  boot at rest or a distributed stall; the wait-for graph decides
+  (`docs/reverse-engineering/m30-slice47-no-wall-to-243m.md`).
 - M30 slice 45 (2026-10-03): **pin the divergent lookup — it asked for
   /fonts/system.fnt**. A temporary entry log (14 lines in 15M services)
   captured the query bytes, the manager input and the ordered chain; the
@@ -1077,13 +1082,15 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **past the new step limit** — the boot
-  now runs to the 2B-step limit at 41,919,339 services, stopping cleanly
-  at 0x005552b0; raising the limit (or probing around the stop) finds the
-  next wall, and the curriculum's remaining units (the OSD configuration
-  services, a counting timer with interrupt delivery, the remaining BIOS
-  services and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **the wait-for graph at the idle stop**
+  — at 243,711,723 services every thread is parked (sleep/sema) and idle
+  delivery wakes nothing (245,036 interrupts pending): map which semaphore
+  each waiter blocks on, who signals it, and whether the chain grounds out
+  in a sleeper only an unmodeled event wakes (deadlock) or in init done
+  waiting on the outside world (input); and the curriculum's remaining
+  units (the OSD configuration services, a counting timer with interrupt
+  delivery, the remaining BIOS services and the jump-table dispatch) stay
+  listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
