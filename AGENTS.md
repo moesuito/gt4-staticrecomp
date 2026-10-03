@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50 plus M32 slices 1–3 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50 plus M32 slices 1–4 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -297,10 +297,14 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   control block, sole global handle, SDK creator, op map) and prove the
   wake button with two probe legs (replay re-parks in 2 services, a
   sleeper wake flickers out in 8): stable-parked, needs new input.
-- Next: M32 async IOP — **name the wild producer (slice 4)**:
-  181 `{0,3}` jobs arrived during the traffic-heavy boot through the
-  single global handle, then silence; trace the writer (SIF-pump bridge
-  vs. a handle-holding thread). The
+  M32 slice 4 then unwinds all six workers to one waiter (one-shot
+  wait-then-delete over delay-library work, timer-conditioned, handlers
+  paired, binds exonerated): the stall is the never-firing delay
+  dispatcher.
+- Next: M32 — **fire one delay node (slice 5)**:
+  work the counting-timer/delay-delivery curriculum unit directly, by
+  experiment, until one node fires or the exact unmet condition is
+  pinned. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
