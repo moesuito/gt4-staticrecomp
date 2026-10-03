@@ -443,9 +443,14 @@ int wmain(int argc, wchar_t* argv[]) {
         != std::numeric_limits<std::uint64_t>::max();
     const bool want_resume = !resume_path.empty();
     const bool want_verify = !verify_resume_path.empty();
-    if ((want_checkpoint && want_resume)
-        || (want_verify && (want_checkpoint || want_resume))) {
-        std::cerr << "checkpoint, resume and verify-resume do not combine\n";
+    // Chained checkpoints: --checkpoint-at saves from a resumed leg too
+    // (decision 0024). The save still requires a clean service stop at
+    // exactly the requested count, so every link is exact; counts stay
+    // leg-relative because the driver recounts services from zero after
+    // a resume. --verify-resume still stands alone (its fresh total
+    // replays from the boot, which a chain link is not).
+    if (want_verify && (want_checkpoint || want_resume)) {
+        std::cerr << "verify-resume does not combine with checkpoint or resume\n";
         usage();
         return 2;
     }

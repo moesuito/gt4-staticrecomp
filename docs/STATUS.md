@@ -1,17 +1,15 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 5 — a delay node fires. Poking TIM2
-COUNT across the due threshold moved the machine (below: bit-identical
-to baseline; above: the delay dispatcher ran, exactly one
-`iSignalSema` on thread 3's completion sema, thread 3 readied, COMP
-reprogrammed): the due comparison at `0x005B822C` gates the parked
-boot, and the game arms COMP from the head node's target. Natural
-maturation needs ~1.9e9 more COUNT ticks (~3–4 chained legs at the
-observed rate, no model change). Next is slice 6: attribute the firing
-precisely and pick the legitimate maturation path (decision 0024).
-Docs only beyond the probes (all removed); product code untouched. This
-is the first document to read in a new session; it is kept current as
-work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 6 — the honest maturation path.
+Ships chained checkpoints (`--resume` + `--checkpoint-at`, new CTest)
+and the idle budget at 2M (decision 0024): three chained 60k legs run
+to their limits and save cleanly, TIM2 COUNT advancing ~190M per leg
+toward the slice-5 threshold (~7–8 legs to go). A stale-binary false
+alarm is documented with its lesson. Next is slice 7: keep chaining
+from `ckpt-180k.bin` until a node fires (or the call mix is
+understood). This is the first document to read in a new session; it is
+kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -1034,6 +1032,15 @@ work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 6 (2026-10-03): **the honest maturation path**. Ships
+  `--resume` + `--checkpoint-at` (new `gt4boot_checkpoint_chain`
+  CTest, 41 total) and the idle budget at 2M (decision 0024): three
+  chained 60k legs run to their limits and save (`ckpt-60k/120k/180k`),
+  COUNT +~190M per leg toward the threshold (~7–8 legs to go).
+  Stale-binary false alarm documented (confirm relink before reading
+  runs). Call-mix and base-scale puzzles stay open for slice 7
+  (`docs/reverse-engineering/m32-slice6-long-legs.md`,
+  `docs/decisions/0024-chained-checkpoints-and-idle-budget.md`).
 - M32 slice 5 (2026-10-03): **a delay node fires**. The due test at
   `0x005B822C` (`current < target` exits the whole walk; COMP is armed
   as `target >> 8`) probed by COUNT threshold: `+0x73800000`
@@ -1159,15 +1166,16 @@ work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — mature the delays
-  legitimately (slice 6)**. Slice 5 proved the due comparison gates the
-  boot and fired a node by poke; slice 6 attributes the firing
-  precisely, resolves the accumulation puzzle (legs advance COUNT
-  ~0.59e9 vs. the ~1.9e9 gap), and picks the honest path (chained
-  checkpoints vs. budget) in decision 0024. M35 pad stays queued
-  (no PADMAN bound at this phase); and the curriculum's remaining units
-  (the OSD configuration services, the remaining BIOS services and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **M32 — keep chaining to the firing
+  (slice 7)**. Slice 6 proved long legs run and save (frontier
+  `ckpt-180k.bin`, COUNT +~190M/leg, ~7–8 legs to the threshold) and
+  left two puzzles with numbers: the unmapped call mix (loop-top
+  drainage vs. servicing vs. the stuck deferred frame) and the delay
+  base scale. Slice 7 chains on until a node fires or the mix is
+  understood. M35 pad stays queued (no PADMAN bound at this phase); and
+  the curriculum's remaining units (the OSD configuration services, the
+  remaining BIOS services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

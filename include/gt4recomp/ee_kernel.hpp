@@ -318,7 +318,11 @@ public:
     // consecutive idle interrupts without a runnable thread.
     static constexpr std::uint32_t vblank_cause = 2;
     static constexpr std::uint32_t intc_stat_physical = 0x1000F000;
-    static constexpr std::uint32_t idle_interrupt_budget = 200000;
+    // The idle budget is this model's own stuck-machine guard (hardware
+    // keeps delivering frames); decision 0024 sizes it 10x past the
+    // measured delay maturation (~202k deliveries), because the slice-5
+    // poke showed the boot's delays maturing just past the old 200,000.
+    static constexpr std::uint32_t idle_interrupt_budget = 2000000;
     // The EE timers: four register blocks at 0x10000000 + index * 0x800,
     // COUNT at +0x00, MODE at +0x10, COMP at +0x20. The model stores what
     // the guest writes (TimerUnit) and advances an enabled timer's count in

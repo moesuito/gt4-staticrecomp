@@ -316,6 +316,19 @@ if(BUILD_TESTING)
         set_tests_properties(gt4boot_resume_verify PROPERTIES
             FIXTURES_REQUIRED "gt4boot;gt4boot_checkpoint"
             PASS_REGULAR_EXPRESSION "resume states identical")
+        # Chained checkpoints (decision 0024): saving from a resumed leg
+        # works the same way, so long runs advance link by link. The
+        # chain file resumes the 400-service link for 400 more and saves
+        # again at exactly 400 leg-relative services.
+        set(GT4_CHAIN_FILE "${CMAKE_CURRENT_BINARY_DIR}/ckpt-chain-test.bin")
+        add_test(NAME gt4boot_checkpoint_chain
+            COMMAND gt4boot "${GT4_LOCAL_CORE}"
+                    --resume "${GT4_CHECKPOINT_FILE}" --services 400
+                    --checkpoint-at 400 "${GT4_CHAIN_FILE}")
+        set_tests_properties(gt4boot_checkpoint_chain PROPERTIES
+            FIXTURES_REQUIRED "gt4boot;gt4boot_checkpoint"
+            FIXTURES_SETUP gt4boot_checkpoint_chain
+            PASS_REGULAR_EXPRESSION "checkpoint saved at 400 services")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(
