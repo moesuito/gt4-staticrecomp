@@ -74,6 +74,9 @@ instrumented-boot dumps from the main line.
   or a second layer (Unknown).
 - Pixel format (new standing answer, High): travels **as data**, not
   as code immediates — the GS chute is indirect end to end
-  (`docs/reverse-engineering/asset-gs-chute-indirect.md`). The static
-  road is the .gpb record grammar; the decisive experiment is a
-  main-line Tex1-object dump (hook `0x454EF8`).
+  (`docs/reverse-engineering/asset-gs-chute-indirect.md`). The packet
+  emitters are now mapped too (`0x4A4CA8` upload with BITBLTBUF,
+  `0x499508` NLOOP=6 context — `docs/reverse-engineering/asset-gif-emitter-hunt.md`):
+  the static road is the .gpb record grammar; the decisive
+  experiments are main-line packet dumps (128 B context at
+  `0x4995D4`, 80 B upload at `0x4A4CD4`).
