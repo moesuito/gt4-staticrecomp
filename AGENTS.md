@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-03:
 
-- M0-M30 slice 47 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 48 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -274,13 +274,19 @@ Live state: `docs/STATUS.md`. As of 2026-10-03:
   no-runnable-thread at 0x00001604, 245,036 interrupts pending — and the
   14 GB scratch logs get deleted post-evidence. CTest 37/37 and Python 73
   (67 run, 6 skip).
-- Next: M30 slice 48 — **the wait-for graph at the idle stop**: map which
-  semaphore each parked thread blocks on, who signals it, and whether the
-  chain grounds out in a sleeper only an unmodeled event wakes (deadlock)
-  or in init done waiting on the outside world (input). The curriculum's
-  remaining units (the OSD configuration services, a counting timer with
-  interrupt delivery, the remaining BIOS services and the jump-table
-  dispatch) stay listed in `docs/requirements.md`.
+  Slice 48 then proves the stop is event starvation, not deadlock (3,123
+  injections, zero unblocks, zero signal/wakeup/release calls; VBlank +
+  timer-2 chains effect-free; no cycle among 10 sleepers and 7
+  sema-waiters), with the resumed leg reproducing the original ending
+  bit-for-bit. CTest 40/40 and Python 73 (67 run, 6 skip).
+- Next: M30 slice 49 — **identify the missing event per waiter class**:
+  which subsystem created each waited semaphore
+  (11/11482435/10388483/4245855/11235775/6407847/11235727) and what
+  hardware event feeds it (async IOP completion vs controller input vs
+  GS-side sync). The curriculum's remaining units (the OSD configuration
+  services, a counting timer with interrupt delivery, the remaining BIOS
+  services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

@@ -1,17 +1,20 @@
 # Project status
 
-Updated 2026-10-03 after M30 slice 47 — no wall through 243M: the machine
-idles. A 5x run (10B steps) ends early with **243,711,723 services
-handled** (241.8M module calls, 7.1B interpreted steps), exit 0, no
-fault: the boundary is **no-runnable-thread at 0x00001604** — every
-thread parked, idle delivery waking nothing, 245,036 interrupts pending.
-Either the boot at rest (waiting on something external) or a distributed
-stall; the wait-for graph decides (slice 48). Same-day housekeeping: the
-per-service logs outgrew SSD comfort (~14 GB of ~25 GB free), so scratch
-logs are deleted after evidence extraction and long runs want a `--quiet`
-mode. CTest 37/37 and Python 73 (67 run, 6 skip). This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-03 after M30 slice 48 — the wait-for graph: event-starved,
+not deadlocked. Resuming from the 243.7M checkpoint, the final ~11.7k
+services show 3,123 handler injections with **zero unblocks and zero
+signal/wakeup/release calls** — VBlank (134,917 queued) and timer-2
+compare (110,119) deliver and run effect-free chains (the VBlank chained
+slot is empty). 10 threads sleep, 7 wait on semaphores nobody signals;
+no cycle exists, so the stop needs an event the model never generates
+(leading: async IOP completions — the model IOP answers purely
+synchronously — then controller input, then GS-side sync); the stuck
+SIF0 CHCR is vestigial (zero addresses). The resumed leg reproduces the
+original ending bit-for-bit (same boundary, thread table, 245,036
+pending, 243,711,723 total) — the large-N checkpoint proof in passing.
+No model change ships. CTest 40/40 and Python 73 (67 run, 6 skip). This
+is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1034,6 +1037,15 @@ Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M30 slice 48 (2026-10-03): **the wait-for graph — event-starved, not
+  deadlocked**. From the 243.7M checkpoint, the final leg shows 3,123
+  injections with zero unblocks and zero signal/wakeup/release calls;
+  VBlank + timer-2 chains are effect-free (empty chained slot). 10
+  sleepers, 7 sema-waiters, no cycle — the stop needs an unmodeled event
+  (async IOP completions lead, then input, then GS-side; stuck SIF0 CHCR
+  cleared as vestigial). The resumed leg reproduces the original ending
+  bit-for-bit — the large-N checkpoint proof in passing. No model change
+  (`docs/reverse-engineering/m30-slice48-wait-graph.md`).
 - M30 slice 47 (2026-10-03): **no wall through 243M — the machine idles**.
   A 5x run (10B steps) ends early with **243,711,723 services handled**
   (241.8M module calls, 7.1B interpreted steps), exit 0, no fault: the
@@ -1082,15 +1094,13 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the wait-for graph at the idle stop**
-  — at 243,711,723 services every thread is parked (sleep/sema) and idle
-  delivery wakes nothing (245,036 interrupts pending): map which semaphore
-  each waiter blocks on, who signals it, and whether the chain grounds out
-  in a sleeper only an unmodeled event wakes (deadlock) or in init done
-  waiting on the outside world (input); and the curriculum's remaining
-  units (the OSD configuration services, a counting timer with interrupt
-  delivery, the remaining BIOS services and the jump-table dispatch) stay
-  listed in `docs/requirements.md`.
+- Next technical milestone work: **identify the missing event per waiter
+  class** — which subsystem created each waited semaphore (11, 11482435,
+  10388483, 4245855, 11235775, 6407847, 11235727) and what hardware event
+  feeds it (async IOP completion vs controller input vs GS-side sync);
+  and the curriculum's remaining units (the OSD configuration services, a
+  counting timer with interrupt delivery, the remaining BIOS services and
+  the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
