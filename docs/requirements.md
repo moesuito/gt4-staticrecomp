@@ -73,6 +73,41 @@ Adhoc inspection/execution lessons (M24-M25); DMA/VIF/VU/GIF/GS and verified
 pixels (M26-M34); input/audio/menu/car/track/race milestones (M35-M41).
 These are an evidence-driven curriculum, not an estimated delivery schedule.
 
+## After M30: completion criterion and the road to first pixels (proposed 2026-10-03)
+
+Note on numbering: the M26–M41 numbers in the "After M13" paragraph above
+predate the executed curriculum, which reused M15–M30 for the
+decoder/translator/driver work actually done. Treat that paragraph as
+historical; the plan below supersedes it and continues the numbering
+where the table ends.
+
+M30's table row scopes the boundary driver, complete since the early
+slices; the dozens of M30 slices since then pushed the whole boot under
+that same number. M30 is done when the boot reaches a **stable,
+deterministic idle** (for example the title-menu wait loop, fault-free
+and repeatable), with CTest green, differentials pinned at service
+frontiers, and anything left behind explicitly re-scoped as its own
+milestone below — never as "the rest of M30". A fault-free long run
+alone does not close it; an observable, repeatable resting state does.
+
+Each milestone below unlocks the observation the next one needs (no IOP,
+no packets; no packets, nothing to draw), and each carries its own
+BUILD/VERIFY gate like the rows above. This is ordering, not a schedule.
+
+| ID | Milestone | Observable result to verify |
+|---|---|---|
+| M31 | Finish the boot to a stable menu idle | Title-menu wait loop, fault-free and deterministic; pinned service frontier plus differential where affordable |
+| M32 | A real IOP (complete services, SPU2, controllers at the protocol level) | The game's IOP traffic answered with data and completion behavior, not just success codes (architecture/IOP-SIF framing) |
+| M33 | Capture graphics packets (DMAC → VIF → VU1 → GIF) | The exact bytes the game sends to draw, logged and attributed, before any pixel work |
+| M34 | First pixel (minimal GS, presented via Vulkan) | A correct frame from captured packets on a modern GPU path |
+| M35 | Native sound and input | Menu music, real navigation |
+| M36 | Playability (load a race, physics, a full clean lap) | The game itself, end to end |
+| M37 | Finish (custom resolutions, ultrawide, polish) | The owner's stated final vision without breaking the UI |
+
+Parallel enablers (not on the critical path, built when they pay off):
+checkpoints/savestates (`docs/plans/checkpoint-resume-mapping.md`) and
+an offline asset viewer (textures/fonts out of GT4.VOL as images).
+
 ## Questions to resolve with evidence
 
 - Target is USA v2.00, confirmed by the owner and SYSTEM.CNF VER metadata.
