@@ -1,16 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 1 — the server inventory and the
-arrival path. The 243.7M stop binds 24 SIF servers (model fully answers
-3); no PADMAN is bound, so pad has no consumer at this phase and M35
-waits on game progress. The pump queue is provably empty ([0x886818]
-mirrors to 0x886740, count byte 0); thread 2 is a semaphore-gated
-dispatch loop (entry 0x005ae9a0, WaitSema on sema 11). Decision 0023
-frames M32: next is thread 2's job source (argument block + sema-11
-signaler), then the first originating packet. `gt4boot --threads` now
-lists bound SIF sids permanently. This is the first document to read in
-a new session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-03 after M32 slices 2–3 — the job queue speaks, and the
+parked state is stable. Slice 2 mapped thread 2's job ring end to end
+(registers, 512 `{op,arg}` slots all historically `{0,3}`, control
+block, the single global handle, the SDK creator and the op map
+wake/rotate/suspend). Slice 3 replayed one producer step (thread 2
+dispatched `WakeupThread` and re-parked in 2 services) and woke sleeper
+thread 5 (five id queries, back to sleep, 8 services): the machine is
+not fragile-parked — it needs genuinely new input, which is milestone
+work. All probe instruments removed; docs only beyond slice 1's
+diagnostic. Next is slice 4: name the wild producer. This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1033,6 +1034,25 @@ linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 3 (2026-10-03): **the first packets**. One verbatim
+  producer step (`{0,3}` at slot 181 + signal + dispatch): thread 2 ran
+  its loop (`WakeupThread`, back to wait) in 2 services and the machine
+  re-parked with counters balanced. One step aimed at sleeper thread 5:
+  five `GetThreadId` calls then `SleepThread` (8 services) — a
+  flicker, no new traffic, no unmodeled wall. Verdict: the parked state
+  is stable, not fragile; the boot needs genuinely new input. Probes
+  removed
+  (`docs/reverse-engineering/m32-slice3-first-packets.md`).
+- M32 slice 2 (2026-10-03): **thread 2's job queue, mapped end to
+  end**. Saved registers match the loop code (`s1 = 0x00885ee8`,
+  `WaitSema(11)`); 512 `{op,arg}` slots, all historically `{0,3}`;
+  control block `{11, 0, 181, 181}`; exactly one RAM pointer to the
+  block (`[0x00885c80]`); the SDK creator (`0x005aea78`: `CreateSema`
+  then `CreateThread`, called once from the init cluster) and the op
+  map (0 = wake, 1 = rotate, 2 = suspend). No handler carries the block
+  as its argument — the wild producer (181 jobs, now silent) stays
+  unnamed
+  (`docs/reverse-engineering/m32-slice2-job-queue.md`).
 - M32 slice 1 (2026-10-03): **the server inventory and the arrival
   path**. From the 243.7M checkpoint: 24 SIF servers bound (16 custom +
   8 system; model fully answers PCDV, PRTS and the fileio open); no
@@ -1120,16 +1140,17 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 async IOP — the first
-  originating traffic**. Slice 1 inventoried the 24 bound servers and
-  mapped the arrival path (provably empty pump queue, SIFCMD table,
-  thread-2 dispatch loop); decision 0023 scopes the work. Slice 2
-  identifies thread 2's job source (argument block + sema-11 signaler),
-  then slice 3 delivers the first originating packet. M35 pad stays
-  queued (no PADMAN bound at this phase); and the curriculum's
-  remaining units (the OSD configuration services, a counting timer
-  with interrupt delivery, the remaining BIOS services and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **M32 async IOP — name the wild
+  producer (slice 4)**. Slices 2–3 proved the wake button works and the
+  parked state is stable under its own historical input; 181 `{0,3}`
+  jobs arrived during the traffic-heavy boot through the single global
+  handle, then silence. Slice 4 traces the writer (leads: SIF-pump
+  bridge handlers vs. a thread holding the handle; the op-1/op-2 and
+  else branches never fired here). M35 pad stays queued (no PADMAN
+  bound at this phase); and the curriculum's remaining units (the OSD
+  configuration services, a counting timer with interrupt delivery, the
+  remaining BIOS services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

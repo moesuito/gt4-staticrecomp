@@ -46,3 +46,16 @@ answers today changes, so the differentials stay green):
 - If thread 2 turns out not to be an EE-side server loop, slice 2 says
   so and the pump-queue packet becomes the lead — the framing holds
   either way.
+
+## Outcome (slices 2–3, 2026-10-03)
+
+Thread 2 is not an EE-side RPC server loop: it is the kernel's deferred
+thread-ops dispatcher (wake/rotate/suspend over a 512-slot `{op,arg}`
+ring at `0x00885ee8`, created once by `0x005aea78`). Both planned
+probes ran as temporary instruments (since removed): a verbatim `{0,3}`
+replay re-parks in 2 services, a `{0,5}` sleeper wake flickers out in 8
+— the parked state is stable, not fragile
+(`docs/reverse-engineering/m32-slice2-job-queue.md`,
+`docs/reverse-engineering/m32-slice3-first-packets.md`). The pump-queue
+packet lead is therefore secondary: the next slice names the ring's wild
+producer (181 `{0,3}` jobs, then silence), not a packet format.
