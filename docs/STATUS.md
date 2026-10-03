@@ -1,28 +1,23 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 42 — the block cache (PRTS) and the sound
-open: the open's result stayed zero because the game's own **block cache
-server** (sid 0x53545250, "PRTS") was not modeled. A temporary write watch
-in the memory API (every guest store passes through it) and a trace of
-every SIF RPC showed the chain: the descriptor callback 0x44D540 runs
-**0x44D6BC (`stream+0x94 = the file object`)** after the header read and
-its magic check; the open's read (0x4B0E28 → 0x4B1950 → **0x550D28**, the
-cache client whose bind at 0x550D00 names PRTS) checks the read's reply is
-non-zero before it builds its file object — and the model's generic zero
-reply left the object unbuilt, the header read fell back to address zero's
-fields, the magic check failed and the stream's result stayed zero (the
-assign chain then copied from address 0 — the unaligned fault at
-0x008475EB). The fix answers PRTS: RPC 3 reads the block from the same
-image as the PCDV reads and answers a fresh handle (a cache of at most
-eight blocks); RPC 4/7 copies the cached block into the client's buffer
-(decision 0021). The boot now runs **past the sound phase** to the step
-limit (200M steps, **3,648,011 services handled**, where the old run
-faulted at 83,783); the differential at 100,000 services is identical
-(43,082,342 interpreter instructions, full state); CTest 35/35
-(`gt4boot_services` pins 90,000 services with the disc, about 22 s) and
-Python 73 (67 run, 6 skip). This is the first document to read in a new
-session; it is kept current as work proceeds. Details live in the linked
-evidence documents.
+Updated 2026-10-02 after M30 slice 43 — beyond the step limit: the steady
+pump and the next wall. The step budget is now a `gt4boot --steps N` flag
+(default unchanged; CTest `gt4boot_steps` pins `--steps 1000`). The
+200M-step stop (pc 0x0055e790) is mid-copy in the 0x0055xxxx client's
+per-packet routine 0x0055e6d0 (~960 bytes per call), not a stall. The
+service mix over 3,648,011 services is **stationary** (create/delete
+semaphore in lock-step ~190k each, signal/wait ~297k, 1.3M patched-syscall
+returns) and the stop-time threads are healthy (5 asleep, 2 on semaphores,
+7 ready/running, nothing pending) — but a temporary LBA trace found only
+**8 disc reads in 1.5M services**, so the pump is SIF RPC chatter, not
+media streaming. A 10x run (`--steps 2000000000`, 13.5 min) finds the next
+wall: an **unaligned guest fault at pc 0x00491798** (a pointer-relocation
+routine, same family as slice 23's) on address 0x009cf08f after
+**15,010,045 services**; its direct caller is 0x0048fb94 (argument = the
+return of 0x00491d90). A second full run faults at the same pc, address
+and service count — deterministic. CTest 36/36 and Python 73 (67 run, 6
+skip). This is the first document to read in a new session; it is kept
+current as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1035,6 +1030,18 @@ evidence documents.
   services with the disc
   (`docs/reverse-engineering/m30-slice42-block-cache-and-the-sound-open.md`,
   `docs/decisions/0021-prts-block-cache.md`).
+- M30 slice 43 (2026-10-02): **beyond the step limit — the steady pump and
+  the next wall**. The step budget is now a `gt4boot --steps N` flag
+  (default unchanged; CTest `gt4boot_steps` pins `--steps 1000`). The
+  200M-step stop (pc 0x0055e790) is mid-copy in the per-packet routine
+  0x0055e6d0, not a stall. The service mix over 3,648,011 services is
+  stationary and the stop-time threads are healthy — but only 8 disc reads
+  occur in 1.5M services, so the pump is RPC chatter, not media streaming.
+  A 10x run finds the next wall: an **unaligned fault at pc 0x00491798**
+  (a move-relocation routine) on 0x009cf08f after 15,010,045 services,
+  deterministic across two full runs (same pc, address and count); the
+  direct caller is 0x0048fb94 (argument = the return of 0x00491d90)
+  (`docs/reverse-engineering/m30-slice43-beyond-the-step-limit.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -1044,13 +1051,14 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the wall beyond the step limit** — the
-  boot now runs to the 200M-step limit at 3,648,011 services; raising the
-  limit finds the next wall (a fault, a stalled service or the end of the
-  boot's init), and the curriculum's remaining units (the OSD configuration
-  services, a counting timer with interrupt delivery, the remaining BIOS
-  services and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **why the relocation pointer is odd** —
+  the wall past the step budget is an unaligned guest fault at pc
+  0x00491798 (address 0x009cf08f) after 15,010,045 services; find whether
+  the odd structure pointer comes from the game itself or from model-fed
+  data (the direct caller 0x0048fb94 passes the return of 0x00491d90),
+  and the curriculum's remaining units (the OSD configuration services, a
+  counting timer with interrupt delivery, the remaining BIOS services and
+  the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
