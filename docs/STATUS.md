@@ -1,14 +1,11 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 10 — deliveries unstuck. Measured
-the mix (346k start attempts, 3.2k successes per 12k leg; backlog 463k
-= 255k VBlank + 208k timer-11, zero DMAC), then fixed it:
-`queue_interrupt` coalesces same-cause entries (decision 0025, unit
-tested; DMAC completions keep stacking). Verification leg: pending
-467,116 → 1, handlers live every frame (module calls nearly doubled).
-Threads still wait (post-wrap delays maturing — expected); future
-crossings can't be missed on phasing. Next is slice 11: continue the
-march with live handlers, watching for re-arms, cancels, or the firing.
+Updated 2026-10-03 after M32 slice 11 — live-handler lockstep. Leg D6
+(`ckpt-880k.bin`): 100k services with exactly 100k module calls, and a
+12k tally leg shows every single service is `0x100` — the machine with
+live handlers issues zero new work and only matures the clock (COUNT
++~1e9/leg, combined ≈ 2.20e9 vs. ≈ 4.26e9 needed: ~2 legs to go, likely
+mid-D8). Next is slice 12: run D7+D8 watching for the firing signature.
 This is the first document to read in a new session; it is kept current
 as work proceeds. Details live in the linked evidence documents.
 
@@ -1033,6 +1030,12 @@ as work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 11 (2026-10-03): **live-handler lockstep**. Leg D6
+  (`ckpt-880k.bin`): 100k services with exactly 100k module calls; a
+  12k tally leg shows every service is `0x100` — zero new work, only
+  clock maturation (COUNT +~1e9/leg, combined ≈ 2.20e9 vs. ≈ 4.26e9:
+  ~2 legs to go, likely mid-D8)
+  (`docs/reverse-engineering/m32-slice11-lockstep.md`).
 - M32 slice 10 (2026-10-03): **unstick deliveries**. Measured mix
   (346k starts, 3.2k ok per 12k leg; backlog 255k VBlank + 208k
   timer-11, zero DMAC); `queue_interrupt` coalesces same-cause entries
@@ -1198,14 +1201,14 @@ as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — march on with live handlers
-  (slice 11)**. Slice 10 repaired delivery (backlog drained, handlers
-  live every frame, unit tested): continue chaining toward the firing
-  band, watching for game-side re-arms, cancels, or the firing itself —
-  none of which can hide behind stale frames anymore. M35 pad stays
-  queued (no PADMAN bound at this phase); and the curriculum's remaining
-  units (the OSD configuration services, the remaining BIOS services
-  and the jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **M32 — run the firing legs (slice
+  12)**. Slice 11 locked the steady state (every service a handler
+  call, yet all `0x100` — pure clock maturation at ~1e9/leg, ~2 legs
+  out): run D7+D8 from `ckpt-880k.bin` watching for the firing
+  signature, then follow the boot. M35 pad stays queued (no PADMAN
+  bound at this phase); and the curriculum's remaining units (the OSD
+  configuration services, the remaining BIOS services and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
