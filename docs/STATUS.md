@@ -1,17 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 4 — what the six workers wait for.
-Unwinding their stacks from the checkpoint: all six share one return
-address (a one-shot wait-then-delete wrapper around delay-library work),
-each on its own never-signaled binary sema, each paired by code family
-to a VBlank-chain handler whose gated work path sits quiet. The stall
-is the delay dispatcher that never fires (the open frontier of slices
-10–11: nodes never due, TIM2 condition unmet) — not SIF binds, which
-completed (24 servers; the bind path is now mapped as a bonus). Next is
-slice 5: fire one delay node, or pin the exact unmet condition, by
-experiment. Docs only; product code untouched. This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 5 — a delay node fires. Poking TIM2
+COUNT across the due threshold moved the machine (below: bit-identical
+to baseline; above: the delay dispatcher ran, exactly one
+`iSignalSema` on thread 3's completion sema, thread 3 readied, COMP
+reprogrammed): the due comparison at `0x005B822C` gates the parked
+boot, and the game arms COMP from the head node's target. Natural
+maturation needs ~1.9e9 more COUNT ticks (~3–4 chained legs at the
+observed rate, no model change). Next is slice 6: attribute the firing
+precisely and pick the legitimate maturation path (decision 0024).
+Docs only beyond the probes (all removed); product code untouched. This
+is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1034,6 +1034,14 @@ Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 5 (2026-10-03): **a delay node fires**. The due test at
+  `0x005B822C` (`current < target` exits the whole walk; COMP is armed
+  as `target >> 8`) probed by COUNT threshold: `+0x73800000`
+  bit-identical to baseline, `+0x73E70000` moved the machine (one
+  `iSignalSema` on thread 3's sema, thread 3 ready, COMP → `0x240`).
+  Natural maturation ≈ 1.9e9 ticks ≈ 3–4 chained legs, no model change.
+  Probes removed; docs only
+  (`docs/reverse-engineering/m32-slice5-delay-node-fires.md`).
 - M32 slice 4 (2026-10-03): **what the six workers wait for**. Stack
   unwinds from the checkpoint: all six share return `0x005aedc0` (a
   one-shot wait-then-delete wrapper over delay-library work
@@ -1151,13 +1159,12 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — fire one delay node (slice
-  5)**. Slice 4 traced all six waits to the never-firing delay
-  dispatcher (timer-conditioned, paired handlers mapped, binds
-  exonerated). Slice 5 works the curriculum unit directly: the counting
-  timer with interrupt/delay delivery — the smallest piece that fires
-  one node, or the exact unmet condition pinned, by experiment
-  (registers and node layout are observable live). M35 pad stays queued
+- Next technical milestone work: **M32 — mature the delays
+  legitimately (slice 6)**. Slice 5 proved the due comparison gates the
+  boot and fired a node by poke; slice 6 attributes the firing
+  precisely, resolves the accumulation puzzle (legs advance COUNT
+  ~0.59e9 vs. the ~1.9e9 gap), and picks the honest path (chained
+  checkpoints vs. budget) in decision 0024. M35 pad stays queued
   (no PADMAN bound at this phase); and the curriculum's remaining units
   (the OSD configuration services, the remaining BIOS services and the
   jump-table dispatch) stay listed in `docs/requirements.md`.
