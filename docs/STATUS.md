@@ -1,15 +1,14 @@
 # Project status
 
-Updated 2026-10-03 after slice 28 (asset-dump legs) — the
-pipeline never runs: zero xor55 calls in 95k fresh-boot services,
-bind entries unreachable fresh or parked (non-blindness
-owner-verified: `function_004b36e0` translated, `function_004b39b0`
-bridge-only). **Asset-dump line closed as answered-negative**; no
-cheap stimulus remains untried (slice 50 exhausted INTC/SSUP, slice
-22's pick done — stated, not re-run). Next is slice 29: spec the
-first originating event — an async IOP completion — as decision
-0026 (delivery path, minimal model semantics, verification).
-This is the
+Updated 2026-10-03 after slice 29 (decision 0026) — the first
+originating event is specified: one synthesized SIF pump SET_SREG
+packet (reg 1 = 1, live-console bytes) via DMAC-ch5, one-shot at the
+first qualifying idle tick, with a 4-item verification bar headed by
+the load-bearing negative (thread census unchanged). Owner-verified
+the delivery path (pump drain/copy/re-kick/index-mask;
+`0x005ae090` = `-0x78` stub, registered in the model both signs).
+Next is slice 30: implement exactly the specified bytes/cause/
+trigger plus the new tests. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1034,6 +1033,13 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 29 (decision 0026, 2026-10-03): **first originating
+  event specified**. Ranked: SIF pump SET_SREG adopted (only
+  synthesizable traffic; wakes nobody — pinned by the negative);
+  delay-march/ring-post/VBlank/PCDV/pad rejected with reasons.
+  Owner-verified the pump path and the `-0x78` registration
+  (`docs/decisions/0026-first-originating-event.md`,
+  `docs/reverse-engineering/m32-slice29-pump-path.md`).
 - Slice 28 (asset dumps, 2026-10-03): **the pipeline never
   runs — line closed as answered-negative**. Zero executions on all
   hooks (95k fresh + validation legs; non-blindness owner-verified).
@@ -1327,15 +1333,15 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the first originating event
-  (slice 29, decision 0026)**. Recon lines closed (M33 answered,
-  asset-dump answered-negative, scout parked): spec an async IOP
-  completion end to end — delivery path (pump bytes, SIFCMD area,
-  dispatcher), minimal model semantics, verification (differential
-  + wake assertion). Then implement. M35 pad stays queued (no
-  PADMAN bound at this phase); and the curriculum's remaining units
-  (the OSD configuration services, the remaining BIOS services and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **implement the first event
+  (slice 30)**. Decision 0026 adopted and owner-verified: synthesize
+  exactly the specified SET_SREG packet/cause/trigger plus the new
+  kernel test and boot-level assertions (register set, census
+  unchanged, differentials green). Then the next originating event.
+  M35 pad stays queued (no PADMAN bound at this phase); and the
+  curriculum's remaining units (the OSD configuration services, the
+  remaining BIOS services and the jump-table dispatch) stay listed
+  in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

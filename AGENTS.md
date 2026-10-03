@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50, M32 slices 1–22, M33 slices 23–28 BUILD/VERIFY complete (M33 recon + asset dumps closed); decoder covers 349 operations; the
+- M0-M30 slice 50, M32 slices 1–22 + slice 29 (decision 0026), M33 slices 23–28 (closed) BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,9 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **the first originating event (slice 29, decision
-  0026)**: recon lines closed (non-blindness owner-verified); spec
-  an async IOP completion end to end, then implement. The
+- Next: **implement the first event (slice 30)**:
+  decision 0026 adopted (pump path + `-0x78` registration
+  owner-verified); synthesize exactly the specified packet, cause,
+  trigger and tests. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
