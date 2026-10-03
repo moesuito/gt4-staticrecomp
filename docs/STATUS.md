@@ -1,13 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 11 — live-handler lockstep. Leg D6
-(`ckpt-880k.bin`): 100k services with exactly 100k module calls, and a
-12k tally leg shows every single service is `0x100` — the machine with
-live handlers issues zero new work and only matures the clock (COUNT
-+~1e9/leg, combined ≈ 2.20e9 vs. ≈ 4.26e9 needed: ~2 legs to go, likely
-mid-D8). Next is slice 12: run D7+D8 watching for the firing signature.
-This is the first document to read in a new session; it is kept current
-as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 12 — the natural firing. Leg D9
+matured node `0x0088a000` on its own (one-shot consumption, COMP
+reprogrammed, saved post-fire in `ckpt-1180k.bin`); thread 3 ran a full
+lifecycle (iSignalSema in, 19 id queries finding no work, sema deleted,
+asleep) that produced nothing new — a closed, sterile loop. The model
+redispatches after handlers on its own (correcting slice 3's probe
+note). Five epoch-scale nodes stand (~3 legs per firing at the live
+rate). Next is slice 13: march on watching whether later workers
+produce anything and whether the system self-heals with sane new
+bases. This is the first document to read in a new session; it is kept
+current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -1030,6 +1034,13 @@ as work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 12 (2026-10-03): **the natural firing**. Leg D9 matured
+  node `0x0088a000` on its own (consumed one-shot, COMP → `0x240`,
+  saved post-fire in `ckpt-1180k.bin`); thread 3's full lifecycle
+  (wake → 19 id queries, no work → sema deleted → asleep) produced
+  nothing new. Redispatch after handlers confirmed in code (corrects
+  slice 3). Five nodes stand, ~3 legs per firing
+  (`docs/reverse-engineering/m32-slice12-natural-firing.md`).
 - M32 slice 11 (2026-10-03): **live-handler lockstep**. Leg D6
   (`ckpt-880k.bin`): 100k services with exactly 100k module calls; a
   12k tally leg shows every service is `0x100` — zero new work, only
@@ -1201,11 +1212,12 @@ as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — run the firing legs (slice
-  12)**. Slice 11 locked the steady state (every service a handler
-  call, yet all `0x100` — pure clock maturation at ~1e9/leg, ~2 legs
-  out): run D7+D8 from `ckpt-880k.bin` watching for the firing
-  signature, then follow the boot. M35 pad stays queued (no PADMAN
+- Next technical milestone work: **M32 — retire the remaining five
+  (slice 13)**. Slice 12 proved natural maturation end to end (first
+  node fired on its own, worker lifecycle closed sterile): march on
+  from `ckpt-1180k.bin` watching whether later workers produce anything
+  and whether new waits get sane bases (self-healing?) — about three
+  legs per firing at the live rate. M35 pad stays queued (no PADMAN
   bound at this phase); and the curriculum's remaining units (the OSD
   configuration services, the remaining BIOS services and the
   jump-table dispatch) stay listed in `docs/requirements.md`.
