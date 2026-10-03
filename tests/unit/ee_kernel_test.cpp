@@ -864,6 +864,65 @@ int main() {
               "a machine without a disc answers zeros");
     }
 
+    // The game's own block cache (the PRTS server, sid 0x53545250): the
+    // read keeps the block and answers its handle — which the client checks
+    // is non-zero before it builds its file object — and the copy-out lands
+    // the cached bytes in the guest (decision 0021).
+    {
+        class FakeBlocks final : public gt4recomp::DiscByteSource {
+        public:
+            [[nodiscard]] std::uint64_t size() const override {
+                return 64 * 2048;
+            }
+            void read(std::uint64_t offset,
+                      std::span<std::uint8_t> destination) const override {
+                std::fill(destination.begin(), destination.end(), 0);
+                // Mark the block's first byte with its sector number, so the
+                // test can tell which block was copied out.
+                if (!destination.empty()) {
+                    destination[0] = static_cast<std::uint8_t>(offset / 2048);
+                }
+            }
+        };
+
+        Kernel kernel;
+        GuestState state = make_state();
+        FakeBlocks blocks;
+        kernel.set_disc_sectors(&blocks);
+        constexpr std::uint32_t request = 0x00100A00;
+        constexpr std::uint32_t destination = 0x00100B00;
+        state.memory().write_word(request + 0, 3);       // the LBA
+        state.memory().write_word(request + 4, 0x20);    // the byte count
+        state.memory().write_word(request + 8, 0x8000);  // the flags
+        const std::uint32_t handle = kernel.answer_prts_read(state, request);
+        check(handle != 0, "the block cache answers a handle");
+        state.memory().write_word(request + 0, handle);
+        state.memory().write_word(request + 4, destination);
+        state.memory().write_word(request + 8, 0x20);
+        check(kernel.answer_prts_copy(state, request) == 0x20
+                  && state.memory().read_byte(destination) == 3,
+              "the copy-out lands the cached block in the guest");
+        state.memory().write_word(request + 0, 0x0000DEADu);
+        check(kernel.answer_prts_copy(state, request) == 0,
+              "an unknown block handle copies nothing");
+        state.memory().write_word(request + 0, 5);
+        state.memory().write_word(request + 4, 0x20);
+        const std::uint32_t second = kernel.answer_prts_read(state, request);
+        check(second != 0 && second != handle,
+              "each block read answers a fresh handle");
+        state.memory().write_word(request + 0, 0x7FFFFFFF);  // far outside
+        bool threw = false;
+        try {
+            (void)kernel.answer_prts_read(state, request);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw, "a block read outside the disc image stops loudly");
+        kernel.set_disc_sectors(nullptr);
+        check(kernel.answer_prts_read(state, request) == 0,
+              "a machine without a disc answers no handle");
+    }
+
     // The volume registration (RPC 2) and the volume query (RPC 4): the
     // model recomputes the library's checksum over the same block it serves
     // and answers the registered volume's "volume space size" (decision

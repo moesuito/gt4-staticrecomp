@@ -224,6 +224,20 @@ public:
     // unit tests.
     [[nodiscard]] std::uint32_t answer_disc_read(GuestState& state,
                                                  std::uint32_t request);
+    // Answers the game's own block cache (sid 0x53545250, RPC 3): the
+    // request is {LBA, byte count, flags}. The cache reads the sectors from
+    // the disc image and keeps them under a fresh handle, which is the
+    // reply — the client copies the block out with RPC 4/7 and never sees
+    // the bytes here. Returns the handle (zero when the request is invalid
+    // or no disc is set). Exposed for unit tests.
+    [[nodiscard]] std::uint32_t answer_prts_read(GuestState& state,
+                                                 std::uint32_t request);
+    // Answers the block cache's copy-out (sid 0x53545250, RPC 4 and 7): the
+    // request is {handle, EE destination, byte count}. The cached block's
+    // bytes are copied out (clamped to the block); the reply carries no
+    // data. Returns the bytes copied. Exposed for unit tests.
+    [[nodiscard]] std::uint32_t answer_prts_copy(GuestState& state,
+                                                 std::uint32_t request);
     // Answers the game's CD driver volume registration (sid 0x50434456,
     // RPC 2): the request is {block, checksum}, where the checksum is the
     // library's index-weighted byte sum (0x00548D20) over the 0x800-byte
@@ -524,6 +538,17 @@ private:
     std::uint32_t disc_volume_lba_ = 0;
     std::map<std::uint32_t, std::string> disc_files_by_handle_;
     std::uint32_t next_disc_handle_ = 1;
+    // The game's own block cache (the PRTS server, sid 0x53545250): the
+    // client asks for a disc block with one call and copies it out with the
+    // next, so the model keeps the blocks it read under the handle it
+    // answered. The client copies each block out right after reading it, so
+    // a handful of entries covers the streaming reads.
+    struct PrtsBlock {
+        std::uint32_t lba = 0;
+        std::vector<std::uint8_t> data;
+    };
+    std::map<std::uint32_t, PrtsBlock> prts_blocks_;
+    std::uint32_t next_prts_handle_ = 1;
 };
 
 } // namespace gt4recomp::ee

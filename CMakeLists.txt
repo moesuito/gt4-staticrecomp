@@ -260,11 +260,23 @@ if(BUILD_TESTING)
         add_test(NAME gt4boot_build
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target gt4boot)
         set_tests_properties(gt4boot_build PROPERTIES FIXTURES_SETUP gt4boot)
-        add_test(NAME gt4boot_services
-            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 3000 --compare-interpreter)
-        set_tests_properties(gt4boot_services PROPERTIES
-            FIXTURES_REQUIRED gt4boot
-            PASS_REGULAR_EXPRESSION "services handled 3000")
+        # The pinned boot frontier. With the disc image present it advances
+        # past the sound phase (the block cache fix of slice 42); without
+        # one the boot cannot pass the disc phase, so the old frontier stays.
+        if(EXISTS "${GT4_LOCAL_ISO}")
+            add_test(NAME gt4boot_services
+                COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"
+                        --services 90000 --compare-interpreter)
+            set_tests_properties(gt4boot_services PROPERTIES
+                FIXTURES_REQUIRED gt4boot
+                PASS_REGULAR_EXPRESSION "services handled 90000")
+        else()
+            add_test(NAME gt4boot_services
+                COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 3000 --compare-interpreter)
+            set_tests_properties(gt4boot_services PROPERTIES
+                FIXTURES_REQUIRED gt4boot
+                PASS_REGULAR_EXPRESSION "services handled 3000")
+        endif()
         # The stop-time memory view: a short run prints the requested guest
         # words, so the --dump option stays exercised.
         add_test(NAME gt4boot_dump

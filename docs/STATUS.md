@@ -1,40 +1,28 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 41 — the worker runs; the result field is
-the wall: the handler class's constructor (0x004AD1C8, base vtable 0x688D48)
-initializes the mutex (+0x10), the three lists (+0x40, +0x4C, +0x58 — each
-{head, tail, tag 0x688C40}), the worker's condition (+0x64) and the result
-(+0x94) — and creates no thread. The archive handler's vtable (0x00688C58)
-maps every step: +0x38 the path match, +0x40 the open (0x004B1730),
-+0x50 the **worker loop** (0x004AD8F8: waits on the condition, drains
-+0x4C), +0x58 the first drain (0x004AD9D0: the gate 0x004AF520, the work
-method for the command, then 0x004AD6D8 moves the stream to the sorted
-tree +0x58 and sets state 2), +0x60 the lookup work (0x004B0B48 →
-+0xC8 0x004B1800 → +0xE0 0x004B1F90, the archive search), +0x70 the second
-drain (0x004ADBB8: work +0x78, pop the tree, then the **stream's**
-completion 0x004AF4A8 sets state 3), +0x28 the handler's completion
-(0x004AD890 → 0x004AD808: handler+0x94 = the file object). A new
-`gt4boot --dump ADDRESS LENGTH` stop-time memory view shows the model at
-83,782 services: the formatter's context (0x01FFFDB0) has **state +0x80 =
-3**, +0x84 = 2 and **result +0x94 = 0**; the handler 0x617AB0's three
-lists are **empty** and its +0x94 = 0x0096DEF0. So the open's pipeline
-**ran end to end** — the thirty-eighth to fortieth slices' "the completion
-never runs / the state never reaches 3" was wrong (the stack watch
-followed the sound thread's sp, missing the worker thread's writes). The
-differential at 83,782 services — the whole boot to the fault's doorstep —
-is **identical** (24,114,381 interpreter instructions, full state): the
-zero result is what the guest code produces from these inputs, so the next
-slice must find which step should write the context's +0x94 (the lookup's
-request field is only zeroed) and which input differs from the console.
-Slice 42 (paused mid-investigation) found the writer — the descriptor
-callback **0x44D540** runs **0x44D6BC (`stream+0x94 = the file object`)**
-after the header read and its magic check — and that the file's disc read
-(LBA 0x1C2C0, size 0x1A830) is **never sent** (a trace of every PCDV RPC
-ends at the archive block); the next experiment is a write watch on the
-descriptor (0x01FFFE60) and stream (0x01FFFDB0) windows to see which
-callback branch ran. This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-02 after M30 slice 42 — the block cache (PRTS) and the sound
+open: the open's result stayed zero because the game's own **block cache
+server** (sid 0x53545250, "PRTS") was not modeled. A temporary write watch
+in the memory API (every guest store passes through it) and a trace of
+every SIF RPC showed the chain: the descriptor callback 0x44D540 runs
+**0x44D6BC (`stream+0x94 = the file object`)** after the header read and
+its magic check; the open's read (0x4B0E28 → 0x4B1950 → **0x550D28**, the
+cache client whose bind at 0x550D00 names PRTS) checks the read's reply is
+non-zero before it builds its file object — and the model's generic zero
+reply left the object unbuilt, the header read fell back to address zero's
+fields, the magic check failed and the stream's result stayed zero (the
+assign chain then copied from address 0 — the unaligned fault at
+0x008475EB). The fix answers PRTS: RPC 3 reads the block from the same
+image as the PCDV reads and answers a fresh handle (a cache of at most
+eight blocks); RPC 4/7 copies the cached block into the client's buffer
+(decision 0021). The boot now runs **past the sound phase** to the step
+limit (200M steps, **3,648,011 services handled**, where the old run
+faulted at 83,783); the differential at 100,000 services is identical
+(43,082,342 interpreter instructions, full state); CTest 35/35
+(`gt4boot_services` pins 90,000 services with the disc, about 22 s) and
+Python 73 (67 run, 6 skip). This is the first document to read in a new
+session; it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -1016,6 +1004,37 @@ documents.
   write the context's +0x94 (the lookup's request field is only zeroed)
   and which input differs from the console
   (`docs/reverse-engineering/m30-slice41-worker-and-the-result-field.md`).
+- M30 slice 42 (2026-10-02): **the block cache (PRTS) and the sound open** —
+  the open's result stayed zero because the game's own **block cache
+  server** (sid 0x53545250, "PRTS" — the bind at 0x550D00) was not modeled.
+  A temporary **write watch in the memory API** (every guest store passes
+  through it; each new (pc, address) pair logged once) captured the open's
+  exact sequence: the request copy (0x4B0EC8..0x4B0ED8), the block read's
+  failure (`0x4B0F34 [descriptor+0] = 9`), the header magic mismatch
+  (`0x44D6C4 [descriptor+0] = 2`), the release, the descriptor's status
+  copied into the stream (0x4AF7BC), the drain's pop, the gate reset and
+  the stream's completion (`0x4AF4D8 [stream+0x80] = 3`). The writer of the
+  result is the descriptor callback **0x44D540** (second drain → 0x4ADC40 →
+  0x4AF780 → the callback): **0x44D6BC `stream+0x94 = the file object`**
+  after the header read (0x4AFA20 → the handler's vtable+0xB8 = 0x4B11A8)
+  and the magic check ("INST" / 0x4E474E45); the failure paths store the
+  error instead (0x44D5B0/0x44D6C0/0x44D6E8). A trace of every SIF RPC
+  showed the cache client's protocol: RPC 3 `{LBA, size, flags}` (the reply
+  is the handle the client checks is non-zero) and RPC 4/7
+  `{handle, destination, size}` (the copy-out), with the sound file's block
+  (0x1C2C0, 0x1A830) and its header copy-out (0x96DD80, 0x20) among them.
+  **The fix** (decision 0021): `Kernel::answer_prts_read` reads the block
+  from the same image as the PCDV reads and answers a fresh handle (a cache
+  of at most eight blocks); `Kernel::answer_prts_copy` copies the cached
+  block into the guest (clamped, validated). Unit tests cover the handle,
+  the copy-out, an unknown handle, a read outside the image and a machine
+  without a disc. The boot now runs **past the sound phase** to the step
+  limit (3,648,011 services handled where the old run faulted at 83,783);
+  the differential at 100,000 services is identical (43,082,342 interpreter
+  instructions); CTest 35/35 with `gt4boot_services` pinning 90,000
+  services with the disc
+  (`docs/reverse-engineering/m30-slice42-block-cache-and-the-sound-open.md`,
+  `docs/decisions/0021-prts-block-cache.md`).
 - M14 (2026-10-01): live observation through PCSX2 PINE — the reconstructed
   text image matches live GT4 RAM byte-for-byte (5,339,668 bytes, equal
   hashes), reginfo 24/24; data-record differences are runtime writes. Slice 2
@@ -1025,17 +1044,13 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **why the open's read never reaches the
-  disc** — the writer of the formatter context's +0x94 is found: the
-  descriptor callback **0x44D540** runs **0x44D6BC (`stream+0x94 = the
-  file object`)** after reading the file header (0x4AFA20) and validating
-  its magic; in the model the descriptor ends with +0 = 2 (an error) and
-  +0xC = 0 (no object), so the callback never got there. A temporary trace
-  of every PCDV RPC shows the file data read (LBA 0x1C2C0, size 0x1A830)
-  was **never sent** — the last PCDV activity is the archive block. The
-  next experiment is a write watch on the descriptor (0x01FFFE60) and the
-  stream (0x01FFFDB0) windows to see which callback branch ran (0x44D5B0 /
-  0x44D6C0 / 0x44D6E8) and whether 0x44D6BC was reached.
+- Next technical milestone work: **the wall beyond the step limit** — the
+  boot now runs to the 200M-step limit at 3,648,011 services; raising the
+  limit finds the next wall (a fault, a stalled service or the end of the
+  boot's init), and the curriculum's remaining units (the OSD configuration
+  services, a counting timer with interrupt delivery, the remaining BIOS
+  services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

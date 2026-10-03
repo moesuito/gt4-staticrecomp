@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 41 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 42 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -228,18 +228,28 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   **stream's** completion 0x004AF4A8 set state 3), and the context's result
   +0x94 = 0 — the value the formatter returns; the differential over the
   whole boot to the fault's doorstep (24,114,381 interpreter instructions)
-  is **identical**, so the next slice finds which step should write +0x94
-  (the lookup work 0x004B0B48 copies it from the search request's +0x10,
-  which 0x004B1F90 never writes) and which input differs from the console.
-- Next: M30 slice 42 — who writes the formatter context's +0x94: the worker
-  pipeline runs end to end (state 3, lists drained, the differential
-  identical at 83,782 services), but the context keeps result +0x94 = 0;
-  the lookup work (0x004B0B48) copies it from the search request's +0x10,
-  which the search (0x004B1F90) never writes and 0x004AF6B8 zeroes; find
-  which step is supposed to fill that field (the search's result at
-  handler+0xC4, the entry pointer or the completion's file object) and
-  which input differs from the console — comparing the request, the path
-  string and the directory object with the console's live state.
+  is **identical** — the lookup work 0x004B0B48 copies +0x94 from the
+  search request's +0x10, which 0x004B1F90 never writes. Slice 42 then
+  finds the root cause — the game's own **block cache server**
+  (sid 0x53545250, "PRTS"; the cache client's bind at 0x00550D00) was not
+  modeled, so its zero reply left the open's file object unbuilt — and
+  fixes it: `answer_prts_read` (RPC 3, `{LBA, size, flags}` → a fresh
+  handle, a cache of at most eight blocks) and `answer_prts_copy` (RPC 4/7,
+  `{handle, destination, size}`) serve the blocks from the same image as
+  the PCDV reads (decision 0021). The writer of the result is the
+  descriptor callback 0x44D540 (second drain → 0x4ADC40 → 0x4AF780 →
+  **0x44D6BC `stream+0x94 = the file object`** after the header read and
+  its magic check). The boot now runs **past the sound phase** to the step
+  limit (3,648,011 services handled where the old run faulted at 83,783);
+  the differential at 100,000 services is identical; CTest 35/35
+  (`gt4boot_services` pins 90,000 services with the disc, about 22 s).
+- Next: M30 slice 43 — **the wall beyond the step limit**: the boot now
+  runs to the 200M-step limit at 3,648,011 services handled; raising the
+  limit finds the next wall (a fault, a stalled service or the end of the
+  boot's init). The curriculum's remaining units (the OSD configuration
+  services, a counting timer with interrupt delivery, the remaining BIOS
+  services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

@@ -1427,6 +1427,58 @@ std::uint32_t Kernel::answer_disc_read(GuestState& state,
     return read_size;
 }
 
+std::uint32_t Kernel::answer_prts_read(GuestState& state,
+                                       std::uint32_t request) {
+    // The block read: {LBA, byte count, flags}. The cache keeps the sectors
+    // and answers the handle the copy-out calls use; the client checks the
+    // reply is non-zero before it builds its file object, so a missing
+    // block is answered with zero exactly like a failed transfer.
+    constexpr std::uint32_t sector_size = 2048;
+    const std::uint32_t lba = state.memory().read_word(request + 0);
+    const std::uint32_t read_size = state.memory().read_word(request + 4);
+    if (read_size == 0 || read_size > 0x100000 || disc_sectors_ == nullptr) {
+        return 0;
+    }
+    const std::uint64_t offset = static_cast<std::uint64_t>(lba) * sector_size;
+    if (offset + read_size > disc_sectors_->size()) {
+        throw std::runtime_error(
+            "The game's block cache read leaves the disc image");
+    }
+    PrtsBlock block;
+    block.lba = lba;
+    block.data.resize(read_size);
+    disc_sectors_->read(offset, block.data);
+    const std::uint32_t handle = next_prts_handle_++;
+    if (prts_blocks_.size() >= 8) {
+        prts_blocks_.erase(prts_blocks_.begin());
+    }
+    prts_blocks_[handle] = std::move(block);
+    return handle;
+}
+
+std::uint32_t Kernel::answer_prts_copy(GuestState& state,
+                                       std::uint32_t request) {
+    // The copy-out: {handle, EE destination, byte count}.
+    const std::uint32_t handle = state.memory().read_word(request + 0);
+    const std::uint32_t destination = state.memory().read_word(request + 4);
+    const std::uint32_t size = state.memory().read_word(request + 8);
+    const auto entry = prts_blocks_.find(handle);
+    if (entry == prts_blocks_.end()) {
+        return 0;
+    }
+    const std::uint32_t available =
+        static_cast<std::uint32_t>(entry->second.data.size());
+    const std::uint32_t copy_size = size < available ? size : available;
+    if (copy_size == 0 || !state.memory().contains(destination, copy_size)) {
+        return 0;
+    }
+    for (std::uint32_t index = 0; index < copy_size; ++index) {
+        state.memory().write_byte(destination + index,
+                                  entry->second.data[index]);
+    }
+    return copy_size;
+}
+
 std::uint32_t Kernel::answer_disc_volume(GuestState& state,
                                          std::uint32_t request) {
     // The game's CD library registers the volume descriptor its scan
@@ -1661,6 +1713,21 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     } else if (sid == 0x50434456u && rpc_number == 4u && server != nullptr) {
         // The volume query: the registered volume's "volume space size".
         result_size = answer_disc_volume_size(result, sizeof result);
+    } else if (sid == 0x53545250u && rpc_number == 3u && server != nullptr) {
+        // The game's block cache read: the reply is the block's handle,
+        // which the copy-out calls pass back.
+        const std::uint32_t handle = answer_prts_read(state, server->buffer);
+        result[0] = static_cast<std::uint8_t>(handle);
+        result[1] = static_cast<std::uint8_t>(handle >> 8);
+        result[2] = static_cast<std::uint8_t>(handle >> 16);
+        result[3] = static_cast<std::uint8_t>(handle >> 24);
+        result_size = 4;
+    } else if (sid == 0x53545250u && (rpc_number == 4u || rpc_number == 7u)
+               && server != nullptr) {
+        // The copy-out: the cached block goes straight into the client's
+        // buffer, so the reply carries no data.
+        (void)answer_prts_copy(state, server->buffer);
+        result_size = 0;
     } else {
         result_size = sif_rpc_result(state, sid, rpc_number, result,
                                      sizeof result);
