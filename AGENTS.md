@@ -103,9 +103,9 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-03:
+Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 49 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -285,10 +285,14 @@ Live state: `docs/STATUS.md`. As of 2026-10-03:
   creator) — no cycle, no in-model signaler — and ranks the missing
   events (async IOP drought, then input, then GS-side). CTest 40/40 and
   Python 73 (67 run, 6 skip).
-- Next: M30 slice 50 — **the smallest external stimulus**: first a pad
-  probe (connected-with-no-buttons, then scripted buttons) watching for
-  selective wakeups, then a synthesized async SIF completion; whichever
-  wakes the machine names the missing event and scopes its model. The
+  Slice 50 then exhausts deliverable stimuli (INTC 0/5 buried and
+  effect-free; SSUP unasked; handler inventory without a wakeup path):
+  the stop needs originating traffic only milestone work provides. CTest
+  40/40 and Python 73 (67 run, 6 skip).
+- Next: M32 async IOP or M35 pad — **the first originating traffic**:
+  Slice 50 mapped the SIF pump (0x005b0e30), its queue (0x886818) and
+  dispatcher (0x005ae090) awaiting real inbound bytes; start whichever
+  maps cheaper. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

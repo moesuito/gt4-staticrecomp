@@ -1,17 +1,16 @@
 # Project status
 
-Updated 2026-10-04 after M30 slice 49 — the missing event per waiter
-class. The stop holds 46 live semaphores; the 7 waited ones are all
-count 0 with one waiter each (no scheduler anomaly): thread 2 (SIF/RPC)
-on ancient counting sema 11, six engine workers on late binary semaphores
-sharing one creator, plus 10 sleepers incl. main. No cycle anywhere, so
-not a deadlock: the SIF/RPC dispatcher is starved of async arrivals (the
-model IOP answers purely synchronously) and the workers of dispatch;
-the menu-shaped wait (fonts, timers) keeps controller input a live
-alternative. Next discriminates with the smallest stimulus: a pad probe,
-then a synthesized async SIF completion. CTest 40/40 and Python 73 (67
-run, 6 skip). This is the first document to read in a new session; it is
-kept current as work proceeds. Details live in the linked evidence
+Updated 2026-10-04 after M30 slice 50 — the smallest stimulus: nothing
+deliverable wakes it. One-shot INTC 0/5 injections end bit-identical
+(buried behind the queue, and both handlers are device acks by code
+reading); the SSUP nonzero answer is never asked (no SIF traffic in the
+final leg); the full handler inventory (VBlank accounting with empty
+chain, timer accounting, GS/VIF1 acks, SIF pump over an empty queue)
+contains no wakeup path. The stop needs originating traffic only
+milestone work provides (M32 async IOP from the mapped pump/queue/
+dispatcher, or M35 pad). No model change. CTest 40/40 and Python 73
+(67 run, 6 skip). This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked evidence
 documents.
 
 ## Where we are
@@ -1035,6 +1034,17 @@ documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M30 slice 50 (2026-10-04): **the smallest stimulus — nothing
+  deliverable wakes it**. One-shot INTC 0/5 injections end bit-identical
+  (buried behind the queue, and both handlers are device acks by code
+  reading); the SSUP nonzero answer is never asked (no SIF traffic in
+  the final leg); the full handler inventory (VBlank accounting with
+  empty chain, timer accounting, GS/VIF1 acks, SIF pump over an empty
+  queue) contains no wakeup path. The stop needs originating traffic
+  only milestone work provides (M32 async IOP from the mapped
+  pump/queue/dispatcher, or M35 pad). No model change. CTest 40/40,
+  Python 73 (67 run, 6 skip)
+  (`docs/reverse-engineering/m30-slice50-stimulus-probes.md`).
 - M30 slice 49 (2026-10-04): **the missing event per waiter class**. 46
   live semaphores; the 7 waited ones all count 0 with one waiter each
   (no scheduler anomaly): thread 2 (SIF/RPC) on ancient counting sema
@@ -1101,12 +1111,12 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the smallest external stimulus** —
-  first a pad probe (connected-with-no-buttons, then scripted buttons)
-  watching for selective wakeups (menu advance proves input-wait), then
-  a synthesized async SIF completion (dispatcher waking workers proves
-  the IOP drought); whichever wakes the machine names the missing event
-  and scopes its model; and the curriculum's remaining units (the OSD
+- Next technical milestone work: **M32 async IOP or M35 pad — the first
+  originating traffic**. Slice 50 exhausted deliverable stimuli (INTC
+  0/5 buried and effect-free; SSUP unasked; handler inventory without a
+  wakeup path): the machine needs IOP→EE bytes into the SIF pump's queue
+  (0x886818 → dispatcher 0x005ae090) or pad reads worth polling. Start
+  whichever maps cheaper; and the curriculum's remaining units (the OSD
   configuration services, a counting timer with interrupt delivery, the
   remaining BIOS services and the jump-table dispatch) stay listed in
   `docs/requirements.md`.
