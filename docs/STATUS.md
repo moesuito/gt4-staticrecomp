@@ -1,17 +1,16 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 9 — the wrap swept the band with no
-firing. Legs D4+D5 ran and saved (`ckpt-580k/680k.bin`); COUNT wrapped
-mid-D5 across the entire theoretical firing band, yet no node
-dispatched, COMP stayed put, all six still wait. Verdict: the trigger
-is delivery phasing, not just level (poke crossed inside a burst, D5
-crossed in a desert); and the 40-minute-scale timeouts cannot be a real
-boot path, so the waits are timeout guards for events the model never
-delivers. Next is slice 10: measure the burst/desert mix, fix the
-unbounded VBlank enqueue if confirmed, and name each wait's real event
-(the 14-leg timeout march demoted to fallback). This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 10 — deliveries unstuck. Measured
+the mix (346k start attempts, 3.2k successes per 12k leg; backlog 463k
+= 255k VBlank + 208k timer-11, zero DMAC), then fixed it:
+`queue_interrupt` coalesces same-cause entries (decision 0025, unit
+tested; DMAC completions keep stacking). Verification leg: pending
+467,116 → 1, handlers live every frame (module calls nearly doubled).
+Threads still wait (post-wrap delays maturing — expected); future
+crossings can't be missed on phasing. Next is slice 11: continue the
+march with live handlers, watching for re-arms, cancels, or the firing.
+This is the first document to read in a new session; it is kept current
+as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1034,6 +1033,14 @@ Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 10 (2026-10-03): **unstick deliveries**. Measured mix
+  (346k starts, 3.2k ok per 12k leg; backlog 255k VBlank + 208k
+  timer-11, zero DMAC); `queue_interrupt` coalesces same-cause entries
+  (decision 0025, unit tested; DMAC keeps stacking). Verification leg:
+  pending 467,116 → 1, handlers live every frame. Threads still wait
+  (delays maturing); crossings can't be missed on phasing anymore
+  (`docs/reverse-engineering/m32-slice10-coalesce.md`,
+  `docs/decisions/0025-coalesce-pending-interrupts.md`).
 - M32 slice 9 (2026-10-03): **the wrap swept the band, no firing**.
   Legs D4+D5 (`ckpt-580k/680k.bin`, limit-hit, saved); COUNT wrapped
   mid-D5 across the whole theoretical band with no dispatch, COMP
@@ -1191,17 +1198,14 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — unstick deliveries, hunt
-  the events (slice 10)**. Slice 9 proved the firing needs delivery
-  phasing, not just level (wrap swept the band silently; backlog at
-  463k; every leg ends with a never-started VBlank frame), and that
-  40-minute timeouts can't be the boot's path. Slice 10 measures the
-  burst/desert mix exactly, fixes the unbounded VBlank enqueue if
-  confirmed (coalesce like hardware status bits), and names each wait's
-  real completion event. M35 pad stays queued (no PADMAN bound at this
-  phase); and the curriculum's remaining units (the OSD configuration
-  services, the remaining BIOS services and the jump-table dispatch)
-  stay listed in `docs/requirements.md`.
+- Next technical milestone work: **M32 — march on with live handlers
+  (slice 11)**. Slice 10 repaired delivery (backlog drained, handlers
+  live every frame, unit tested): continue chaining toward the firing
+  band, watching for game-side re-arms, cancels, or the firing itself —
+  none of which can hide behind stale frames anymore. M35 pad stays
+  queued (no PADMAN bound at this phase); and the curriculum's remaining
+  units (the OSD configuration services, the remaining BIOS services
+  and the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

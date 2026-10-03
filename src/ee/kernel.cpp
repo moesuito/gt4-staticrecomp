@@ -1071,6 +1071,21 @@ void Kernel::ensure_sif_ready(GuestState& state) {
 }
 
 void Kernel::queue_interrupt(std::uint32_t cause) {
+    // Coalescing (decision 0025): a cause that is already pending stays a
+    // single entry, like the hardware status bit the handler reads and
+    // clears. Queue entries carry no payload (handlers read live state),
+    // so a second instance adds nothing but backlog: without this, one
+    // VBlank per idle call grows the queue without bound (463k observed)
+    // and buries every other cause behind stale frames.
+    for (auto entry = interrupt_queue_.begin();
+         entry != interrupt_queue_.end();) {
+        if (entry->kind == InterruptRequest::Kind::Intc
+            && entry->number == cause) {
+            entry = interrupt_queue_.erase(entry);
+        } else {
+            ++entry;
+        }
+    }
     InterruptRequest request;
     request.kind = InterruptRequest::Kind::Intc;
     request.number = cause;

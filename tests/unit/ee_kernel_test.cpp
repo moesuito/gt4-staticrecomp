@@ -766,6 +766,26 @@ int main() {
               "the frame's VBlank joins the queue");
     }
 
+    // Coalescing (decision 0025): a cause that is already pending stays
+    // a single entry, like the hardware status bit the handler reads and
+    // clears — queue entries carry no payload, so a repeat adds nothing
+    // but backlog (463k stale frames observed without it).
+    {
+        Kernel kernel;
+        kernel.raise_interrupt(2);
+        check(kernel.pending_interrupts() == 1,
+              "a first VBlank queues");
+        kernel.raise_interrupt(2);
+        check(kernel.pending_interrupts() == 1,
+              "a pending cause coalesces instead of stacking");
+        kernel.raise_interrupt(11);
+        check(kernel.pending_interrupts() == 2,
+              "a different cause still queues");
+        kernel.raise_interrupt(11);
+        check(kernel.pending_interrupts() == 2,
+              "the second cause coalesces too");
+    }
+
     // The file server's open answers from the disc image (decision 0017): the
     // request's path at +8, the reply {handle, size}; a path the disc does
     // not have, or a machine without a disc, answers handle 0.
