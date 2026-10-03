@@ -1,13 +1,15 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 19 — gates open and stable. Legs
-D14+D15 ran and saved (`ckpt-1680k/1780k.bin`) with metronomic COUNT
-deltas; the `[0x65c714]` gate reads nonzero and stable (heap pointers,
-unchanged) — thread 4's engine work already runs every VBlank, nothing
-left to open there. Combined ≈ 2.76e9 vs. ≈ 4.29e9: ~1.5 legs to go,
-likely firing mid-D17. Next is slice 20: run D16+D17 watching for
-thread 6's firing signature. This is the first document to read in a
-new session; it is kept current as work proceeds. Details live in the
+Updated 2026-10-03 after M32 slice 20 — marching paused as sterile.
+Legs D16+D17 ran and saved (`ckpt-1880k/1980k.bin`); COUNT wrapped
+mid-D17 across the band with no dispatch (third sweep-miss: D5, D13,
+D17) — firings are lottery tickets, and thread 3 proved each win only
+retires a waiter sterily. The chain files stay; the marching stops
+until an event-side reason restarts it. Next is slice 21: re-census
+every parked thread as delay-timeout vs. event-wait vs. sleep, naming
+the announcer each event-wait needs (the sync-without-async-
+announcement audit). This is the first document to read in a new
+session; it is kept current as work proceeds. Details live in the
 linked evidence documents.
 
 ## Where we are
@@ -1031,6 +1033,12 @@ linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 20 (2026-10-03): **marching paused as sterile**. Legs
+  D16+D17 (`ckpt-1880k/1980k.bin`); third wrap-miss (D5, D13, D17) —
+  firings are lottery, each win only retires a waiter sterily. Chain
+  kept; marching stops until event-side reasons restart it. Next is
+  slice 21: the sync-without-async-announcement audit
+  (`docs/reverse-engineering/m32-slice20-march-paused.md`).
 - M32 slice 19 (2026-10-03): **gates open and stable**. Legs D14+D15
   (`ckpt-1680k/1780k.bin`) with metronomic deltas; `[0x65c714]` reads
   nonzero and stable (heap pointers) — correcting slice 18: the engine
@@ -1258,12 +1266,12 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — run D16+D17 to the firing
-  (slice 20)**. Slice 19 marched two legs (frontier `ckpt-1780k.bin`,
-  combined ≈ 2.76e9, ~1.5 legs out) and closed the first gate watch
-  (open from the start — correcting slice 18): run D16+D17 watching
-  for thread 6's firing signature, then follow the boot. M35 pad stays
-  queued (no PADMAN bound at this phase); and the curriculum's
+- Next technical milestone work: **M32 — the announcement audit
+  (slice 21)**. Slice 20 proved firings are lottery and retirements
+  sterile, pausing the march: re-census every parked thread as
+  delay-timeout vs. event-wait vs. sleep, naming the announcer each
+  event-wait needs (sync answers without async announcements). M35 pad
+  stays queued (no PADMAN bound at this phase); and the curriculum's
   remaining units (the OSD configuration services, the remaining BIOS
   services and the jump-table dispatch) stay listed in
   `docs/requirements.md`.
