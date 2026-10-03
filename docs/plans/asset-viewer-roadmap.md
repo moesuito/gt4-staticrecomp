@@ -72,3 +72,8 @@ instrumented-boot dumps from the main line.
   viewer first opens the fonts table.
 - Whether PRTS-block transform (`FFF7EEC5`...) equals the page cipher
   or a second layer (Unknown).
+- Pixel format (new standing answer, High): travels **as data**, not
+  as code immediates — the GS chute is indirect end to end
+  (`docs/reverse-engineering/asset-gs-chute-indirect.md`). The static
+  road is the .gpb record grammar; the decisive experiment is a
+  main-line Tex1-object dump (hook `0x454EF8`).
