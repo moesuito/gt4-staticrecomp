@@ -61,6 +61,13 @@ instrumented-boot dumps from the main line.
 ## Standing questions for the viewer track
 
 - Page-payload cipher (Unknown) — the single gate for everything small.
+  Static side exhausted (grid over xor/inflate/skips/pages: zero hits);
+  the reader itself is mapped (`0x4B38A0` dual-magic check, `0x4B3938`
+  keyed table read, `0x4B36E0` xor55 loop, `0x4B39B0` page fetch with
+  virtual inflate — all owner-verified in disassembly). Decisive
+  experiment specified and queued for the main line: Hook A (log
+  `0x4B36E0` buffers) then Hook B (log `0x4B39B0` in/out pairs).
+  Full evidence: `docs/reverse-engineering/asset-page-cipher-static.md`.
 - Font entry addresses/sizes (`@0x1308` etc.) [S] — re-verify when the
   viewer first opens the fonts table.
 - Whether PRTS-block transform (`FFF7EEC5`...) equals the page cipher

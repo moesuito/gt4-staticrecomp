@@ -1,15 +1,16 @@
 # Project status
 
-Updated 2026-10-03 after slice 24 (M33 heartbeat trace) — the
-dispatcher's worker thread is never created. Whole-translation grep
-(zero direct callers), disassembly (initializer `0x00586da0` up
-through four lazy-init wrappers), and stop-time dumps (one-shot flag
-`[0x00617d88]` = 0, job global `0x0087E180` all zeros — both
-independently re-verified by the owner-agent) show the cut is
-upstream of VBlank/main/SIF alike: the boot parks before the late
-lazy init that builds the job system. Next is slice 25: which of the
-four `0x0019a7xx` lazy wrappers the boot reaches for first (what
-unparks main / feeds the flag queue). This is the
+Updated 2026-10-03 after slice 25 (M33 lazy wrappers) — none of
+the four wrappers is on the boot path: each has exactly one direct
+caller (F1–F4, themselves indirect-only), and the string dumps name
+the domain USB-printer (`MPhotoRendererFace`, `printout`,
+`cleaning`, `nozzleCheck` — all owner-verified live, plus
+`[0x00659EA4]` = `0x001097E8`, main's own sleep chain). New
+hypothesis: the `0x00587xxx` system is a print-render pool, not a
+frame dispatcher — the "per-frame heartbeat" may never have existed.
+Next is slice 26: test it through the switch's case handlers
+(`0x00587c08`, table `0x006CE970`) — render verbs confirm,
+engine-frame verbs refute; disassembly only. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1034,6 +1035,17 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 25 (M33 wrappers, 2026-10-03): **none of the four is on
+  the boot path**. Whole-text `jal` scan: exact sole callers
+  (sib1–4 ← F1–F4 at `0x00198360`/`0x00197c48`/`0x00197db0`/
+  `0x00197f18`); F-functions indirect-only (zero `jal`, zero data
+  refs). String dumps name USB-printer channels; main's callback is
+  its own chain (`[0x00659EA4]` = `0x001097E8`), its first post came
+  from startup itself (`0x00100210 → 0x00107f08`). Hypothesis: the
+  `0x00587xxx` system is a **print-render pool**, not a frame
+  dispatcher (`docs/reverse-engineering/m33-slice25-lazy-wrappers.md`).
+  Owner-verified: F1 prologue + `jal 0x0019a7f8` + `0x006923e0` ref in
+  disassembly; all three live dumps (callback, printer strings, flag).
 - Slice 24 (M33 heartbeat, 2026-10-03): **the worker thread is
   never created**. Dispatcher region mapped (`0x005878f8` validate/
   wake/join/signal, `0x00587bb0` sleep-loop, `0x00587c08` 10-way
@@ -1294,12 +1306,14 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the lazy-init wrappers
-  (slice 25)**. Slice 24 proved the job system is never built (flag 0,
-  global zeros): find which of the four `0x0019a7xx` lazy wrappers the
-  boot reaches for first — what unparks main / feeds the flag queue —
-  or, once the loop thread exists, who writes `[0x0087E180+0x10]`.
-  M35 pad stays queued (no PADMAN bound at this
+- Next technical milestone work: **the switch case handlers
+  (slice 26)**. Slice 25 reframes the `0x00587xxx` system as a
+  possible print-render pool: identify the 10-way switch's case
+  handlers (`0x00587c08`, table `0x006CE970` — `0x00589678`,
+  `0x00587f88`, `0x00588878`, `0x0058b210`) by disassembly only.
+  Render verbs confirm (heartbeat line closes; main-unpark returns to
+  M32's async-event framing, decision 0023); engine-frame verbs
+  refute. M35 pad stays queued (no PADMAN bound at this
   phase); and the curriculum's remaining units (the OSD configuration
   services, the remaining BIOS services and the jump-table dispatch)
   stay listed in `docs/requirements.md`.
