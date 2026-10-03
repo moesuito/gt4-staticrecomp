@@ -1,16 +1,19 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 13 — the walk designates thread 6's
-node next. Post-fire list slot reads `0x00889f80` (one node tested per
-timer run — correcting the sorted-walk picture); the job protocol is
-exactly three ops (else-branch is an assert); the pump's post-dispatch
-is table-driven but fully dormant without inbound IOP bytes (producer
-hunt ends structurally; `0x005ae090` label corrected). Leg D10 marched
-and saved (`ckpt-1280k.bin`); combined ≈ 1.97e9 vs. ≈ 4.26e9: ~2.3 legs
-to thread 6's firing. Next is slice 14: keep marching (D11+) while the
-originating-bytes question waits behind the retiring timeouts. This is
-the first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 14 — the band swept twice, still
+silent. Legs D11–D13 ran and saved (`ckpt-1380k/1480k/1580k.bin`);
+COUNT wrapped mid-D13 across the full theoretical band with live
+per-frame delivery, yet nothing dispatched. Careful math says an 8M-tick
+window tested every frame cannot be missed — and slice 5's poke fired
+*below* any threshold the same math produces. Verdict: the due test
+alone does not decide firing; the walk's reachability (gate, head,
+overflow branch) is now the question, and slice 7's attribution is
+downgraded to consumption-observed/path-uncertain. Marching pauses
+until a both-directions criterion exists. Next is slice 15: dump the
+head pointer and overflow every leg (plus the firing forecasts are
+withdrawn). This is the first document to read in a new session; it is
+kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -1033,6 +1036,14 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 14 (2026-10-03): **the band swept twice, still silent**.
+  Legs D11–D13 (`ckpt-1380k/1480k/1580k.bin`); COUNT wrapped mid-D13
+  across the full band with live delivery, no dispatch. Careful math
+  says an 8M-tick every-frame window cannot be missed — and the poke
+  fired below any threshold: the due test alone does not decide firing.
+  Walk reachability (gate/head/branch) is the question; slice 7
+  downgraded; forecasts withdrawn; marching paused
+  (`docs/reverse-engineering/m32-slice14-band-swept-twice.md`).
 - M32 slice 13 (2026-10-03): **the walk designates thread 6's node
   next**. Post-fire slot `0x00889f80` (one node tested per run —
   correcting the walk picture); job protocol exactly three ops
@@ -1218,12 +1229,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — march to thread 6's firing
-  (slice 14)**. Slice 13 proved the walk designates one node (now
-  `0x00889f80` → thread 6, ~2.3 legs out) and closed the static corners
-  (three-op protocol, dormant pump chain, originating bytes as the true
-  M32 work behind the timeouts): keep marching from `ckpt-1280k.bin`.
-  M35 pad stays queued (no PADMAN
+- Next technical milestone work: **M32 — settle walk reachability
+  (slice 15)**. Slice 14 proved neither direction fits the due-test
+  story (band swept silently with live delivery; poke fired below
+  threshold): dump the head pointer and overflow every leg to see
+  whether the walk reaches its test at all, and rebuild the firing
+  criterion from what survives. M35 pad stays queued (no PADMAN
   bound at this phase); and the curriculum's remaining units (the OSD
   configuration services, the remaining BIOS services and the
   jump-table dispatch) stay listed in `docs/requirements.md`.
