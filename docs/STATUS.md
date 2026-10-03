@@ -1,15 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 8 — the steady march. Three chained
-100k legs from `ckpt-180k.bin` (all limit-hit, all saved:
-`ckpt-280k/380k/480k.bin`), TIM2 COUNT advancing ~313M per leg with
-identical module-call counts and ±80-step fidelity. Combined time base
-now ≈ 3.82e9 vs. the poke-proven firing neighborhood ≈ 4.26e9: ~1.4
-legs to go, likely firing during leg D5. Next is slice 9: run D4+D5
-watching for the signature (node flags `3 → 0`, waiter readied, COMP
-reprogrammed). This is the first document to read in a new session; it
-is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-03 after M32 slice 9 — the wrap swept the band with no
+firing. Legs D4+D5 ran and saved (`ckpt-580k/680k.bin`); COUNT wrapped
+mid-D5 across the entire theoretical firing band, yet no node
+dispatched, COMP stayed put, all six still wait. Verdict: the trigger
+is delivery phasing, not just level (poke crossed inside a burst, D5
+crossed in a desert); and the 40-minute-scale timeouts cannot be a real
+boot path, so the waits are timeout guards for events the model never
+delivers. Next is slice 10: measure the burst/desert mix, fix the
+unbounded VBlank enqueue if confirmed, and name each wait's real event
+(the 14-leg timeout march demoted to fallback). This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1032,6 +1034,15 @@ documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 9 (2026-10-03): **the wrap swept the band, no firing**.
+  Legs D4+D5 (`ckpt-580k/680k.bin`, limit-hit, saved); COUNT wrapped
+  mid-D5 across the whole theoretical band with no dispatch, COMP
+  untouched. Verdict: delivery phasing, not level (burst vs. desert);
+  the 40-minute timeouts can't be a real boot path, so the waits guard
+  events the model never delivers. Stuck VBlank frame parsed (cause 2,
+  full chain pending); backlog at 463k. Next is slice 10: measure the
+  mix, fix VBlank enqueue if confirmed, name each wait's real event
+  (`docs/reverse-engineering/m32-slice9-wrap-miss.md`).
 - M32 slice 8 (2026-10-03): **the steady march**. Three chained 100k
   legs (`ckpt-280k/380k/480k.bin`, all limit-hit and saved), COUNT
   +~313M per leg, module calls identical (55,987), steps ±80. Combined
@@ -1180,15 +1191,17 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — witness the natural firing
-  (slice 9)**. Slice 8 marched the frontier to `ckpt-480k.bin`
-  (combined ≈ 3.82e9, ~1.4 legs from the firing neighborhood): run legs
-  D4+D5 watching for the signature (node flags `3 → 0`, waiter readied,
-  COMP reprogrammed), then follow whatever the boot does next. M35 pad
-  stays queued (no PADMAN bound at this phase); and the curriculum's
-  remaining units (the OSD configuration services, the remaining BIOS
-  services and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **M32 — unstick deliveries, hunt
+  the events (slice 10)**. Slice 9 proved the firing needs delivery
+  phasing, not just level (wrap swept the band silently; backlog at
+  463k; every leg ends with a never-started VBlank frame), and that
+  40-minute timeouts can't be the boot's path. Slice 10 measures the
+  burst/desert mix exactly, fixes the unbounded VBlank enqueue if
+  confirmed (coalesce like hardware status bits), and names each wait's
+  real completion event. M35 pad stays queued (no PADMAN bound at this
+  phase); and the curriculum's remaining units (the OSD configuration
+  services, the remaining BIOS services and the jump-table dispatch)
+  stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
