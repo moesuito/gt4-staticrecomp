@@ -1,17 +1,16 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 21 - the announcement audit. All 17
-parked threads classified from the checkpoint (5 delay-timeouts, thread
-2 job-hungry, 11 condvar/sleep event-waits): every announcer exists in
-plumbing (dispatcher, engine completions, thread-2 jobs, WakeupThread
-callers at four engine sites) and every one is silent for lack of
-input - the feared sync-without-async gap does not exist. Three
-Unknowns recorded with leads (thread 3's new sleep, thread 9, main
-thread 1 - the last being the M31 question itself). Next is slice 22:
-pick the cheapest originating event to model (main's wait, the
-0x587b double-wake, or pad if a consumer appears). This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 22 — the cheapest event. All three
+candidates adjudicated: main's wait (unknown cost), the frame
+dispatcher (expensive indirect tracing), the stuck SIF0 channel
+(falsified in 2 minutes — MADR/QWC/TADR all zero). Producer fully
+silent (0xb5/0xb5 across the chain) and a 12k mix with zero signals.
+The pick is a fourth option: M33 recon — check whether the engine
+emits graphics packets at all (lively engine vs. confirmed deep park,
+binary answer, cheap). Next is slice 23: instrument DMA/GIF traffic
+and read the pipe. This is the first document to read in a new
+session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -1034,6 +1033,11 @@ Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 22 (2026-10-03): **the cheapest event**. Three candidates
+  adjudicated (main: unknown cost; dispatcher: expensive trace; SIF0:
+  falsified — MADR/QWC/TADR zero). Producer silent (0xb5/0xb5), 12k
+  mix all `0x100`. Pick: M33 recon — does the engine emit packets?
+  (`docs/reverse-engineering/m32-slice22-cheapest-event.md`).
 - M32 slice 21 (2026-10-03): **the announcement audit**. 17 threads
   classified (5 delay-timeouts, thread 2 job-hungry, 11 event-waits);
   every announcer exists and is silent for lack of input — no
@@ -1273,11 +1277,11 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — cheapest originating event
-  (slice 22)**. Slice 21 classified all 17 waiters and negated the
-  announcement gap (every announcer exists, all silent for lack of
-  input): pick the cheapest event to model — main thread 1's wait, the
-  `0x587b` double-wake, or pad if a consumer appears. M35 pad stays
+- Next technical milestone work: **M33 recon — read the pipe
+  (slice 23)**. Slice 22 eliminated the three event candidates and
+  picked the cheapest falsifiable probe: instrument DMA/GIF traffic
+  (temporary) and answer binary — packets flow (alive engine, M31
+  presentational) or pipe dry (confirmed deep park). M35 pad stays
   queued (no PADMAN bound at this phase); and the curriculum's
   remaining units (the OSD configuration services, the remaining BIOS
   services and the jump-table dispatch) stay listed in
