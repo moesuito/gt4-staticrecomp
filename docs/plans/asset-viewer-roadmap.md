@@ -79,4 +79,7 @@ instrumented-boot dumps from the main line.
   `0x499508` NLOOP=6 context — `docs/reverse-engineering/asset-gif-emitter-hunt.md`):
   the static road is the .gpb record grammar; the decisive
   experiments are main-line packet dumps (128 B context at
-  `0x4995D4`, 80 B upload at `0x4A4CD4`).
+  `0x4995D4`, 80 B upload at `0x4A4CD4`, `[obj+0x1C]` writer watch —
+  `docs/reverse-engineering/asset-tex0-data-origins.md`). The scout
+  track is **parked** at its stop rule until slice 27 frees the line;
+  no static road remains.
