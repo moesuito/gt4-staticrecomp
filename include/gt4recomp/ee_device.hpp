@@ -14,6 +14,9 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <span>
+#include <utility>
+#include <vector>
 
 namespace gt4recomp::ee {
 
@@ -32,6 +35,14 @@ public:
 
     // The stored value of one register; zero when never written.
     [[nodiscard]] std::uint32_t register_value(std::uint32_t address) const;
+
+    // A copy of every stored register (address/value, ordered) for
+    // snapshots. Restoring replaces the stored registers wholesale through
+    // plain width-4 writes; MMIO routing is untouched.
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
+    registers_snapshot() const;
+    void restore_registers(
+        std::span<const std::pair<std::uint32_t, std::uint32_t>> entries);
 
     [[nodiscard]] std::uint32_t base() const noexcept;
     [[nodiscard]] std::uint32_t size() const noexcept;
@@ -65,6 +76,14 @@ public:
     [[nodiscard]] std::uint32_t register_value(std::uint32_t address) const;
     [[nodiscard]] std::uint32_t base() const noexcept;
     [[nodiscard]] std::uint32_t size() const noexcept;
+
+    // Snapshot passthrough to the channel's bank. Restoring never fires a
+    // completion: it writes the bank's storage directly, bypassing the
+    // start-bit behavior of a live write.
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
+    registers_snapshot() const;
+    void restore_registers(
+        std::span<const std::pair<std::uint32_t, std::uint32_t>> entries);
 
 private:
     [[nodiscard]] std::uint32_t read_register(std::uint32_t address,

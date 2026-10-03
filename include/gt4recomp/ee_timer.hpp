@@ -17,6 +17,9 @@
 #include "gt4recomp/ee_state.hpp"
 
 #include <cstdint>
+#include <span>
+#include <utility>
+#include <vector>
 
 namespace gt4recomp::ee {
 
@@ -45,6 +48,12 @@ public:
 
     // The stored value of one register; zero when never written.
     [[nodiscard]] std::uint32_t register_value(std::uint32_t address) const;
+
+    // Snapshot passthrough to the timer's bank (see RegisterBank).
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
+    registers_snapshot() const;
+    void restore_registers(
+        std::span<const std::pair<std::uint32_t, std::uint32_t>> entries);
 
 private:
     RegisterBank registers_{window_base, window_size};

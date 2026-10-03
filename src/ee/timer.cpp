@@ -20,4 +20,14 @@ std::uint32_t TimerUnit::register_value(std::uint32_t address) const {
     return registers_.register_value(address);
 }
 
+std::vector<std::pair<std::uint32_t, std::uint32_t>>
+TimerUnit::registers_snapshot() const {
+    return registers_.registers_snapshot();
+}
+
+void TimerUnit::restore_registers(
+    std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
+    registers_.restore_registers(entries);
+}
+
 } // namespace gt4recomp::ee

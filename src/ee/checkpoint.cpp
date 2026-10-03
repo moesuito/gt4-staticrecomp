@@ -182,4 +182,53 @@ void restore_memory(GuestMemory& memory, const Snapshot& snapshot) {
     }
 }
 
+std::vector<std::uint8_t> save_bank_section(
+    const std::vector<BankRegisters>& banks) {
+    std::vector<std::uint8_t> out;
+    for (const char letter : {'G', 'T', '4', 'B', 'A', 'N', 'K', '1'}) {
+        out.push_back(static_cast<std::uint8_t>(letter));
+    }
+    if (banks.size() > 0xFFFFFFFFu) {
+        throw std::runtime_error("The bank section holds too many banks");
+    }
+    put_u32(out, static_cast<std::uint32_t>(banks.size()));
+    for (const BankRegisters& bank : banks) {
+        if (bank.size() > 0xFFFFFFFFu) {
+            throw std::runtime_error("The bank section holds too many entries");
+        }
+        put_u32(out, static_cast<std::uint32_t>(bank.size()));
+        for (const auto& [address, value] : bank) {
+            put_u32(out, address);
+            put_u32(out, value);
+        }
+    }
+    return out;
+}
+
+std::vector<BankRegisters> load_bank_section(
+    std::span<const std::uint8_t> bytes) {
+    Reader reader{bytes, 0};
+    constexpr char magic[8] = {'G', 'T', '4', 'B', 'A', 'N', 'K', '1'};
+    for (const char letter : magic) {
+        if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
+            throw std::runtime_error("The bank section has a bad magic");
+        }
+    }
+    std::vector<BankRegisters> banks;
+    const std::uint32_t bank_count = reader.take_u32();
+    for (std::uint32_t bank = 0; bank < bank_count; ++bank) {
+        BankRegisters entries;
+        const std::uint32_t entry_count = reader.take_u32();
+        for (std::uint32_t entry = 0; entry < entry_count; ++entry) {
+            const std::uint32_t address = reader.take_u32();
+            entries.emplace_back(address, reader.take_u32());
+        }
+        banks.push_back(std::move(entries));
+    }
+    if (reader.offset != reader.bytes.size()) {
+        throw std::runtime_error("The bank section has trailing bytes");
+    }
+    return banks;
+}
+
 } // namespace gt4recomp::ee

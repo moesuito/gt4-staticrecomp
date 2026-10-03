@@ -64,6 +64,19 @@ std::uint32_t RegisterBank::size() const noexcept {
     return size_;
 }
 
+std::vector<std::pair<std::uint32_t, std::uint32_t>>
+RegisterBank::registers_snapshot() const {
+    return {registers_.begin(), registers_.end()};
+}
+
+void RegisterBank::restore_registers(
+    std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
+    registers_.clear();
+    for (const auto& [address, value] : entries) {
+        write_register(address, 4, value);
+    }
+}
+
 DmaChannel::DmaChannel(std::uint32_t base, std::uint32_t size,
                        std::uint32_t cause,
                        std::function<void(std::uint32_t)> raise)
@@ -94,6 +107,18 @@ std::uint32_t DmaChannel::base() const noexcept {
 
 std::uint32_t DmaChannel::size() const noexcept {
     return bank_.size();
+}
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>>
+DmaChannel::registers_snapshot() const {
+    return bank_.registers_snapshot();
+}
+
+void DmaChannel::restore_registers(
+    std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
+    // Straight into the bank's storage: a live write would complete a
+    // transfer whose start bit is set, which a restore must never fire.
+    bank_.restore_registers(entries);
 }
 
 std::uint32_t DmaChannel::read_register(std::uint32_t address,

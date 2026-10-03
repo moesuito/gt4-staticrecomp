@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace gt4recomp::ee {
@@ -53,5 +54,17 @@ struct Snapshot {
 // rebuilds the geometry identically and restores device registers
 // separately.
 void restore_memory(GuestMemory& memory, const Snapshot& snapshot);
+
+// Device banks in the caller's fixed order (the gt4boot wiring uses
+// map_into order): each bank contributes its stored registers.
+using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+
+// One section holding every bank: magic "GT4BANK1", u32 bank count, then
+// per bank {u32 entry count, per entry {u32 address, u32 value}}. Anything
+// malformed (magic, truncation, trailing bytes) throws std::runtime_error.
+[[nodiscard]] std::vector<std::uint8_t> save_bank_section(
+    const std::vector<BankRegisters>& banks);
+[[nodiscard]] std::vector<BankRegisters> load_bank_section(
+    std::span<const std::uint8_t> bytes);
 
 } // namespace gt4recomp::ee
