@@ -148,8 +148,11 @@ ServiceOutcome Driver::handle_syscall(std::uint32_t pc, std::uint32_t service,
     return outcome;
 }
 
-RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
-    RunResult result;
+bool Driver::pending_transfer() const noexcept {
+    return interpreter_.pending_transfer();
+}
+
+RunResult Driver::run(ServiceTable& services, const RunOptions& options) {    RunResult result;
     while (true) {
         if (result.stats.module_calls + result.stats.interpreted_steps
             >= options.step_limit) {
