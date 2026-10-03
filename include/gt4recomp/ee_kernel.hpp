@@ -286,6 +286,8 @@ public:
     [[nodiscard]] std::uint32_t current_thread_id() const noexcept;
     [[nodiscard]] const std::vector<KernelThread>& threads() const noexcept;
     [[nodiscard]] const std::vector<KernelSemaphore>& semaphores() const noexcept;
+    // The SIF RPC servers the game has bound, sorted by sid.
+    [[nodiscard]] std::vector<std::uint32_t> sif_server_sids() const;
     [[nodiscard]] const std::vector<KernelInterruptHandler>& interrupt_handlers() const noexcept;
     [[nodiscard]] const std::vector<KernelInterruptHandler>& dmac_handlers() const noexcept;
     // The guest handler a SetSyscall installed for the number, or zero.

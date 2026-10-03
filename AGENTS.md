@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50 plus M32 slice 1 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -289,10 +289,13 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   effect-free; SSUP unasked; handler inventory without a wakeup path):
   the stop needs originating traffic only milestone work provides. CTest
   40/40 and Python 73 (67 run, 6 skip).
-- Next: M32 async IOP or M35 pad — **the first originating traffic**:
-  Slice 50 mapped the SIF pump (0x005b0e30), its queue (0x886818) and
-  dispatcher (0x005ae090) awaiting real inbound bytes; start whichever
-  maps cheaper. The
+  M32 slice 1 then inventories the 24 bound SIF servers (no PADMAN, so
+  M35 waits), maps the arrival path (provably empty pump queue, SIFCMD
+  table, thread-2 dispatch loop) and frames the async work in decision
+  0023; `--threads` lists SIF sids permanently.
+- Next: M32 async IOP — **the first originating traffic**:
+  Slice 2 identifies thread 2's job source (argument block + sema-11
+  signaler), then slice 3 delivers the first originating packet. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

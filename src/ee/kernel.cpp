@@ -253,6 +253,16 @@ const std::vector<KernelSemaphore>& Kernel::semaphores() const noexcept {
     return semaphores_;
 }
 
+std::vector<std::uint32_t> Kernel::sif_server_sids() const {
+    std::vector<std::uint32_t> sids;
+    sids.reserve(sif_rpc_servers_.size());
+    for (const auto& [sid, server] : sif_rpc_servers_) {
+        (void)server;
+        sids.push_back(sid);
+    }
+    return sids;
+}
+
 const std::vector<KernelInterruptHandler>& Kernel::interrupt_handlers() const noexcept {
     return interrupt_handlers_;
 }

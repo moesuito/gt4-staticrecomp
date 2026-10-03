@@ -1,17 +1,16 @@
 # Project status
 
-Updated 2026-10-04 after M30 slice 50 — the smallest stimulus: nothing
-deliverable wakes it. One-shot INTC 0/5 injections end bit-identical
-(buried behind the queue, and both handlers are device acks by code
-reading); the SSUP nonzero answer is never asked (no SIF traffic in the
-final leg); the full handler inventory (VBlank accounting with empty
-chain, timer accounting, GS/VIF1 acks, SIF pump over an empty queue)
-contains no wakeup path. The stop needs originating traffic only
-milestone work provides (M32 async IOP from the mapped pump/queue/
-dispatcher, or M35 pad). No model change. CTest 40/40 and Python 73
-(67 run, 6 skip). This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-03 after M32 slice 1 — the server inventory and the
+arrival path. The 243.7M stop binds 24 SIF servers (model fully answers
+3); no PADMAN is bound, so pad has no consumer at this phase and M35
+waits on game progress. The pump queue is provably empty ([0x886818]
+mirrors to 0x886740, count byte 0); thread 2 is a semaphore-gated
+dispatch loop (entry 0x005ae9a0, WaitSema on sema 11). Decision 0023
+frames M32: next is thread 2's job source (argument block + sema-11
+signaler), then the first originating packet. `gt4boot --threads` now
+lists bound SIF sids permanently. This is the first document to read in
+a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -1034,6 +1033,16 @@ documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 1 (2026-10-03): **the server inventory and the arrival
+  path**. From the 243.7M checkpoint: 24 SIF servers bound (16 custom +
+  8 system; model fully answers PCDV, PRTS and the fileio open); no
+  PADMAN bound, so M35 waits on game progress, not model work. The pump
+  queue is provably empty (mirror alias resolved by dump); the SIFCMD
+  table and thread 2's dispatch loop are mapped (decision 0023 frames
+  the async work). `gt4boot --threads` lists bound SIF sids permanently
+  (`Kernel::sif_server_sids()`, unit-tested)
+  (`docs/reverse-engineering/m32-slice1-server-inventory.md`,
+  `docs/decisions/0023-async-iop-framing.md`).
 - M30 slice 50 (2026-10-04): **the smallest stimulus — nothing
   deliverable wakes it**. One-shot INTC 0/5 injections end bit-identical
   (buried behind the queue, and both handlers are device acks by code
@@ -1111,15 +1120,16 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 async IOP or M35 pad — the first
-  originating traffic**. Slice 50 exhausted deliverable stimuli (INTC
-  0/5 buried and effect-free; SSUP unasked; handler inventory without a
-  wakeup path): the machine needs IOP→EE bytes into the SIF pump's queue
-  (0x886818 → dispatcher 0x005ae090) or pad reads worth polling. Start
-  whichever maps cheaper; and the curriculum's remaining units (the OSD
-  configuration services, a counting timer with interrupt delivery, the
-  remaining BIOS services and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **M32 async IOP — the first
+  originating traffic**. Slice 1 inventoried the 24 bound servers and
+  mapped the arrival path (provably empty pump queue, SIFCMD table,
+  thread-2 dispatch loop); decision 0023 scopes the work. Slice 2
+  identifies thread 2's job source (argument block + sema-11 signaler),
+  then slice 3 delivers the first originating packet. M35 pad stays
+  queued (no PADMAN bound at this phase); and the curriculum's
+  remaining units (the OSD configuration services, a counting timer
+  with interrupt delivery, the remaining BIOS services and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

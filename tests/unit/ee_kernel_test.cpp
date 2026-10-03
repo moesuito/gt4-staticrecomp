@@ -645,6 +645,9 @@ int main() {
               "the model IOP answered the RPC bind");
         check(kernel.pending_interrupts() == 1,
               "the bind reply queued its SIF0 interrupt");
+        check(kernel.sif_server_sids().size() == 1
+                  && kernel.sif_server_sids()[0] == 0x80000001u,
+              "the bound server is listed in the server inventory");
 
         // A reset command records the image and completes the modeled
         // reboot by announcing the fully booted flag set.

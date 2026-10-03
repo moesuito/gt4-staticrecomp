@@ -740,6 +740,13 @@ int wmain(int argc, wchar_t* argv[]) {
                           << std::setw(8) << registration.handler << std::dec
                           << std::setfill(' ') << '\n';
             }
+            // The SIF RPC servers the game has bound: the inventory the
+            // async-IOP work starts from.
+            for (const std::uint32_t sid : driver_kernel.sif_server_sids()) {
+                std::cout << "sif server: sid 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << sid << std::dec
+                          << std::setfill(' ') << '\n';
+            }
             // The DMA channel control registers: a channel with the STR bit
             // (0x100) still set was started and never completed.
             const auto print_channel = [](const char* name, std::uint32_t chcr) {
