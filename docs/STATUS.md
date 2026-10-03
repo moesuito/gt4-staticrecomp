@@ -1,17 +1,16 @@
 # Project status
 
-Updated 2026-10-03 after slice 26 (M33 switch cases) — an honest
-neither-confirm-nor-refute: the 10-way switch's handlers are
-domain-neutral plumbing (request validation, break-trap fan-out
-`0x09–0x2D+`, thread sync/priority, FlushCache, MMI copies; three
-materialized addresses in the whole complex, zero strings/devices/
-graphics regs — switch head and table base owner-verified in
-disassembly). The narrowed claim stands: a generic pool whose only
-observed first-user is printer init. Next is slice 27: one short leg
-with a temporary write-watch on the flag word and the loop request
-slot — any poster names itself by writer pc; continued silence
-returns main-unpark to M32's async-event framing (decision 0023).
-This is the
+Updated 2026-10-03 after slice 27 (M33 write-watch) — total
+silence with a verified probe: zero stores to main's flag word and
+the loop request slot over 2,000 services (selftest PASS over all
+five store paths incl. KSEG0 alias; instrument fully reverted,
+hygiene owner-verified, stop state re-proven by an owner plain leg).
+**M33 recon is closed as answered** (dry pipe → unbuilt job system
+→ printer-owned feeders → neutral handlers → silent watch): no
+originating traffic exists in the parked machine. Next is slice 28:
+the main line serves the asset track's specified dumps (Hook A
+`0x4B36E0` buffers, 128 B context packet, 80 B upload packet,
+`[obj+0x1C]` writer) — bounded legs that unblock the viewer. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1036,6 +1035,13 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 27 (M33 watch, 2026-10-03): **total silence, probe
+  verified**. Zero stores to `[0x006207F4]` / `[0x0087E190]` over
+  2,000 services (selftest PASS on all five paths; 152 lines
+  reverted; hygiene + stop state owner-verified). **M33 recon closed
+  as answered** — the park is total; only milestone traffic
+  (decision 0023) can break it
+  (`docs/reverse-engineering/m33-slice27-write-watch.md`).
 - Slice 26 (M33 cases, 2026-10-03): **neither confirm nor
   refute — domain-neutral plumbing**. Case list from image bytes;
   handlers do validation + break-trap fan-out + sync/priority +
@@ -1316,14 +1322,13 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the write-watch leg
-  (slice 27)**. Slice 26 closed content-typing (handlers are
-  domain-neutral): run one short leg with a temporary write-watch on
-  the flag word `[0x006207F4]` and the loop request slot
-  `[0x0087E180+0x10]` — any poster at all names itself by writer pc;
-  continued silence returns main-unpark to M32's async-event framing
-  (decision 0023), where originating IOP/pad/USB traffic is already
-  the ranked answer. M35 pad stays queued (no PADMAN bound at this
+- Next technical milestone work: **asset-dump legs
+  (slice 28)**. M33 closed (silent watch, owner-verified): the main
+  line now serves the viewer track's specified dumps — Hook A
+  (`0x4B36E0` buffer log), the 128 B context packet (`0x4995D4`),
+  the 80 B upload packet (`0x4A4CD4`), the `[obj+0x1C]` writer watch
+  — bounded instrument legs; afterwards, milestone event work per
+  decision 0023. M35 pad stays queued (no PADMAN bound at this
   phase); and the curriculum's remaining units (the OSD configuration
   services, the remaining BIOS services and the jump-table dispatch)
   stay listed in `docs/requirements.md`.

@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50, M32 slices 1–22, M33 slices 23–26 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50, M32 slices 1–22, M33 slices 23–27 BUILD/VERIFY complete (M33 recon closed as answered); decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,10 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **the write-watch leg (slice 27)**:
-  slice 26 closed content-typing (domain-neutral handlers — switch
-  head owner-verified); one short leg watches the flag word and the
-  loop request slot for any poster. The
+- Next: **asset-dump legs (slice 28)**:
+  M33 closed as answered (silent watch, owner-verified); the main
+  line serves the viewer track's specified dumps in bounded
+  instrument legs, then milestone event work per decision 0023. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
