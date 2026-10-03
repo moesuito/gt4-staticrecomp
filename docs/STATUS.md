@@ -1,16 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after slice 25 (M33 lazy wrappers) — none of
-the four wrappers is on the boot path: each has exactly one direct
-caller (F1–F4, themselves indirect-only), and the string dumps name
-the domain USB-printer (`MPhotoRendererFace`, `printout`,
-`cleaning`, `nozzleCheck` — all owner-verified live, plus
-`[0x00659EA4]` = `0x001097E8`, main's own sleep chain). New
-hypothesis: the `0x00587xxx` system is a print-render pool, not a
-frame dispatcher — the "per-frame heartbeat" may never have existed.
-Next is slice 26: test it through the switch's case handlers
-(`0x00587c08`, table `0x006CE970`) — render verbs confirm,
-engine-frame verbs refute; disassembly only. This is the
+Updated 2026-10-03 after slice 26 (M33 switch cases) — an honest
+neither-confirm-nor-refute: the 10-way switch's handlers are
+domain-neutral plumbing (request validation, break-trap fan-out
+`0x09–0x2D+`, thread sync/priority, FlushCache, MMI copies; three
+materialized addresses in the whole complex, zero strings/devices/
+graphics regs — switch head and table base owner-verified in
+disassembly). The narrowed claim stands: a generic pool whose only
+observed first-user is printer init. Next is slice 27: one short leg
+with a temporary write-watch on the flag word and the loop request
+slot — any poster names itself by writer pc; continued silence
+returns main-unpark to M32's async-event framing (decision 0023).
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1035,6 +1036,15 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 26 (M33 cases, 2026-10-03): **neither confirm nor
+  refute — domain-neutral plumbing**. Case list from image bytes;
+  handlers do validation + break-trap fan-out + sync/priority +
+  FlushCache + MMI; only three addresses materialized in the complex
+  (job global, jump table, control struct). Narrowed claim stands
+  (generic pool, printer init the only observed first-user)
+  (`docs/reverse-engineering/m33-slice26-switch-cases.md`).
+  Owner-verified: switch head (`< 10` gate, table `0x006CE970`,
+  `jr`-dispatch, case-0 inline `jal 0x00589678`).
 - Slice 25 (M33 wrappers, 2026-10-03): **none of the four is on
   the boot path**. Whole-text `jal` scan: exact sole callers
   (sib1–4 ← F1–F4 at `0x00198360`/`0x00197c48`/`0x00197db0`/
@@ -1306,14 +1316,14 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the switch case handlers
-  (slice 26)**. Slice 25 reframes the `0x00587xxx` system as a
-  possible print-render pool: identify the 10-way switch's case
-  handlers (`0x00587c08`, table `0x006CE970` — `0x00589678`,
-  `0x00587f88`, `0x00588878`, `0x0058b210`) by disassembly only.
-  Render verbs confirm (heartbeat line closes; main-unpark returns to
-  M32's async-event framing, decision 0023); engine-frame verbs
-  refute. M35 pad stays queued (no PADMAN bound at this
+- Next technical milestone work: **the write-watch leg
+  (slice 27)**. Slice 26 closed content-typing (handlers are
+  domain-neutral): run one short leg with a temporary write-watch on
+  the flag word `[0x006207F4]` and the loop request slot
+  `[0x0087E180+0x10]` — any poster at all names itself by writer pc;
+  continued silence returns main-unpark to M32's async-event framing
+  (decision 0023), where originating IOP/pad/USB traffic is already
+  the ranked answer. M35 pad stays queued (no PADMAN bound at this
   phase); and the curriculum's remaining units (the OSD configuration
   services, the remaining BIOS services and the jump-table dispatch)
   stay listed in `docs/requirements.md`.
