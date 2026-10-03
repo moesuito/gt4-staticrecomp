@@ -239,6 +239,15 @@ public:
     // copied. Exposed for unit tests.
     [[nodiscard]] std::uint32_t answer_prts_copy(GuestState& state,
                                                  std::uint32_t request);
+    // Snapshots the whole kernel state (threads with their contexts,
+    // semaphores, syscall patches, OSD, deferred calls, SIF/RPC tables,
+    // clocks, disc handles, PRTS blocks with their copy-out cursors, and
+    // every counter) into a versioned blob; load restores it. Anything
+    // malformed throws. Pointers are policy, not state: the disc sources
+    // and the service table are relinked identically on both sides and
+    // never serialized. Exposed for unit tests and the checkpoint tooling.
+    [[nodiscard]] std::vector<std::uint8_t> save_kernel_state() const;
+    void load_kernel_state(std::span<const std::uint8_t> bytes);
     // Answers the game's CD driver volume registration (sid 0x50434456,
     // RPC 2): the request is {block, checksum}, where the checksum is the
     // library's index-weighted byte sum (0x00548D20) over the 0x800-byte

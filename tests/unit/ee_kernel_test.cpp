@@ -934,6 +934,182 @@ int main() {
               "a machine without a disc answers no handle");
     }
 
+    // The kernel snapshot round-trips every populated structure and keeps
+    // serving from it (checkpoint slice C2).
+    {
+        class FakeBlocks final : public gt4recomp::DiscByteSource {
+        public:
+            [[nodiscard]] std::uint64_t size() const override {
+                return 64 * 2048;
+            }
+            void read(std::uint64_t offset,
+                      std::span<std::uint8_t> destination) const override {
+                std::fill(destination.begin(), destination.end(), 0);
+                if (!destination.empty()) {
+                    destination[0] = static_cast<std::uint8_t>(offset / 2048);
+                }
+            }
+        };
+
+        const auto contexts_equal = [](const RegisterContext& left,
+                                       const RegisterContext& right) {
+            return left.gpr == right.gpr && left.gpr_high == right.gpr_high
+                && left.fpr == right.fpr && left.hi == right.hi
+                && left.lo == right.lo && left.hi1 == right.hi1
+                && left.lo1 == right.lo1
+                && left.fpu_accumulator == right.fpu_accumulator
+                && left.fpu_control == right.fpu_control
+                && left.shift_amount_cache == right.shift_amount_cache
+                && left.cp0 == right.cp0 && left.vu0_vf == right.vu0_vf
+                && left.vu0_vi == right.vu0_vi
+                && left.vu0_clip_flag == right.vu0_clip_flag
+                && left.vu0_acc == right.vu0_acc
+                && left.vu0_mac_flag == right.vu0_mac_flag
+                && left.vu0_status_flag == right.vu0_status_flag
+                && left.pc == right.pc;
+        };
+        const auto threads_equal = [&](const Kernel& left, const Kernel& right) {
+            if (left.threads().size() != right.threads().size()) {
+                return false;
+            }
+            for (std::size_t index = 0; index < left.threads().size(); ++index) {
+                const KernelThread& a = left.threads()[index];
+                const KernelThread& b = right.threads()[index];
+                if (a.id != b.id || a.status != b.status
+                    || a.function != b.function || a.stack != b.stack
+                    || a.stack_size != b.stack_size || a.gp != b.gp
+                    || a.initial_priority != b.initial_priority
+                    || a.current_priority != b.current_priority
+                    || a.attr != b.attr || a.option != b.option
+                    || a.wait_type != b.wait_type || a.wait_id != b.wait_id
+                    || a.wakeup_count != b.wakeup_count
+                    || !contexts_equal(a.context, b.context)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        FakeBlocks blocks;
+        kernel.set_disc_sectors(&blocks);
+        check(setup_root(kernel, state), "snapshot root ready");
+        check(start_second_thread(kernel, state, 8, 0), "snapshot worker ready");
+        write_sema_struct(state, 2, 1);
+        state.write_gpr32(4, sema_struct);
+        check(kernel.create_sema(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 3,
+              "snapshot semaphore ready");
+        state.write_gpr32(4, 3);
+        check(kernel.signal_sema(state) == ServiceOutcome::Handled,
+              "snapshot semaphore signaled");
+        state.write_gpr32(4, 0x83);
+        state.write_gpr32(5, 0x5B73C8);
+        check(kernel.set_syscall(state) == ServiceOutcome::Handled,
+              "snapshot patch ready");
+        state.write_gpr32(4, 2);
+        state.write_gpr32(5, 0x00ABCDEF);
+        state.write_gpr32(7, 0x1111);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 1,
+              "snapshot interrupt handler ready");
+        state.write_gpr32(4, 1);
+        state.write_gpr32(5, 0x00ABCDF0);
+        state.write_gpr32(7, 0x2222);
+        check(kernel.add_dmac_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 2,
+              "snapshot DMA handler ready");
+        state.memory().write_word(thread_struct, 0x12345678);
+        state.write_gpr32(4, thread_struct);
+        check(kernel.set_osd_config(state) == ServiceOutcome::Handled
+                  && kernel.osd_config() == 0x12345678u,
+              "snapshot OSD value ready");
+        constexpr std::uint32_t request = 0x00100A00;
+        constexpr std::uint32_t first_chunk = 0x00100B00;
+        constexpr std::uint32_t next_chunk = 0x00100C00;
+        state.memory().write_word(request + 0, 3);
+        state.memory().write_word(request + 4, 0x40);
+        state.memory().write_word(request + 8, 0x8000);
+        const std::uint32_t handle = kernel.answer_prts_read(state, request);
+        check(handle != 0, "snapshot block ready");
+        state.memory().write_word(request + 0, handle);
+        state.memory().write_word(request + 4, first_chunk);
+        state.memory().write_word(request + 8, 0x10);
+        check(kernel.answer_prts_copy(state, request) == 0x10
+                  && state.memory().read_byte(first_chunk) == 3,
+              "snapshot block partly consumed");
+
+        const std::vector<std::uint8_t> blob = kernel.save_kernel_state();
+        Kernel restored;
+        restored.load_kernel_state(blob);
+        check(threads_equal(kernel, restored), "the threads restore");
+        check(kernel.semaphores().size() == restored.semaphores().size()
+                  && kernel.semaphores()[0].count
+                         == restored.semaphores()[0].count,
+              "the semaphores restore");
+        check(kernel.patched_handler(0x83) == restored.patched_handler(0x83)
+                  && restored.patched_handler(0x83) == 0x5B73C8u,
+              "the syscall patch restores");
+        check(kernel.osd_config() == restored.osd_config()
+                  && kernel.interrupt_handlers().size()
+                         == restored.interrupt_handlers().size()
+                  && kernel.dmac_handlers().size()
+                         == restored.dmac_handlers().size()
+                  && kernel.pending_interrupts()
+                         == restored.pending_interrupts()
+                  && kernel.deferred_call_count()
+                         == restored.deferred_call_count()
+                  && kernel.current_thread_id() == restored.current_thread_id(),
+              "handlers, counts and ids restore");
+        check(restored.save_kernel_state() == blob,
+              "save-load-save is byte identical");
+        // The restored block keeps serving from its cursor, not from zero:
+        // pre-fill the buffer so zeros prove the copy ran.
+        for (std::uint32_t offset = 0; offset < 0x10; ++offset) {
+            state.memory().write_byte(next_chunk + offset, 0xFF);
+        }
+        state.memory().write_word(request + 0, handle);
+        state.memory().write_word(request + 4, next_chunk);
+        state.memory().write_word(request + 8, 0x10);
+        check(restored.answer_prts_copy(state, request) == 0x10
+                  && state.memory().read_byte(next_chunk) == 0,
+              "the restored block continues from its cursor");
+        std::vector<std::uint8_t> bad_magic = blob;
+        bad_magic[0] = 'X';
+        check([&] {
+                  try {
+                      restored.load_kernel_state(bad_magic);
+                  } catch (const std::runtime_error&) {
+                      return true;
+                  }
+                  return false;
+              }(),
+              "a bad kernel magic throws");
+        check([&] {
+                  try {
+                      restored.load_kernel_state({blob.data(), 10});
+                  } catch (const std::runtime_error&) {
+                      return true;
+                  }
+                  return false;
+              }(),
+              "a truncated kernel snapshot throws");
+        std::vector<std::uint8_t> trailing = blob;
+        trailing.push_back(0);
+        check([&] {
+                  try {
+                      restored.load_kernel_state(trailing);
+                  } catch (const std::runtime_error&) {
+                      return true;
+                  }
+                  return false;
+              }(),
+              "trailing kernel bytes throw");
+    }
+
     // The volume registration (RPC 2) and the volume query (RPC 4): the
     // model recomputes the library's checksum over the same block it serves
     // and answers the registered volume's "volume space size" (decision

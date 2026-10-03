@@ -1487,6 +1487,486 @@ std::uint32_t Kernel::answer_prts_copy(GuestState& state,
     return copy_size;
 }
 
+namespace {
+
+// The snapshot codec twins the one in checkpoint.cpp (same put_u32 and
+// Reader shape): both must keep the RegisterContext field order the
+// ee_checkpoint header documents, which the unit test below pins through
+// a context round-trip on each side.
+void put_u32(std::vector<std::uint8_t>& out, std::uint32_t value) {
+    out.push_back(static_cast<std::uint8_t>(value & 0xFFu));
+    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFFu));
+    out.push_back(static_cast<std::uint8_t>((value >> 16) & 0xFFu));
+    out.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFFu));
+}
+
+void put_u64(std::vector<std::uint8_t>& out, std::uint64_t value) {
+    put_u32(out, static_cast<std::uint32_t>(value & 0xFFFFFFFFull));
+    put_u32(out, static_cast<std::uint32_t>((value >> 32) & 0xFFFFFFFFull));
+}
+
+void put_context(std::vector<std::uint8_t>& out, const RegisterContext& context) {
+    for (const std::uint64_t value : context.gpr) {
+        put_u64(out, value);
+    }
+    for (const std::uint64_t value : context.gpr_high) {
+        put_u64(out, value);
+    }
+    for (const std::uint32_t value : context.fpr) {
+        put_u32(out, value);
+    }
+    put_u64(out, context.hi);
+    put_u64(out, context.lo);
+    put_u64(out, context.hi1);
+    put_u64(out, context.lo1);
+    put_u32(out, context.fpu_accumulator);
+    put_u32(out, context.fpu_control);
+    put_u32(out, context.shift_amount_cache);
+    for (const std::uint32_t value : context.cp0) {
+        put_u32(out, value);
+    }
+    for (const auto& lanes : context.vu0_vf) {
+        for (const std::uint32_t lane : lanes) {
+            put_u32(out, lane);
+        }
+    }
+    for (const std::uint32_t value : context.vu0_vi) {
+        put_u32(out, value);
+    }
+    put_u32(out, context.vu0_clip_flag);
+    for (const std::uint32_t lane : context.vu0_acc) {
+        put_u32(out, lane);
+    }
+    put_u32(out, context.vu0_mac_flag);
+    put_u32(out, context.vu0_status_flag);
+    put_u32(out, context.pc);
+}
+
+struct Reader {
+    std::span<const std::uint8_t> bytes;
+    std::size_t offset = 0;
+
+    std::uint8_t take_byte() {
+        if (offset >= bytes.size()) {
+            throw std::runtime_error("The kernel snapshot ends mid-value");
+        }
+        return bytes[offset++];
+    }
+
+    std::uint32_t take_u32() {
+        const std::uint32_t low = take_byte();
+        const std::uint32_t mid_low = take_byte();
+        const std::uint32_t mid_high = take_byte();
+        const std::uint32_t high = take_byte();
+        return low | (mid_low << 8) | (mid_high << 16) | (high << 24);
+    }
+
+    std::uint64_t take_u64() {
+        const std::uint64_t low = take_u32();
+        const std::uint64_t high = take_u32();
+        return low | (high << 32);
+    }
+
+    RegisterContext take_context() {
+        RegisterContext context;
+        for (std::uint64_t& value : context.gpr) {
+            value = take_u64();
+        }
+        for (std::uint64_t& value : context.gpr_high) {
+            value = take_u64();
+        }
+        for (std::uint32_t& value : context.fpr) {
+            value = take_u32();
+        }
+        context.hi = take_u64();
+        context.lo = take_u64();
+        context.hi1 = take_u64();
+        context.lo1 = take_u64();
+        context.fpu_accumulator = take_u32();
+        context.fpu_control = take_u32();
+        context.shift_amount_cache = take_u32();
+        for (std::uint32_t& value : context.cp0) {
+            value = take_u32();
+        }
+        for (auto& lanes : context.vu0_vf) {
+            for (std::uint32_t& lane : lanes) {
+                lane = take_u32();
+            }
+        }
+        for (std::uint32_t& value : context.vu0_vi) {
+            value = take_u32();
+        }
+        context.vu0_clip_flag = take_u32();
+        for (std::uint32_t& lane : context.vu0_acc) {
+            lane = take_u32();
+        }
+        context.vu0_mac_flag = take_u32();
+        context.vu0_status_flag = take_u32();
+        context.pc = take_u32();
+        return context;
+    }
+};
+
+} // namespace
+
+std::vector<std::uint8_t> Kernel::save_kernel_state() const {
+    std::vector<std::uint8_t> out;
+    for (const char letter : {'G', 'T', '4', 'K', 'E', 'R', 'N', '1'}) {
+        out.push_back(static_cast<std::uint8_t>(letter));
+    }
+    const auto put_size = [&out](std::size_t count) {
+        if (count > 0xFFFFFFFFu) {
+            throw std::runtime_error("The kernel snapshot holds too many entries");
+        }
+        put_u32(out, static_cast<std::uint32_t>(count));
+    };
+    put_size(threads_.size());
+    for (const KernelThread& thread : threads_) {
+        put_u32(out, thread.id);
+        put_u32(out, thread.status);
+        put_u32(out, thread.function);
+        put_u32(out, thread.stack);
+        put_u32(out, thread.stack_size);
+        put_u32(out, thread.gp);
+        put_u32(out, static_cast<std::uint32_t>(thread.initial_priority));
+        put_u32(out, static_cast<std::uint32_t>(thread.current_priority));
+        put_u32(out, thread.attr);
+        put_u32(out, thread.option);
+        put_u32(out, thread.wait_type);
+        put_u32(out, thread.wait_id);
+        put_u32(out, thread.wakeup_count);
+        put_context(out, thread.context);
+    }
+    put_size(semaphores_.size());
+    for (const KernelSemaphore& semaphore : semaphores_) {
+        put_u32(out, semaphore.id);
+        put_u32(out, static_cast<std::uint32_t>(semaphore.count));
+        put_u32(out, static_cast<std::uint32_t>(semaphore.max_count));
+        put_u32(out, static_cast<std::uint32_t>(semaphore.init_count));
+        put_u32(out, static_cast<std::uint32_t>(semaphore.wait_threads));
+        put_u32(out, semaphore.attr);
+        put_u32(out, semaphore.option);
+    }
+    put_u32(out, next_thread_id_);
+    put_u32(out, next_semaphore_id_);
+    put_u32(out, current_thread_id_);
+    put_u32(out, syscall_table_ready_ ? 1u : 0u);
+    for (const std::uint32_t entry : patched_handlers_) {
+        put_u32(out, entry);
+    }
+    put_u32(out, osd_config_);
+    for (const std::uint8_t byte : osd_config2_) {
+        out.push_back(byte);
+    }
+    put_u64(out, gs_imr_);
+    put_size(deferred_calls_.size());
+    for (const DeferredCall& call : deferred_calls_) {
+        put_u32(out, call.kind == DeferredCall::Kind::Interrupt ? 1u : 0u);
+        put_u32(out, call.resume_pc);
+        put_u32(out, call.caller_ra);
+        put_u32(out, call.thread_id);
+        put_u32(out, call.cause);
+        put_size(call.handlers.size());
+        for (const std::uint32_t handler : call.handlers) {
+            put_u32(out, handler);
+        }
+        put_u64(out, static_cast<std::uint64_t>(call.next_handler));
+        put_context(out, call.context);
+    }
+    put_u32(out, next_handler_id_);
+    put_size(sif_software_registers_.size());
+    for (const auto& [index, value] : sif_software_registers_) {
+        put_u32(out, index);
+        put_u32(out, value);
+    }
+    put_size(interrupt_queue_.size());
+    for (const InterruptRequest& request : interrupt_queue_) {
+        put_u32(out, request.kind == InterruptRequest::Kind::Dmac ? 1u : 0u);
+        put_u32(out, request.number);
+    }
+    const auto put_handlers = [&out, &put_size](
+                                  const std::vector<KernelInterruptHandler>& list) {
+        put_size(list.size());
+        for (const KernelInterruptHandler& registration : list) {
+            put_u32(out, registration.id);
+            put_u32(out, registration.cause);
+            put_u32(out, registration.handler);
+            put_u32(out, registration.argument);
+        }
+    };
+    put_handlers(interrupt_handlers_);
+    put_handlers(dmac_handlers_);
+    put_u32(out, next_dma_id_);
+    put_u32(out, sif_ready_ ? 1u : 0u);
+    put_u32(out, ee_command_buffer_);
+    put_size(sif_rpc_servers_.size());
+    for (const auto& [sid, server] : sif_rpc_servers_) {
+        put_u32(out, sid);
+        put_u32(out, server.handle);
+        put_u32(out, server.buffer);
+        put_u32(out, server.connection_buffer);
+    }
+    if (sif_iop_image_.size() > 0xFFFFFFFFu) {
+        throw std::runtime_error("The kernel snapshot holds a wild image name");
+    }
+    put_u32(out, static_cast<std::uint32_t>(sif_iop_image_.size()));
+    out.insert(out.end(), sif_iop_image_.begin(), sif_iop_image_.end());
+    put_u32(out, sif_reboot_pending_ ? 1u : 0u);
+    put_u32(out, idle_interrupts_);
+    put_u32(out, service_ticks_);
+    for (const std::uint32_t remainder : service_timer_remainders_) {
+        put_u32(out, remainder);
+    }
+    put_u32(out, disc_volume_lba_);
+    put_size(disc_files_by_handle_.size());
+    for (const auto& [handle, path] : disc_files_by_handle_) {
+        if (path.size() > 0xFFFFFFFFu) {
+            throw std::runtime_error("The kernel snapshot holds a wild path");
+        }
+        put_u32(out, handle);
+        put_u32(out, static_cast<std::uint32_t>(path.size()));
+        out.insert(out.end(), path.begin(), path.end());
+    }
+    put_u32(out, next_disc_handle_);
+    put_size(prts_blocks_.size());
+    for (const auto& [handle, block] : prts_blocks_) {
+        if (block.data.size() > 0xFFFFFFFFu) {
+            throw std::runtime_error("The kernel snapshot holds a wild block");
+        }
+        put_u32(out, handle);
+        put_u32(out, block.lba);
+        put_u32(out, static_cast<std::uint32_t>(block.data.size()));
+        out.insert(out.end(), block.data.begin(), block.data.end());
+        put_u32(out, block.cursor);
+    }
+    put_u32(out, next_prts_handle_);
+    return out;
+}
+
+void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
+    Reader reader{bytes, 0};
+    constexpr char magic[8] = {'G', 'T', '4', 'K', 'E', 'R', 'N', '1'};
+    for (const char letter : magic) {
+        if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
+            throw std::runtime_error("The kernel snapshot has a bad magic");
+        }
+    }
+    const auto take_bool = [&reader](const char* what) {
+        const std::uint32_t flag = reader.take_u32();
+        if (flag > 1u) {
+            throw std::runtime_error(what);
+        }
+        return flag == 1u;
+    };
+    // Parse into temporaries first so a malformed blob leaves the live
+    // kernel untouched.
+    std::vector<KernelThread> threads;
+    const std::uint32_t thread_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < thread_count; ++index) {
+        KernelThread thread;
+        thread.id = reader.take_u32();
+        thread.status = reader.take_u32();
+        thread.function = reader.take_u32();
+        thread.stack = reader.take_u32();
+        thread.stack_size = reader.take_u32();
+        thread.gp = reader.take_u32();
+        thread.initial_priority = static_cast<std::int32_t>(reader.take_u32());
+        thread.current_priority = static_cast<std::int32_t>(reader.take_u32());
+        thread.attr = reader.take_u32();
+        thread.option = reader.take_u32();
+        thread.wait_type = reader.take_u32();
+        thread.wait_id = reader.take_u32();
+        thread.wakeup_count = reader.take_u32();
+        thread.context = reader.take_context();
+        threads.push_back(std::move(thread));
+    }
+    std::vector<KernelSemaphore> semaphores;
+    const std::uint32_t semaphore_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < semaphore_count; ++index) {
+        KernelSemaphore semaphore;
+        semaphore.id = reader.take_u32();
+        semaphore.count = static_cast<std::int32_t>(reader.take_u32());
+        semaphore.max_count = static_cast<std::int32_t>(reader.take_u32());
+        semaphore.init_count = static_cast<std::int32_t>(reader.take_u32());
+        semaphore.wait_threads = static_cast<std::int32_t>(reader.take_u32());
+        semaphore.attr = reader.take_u32();
+        semaphore.option = reader.take_u32();
+        semaphores.push_back(semaphore);
+    }
+    const std::uint32_t next_thread_id = reader.take_u32();
+    const std::uint32_t next_semaphore_id = reader.take_u32();
+    const std::uint32_t current_thread_id = reader.take_u32();
+    const bool syscall_table_ready =
+        take_bool("The kernel snapshot has a bad table flag");
+    std::array<std::uint32_t, syscall_table_entries> patched_handlers{};
+    for (std::uint32_t& entry : patched_handlers) {
+        entry = reader.take_u32();
+    }
+    const std::uint32_t osd_config = reader.take_u32();
+    std::array<std::uint8_t, 4> osd_config2{};
+    for (std::uint8_t& byte : osd_config2) {
+        byte = reader.take_byte();
+    }
+    const std::uint64_t gs_imr = reader.take_u64();
+    std::vector<DeferredCall> deferred_calls;
+    const std::uint32_t deferred_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < deferred_count; ++index) {
+        DeferredCall call;
+        const std::uint32_t kind = reader.take_u32();
+        if (kind > 1u) {
+            throw std::runtime_error("The kernel snapshot has a bad call kind");
+        }
+        call.kind = kind == 1u ? DeferredCall::Kind::Interrupt
+                              : DeferredCall::Kind::Patch;
+        call.resume_pc = reader.take_u32();
+        call.caller_ra = reader.take_u32();
+        call.thread_id = reader.take_u32();
+        call.cause = reader.take_u32();
+        const std::uint32_t handler_count = reader.take_u32();
+        for (std::uint32_t handler = 0; handler < handler_count; ++handler) {
+            call.handlers.push_back(reader.take_u32());
+        }
+        call.next_handler = static_cast<std::size_t>(reader.take_u64());
+        call.context = reader.take_context();
+        deferred_calls.push_back(std::move(call));
+    }
+    const std::uint32_t next_handler_id = reader.take_u32();
+    std::map<std::uint32_t, std::uint32_t> sif_software_registers;
+    const std::uint32_t register_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < register_count; ++index) {
+        const std::uint32_t key = reader.take_u32();
+        sif_software_registers[key] = reader.take_u32();
+    }
+    std::vector<InterruptRequest> interrupt_queue;
+    const std::uint32_t queued_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < queued_count; ++index) {
+        InterruptRequest request;
+        const std::uint32_t kind = reader.take_u32();
+        if (kind > 1u) {
+            throw std::runtime_error("The kernel snapshot has a bad queue kind");
+        }
+        request.kind = kind == 1u ? InterruptRequest::Kind::Dmac
+                                  : InterruptRequest::Kind::Intc;
+        request.number = reader.take_u32();
+        interrupt_queue.push_back(request);
+    }
+    const auto take_handlers = [&reader]() {
+        std::vector<KernelInterruptHandler> list;
+        const std::uint32_t count = reader.take_u32();
+        for (std::uint32_t index = 0; index < count; ++index) {
+            KernelInterruptHandler registration;
+            registration.id = reader.take_u32();
+            registration.cause = reader.take_u32();
+            registration.handler = reader.take_u32();
+            registration.argument = reader.take_u32();
+            list.push_back(registration);
+        }
+        return list;
+    };
+    std::vector<KernelInterruptHandler> interrupt_handlers = take_handlers();
+    std::vector<KernelInterruptHandler> dmac_handlers = take_handlers();
+    const std::uint32_t next_dma_id = reader.take_u32();
+    const bool sif_ready = take_bool("The kernel snapshot has a bad SIF flag");
+    const std::uint32_t ee_command_buffer = reader.take_u32();
+    std::map<std::uint32_t, SifRpcServer> sif_rpc_servers;
+    const std::uint32_t server_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < server_count; ++index) {
+        SifRpcServer server;
+        const std::uint32_t sid = reader.take_u32();
+        server.handle = reader.take_u32();
+        server.buffer = reader.take_u32();
+        server.connection_buffer = reader.take_u32();
+        server.sid = sid;
+        sif_rpc_servers[sid] = server;
+    }
+    const std::uint32_t image_size = reader.take_u32();
+    if (image_size > reader.bytes.size() - reader.offset) {
+        throw std::runtime_error("The kernel snapshot image overruns the blob");
+    }
+    const std::string sif_iop_image(
+        reader.bytes.begin() + reader.offset,
+        reader.bytes.begin() + reader.offset + image_size);
+    reader.offset += image_size;
+    const bool sif_reboot_pending =
+        take_bool("The kernel snapshot has a bad reboot flag");
+    const std::uint32_t idle_interrupts = reader.take_u32();
+    const std::uint32_t service_ticks = reader.take_u32();
+    std::uint32_t service_timer_remainders[4] = {};
+    for (std::uint32_t& remainder : service_timer_remainders) {
+        remainder = reader.take_u32();
+    }
+    const std::uint32_t disc_volume_lba = reader.take_u32();
+    std::map<std::uint32_t, std::string> disc_files_by_handle;
+    const std::uint32_t file_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < file_count; ++index) {
+        const std::uint32_t handle = reader.take_u32();
+        const std::uint32_t path_size = reader.take_u32();
+        if (path_size > reader.bytes.size() - reader.offset) {
+            throw std::runtime_error("The kernel snapshot path overruns the blob");
+        }
+        disc_files_by_handle[handle] = std::string(
+            reader.bytes.begin() + reader.offset,
+            reader.bytes.begin() + reader.offset + path_size);
+        reader.offset += path_size;
+    }
+    const std::uint32_t next_disc_handle = reader.take_u32();
+    std::map<std::uint32_t, PrtsBlock> prts_blocks;
+    const std::uint32_t block_count = reader.take_u32();
+    for (std::uint32_t index = 0; index < block_count; ++index) {
+        PrtsBlock block;
+        const std::uint32_t handle = reader.take_u32();
+        block.lba = reader.take_u32();
+        const std::uint32_t block_size = reader.take_u32();
+        if (block_size > reader.bytes.size() - reader.offset) {
+            throw std::runtime_error("The kernel snapshot block overruns the blob");
+        }
+        block.data.assign(reader.bytes.begin() + reader.offset,
+                          reader.bytes.begin() + reader.offset + block_size);
+        reader.offset += block_size;
+        block.cursor = reader.take_u32();
+        if (block.cursor > block.data.size()) {
+            throw std::runtime_error("The kernel snapshot cursor leaves the block");
+        }
+        prts_blocks[handle] = std::move(block);
+    }
+    const std::uint32_t next_prts_handle = reader.take_u32();
+    if (reader.offset != reader.bytes.size()) {
+        throw std::runtime_error("The kernel snapshot has trailing bytes");
+    }
+    threads_ = std::move(threads);
+    semaphores_ = std::move(semaphores);
+    next_thread_id_ = next_thread_id;
+    next_semaphore_id_ = next_semaphore_id;
+    current_thread_id_ = current_thread_id;
+    syscall_table_ready_ = syscall_table_ready;
+    patched_handlers_ = patched_handlers;
+    osd_config_ = osd_config;
+    osd_config2_ = osd_config2;
+    gs_imr_ = gs_imr;
+    deferred_calls_ = std::move(deferred_calls);
+    next_handler_id_ = next_handler_id;
+    sif_software_registers_ = std::move(sif_software_registers);
+    interrupt_queue_ = std::move(interrupt_queue);
+    interrupt_handlers_ = std::move(interrupt_handlers);
+    dmac_handlers_ = std::move(dmac_handlers);
+    next_dma_id_ = next_dma_id;
+    sif_ready_ = sif_ready;
+    ee_command_buffer_ = ee_command_buffer;
+    sif_rpc_servers_ = std::move(sif_rpc_servers);
+    sif_iop_image_ = std::move(sif_iop_image_);
+    sif_reboot_pending_ = sif_reboot_pending;
+    idle_interrupts_ = idle_interrupts;
+    service_ticks_ = service_ticks;
+    for (std::size_t index = 0; index < 4; ++index) {
+        service_timer_remainders_[index] = service_timer_remainders[index];
+    }
+    disc_volume_lba_ = disc_volume_lba;
+    disc_files_by_handle_ = std::move(disc_files_by_handle);
+    next_disc_handle_ = next_disc_handle;
+    prts_blocks_ = std::move(prts_blocks);
+    next_prts_handle_ = next_prts_handle;
+}
+
 std::uint32_t Kernel::answer_disc_volume(GuestState& state,
                                          std::uint32_t request) {
     // The game's CD library registers the volume descriptor its scan
