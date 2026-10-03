@@ -1458,7 +1458,9 @@ std::uint32_t Kernel::answer_prts_read(GuestState& state,
 
 std::uint32_t Kernel::answer_prts_copy(GuestState& state,
                                        std::uint32_t request) {
-    // The copy-out: {handle, EE destination, byte count}.
+    // The copy-out: {handle, EE destination, byte count}. The block is
+    // consumed sequentially from the handle's cursor, which advances past
+    // the copied bytes.
     const std::uint32_t handle = state.memory().read_word(request + 0);
     const std::uint32_t destination = state.memory().read_word(request + 4);
     const std::uint32_t size = state.memory().read_word(request + 8);
@@ -1468,14 +1470,20 @@ std::uint32_t Kernel::answer_prts_copy(GuestState& state,
     }
     const std::uint32_t available =
         static_cast<std::uint32_t>(entry->second.data.size());
-    const std::uint32_t copy_size = size < available ? size : available;
+    if (entry->second.cursor >= available) {
+        return 0;
+    }
+    const std::uint32_t remaining = available - entry->second.cursor;
+    const std::uint32_t copy_size = size < remaining ? size : remaining;
     if (copy_size == 0 || !state.memory().contains(destination, copy_size)) {
         return 0;
     }
     for (std::uint32_t index = 0; index < copy_size; ++index) {
-        state.memory().write_byte(destination + index,
-                                  entry->second.data[index]);
+        state.memory().write_byte(
+            destination + index,
+            entry->second.data[entry->second.cursor + index]);
     }
+    entry->second.cursor += copy_size;
     return copy_size;
 }
 

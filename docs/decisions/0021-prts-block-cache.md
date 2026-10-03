@@ -39,23 +39,35 @@ The client's protocol, read from the traced calls and the disassembly:
 2. **The cache keeps at most eight blocks.** The client copies each block
    out right after reading it (the traced reads and copies interleave), so
    a small bound covers the streaming reads without unbounded growth.
-3. **The copy-out clamps to the block and validates the destination.**
-   `Kernel::answer_prts_copy` (RPC 4 and 7) copies at most the block's
-   bytes into the guest window and answers zero when the handle is unknown.
+3. **The copy-out consumes the block sequentially from a per-handle
+   cursor.** `Kernel::answer_prts_copy` (RPC 4 and 7) copies from the
+   handle's cursor (clamped to what remains), validates the destination
+   and advances the cursor past the copied bytes; an exhausted or unknown
+   handle copies nothing. The request carries no offset — the client's
+   font load streams one block in fixed-size chunks into alternating
+   buffers (seven 0x4000-byte copy-outs of one handle), so only a
+   server-side cursor serves successive chunks (M30 slice 46); serving
+   chunk zero repeatedly corrupted the loaded object and faulted the
+   boot's asset relocation at 15,010,045 services.
 4. **The handle is a model-chosen counter.** The guest only passes the
    handle back to the copy-out calls; it never interprets its value beyond
    "non-zero means the read succeeded", so a monotonic counter is faithful
    where it matters and cannot collide with a real block's identity.
-5. **The temporary instruments (a memory write watch and an RPC trace)
+5. **The temporary instruments (a memory write watch and RPC/file traces)
    stay out of the tree.** The unit tests in `ee_kernel_test.cpp` pin the
-   new behavior: the handle, the copy-out, an unknown handle, a read
-   outside the image and a machine without a disc.
+   new behavior: the handle, the copy-out, sequential copy-outs advancing
+   through a block (plus exhaustion), an unknown handle, a read outside
+   the image and a machine without a disc.
 
 ## Consequences
 
 - The boot runs past the sound phase: from the ELF entry to the step limit
   (200M steps, 3,648,011 services handled) where the old run faulted at
   83,783 services.
+- With the copy-out cursor (M30 slice 46), the boot also runs past the
+  font-load fault at 15,010,045 services: a 10x run reaches its step limit
+  with 41,919,339 services handled (65,423,272 module calls,
+  1,934,576,728 interpreted steps), stopping cleanly at 0x005552b0.
 - `gt4boot_services` pins 90,000 services with the disc (about 22 s);
   without a disc image the old 3,000-service frontier stays.
 - The differential passes at 100,000 services with the full state

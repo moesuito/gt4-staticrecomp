@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-03:
 
-- M0-M30 slice 45 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 46 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -264,14 +264,18 @@ Live state: `docs/STATUS.md`. As of 2026-10-03:
   tables, and an entry turned absolute faults exactly at `0x009CF08F`
   (low memory all zeros). Next is the font file's load path. CTest 36/36
   and Python 73 (67 run, 6 skip).
-- Next: M30 slice 46 — **the font file's load path**: trace
-  `/fonts/system.fnt`'s PRTS/fileio reads near the fault, read the file's
-  header bytes from the image, and compare them against the live FT01
-  object's offset tables (a mismatch pins the loader/model divergence; a
-  match points at lifecycle timing, relocate before fixup). The
-  curriculum's remaining units (the OSD configuration services, a counting
-  timer with interrupt delivery, the remaining BIOS services and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+  Slice 46 then traces the font's load (3 late PRTS reads, 186 KB last, no
+  fileio) and finds the model re-serving chunk zero for every chunked
+  copy-out (the request has no offset): a per-handle cursor fixes it and
+  the boot sails past the 15M fault to 41,919,339 services, stopping
+  cleanly. CTest 36/36 and Python 73 (67 run, 6 skip).
+- Next: M30 slice 47 — **past the new step limit**: the boot now runs to
+  the 2B-step limit at 41,919,339 services, stopping cleanly at
+  0x005552b0; raising the limit (or probing around the stop) finds the
+  next wall. The curriculum's remaining units (the OSD configuration
+  services, a counting timer with interrupt delivery, the remaining BIOS
+  services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

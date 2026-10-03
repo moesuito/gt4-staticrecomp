@@ -234,8 +234,9 @@ public:
                                                  std::uint32_t request);
     // Answers the block cache's copy-out (sid 0x53545250, RPC 4 and 7): the
     // request is {handle, EE destination, byte count}. The cached block's
-    // bytes are copied out (clamped to the block); the reply carries no
-    // data. Returns the bytes copied. Exposed for unit tests.
+    // bytes are copied out sequentially from the handle's cursor (clamped
+    // to what remains); the reply carries no data. Returns the bytes
+    // copied. Exposed for unit tests.
     [[nodiscard]] std::uint32_t answer_prts_copy(GuestState& state,
                                                  std::uint32_t request);
     // Answers the game's CD driver volume registration (sid 0x50434456,
@@ -546,6 +547,11 @@ private:
     struct PrtsBlock {
         std::uint32_t lba = 0;
         std::vector<std::uint8_t> data;
+        // The copy-out cursor: the client reads each block sequentially in
+        // fixed-size chunks (the font load streams 0x4000-byte chunks from
+        // one block into alternating buffers), and the request carries no
+        // offset — so the server tracks how far each handle was consumed.
+        std::uint32_t cursor = 0;
     };
     std::map<std::uint32_t, PrtsBlock> prts_blocks_;
     std::uint32_t next_prts_handle_ = 1;

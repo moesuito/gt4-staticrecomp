@@ -892,7 +892,7 @@ int main() {
         constexpr std::uint32_t request = 0x00100A00;
         constexpr std::uint32_t destination = 0x00100B00;
         state.memory().write_word(request + 0, 3);       // the LBA
-        state.memory().write_word(request + 4, 0x20);    // the byte count
+        state.memory().write_word(request + 4, 0x40);    // the byte count
         state.memory().write_word(request + 8, 0x8000);  // the flags
         const std::uint32_t handle = kernel.answer_prts_read(state, request);
         check(handle != 0, "the block cache answers a handle");
@@ -902,6 +902,17 @@ int main() {
         check(kernel.answer_prts_copy(state, request) == 0x20
                   && state.memory().read_byte(destination) == 3,
               "the copy-out lands the cached block in the guest");
+        // Sequential copy-outs advance through the block: the second one
+        // lands the next bytes, not the first ones again (decision 0021).
+        constexpr std::uint32_t second_destination = 0x00100C00;
+        state.memory().write_word(request + 0, handle);
+        state.memory().write_word(request + 4, second_destination);
+        state.memory().write_word(request + 8, 0x20);
+        check(kernel.answer_prts_copy(state, request) == 0x20
+                  && state.memory().read_byte(second_destination) == 0,
+              "the next copy-out continues where the previous stopped");
+        check(kernel.answer_prts_copy(state, request) == 0,
+              "a consumed block copies nothing more");
         state.memory().write_word(request + 0, 0x0000DEADu);
         check(kernel.answer_prts_copy(state, request) == 0,
               "an unknown block handle copies nothing");

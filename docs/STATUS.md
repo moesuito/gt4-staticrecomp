@@ -1,18 +1,19 @@
 # Project status
 
-Updated 2026-10-03 after M30 slice 45 — pin the divergent lookup: the fatal
-query asked for **/fonts/system.fnt**. A temporary entry log (14 lines in
-15M services) captured the query bytes, the manager input and the ordered
-chain; the file exists in the archive's fonts table on both layers. The
-mechanism is complete: the even FT01 object (old base 0, count 10) gets
-its `0x30/0x58` fields relocated into self-pointers, walked as offset
-tables, and an entry turned absolute (`0x358B` → `0x9CF08B`) leads into
-the heap data buffer, faulting exactly at `0x009CF08F`; low memory is all
-zeros, ruling out garbage tables. Next is comparing the loaded object's
-offset tables against the file's header bytes on disc (loader divergence
-vs lifecycle timing). CTest 36/36 and Python 73 (67 run, 6 skip). This is
-the first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-03 after M30 slice 46 — the font file's load path: the
+copy-out cursor. The whole boot's disc traffic is 12 block reads; the
+font loads as 3 late PRTS reads (the last: 186 KB at 14,991,629 services)
+with no fileio involvement, and its block streams out as seven 0x4000-byte
+copy-outs into alternating buffers — but the request carries no offset
+and the model re-served chunk zero every time, building the loaded object
+from one chunk repeated seven times (hence the patterned buffer and the
+odd "pointer"). `PrtsBlock` gains a per-handle cursor that the copy-out
+serves from and advances (decision 0021 extended; unit tests cover
+sequential chunks and exhaustion). The verification run sails past the
+15,010,045-service fault to its step limit with **41,919,339 services
+handled**, stopping cleanly. CTest 36/36 and Python 73 (67 run, 6 skip).
+This is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1025,6 +1026,16 @@ proceeds. Details live in the linked evidence documents.
   services with the disc
   (`docs/reverse-engineering/m30-slice42-block-cache-and-the-sound-open.md`,
   `docs/decisions/0021-prts-block-cache.md`).
+- M30 slice 46 (2026-10-03): **the font file's load path — the copy-out
+  cursor (the fix)**. The whole boot reads 12 disc blocks; the font loads
+  as 3 late PRTS reads (186 KB last) with no fileio involvement, and
+  streams out as seven 0x4000-byte copy-outs — but the request has no
+  offset and the model re-served chunk zero, corrupting the object.
+  `PrtsBlock` gains a cursor the copy-out serves from and advances
+  (decision 0021 extended; tests cover sequences and exhaustion). The
+  verification run passes the 15,010,045-service fault to its step limit
+  with **41,919,339 services handled**, stopping cleanly
+  (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
 - M30 slice 45 (2026-10-03): **pin the divergent lookup — it asked for
   /fonts/system.fnt**. A temporary entry log (14 lines in 15M services)
   captured the query bytes, the manager input and the ordered chain; the
@@ -1066,14 +1077,13 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the font file's load path** — trace
-  `/fonts/system.fnt`'s PRTS/fileio reads near the fault, read the file's
-  header bytes from the image, and compare them against the live FT01
-  object's offset tables (a mismatch pins the loader/model divergence; a
-  match points at lifecycle timing, relocate before fixup); and the
-  curriculum's remaining units (the OSD configuration services, a counting
-  timer with interrupt delivery, the remaining BIOS services and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **past the new step limit** — the boot
+  now runs to the 2B-step limit at 41,919,339 services, stopping cleanly
+  at 0x005552b0; raising the limit (or probing around the stop) finds the
+  next wall, and the curriculum's remaining units (the OSD configuration
+  services, a counting timer with interrupt delivery, the remaining BIOS
+  services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
