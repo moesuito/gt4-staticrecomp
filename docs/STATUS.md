@@ -1,17 +1,15 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 17 — the walk traced live. A
-temporary pc-triggered trace watched every due test with live
-operands: 2,000 runs per 2k leg, target exactly the mapped
-`sched + base - acc`, current matching the formula exactly — and the
-firing edge sits single-digits below the 32-bit ceiling while frames
-advance thousands-to-hundreds-of-thousands per service. Verdict: the
-lottery account holds both directions (freak slow alignments explain
-the two historical firings); timeouts are vestigial as a completion
-path. Next is slice 18: map each worker's "issue request, then wait"
-chain to name the event whose arrival retires it. This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 18 — what each worker asked for.
+Workers are one-shot job processors (item dispatch + priority set +
+self-delete); thread 4's family does `0x58xxxx` engine work gated on
+`[0x65c714]` (zero at every stop; writer joins the watchlist). Delay
+scale corrected: scheds are microscopic (~0.1 services), the epoch
+lives in base — short fuses missed across a wrap during the stall era,
+dissolving the 40-minute paradox. Next is slice 19: march D14+ toward
+`0x00889f80`'s firing while watching the gate words for opening. This
+is the first document to read in a new session; it is kept current as
+work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1034,6 +1032,12 @@ Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 18 (2026-10-03): **what each worker asked for**. One-shot
+  job processors (dispatch + priority + self-delete); T4's `0x58xxxx`
+  engine gated on `[0x65c714]` (writer statically unreachable —
+  watchlisted); delay scale corrected (microscopic scheds, epoch in
+  base — missed micro-fuses, paradox dissolved)
+  (`docs/reverse-engineering/m32-slice18-worker-requests.md`).
 - M32 slice 17 (2026-10-03): **the walk traced live**. Temporary
   pc-triggered trace: 2,000 runs per 2k leg, target exactly the mapped
   fields, current matching the formula — firing edge single-digits
@@ -1249,10 +1253,11 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — map each worker's request
-  (slice 18)**. Slice 17 proved timeouts are vestigial (walk runs
-  constantly, lottery both directions): disassemble the shared worker
-  dispatch chain to name the event whose arrival retires each wait.
+- Next technical milestone work: **M32 — march D14+, watch the gates
+  (slice 19)**. Slice 18 showed workers as one-shot jobs with
+  micro-delay waits (40-minute paradox dissolved) plus gated engine
+  work (`[0x65c714]` and kin, writer unknown): march toward
+  `0x00889f80`'s firing while watching the gate words for opening.
   M35 pad stays queued (no PADMAN bound at this phase); and the
   curriculum's remaining units (the OSD configuration services, the
   remaining BIOS services and the jump-table dispatch) stay listed in
