@@ -1,21 +1,18 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 44 — why the relocation pointer is odd:
-the odd value was **never stored** — a write watch over the fault object
-shows it zeroed by the allocator path and pattern-filled byte-wise by a
-transforming copy (no disc region matches those bytes), so the relocate
-family **derived** the odd "pointer" by walking a data buffer as pointer
-tables (live stack: the loop → trampoline 0x00491e80 → 0x00491990-class
-routine 0x00498b28; the reported pc is stale, the translator publishes it
-at halt points only). The stream `+0x94` writers (4 sites) store only
-zeros, heap objects or field copies — none mints odd values — so the
-lookup designated the wrong object (or the right one in an impossible
-state); the shipped game boots on hardware, hence model-fed divergence
-upstream (high confidence). No model change shipped (skipping odd
-relocations would fabricate hardware); pinning the divergent lookup is
-next. CTest 36/36 and Python 73 (67 run, 6 skip). This is the first
-document to read in a new session; it is kept current as work proceeds.
-Details live in the linked evidence documents.
+Updated 2026-10-03 after M30 slice 45 — pin the divergent lookup: the fatal
+query asked for **/fonts/system.fnt**. A temporary entry log (14 lines in
+15M services) captured the query bytes, the manager input and the ordered
+chain; the file exists in the archive's fonts table on both layers. The
+mechanism is complete: the even FT01 object (old base 0, count 10) gets
+its `0x30/0x58` fields relocated into self-pointers, walked as offset
+tables, and an entry turned absolute (`0x358B` → `0x9CF08B`) leads into
+the heap data buffer, faulting exactly at `0x009CF08F`; low memory is all
+zeros, ruling out garbage tables. Next is comparing the loaded object's
+offset tables against the file's header bytes on disc (loader divergence
+vs lifecycle timing). CTest 36/36 and Python 73 (67 run, 6 skip). This is
+the first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1028,6 +1025,16 @@ Details live in the linked evidence documents.
   services with the disc
   (`docs/reverse-engineering/m30-slice42-block-cache-and-the-sound-open.md`,
   `docs/decisions/0021-prts-block-cache.md`).
+- M30 slice 45 (2026-10-03): **pin the divergent lookup — it asked for
+  /fonts/system.fnt**. A temporary entry log (14 lines in 15M services)
+  captured the query bytes, the manager input and the ordered chain; the
+  file exists in the archive's fonts table on both layers. The mechanism is
+  complete: the even FT01 object's `0x30/0x58` fields relocate into
+  self-pointers, walked as offset tables, and an entry turned absolute
+  faults exactly at `0x009CF08F`; low memory is all zeros. Next is
+  comparing the loaded object's offset tables against the file's header
+  bytes (loader divergence vs lifecycle timing)
+  (`docs/reverse-engineering/m30-slice45-the-fatal-query.md`).
 - M30 slice 44 (2026-10-02): **why the relocation pointer is odd** — the
   odd value was never stored: a write watch over the fault object shows it
   zeroed by the allocator path and pattern-filled byte-wise by a
@@ -1059,14 +1066,14 @@ Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **pin the divergent lookup** — capture
-  the dispatcher query (the key handed to 0x004ace58/0x004ae1f8) for the
-  fatal relocate-over-data call and what it should have returned (query
-  logging or console comparison), then fix the model state that
-  misdirects it; and the curriculum's remaining units (the OSD
-  configuration services, a counting timer with interrupt delivery, the
-  remaining BIOS services and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **the font file's load path** — trace
+  `/fonts/system.fnt`'s PRTS/fileio reads near the fault, read the file's
+  header bytes from the image, and compare them against the live FT01
+  object's offset tables (a mismatch pins the loader/model divergence; a
+  match points at lifecycle timing, relocate before fixup); and the
+  curriculum's remaining units (the OSD configuration services, a counting
+  timer with interrupt delivery, the remaining BIOS services and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

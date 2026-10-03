@@ -103,9 +103,9 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-02:
+Live state: `docs/STATUS.md`. As of 2026-10-03:
 
-- M0-M30 slice 44 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 45 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -257,10 +257,18 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   object: model-fed divergence upstream (high confidence), no model change
   shipped, pinning the divergent lookup is next. CTest 36/36 and Python 73
   (67 run, 6 skip).
-- Next: M30 slice 45 — **pin the divergent lookup**: capture the dispatcher
-  query (the key handed to 0x004ace58/0x004ae1f8) for the fatal
-  relocate-over-data call and what it should have returned (query logging
-  or console comparison), then fix the model state that misdirects it. The
+  Slice 45 then captures the fatal query itself — **/fonts/system.fnt**
+  (14 hook lines in 15M services; the file is in the archive's fonts table
+  on both layers) — and completes the mechanism: the even FT01 object's
+  `0x30/0x58` fields relocate into self-pointers, walked as offset
+  tables, and an entry turned absolute faults exactly at `0x009CF08F`
+  (low memory all zeros). Next is the font file's load path. CTest 36/36
+  and Python 73 (67 run, 6 skip).
+- Next: M30 slice 46 — **the font file's load path**: trace
+  `/fonts/system.fnt`'s PRTS/fileio reads near the fault, read the file's
+  header bytes from the image, and compare them against the live FT01
+  object's offset tables (a mismatch pins the loader/model divergence; a
+  match points at lifecycle timing, relocate before fixup). The
   curriculum's remaining units (the OSD configuration services, a counting
   timer with interrupt delivery, the remaining BIOS services and the
   jump-table dispatch) stay listed in `docs/requirements.md`.
