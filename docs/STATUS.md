@@ -1,16 +1,15 @@
 # Project status
 
-Updated 2026-10-03 after slice 27 (M33 write-watch) — total
-silence with a verified probe: zero stores to main's flag word and
-the loop request slot over 2,000 services (selftest PASS over all
-five store paths incl. KSEG0 alias; instrument fully reverted,
-hygiene owner-verified, stop state re-proven by an owner plain leg).
-**M33 recon is closed as answered** (dry pipe → unbuilt job system
-→ printer-owned feeders → neutral handlers → silent watch): no
-originating traffic exists in the parked machine. Next is slice 28:
-the main line serves the asset track's specified dumps (Hook A
-`0x4B36E0` buffers, 128 B context packet, 80 B upload packet,
-`[obj+0x1C]` writer) — bounded legs that unblock the viewer. This is the
+Updated 2026-10-03 after slice 28 (asset-dump legs) — the
+pipeline never runs: zero xor55 calls in 95k fresh-boot services,
+bind entries unreachable fresh or parked (non-blindness
+owner-verified: `function_004b36e0` translated, `function_004b39b0`
+bridge-only). **Asset-dump line closed as answered-negative**; no
+cheap stimulus remains untried (slice 50 exhausted INTC/SSUP, slice
+22's pick done — stated, not re-run). Next is slice 29: spec the
+first originating event — an async IOP completion — as decision
+0026 (delivery path, minimal model semantics, verification).
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1035,6 +1034,12 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 28 (asset dumps, 2026-10-03): **the pipeline never
+  runs — line closed as answered-negative**. Zero executions on all
+  hooks (95k fresh + validation legs; non-blindness owner-verified).
+  No cheap stimulus left untried — stated, not re-run. Hook D
+  parked behind the milestone precondition
+  (`docs/reverse-engineering/m33-slice28-asset-dumps.md`).
 - Slice 27 (M33 watch, 2026-10-03): **total silence, probe
   verified**. Zero stores to `[0x006207F4]` / `[0x0087E190]` over
   2,000 services (selftest PASS on all five paths; 152 lines
@@ -1322,16 +1327,15 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **asset-dump legs
-  (slice 28)**. M33 closed (silent watch, owner-verified): the main
-  line now serves the viewer track's specified dumps — Hook A
-  (`0x4B36E0` buffer log), the 128 B context packet (`0x4995D4`),
-  the 80 B upload packet (`0x4A4CD4`), the `[obj+0x1C]` writer watch
-  — bounded instrument legs; afterwards, milestone event work per
-  decision 0023. M35 pad stays queued (no PADMAN bound at this
-  phase); and the curriculum's remaining units (the OSD configuration
-  services, the remaining BIOS services and the jump-table dispatch)
-  stay listed in `docs/requirements.md`.
+- Next technical milestone work: **the first originating event
+  (slice 29, decision 0026)**. Recon lines closed (M33 answered,
+  asset-dump answered-negative, scout parked): spec an async IOP
+  completion end to end — delivery path (pump bytes, SIFCMD area,
+  dispatcher), minimal model semantics, verification (differential
+  + wake assertion). Then implement. M35 pad stays queued (no
+  PADMAN bound at this phase); and the curriculum's remaining units
+  (the OSD configuration services, the remaining BIOS services and
+  the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
