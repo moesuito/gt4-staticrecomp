@@ -70,3 +70,15 @@ ponta com decisão numerada). Ganho por iteração ~(N+M)/M (~20× no caso
 atual: checkpoint nos 41,9 M e iterações de 1–2 M). Pré-requisitos:
 pontos N canônicos, espaço ignorado, header com hashes, `main` verde
 (sem tocar semântica — o diferencial existente continua passando).
+
+## 5. Autosave girando (decisão do dono, 2026-10-03 — futuro, não iniciado)
+
+Para empurrões longos (ex. 243M → além), fotos automáticas e girantes:
+`--checkpoint-every K DIR --keep N` (ex. últimas 20, apagando a mais
+velha; limitar também por tamanho total, pois fotos tardias passam de
+centenas de MB). Semântica: foto só em ponto limpo; ponto sujo é pulado
+quieto (e anotado), nunca aborta a corrida; ao quebrar, volta-se da
+última saudável — encurta o replay, não elimina (não existe foto "da hora
+que quebrou": falha nunca é fotografada). Entra junto o modo `--quiet`
+(sem ele cada foto vem com GBs de log). Fatia pequena, após o uso manual
+estar provado em grande.
