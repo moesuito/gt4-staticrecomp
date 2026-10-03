@@ -1,17 +1,15 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 7 — who fired. The full chain is
-mapped node → descriptor → worker (6/6, sema words name the waiters);
-the poked leg consumed node `0x0088a000` one-shot (flags cleared,
-unlinked, new tail), waking thread 3 — correcting slice 5's reschedule
-guess. The base clock shares the handler's units by construction
-(`0x005B8400`); leading hypothesis is a pre-wrap fuse missed during
-the backlog stall. One tick-math non-reconciliation is recorded
-honestly with checked numbers. Next is slice 8: keep chaining from
-`ckpt-180k.bin`, watching for the predicted signature (a node's flags
-`3 → 0`, waiter readied, COMP reprogrammed). This is the first document
-to read in a new session; it is kept current as work proceeds. Details
-live in the linked evidence documents.
+Updated 2026-10-03 after M32 slice 8 — the steady march. Three chained
+100k legs from `ckpt-180k.bin` (all limit-hit, all saved:
+`ckpt-280k/380k/480k.bin`), TIM2 COUNT advancing ~313M per leg with
+identical module-call counts and ±80-step fidelity. Combined time base
+now ≈ 3.82e9 vs. the poke-proven firing neighborhood ≈ 4.26e9: ~1.4
+legs to go, likely firing during leg D5. Next is slice 9: run D4+D5
+watching for the signature (node flags `3 → 0`, waiter readied, COMP
+reprogrammed). This is the first document to read in a new session; it
+is kept current as work proceeds. Details live in the linked evidence
+documents.
 
 ## Where we are
 
@@ -1034,6 +1032,12 @@ live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 8 (2026-10-03): **the steady march**. Three chained 100k
+  legs (`ckpt-280k/380k/480k.bin`, all limit-hit and saved), COUNT
+  +~313M per leg, module calls identical (55,987), steps ±80. Combined
+  ≈ 3.82e9 vs. firing neighborhood ≈ 4.26e9: ~1.4 legs to go, likely
+  leg D5. No probes, no model change
+  (`docs/reverse-engineering/m32-slice8-steady-march.md`).
 - M32 slice 7 (2026-10-03): **who fired**. Node → descriptor → worker
   mapped 6/6 (callback `0x005AEF58`, sema words name the waiters); the
   poked leg consumed `0x0088a000` one-shot (flags `3 → 0`, unlinked,
@@ -1176,14 +1180,14 @@ live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — chain to the natural firing
-  (slice 8)**. Slice 7 attributed the poke firing completely (node
-  `0x0088a000` → thread 3, one-shot) and gave slice 8 its signature to
-  watch for: a node's flags `3 → 0`, its waiter readied, COMP
-  reprogrammed. Chain from `ckpt-180k.bin` until that signature appears
-  naturally. M35 pad stays queued (no PADMAN bound at this phase); and
-  the curriculum's remaining units (the OSD configuration services, the
-  remaining BIOS services and the jump-table dispatch) stay listed in
+- Next technical milestone work: **M32 — witness the natural firing
+  (slice 9)**. Slice 8 marched the frontier to `ckpt-480k.bin`
+  (combined ≈ 3.82e9, ~1.4 legs from the firing neighborhood): run legs
+  D4+D5 watching for the signature (node flags `3 → 0`, waiter readied,
+  COMP reprogrammed), then follow whatever the boot does next. M35 pad
+  stays queued (no PADMAN bound at this phase); and the curriculum's
+  remaining units (the OSD configuration services, the remaining BIOS
+  services and the jump-table dispatch) stay listed in
   `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
