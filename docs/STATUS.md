@@ -1,13 +1,15 @@
 # Project status
 
-Updated 2026-10-03 after slice 23 (M33 recon) — the pipe is dry. A
-temporary transfer log in the DMA write path recorded zero starts in
-12,000 services (all six channels idle at every stop; SIF caveat
-checked and moot): the engine emits nothing — confirmed deep park,
-and M33's capture work correctly stays queued. The missing heartbeat
-(who calls the frame dispatcher per frame?) is now the single upstream
-cause of parked workers and dry pipe alike. Next is slice 24: trace
-the heartbeat — VBlank tick, main loop, or SIF completion? This is the
+Updated 2026-10-03 after slice 24 (M33 heartbeat trace) — the
+dispatcher's worker thread is never created. Whole-translation grep
+(zero direct callers), disassembly (initializer `0x00586da0` up
+through four lazy-init wrappers), and stop-time dumps (one-shot flag
+`[0x00617d88]` = 0, job global `0x0087E180` all zeros — both
+independently re-verified by the owner-agent) show the cut is
+upstream of VBlank/main/SIF alike: the boot parks before the late
+lazy init that builds the job system. Next is slice 25: which of the
+four `0x0019a7xx` lazy wrappers the boot reaches for first (what
+unparks main / feeds the flag queue). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1034,17 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 24 (M33 heartbeat, 2026-10-03): **the worker thread is
+  never created**. Dispatcher region mapped (`0x005878f8` validate/
+  wake/join/signal, `0x00587bb0` sleep-loop, `0x00587c08` 10-way
+  switch); zero direct `jal` sites in 3.5M translated lines; creation
+  chain `0x0019a698 → 0x001c9468 → 0x00101c50 → 0x00583718 →
+  0x00586da0 → CreateThread` never runs (flag 0, global zeros —
+  owner-agent re-verified both by dump). Cut upstream of all three
+  charter candidates; dispatcher's own per-frame invoker stays Unknown
+  (`docs/reverse-engineering/m33-slice24-heartbeat-trace.md`).
+  Independently verified: `0x00586da0` prologue/sems,
+  `0x00587bb0` sleep-loop shape, both stop-time dumps.
 - Slice 23 (M33 recon, 2026-10-03): **the pipe is dry**. Temporary
   DMA write-path log: zero transfer starts in 12k services, all
   channels idle (SIF caveat moot — no SIF syscalls in-legs). Engine
@@ -1281,11 +1294,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **trace the heartbeat (slice 24)**.
-  Slice 23 proved the pipe dry (zero DMA starts, engine emits
-  nothing): find what invokes the frame dispatcher per frame on a
-  running engine — VBlank tick, main loop, or SIF completion — and
-  which link is cut here. M35 pad stays queued (no PADMAN bound at this
+- Next technical milestone work: **the lazy-init wrappers
+  (slice 25)**. Slice 24 proved the job system is never built (flag 0,
+  global zeros): find which of the four `0x0019a7xx` lazy wrappers the
+  boot reaches for first — what unparks main / feeds the flag queue —
+  or, once the loop thread exists, who writes `[0x0087E180+0x10]`.
+  M35 pad stays queued (no PADMAN bound at this
   phase); and the curriculum's remaining units (the OSD configuration
   services, the remaining BIOS services and the jump-table dispatch)
   stay listed in `docs/requirements.md`.
