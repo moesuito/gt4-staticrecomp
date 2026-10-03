@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50 plus M32 slices 1–18 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50 plus M32 slices 1–19 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,10 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: M32 — **march D14+, watch the gates (slice 19)**:
-  slice 18 mapped worker requests (one-shot jobs, micro-delay waits,
-  gated engine work); march toward `0x00889f80`'s firing while watching
-  the gate words for opening. The
+- Next: M32 — **run D16+D17 to the firing (slice 20)**:
+  slice 19 marched two legs (frontier `ckpt-1780k.bin`, ~1.5 legs out)
+  and closed the first gate watch (open from the start); run D16+D17
+  watching for thread 6's firing signature, then follow the boot. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
