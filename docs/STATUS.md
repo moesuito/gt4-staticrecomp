@@ -1,19 +1,19 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 14 — the band swept twice, still
-silent. Legs D11–D13 ran and saved (`ckpt-1380k/1480k/1580k.bin`);
-COUNT wrapped mid-D13 across the full theoretical band with live
-per-frame delivery, yet nothing dispatched. Careful math says an 8M-tick
-window tested every frame cannot be missed — and slice 5's poke fired
-*below* any threshold the same math produces. Verdict: the due test
-alone does not decide firing; the walk's reachability (gate, head,
-overflow branch) is now the question, and slice 7's attribution is
-downgraded to consumption-observed/path-uncertain. Marching pauses
-until a both-directions criterion exists. Next is slice 15: dump the
-head pointer and overflow every leg (plus the firing forecasts are
-withdrawn). This is the first document to read in a new session; it is
-kept current as work proceeds. Details live in the linked evidence
-documents.
+Updated 2026-10-03 after M32 slice 15 - the walk runs constantly; the
+sliver is jumped over. Handler-start counters proved 12,000 timer runs
+per 12k leg with gate, head, and fields all live-correct, yet no
+dispatch; a three-leg poke bracket (same start doesn't reproduce, 3.2k
+near miss, wrap-through silence) plus fresh disassembly of the arm site
+and the dispatcher show the firing sliver is narrower than one frame's
+COUNT advance - consecutive walk runs step clean over it except by
+freak alignment. Verdict: the timeouts are unreachable by time in any
+faithful model; completion must come via cancellation driven by the
+real event. Next is slice 16: identify each wrapper's request from the
+checkpoint stacks to name the reply path worth modeling asynchronously
+(M32's charter). This is the first document to read in a new session;
+it is kept current as work proceeds. Details live in the linked
+evidence documents.
 
 ## Where we are
 
@@ -1036,6 +1036,14 @@ documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 15 (2026-10-03): **the walk runs constantly; the sliver
+  is jumped over**. Handler-start counters: 12,000 timer runs per 12k
+  leg, gate/head/fields live-correct, no dispatch. Three-leg poke
+  bracket (no reproduce, 3.2k near miss, wrap-through silence); arm
+  site and dispatcher re-verified; firing sliver narrower than one
+  frame's advance. Verdict: timeouts unreachable by time — completion
+  must come via cancellation; slice 16 names each wrapper's request
+  (`docs/reverse-engineering/m32-slice15-sub-service-sliver.md`).
 - M32 slice 14 (2026-10-03): **the band swept twice, still silent**.
   Legs D11–D13 (`ckpt-1380k/1480k/1580k.bin`); COUNT wrapped mid-D13
   across the full band with live delivery, no dispatch. Careful math
@@ -1229,14 +1237,14 @@ documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — settle walk reachability
-  (slice 15)**. Slice 14 proved neither direction fits the due-test
-  story (band swept silently with live delivery; poke fired below
-  threshold): dump the head pointer and overflow every leg to see
-  whether the walk reaches its test at all, and rebuild the firing
-  criterion from what survives. M35 pad stays queued (no PADMAN
-  bound at this phase); and the curriculum's remaining units (the OSD
-  configuration services, the remaining BIOS services and the
+- Next technical milestone work: **M32 — name each wrapper's request
+  (slice 16)**. Slice 15 proved the walk runs constantly while the
+  firing sliver is narrower than one frame's advance (timeouts
+  unreachable by time; completion must come via cancellation): read
+  each worker's wrapper arguments from the checkpoint stacks to name
+  the reply path worth modeling asynchronously. M35 pad stays queued
+  (no PADMAN bound at this phase); and the curriculum's remaining units
+  (the OSD configuration services, the remaining BIOS services and the
   jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
