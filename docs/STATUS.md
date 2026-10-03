@@ -1,23 +1,21 @@
 # Project status
 
-Updated 2026-10-02 after M30 slice 43 — beyond the step limit: the steady
-pump and the next wall. The step budget is now a `gt4boot --steps N` flag
-(default unchanged; CTest `gt4boot_steps` pins `--steps 1000`). The
-200M-step stop (pc 0x0055e790) is mid-copy in the 0x0055xxxx client's
-per-packet routine 0x0055e6d0 (~960 bytes per call), not a stall. The
-service mix over 3,648,011 services is **stationary** (create/delete
-semaphore in lock-step ~190k each, signal/wait ~297k, 1.3M patched-syscall
-returns) and the stop-time threads are healthy (5 asleep, 2 on semaphores,
-7 ready/running, nothing pending) — but a temporary LBA trace found only
-**8 disc reads in 1.5M services**, so the pump is SIF RPC chatter, not
-media streaming. A 10x run (`--steps 2000000000`, 13.5 min) finds the next
-wall: an **unaligned guest fault at pc 0x00491798** (a pointer-relocation
-routine, same family as slice 23's) on address 0x009cf08f after
-**15,010,045 services**; its direct caller is 0x0048fb94 (argument = the
-return of 0x00491d90). A second full run faults at the same pc, address
-and service count — deterministic. CTest 36/36 and Python 73 (67 run, 6
-skip). This is the first document to read in a new session; it is kept
-current as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-02 after M30 slice 44 — why the relocation pointer is odd:
+the odd value was **never stored** — a write watch over the fault object
+shows it zeroed by the allocator path and pattern-filled byte-wise by a
+transforming copy (no disc region matches those bytes), so the relocate
+family **derived** the odd "pointer" by walking a data buffer as pointer
+tables (live stack: the loop → trampoline 0x00491e80 → 0x00491990-class
+routine 0x00498b28; the reported pc is stale, the translator publishes it
+at halt points only). The stream `+0x94` writers (4 sites) store only
+zeros, heap objects or field copies — none mints odd values — so the
+lookup designated the wrong object (or the right one in an impossible
+state); the shipped game boots on hardware, hence model-fed divergence
+upstream (high confidence). No model change shipped (skipping odd
+relocations would fabricate hardware); pinning the divergent lookup is
+next. CTest 36/36 and Python 73 (67 run, 6 skip). This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1028,16 @@ current as work proceeds. Details live in the linked evidence documents.
   services with the disc
   (`docs/reverse-engineering/m30-slice42-block-cache-and-the-sound-open.md`,
   `docs/decisions/0021-prts-block-cache.md`).
+- M30 slice 44 (2026-10-02): **why the relocation pointer is odd** — the
+  odd value was never stored: a write watch over the fault object shows it
+  zeroed by the allocator path and pattern-filled byte-wise by a
+  transforming copy (no disc region matches), so the relocate family
+  derived it by walking data as pointer tables (live stack reaches
+  0x00498b28 through the 0x00491e80 trampoline; the reported pc is stale).
+  The `+0x94` writers store only zeros, heap objects or field copies, so
+  the lookup designated the wrong object: model-fed divergence upstream
+  (high confidence), no model change shipped
+  (`docs/reverse-engineering/m30-slice44-why-the-pointer-is-odd.md`).
 - M30 slice 43 (2026-10-02): **beyond the step limit — the steady pump and
   the next wall**. The step budget is now a `gt4boot --steps N` flag
   (default unchanged; CTest `gt4boot_steps` pins `--steps 1000`). The
@@ -1051,14 +1059,14 @@ current as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **why the relocation pointer is odd** —
-  the wall past the step budget is an unaligned guest fault at pc
-  0x00491798 (address 0x009cf08f) after 15,010,045 services; find whether
-  the odd structure pointer comes from the game itself or from model-fed
-  data (the direct caller 0x0048fb94 passes the return of 0x00491d90),
-  and the curriculum's remaining units (the OSD configuration services, a
-  counting timer with interrupt delivery, the remaining BIOS services and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **pin the divergent lookup** — capture
+  the dispatcher query (the key handed to 0x004ace58/0x004ae1f8) for the
+  fatal relocate-over-data call and what it should have returned (query
+  logging or console comparison), then fix the model state that
+  misdirects it; and the curriculum's remaining units (the OSD
+  configuration services, a counting timer with interrupt delivery, the
+  remaining BIOS services and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

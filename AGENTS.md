@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-02:
 
-- M0-M30 slice 43 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 44 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -250,14 +250,20 @@ Live state: `docs/STATUS.md`. As of 2026-10-02:
   10x run finds the next wall, an **unaligned fault at pc 0x00491798** (a
   move-relocation routine) on 0x009cf08f after 15,010,045 services,
   deterministic across two runs; the direct caller is 0x0048fb94.
-- Next: M30 slice 44 — **why the relocation pointer is odd**: the wall past
-  the step budget is the unaligned guest fault at pc 0x00491798 (address
-  0x009cf08f) after 15,010,045 services; find whether the odd structure
-  pointer comes from the game itself or from model-fed data (the direct
-  caller 0x0048fb94 passes the return of 0x00491d90). The curriculum's
-  remaining units (the OSD configuration services, a counting timer with
-  interrupt delivery, the remaining BIOS services and the jump-table
-  dispatch) stay listed in `docs/requirements.md`.
+  Slice 44 then shows the odd value was never stored (a write watch over
+  the fault object: allocator-zeroed, pattern-filled by a transforming
+  copy, no disc region matches) — the relocate family derived it by
+  walking data as pointer tables — so the lookup designated the wrong
+  object: model-fed divergence upstream (high confidence), no model change
+  shipped, pinning the divergent lookup is next. CTest 36/36 and Python 73
+  (67 run, 6 skip).
+- Next: M30 slice 45 — **pin the divergent lookup**: capture the dispatcher
+  query (the key handed to 0x004ace58/0x004ae1f8) for the fatal
+  relocate-over-data call and what it should have returned (query logging
+  or console comparison), then fix the model state that misdirects it. The
+  curriculum's remaining units (the OSD configuration services, a counting
+  timer with interrupt delivery, the remaining BIOS services and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
