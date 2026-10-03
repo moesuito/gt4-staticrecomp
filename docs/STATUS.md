@@ -1,16 +1,17 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 20 — marching paused as sterile.
-Legs D16+D17 ran and saved (`ckpt-1880k/1980k.bin`); COUNT wrapped
-mid-D17 across the band with no dispatch (third sweep-miss: D5, D13,
-D17) — firings are lottery tickets, and thread 3 proved each win only
-retires a waiter sterily. The chain files stay; the marching stops
-until an event-side reason restarts it. Next is slice 21: re-census
-every parked thread as delay-timeout vs. event-wait vs. sleep, naming
-the announcer each event-wait needs (the sync-without-async-
-announcement audit). This is the first document to read in a new
-session; it is kept current as work proceeds. Details live in the
-linked evidence documents.
+Updated 2026-10-03 after M32 slice 21 - the announcement audit. All 17
+parked threads classified from the checkpoint (5 delay-timeouts, thread
+2 job-hungry, 11 condvar/sleep event-waits): every announcer exists in
+plumbing (dispatcher, engine completions, thread-2 jobs, WakeupThread
+callers at four engine sites) and every one is silent for lack of
+input - the feared sync-without-async gap does not exist. Three
+Unknowns recorded with leads (thread 3's new sleep, thread 9, main
+thread 1 - the last being the M31 question itself). Next is slice 22:
+pick the cheapest originating event to model (main's wait, the
+0x587b double-wake, or pad if a consumer appears). This is the first
+document to read in a new session; it is kept current as work proceeds.
+Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1033,6 +1034,12 @@ linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 21 (2026-10-03): **the announcement audit**. 17 threads
+  classified (5 delay-timeouts, thread 2 job-hungry, 11 event-waits);
+  every announcer exists and is silent for lack of input — no
+  sync-without-async gap. Three Unknowns with leads (thread 3, thread
+  9, main thread 1 = the M31 question)
+  (`docs/reverse-engineering/m32-slice21-announcement-audit.md`).
 - M32 slice 20 (2026-10-03): **marching paused as sterile**. Legs
   D16+D17 (`ckpt-1880k/1980k.bin`); third wrap-miss (D5, D13, D17) —
   firings are lottery, each win only retires a waiter sterily. Chain
@@ -1266,12 +1273,12 @@ linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — the announcement audit
-  (slice 21)**. Slice 20 proved firings are lottery and retirements
-  sterile, pausing the march: re-census every parked thread as
-  delay-timeout vs. event-wait vs. sleep, naming the announcer each
-  event-wait needs (sync answers without async announcements). M35 pad
-  stays queued (no PADMAN bound at this phase); and the curriculum's
+- Next technical milestone work: **M32 — cheapest originating event
+  (slice 22)**. Slice 21 classified all 17 waiters and negated the
+  announcement gap (every announcer exists, all silent for lack of
+  input): pick the cheapest event to model — main thread 1's wait, the
+  `0x587b` double-wake, or pad if a consumer appears. M35 pad stays
+  queued (no PADMAN bound at this phase); and the curriculum's
   remaining units (the OSD configuration services, the remaining BIOS
   services and the jump-table dispatch) stay listed in
   `docs/requirements.md`.

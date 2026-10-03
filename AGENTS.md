@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50 plus M32 slices 1–20 BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50 plus M32 slices 1–21 BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,10 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: M32 — **the announcement audit (slice 21)**:
-  slice 20 proved firings lottery and retirements sterile, pausing the
-  march; re-census every parked thread (delay-timeout vs. event-wait
-  vs. sleep), naming each event-wait's announcer. The
+- Next: M32 — **cheapest originating event (slice 22)**:
+  slice 21 classified all waiters and negated the announcement gap;
+  pick the cheapest event to model (main's wait, `0x587b` double-wake,
+  or pad). The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
