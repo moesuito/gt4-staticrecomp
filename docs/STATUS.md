@@ -1,19 +1,18 @@
 # Project status
 
-Updated 2026-10-03 after M32 slice 15 - the walk runs constantly; the
-sliver is jumped over. Handler-start counters proved 12,000 timer runs
-per 12k leg with gate, head, and fields all live-correct, yet no
-dispatch; a three-leg poke bracket (same start doesn't reproduce, 3.2k
-near miss, wrap-through silence) plus fresh disassembly of the arm site
-and the dispatcher show the firing sliver is narrower than one frame's
-COUNT advance - consecutive walk runs step clean over it except by
-freak alignment. Verdict: the timeouts are unreachable by time in any
-faithful model; completion must come via cancellation driven by the
-real event. Next is slice 16: identify each wrapper's request from the
-checkpoint stacks to name the reply path worth modeling asynchronously
-(M32's charter). This is the first document to read in a new session;
-it is kept current as work proceeds. Details live in the linked
-evidence documents.
+Updated 2026-10-03 after M32 slice 16 — every completion path mapped.
+By code reading: the unlink is pure list surgery (no signal); four
+unlink callers exist (walk dispatch — the only signaling context,
+re-arm cancel, delete/cancel, update/refresh) and none of the six waits
+suffered cancellation (nodes intact, workers still waiting); the
+iSignalSema endpoint is reachable only via the walk's indirect dispatcher
+call. So the due test plus walk dispatch is the only signaling path in
+the codebase — the paradox is about its inputs/runs, not hidden
+signalers. Next is slice 17: a temporary pc-triggered trace in the
+reference interpreter at `0x005b822c` logging current, target, COUNT,
+overflow, and head per walk test. This is the first document to read in
+a new session; it is kept current as work proceeds. Details live in the
+linked evidence documents.
 
 ## Where we are
 
@@ -1036,6 +1035,14 @@ evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- M32 slice 16 (2026-10-03): **every completion path mapped**. The
+  unlink is pure list surgery; four callers (walk dispatch — the only
+  signaling context — plus re-arm cancel, delete/cancel,
+  update/refresh); no wait suffered cancellation; the signal endpoint
+  is reachable only via the walk's indirect call. Due test + dispatch
+  is the only signaling path — paradox is about inputs/runs, not
+  hidden signalers
+  (`docs/reverse-engineering/m32-slice16-completion-paths.md`).
 - M32 slice 15 (2026-10-03): **the walk runs constantly; the sliver
   is jumped over**. Handler-start counters: 12,000 timer runs per 12k
   leg, gate/head/fields live-correct, no dispatch. Three-leg poke
@@ -1237,14 +1244,14 @@ evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M32 — name each wrapper's request
-  (slice 16)**. Slice 15 proved the walk runs constantly while the
-  firing sliver is narrower than one frame's advance (timeouts
-  unreachable by time; completion must come via cancellation): read
-  each worker's wrapper arguments from the checkpoint stacks to name
-  the reply path worth modeling asynchronously. M35 pad stays queued
-  (no PADMAN bound at this phase); and the curriculum's remaining units
-  (the OSD configuration services, the remaining BIOS services and the
+- Next technical milestone work: **M32 — trace the walk live
+  (slice 17)**. Slice 16 proved due test + dispatch is the only
+  signaling path (unlink callers mapped, no cancellation suffered, no
+  hidden signalers): instrument the reference interpreter with a
+  temporary pc-triggered trace at `0x005b822c` logging current, target,
+  COUNT, overflow, and head per test. M35 pad stays queued (no PADMAN
+  bound at this phase); and the curriculum's remaining units (the OSD
+  configuration services, the remaining BIOS services and the
   jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
