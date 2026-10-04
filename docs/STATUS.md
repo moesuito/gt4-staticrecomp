@@ -1,14 +1,14 @@
 # Project status
 
-Updated 2026-10-03 after slice 29 (decision 0026) — the first
-originating event is specified: one synthesized SIF pump SET_SREG
-packet (reg 1 = 1, live-console bytes) via DMAC-ch5, one-shot at the
-first qualifying idle tick, with a 4-item verification bar headed by
-the load-bearing negative (thread census unchanged). Owner-verified
-the delivery path (pump drain/copy/re-kick/index-mask;
-`0x005ae090` = `-0x78` stub, registered in the model both signs).
-Next is slice 30: implement exactly the specified bytes/cause/
-trigger plus the new tests. This is the
+Updated 2026-10-03 after slice 30 (decision 0026 implemented) —
+the first originating event is live: one synthesized SIF pump
+SET_SREG packet per boot (exact specified bytes/cause/trigger plus
+the table-gate amendment), differentials green incl. 90k with
+`--compare-interpreter`, thread census identical (the tripwire is
+set: the day something wakes, tests fail loudly). Code reviewed
+line by line; owner ran 42/42 CTest + Python 73. Next is slice 31:
+watch the tripwire — chained-replay proof of the one-shot flag plus
+mapping the next waiter the live pump path could consume. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1033,6 +1033,12 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 30 (decision 0026 live, 2026-10-03): **first event
+  implemented, nobody wakes (tripwire set)**. Exact specified
+  bytes/cause/trigger + table-gate amendment; 42/42 CTest (new
+  `gt4boot_originating`, 90k differential); census identical.
+  Owner code-reviewed + gated
+  (`docs/reverse-engineering/m32-slice30-first-event-live.md`).
 - Slice 29 (decision 0026, 2026-10-03): **first originating
   event specified**. Ranked: SIF pump SET_SREG adopted (only
   synthesizable traffic; wakes nobody — pinned by the negative);
@@ -1333,12 +1339,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **implement the first event
-  (slice 30)**. Decision 0026 adopted and owner-verified: synthesize
-  exactly the specified SET_SREG packet/cause/trigger plus the new
-  kernel test and boot-level assertions (register set, census
-  unchanged, differentials green). Then the next originating event.
-  M35 pad stays queued (no PADMAN bound at this phase); and the
+- Next technical milestone work: **watch the tripwire
+  (slice 31)**. Decision 0026 live and owner-gated: prove the
+  one-shot flag across chained-checkpoint replay, and map the next
+  waiter the live pump path could consume (which parked thread is
+  closest to SIF work). Then the second originating event. M35 pad
+  stays queued (no PADMAN bound at this phase); and the
   curriculum's remaining units (the OSD configuration services, the
   remaining BIOS services and the jump-table dispatch) stay listed
   in `docs/requirements.md`.

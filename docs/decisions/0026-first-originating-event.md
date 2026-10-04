@@ -71,6 +71,14 @@ Slice 30 implements ONE synthesized SIF pump packet, exactly:
   reference interpreter) share the kernel and the service sequence,
   so both inject at the same boundary and the differential stays
   green by construction. No host timing may enter the condition.
+- **Amendment (slice 30, implementation evidence):** the first
+  fresh-boot leg showed a drained-but-unhandled packet (count byte
+  cleared, register never written — the pump dispatched into an
+  as-yet-unpopulated table and skipped). The trigger additionally
+  requires the game's dispatch entry for the packet
+  (`[table + 12]`) to be populated, so the one shot is never spent
+  where no consumer can run. Same determinism rule; unit-tested
+  (empty-table hold case).
 - **Observable effects (all model-side or game-read):** pump drains
   (count byte back to 0), `SIFREG[1]` reads 1 at stop, SIF0 CHCR
   shows the re-kick (`STR`), handler chain returns cleanly.

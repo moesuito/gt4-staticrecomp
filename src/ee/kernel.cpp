@@ -1099,6 +1099,60 @@ void Kernel::queue_dmac_completion(std::uint32_t channel) {
     interrupt_queue_.push_back(request);
 }
 
+void Kernel::maybe_send_originating_packet(GuestState& state) {
+    // One shot per boot; a resumed boot that already delivered keeps its
+    // flag through the snapshot below.
+    if (originating_packet_sent_) {
+        return;
+    }
+    // The game must have registered the pump (its DMAC channel-5
+    // handler): without a consumer the bytes would sit unread.
+    bool pump_registered = false;
+    for (const KernelInterruptHandler& registration : dmac_handlers_) {
+        if (registration.cause == sif_channel_dmac) {
+            pump_registered = true;
+        }
+    }
+    if (!pump_registered) {
+        return;
+    }
+    // Additive only: never overwrite live traffic the game queued, and
+    // never deliver into an unpopulated dispatch table (the pump would
+    // drain the packet and skip the empty entry).
+    if (!state.memory().contains(originating_queue_pointer, 4)) {
+        return;
+    }
+    const std::uint32_t queue =
+        state.memory().read_word(originating_queue_pointer) & 0x1fffffffu;
+    constexpr std::size_t packet_span = 24;
+    if (!state.memory().contains(queue, packet_span)) {
+        return;
+    }
+    if (state.memory().read_byte(queue) != 0) {
+        return;
+    }
+    if (!state.memory().contains(originating_dispatch_table, 4)) {
+        return;
+    }
+    const std::uint32_t table =
+        state.memory().read_word(originating_dispatch_table);
+    if (!state.memory().contains(table + originating_dispatch_entry, 4)
+        || state.memory().read_word(table + originating_dispatch_entry) == 0) {
+        return;
+    }
+    // Count byte plus words {0, 1, 0, register, value}: the pump's
+    // table dispatches word 2 (masked) to the SET_SREG register writer,
+    // which stores the value at software register `register`.
+    state.memory().write_byte(queue, originating_packet_count);
+    state.memory().write_word(queue + 4, 0);
+    state.memory().write_word(queue + 8, sif_command_cid_set_sreg & 0x7fffffffu);
+    state.memory().write_word(queue + 12, 0);
+    state.memory().write_word(queue + 16, originating_packet_register);
+    state.memory().write_word(queue + 20, originating_packet_value);
+    queue_dmac_completion(sif_channel_dmac);
+    originating_packet_sent_ = true;
+}
+
 void Kernel::raise_interrupt(std::uint32_t cause) {
     queue_interrupt(cause);
 }
@@ -1163,6 +1217,7 @@ bool Kernel::deliver_idle_interrupt(GuestState& state) {
         // nothing; the driver reports the no-runnable-thread boundary.
         return false;
     }
+    maybe_send_originating_packet(state);
     advance_timers(state);
     // The frame's VBlank joins the queue when a handler is registered.
     for (const KernelInterruptHandler& registration : interrupt_handlers_) {
@@ -1765,6 +1820,7 @@ std::vector<std::uint8_t> Kernel::save_kernel_state() const {
         put_u32(out, block.cursor);
     }
     put_u32(out, next_prts_handle_);
+    put_u32(out, originating_packet_sent_ ? 1u : 0u);
     return out;
 }
 
@@ -1955,6 +2011,14 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
         prts_blocks[handle] = std::move(block);
     }
     const std::uint32_t next_prts_handle = reader.take_u32();
+    // Checkpoints from before decision 0026 end here: they resume with
+    // the packet unsent, which is correct because their queues never
+    // held one. Anything longer must parse exactly.
+    bool originating_packet_sent = false;
+    if (reader.offset != reader.bytes.size()) {
+        originating_packet_sent =
+            take_bool("The kernel snapshot has a bad originating flag");
+    }
     if (reader.offset != reader.bytes.size()) {
         throw std::runtime_error("The kernel snapshot has trailing bytes");
     }
@@ -1990,6 +2054,7 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     next_disc_handle_ = next_disc_handle;
     prts_blocks_ = std::move(prts_blocks);
     next_prts_handle_ = next_prts_handle;
+    originating_packet_sent_ = originating_packet_sent;
 }
 
 std::uint32_t Kernel::answer_disc_volume(GuestState& state,

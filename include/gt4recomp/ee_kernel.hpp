@@ -365,6 +365,19 @@ public:
     static constexpr std::uint32_t sif_command_cid_rpc_end = 0x80000008;
     static constexpr std::uint32_t sif_command_cid_rpc_bind = 0x80000009;
     static constexpr std::uint32_t sif_command_cid_rpc_call = 0x8000000A;
+    // The first originating event (decision 0026): one synthesized SIF
+    // pump packet per boot. The pump reads its queue pointer from the
+    // game's word below; the packet matches what the pump's table
+    // dispatches to the SET_SREG register writer (count byte, then
+    // words {0, 1, 0, register, value}). Delivery also waits for the
+    // game's dispatch entry, so the first packet is never sent into an
+    // unpopulated table.
+    static constexpr std::uint32_t originating_queue_pointer = 0x00886818;
+    static constexpr std::uint32_t originating_dispatch_table = 0x00886824;
+    static constexpr std::uint32_t originating_dispatch_entry = 12;
+    static constexpr std::uint32_t originating_packet_count = 0x18;
+    static constexpr std::uint32_t originating_packet_register = 1;
+    static constexpr std::uint32_t originating_packet_value = 1;
     static constexpr std::uint32_t sif_sreg_rpcinit = 0;
     // The model IOP's scratch region for RPC server state. These are model
     // addresses below the game's image (which starts at 0x00100000), inside
@@ -423,6 +436,12 @@ private:
     // Advances the enabled EE timers by one idle frame and queues their
     // compare interrupts (see the constants above).
     void advance_timers(GuestState& state);
+    // Writes one SET_SREG pump packet and queues its DMAC completion the
+    // first time an idle tick finds the pump handler registered, the
+    // queue empty, and the game's dispatch entry populated (decision
+    // 0026). Pure function of kernel and guest state, so both engines
+    // inject at the same boundary.
+    void maybe_send_originating_packet(GuestState& state);
     // Installs one handler call frame over the saved interrupted context.
     void install_handler_frame(GuestState& state, std::uint32_t cause,
                                std::uint32_t handler,
@@ -534,6 +553,9 @@ private:
     // True between a reset command and the first following register read:
     // the model IOP's reboot completes there (see answer_sif_reset).
     bool sif_reboot_pending_ = false;
+    // Whether the one-shot originating packet was delivered (decision
+    // 0026). Snapshotted below so a resumed boot never replays it.
+    bool originating_packet_sent_ = false;
     // Consecutive idle interrupts without a runnable thread (progress
     // resets the count). The budget only bounds a truly stuck machine; idle
     // interrupts are cheap, so it allows long waits (about an hour of

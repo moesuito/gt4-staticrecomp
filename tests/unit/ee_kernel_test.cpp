@@ -20,8 +20,9 @@ namespace {
 
 constexpr std::uint32_t window_base = 0x00000000;
 // Large enough for the whole low RAM the kernel model reaches (the game's
-// compatibility constants at 0x0065829C and 0x0066829C live above 6 MiB).
-constexpr std::size_t window_size = 0x00700000;
+// compatibility constants at 0x0065829C and 0x0066829C live above 6 MiB;
+// the SIF pump queue and its pointer near 0x00886818 need almost 9 MiB).
+constexpr std::size_t window_size = 0x00900000;
 
 constexpr std::uint32_t root_stack = 0x00100800;
 constexpr std::uint32_t root_stack_size = 0x800;
@@ -89,6 +90,7 @@ int main() {
     const auto check = [&](bool passed, const char* label) {
         if (!passed) { std::cerr << label << '\n'; ++failures; }
     };
+    try {
 
     // SetupThread registers the root, returns the region top and starts it
     // running.
@@ -484,6 +486,121 @@ int main() {
         }
         check(!delivered && deliveries == Kernel::idle_interrupt_budget,
               "the idle budget bounds deliveries that change nothing");
+    }
+
+    // The first originating event (decision 0026): the first idle tick
+    // with the pump handler registered and an empty queue writes one
+    // SET_SREG packet and queues its DMAC completion, once per boot.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        check(setup_root(kernel, state), "originating root ready");
+        state.write_gpr32(4, 5);  // channel: SIF0
+        state.write_gpr32(5, 0x005B0E30);
+        check(kernel.add_dmac_handler(state) == ServiceOutcome::Handled,
+              "originating pump registered");
+        // The queue pointer through the mirror alias, proving the
+        // physical resolution the pump relies on, plus a populated
+        // dispatch entry so the packet has a consumer.
+        state.memory().write_word(0x00886818u, 0x20886740u);
+        state.memory().write_word(0x00886824u, 0x00886000u);
+        state.memory().write_word(0x0088600Cu, 0x005B0850u);
+        check(kernel.pending_interrupts() == 0, "originating queue starts empty");
+        check(kernel.deliver_idle_interrupt(state),
+              "the idle tick delivers the packet completion");
+        check(state.memory().read_byte(0x00886740u) == 0x18
+                  && state.memory().read_word(0x00886744u) == 0
+                  && state.memory().read_word(0x00886748u) == 1
+                  && state.memory().read_word(0x0088674Cu) == 0
+                  && state.memory().read_word(0x00886750u) == 1
+                  && state.memory().read_word(0x00886754u) == 1,
+              "the packet bytes match the decision: count plus {0,1,0,reg,value}");
+        check(kernel.pending_interrupts() == 0,
+              "the completion dispatched immediately to the pump");
+        check(!kernel.deliver_idle_interrupt(state)
+                  && state.memory().read_byte(0x00886740u) == 0x18
+                  && kernel.pending_interrupts() == 0,
+              "the packet is one-shot: no replay, no duplicate");
+    }
+
+    // The trigger's guards: no pump registered, or live traffic in the
+    // queue, means nothing is written and nothing is queued.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        check(setup_root(kernel, state), "guarded root ready");
+        state.memory().write_word(0x00886818u, 0x00886740u);
+        check(!kernel.deliver_idle_interrupt(state)
+                  && kernel.pending_interrupts() == 0
+                  && state.memory().read_byte(0x00886740u) == 0,
+              "without a registered pump nothing fires");
+        state.write_gpr32(4, 5);
+        state.write_gpr32(5, 0x005B0E30);
+        check(kernel.add_dmac_handler(state) == ServiceOutcome::Handled,
+              "guarded pump registered");
+        state.memory().write_byte(0x00886740u, 0x07);
+        check(!kernel.deliver_idle_interrupt(state)
+                  && kernel.pending_interrupts() == 0
+                  && state.memory().read_byte(0x00886740u) == 0x07,
+              "a non-empty queue is never overwritten");
+        state.memory().write_word(0x00886818u, 0x00886740u);
+        state.memory().write_byte(0x00886740u, 0);
+        check(!kernel.deliver_idle_interrupt(state)
+                  && kernel.pending_interrupts() == 0
+                  && state.memory().read_byte(0x00886740u) == 0,
+              "an unpopulated dispatch table holds the packet");
+    }
+
+    // The one-shot flag rides the snapshot: a restored kernel never
+    // replays, and a pre-decision blob (without the trailing word)
+    // loads with the packet unsent.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        check(setup_root(kernel, state), "snapshot root ready");
+        state.write_gpr32(4, 5);
+        state.write_gpr32(5, 0x005B0E30);
+        check(kernel.add_dmac_handler(state) == ServiceOutcome::Handled,
+              "snapshot pump registered");
+        state.memory().write_word(0x00886818u, 0x00886740u);
+        state.memory().write_word(0x00886824u, 0x00886000u);
+        state.memory().write_word(0x0088600Cu, 0x005B0850u);
+        check(kernel.deliver_idle_interrupt(state), "snapshot packet sent");
+        const std::vector<std::uint8_t> blob = kernel.save_kernel_state();
+        Kernel restored;
+        restored.load_kernel_state(blob);
+        check(!restored.deliver_idle_interrupt(state)
+                  && state.memory().read_byte(0x00886740u) == 0x18
+                  && restored.save_kernel_state() == blob,
+              "the restored kernel keeps the one-shot and re-saves identically");
+        std::vector<std::uint8_t> legacy(blob.begin(), blob.end() - 4);
+        Kernel legacy_kernel;
+        legacy_kernel.load_kernel_state(legacy);
+        GuestState legacy_state = make_state();
+        check(setup_root(legacy_kernel, legacy_state), "legacy root ready");
+        legacy_state.write_gpr32(4, 5);
+        legacy_state.write_gpr32(5, 0x005B0E30);
+        check(legacy_kernel.add_dmac_handler(legacy_state)
+                  == ServiceOutcome::Handled,
+              "legacy pump registered");
+        legacy_state.memory().write_word(0x00886818u, 0x00886740u);
+        legacy_state.memory().write_word(0x00886824u, 0x00886000u);
+        legacy_state.memory().write_word(0x0088600Cu, 0x005B0850u);
+        // The blob carries the first delivery's live handler frame, exactly
+        // as a snapshot taken mid-dispatch would: return it first, the way
+        // the driver does after running the handler, so the next delivery
+        // is allowed.
+        ServiceTable legacy_services;
+        legacy_kernel.register_services(legacy_services);
+        const ServiceHandler* legacy_return =
+            legacy_services.find(Kernel::patch_return_service);
+        check(legacy_return != nullptr
+                  && (*legacy_return)(legacy_state) != ServiceOutcome::Unhandled
+                  && legacy_kernel.deferred_call_count() == 0,
+              "legacy handler frame returned");
+        check(legacy_kernel.deliver_idle_interrupt(legacy_state)
+                  && legacy_state.memory().read_byte(0x00886740u) == 0x18,
+              "a pre-decision snapshot loads and still sends once");
     }
 
     // Interrupt and DMA handler registrations are stored and removable;
@@ -1213,5 +1330,14 @@ int main() {
     }
     std::cout << "kernel threads, semaphores and the cooperative scheduler behave as specified\n";
     return 0;
+    } catch (const std::exception& error) {
+        // Headless runs must never hang on a runtime dialog: report an
+        // escaping exception as text instead (slice 30's abort hunt).
+        std::cerr << "UNCAUGHT: " << error.what() << '\n';
+        return 2;
+    } catch (...) {
+        std::cerr << "UNCAUGHT unknown exception\n";
+        return 2;
+    }
 }
 

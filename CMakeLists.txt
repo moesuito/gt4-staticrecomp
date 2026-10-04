@@ -277,6 +277,20 @@ if(BUILD_TESTING)
             set_tests_properties(gt4boot_services PROPERTIES
                 FIXTURES_REQUIRED gt4boot
                 PASS_REGULAR_EXPRESSION "services handled 90000")
+            # The first originating event (decision 0026): a fresh disc
+            # boot delivers the synthesized SIF pump packet, so the pump
+            # queue reads back drained with the packet words, while the
+            # early park census shows nobody woke (threads 1-3 in their
+            # waits, idle boundary). The register write itself is covered
+            # by the ee_kernel unit tests and the parked-frontier
+            # evidence leg: mid-boot game phases may still be settling
+            # the dispatch table, so only the drain is pinned here.
+            add_test(NAME gt4boot_originating
+                COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"
+                        --services 20000 --threads --dump 0x00886740 32)
+            set_tests_properties(gt4boot_originating PROPERTIES
+                FIXTURES_REQUIRED gt4boot
+                PASS_REGULAR_EXPRESSION "00886740: 00000000 00000000 00000001 00000000 00000001 00000001;boundary: syscall 0x00001604 service 0x100;thread 2: status 0x4, wait 2/11")
         else()
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 3000 --compare-interpreter)
