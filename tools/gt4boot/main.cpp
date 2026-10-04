@@ -675,6 +675,7 @@ void usage() {
                  "[--compare-interpreter] [--threads] [--dump ADDRESS LENGTH]\n"
                  "       [--checkpoint-at N PATH] [--resume PATH] [--verify-resume PATH]\n"
                  "       [--checkpoint-every K DIR --keep M [--max-bytes B]] [--quiet]\n"
+                 "       [--strict-rpc]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
                  "  --steps N             stop after N translated calls plus interpreted\n"
@@ -685,6 +686,11 @@ void usage() {
                  "  --compare-interpreter repeat the run in the interpreter and require the\n"
                  "                        stop and the full final state to match\n"
                  "  --threads             print the kernel's thread table after the run\n"
+                 "                        (with the slice-73 RPC inventory)\n"
+                 "  --strict-rpc          stop loudly at the first unknown (SID,\n"
+                 "                        function) RPC pair instead of answering\n"
+                 "                        the silent empty result (default off,\n"
+                 "                        so the boot keeps its behavior)\n"
                  "  --dump ADDRESS LENGTH print LENGTH bytes of guest memory at the stop,\n"
                  "                        eight words per line (both values hexadecimal;\n"
                  "                        may be repeated)\n"
@@ -722,6 +728,9 @@ int wmain(int argc, wchar_t* argv[]) {
     std::uint64_t step_limit = default_step_limit;
     std::filesystem::path core_path;
     bool print_threads = false;
+    // Strict RPC mode (slice 73, P07): off by default so the boot keeps
+    // its current behavior; on, the first unknown pair stops loudly.
+    bool strict_rpc = false;
     // Checkpointing: --checkpoint-at saves after exactly N services (pair
     // with --services N); --resume restarts from a file (leg counters recount
     // from zero); --verify-resume replays both ways and requires identical
@@ -751,6 +760,8 @@ int wmain(int argc, wchar_t* argv[]) {
             compare_interpreter = true;
         } else if (argument == L"--threads") {
             print_threads = true;
+        } else if (argument == L"--strict-rpc") {
+            strict_rpc = true;
         } else if (argument == L"--dump" && index + 2 < argc) {
             const std::uint32_t address = static_cast<std::uint32_t>(
                 std::stoul(argv[++index], nullptr, 16));
@@ -945,6 +956,7 @@ int wmain(int argc, wchar_t* argv[]) {
             // The resumed leg: rebuild identically, apply the snapshot, run
             // the requested extra services.
             Kernel resumed_kernel;
+            resumed_kernel.set_strict_rpc(strict_rpc);
             relink_disc(resumed_kernel);
             ServiceTable resumed_services = make_boot_services(resumed_kernel);
             BootDevices resumed_devices(
@@ -970,6 +982,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 resumed_driver.run(resumed_services, resumed_options);
             // The direct leg: the same total from the entry, uninterrupted.
             Kernel direct_kernel;
+            direct_kernel.set_strict_rpc(strict_rpc);
             relink_disc(direct_kernel);
             ServiceTable direct_services = make_boot_services(direct_kernel);
             BootDevices direct_devices(
@@ -1013,6 +1026,7 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         Kernel driver_kernel;
+        driver_kernel.set_strict_rpc(strict_rpc);
         if (disc_image != nullptr) {
             driver_kernel.set_disc_files(disc_image.get());
         }
@@ -1215,6 +1229,67 @@ int wmain(int argc, wchar_t* argv[]) {
                           << std::setw(8) << sid << std::dec
                           << std::setfill(' ') << '\n';
             }
+            // Slice-73 RPC telemetry (P07): the per-SID bind counts and
+            // the per-(SID, function) call inventory from the real boot
+            // above, with the honest class, the candidate name and the
+            // consumer note. Completion is the synchronous end packet
+            // plus the DMAC channel-5 queueing; no per-pair async
+            // callback is tracked, so callback reads none-tracked.
+            for (const auto& [sid, bind] : driver_kernel.rpc_bind_stats()) {
+                std::cout << "rpc bind: sid 0x" << std::hex
+                          << std::setfill('0') << std::setw(8) << sid
+                          << std::dec << std::setfill(' ')
+                          << " count " << bind.count
+                          << " first-thread " << bind.first_thread
+                          << " first-pc 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << bind.first_pc << std::dec
+                          << std::setfill(' ') << " threads";
+                for (const auto& [thread, count] : bind.counts_by_thread) {
+                    std::cout << " " << thread << "x" << count;
+                }
+                std::cout << '\n';
+            }
+            std::uint64_t rpc_unknown_calls = 0;
+            for (const auto& [key, stats] : driver_kernel.rpc_pair_stats()) {
+                (void)key;
+                const RpcPairClass pair_class =
+                    Kernel::classify_rpc_pair(stats.sid, stats.function);
+                if (pair_class == RpcPairClass::Unknown) {
+                    rpc_unknown_calls += stats.calls;
+                }
+                std::cout << "rpc pair: sid 0x" << std::hex
+                          << std::setfill('0') << std::setw(8) << stats.sid
+                          << " fn 0x" << std::setw(8) << stats.function
+                          << std::dec << std::setfill(' ')
+                          << " calls " << stats.calls << " class "
+                          << Kernel::rpc_pair_class_name(pair_class)
+                          << " candidate \""
+                          << Kernel::rpc_pair_candidate_name(stats.sid)
+                          << "\" threads";
+                for (const auto& [thread, count] : stats.calls_by_thread) {
+                    std::cout << " " << thread << "x" << count;
+                }
+                std::cout << " pcs 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << stats.first_pc << "/0x"
+                          << std::setw(8) << stats.last_pc << std::dec
+                          << std::setfill(' ')
+                          << " send " << stats.first_send_size << "/"
+                          << stats.max_send_size << " recv "
+                          << stats.first_recv_size << "/"
+                          << stats.max_recv_size << " result "
+                          << stats.first_result_size << "/"
+                          << stats.max_result_size << " recvbuf 0x"
+                          << std::hex << std::setfill('0') << std::setw(8)
+                          << stats.first_recv_buffer << std::dec
+                          << std::setfill(' ')
+                          << " completion sync-end-packet+dmac5"
+                          << " callback none-tracked consumer \""
+                          << Kernel::rpc_pair_note(stats.sid, stats.function)
+                          << "\"\n";
+            }
+            std::cout << "rpc inventory: "
+                      << driver_kernel.rpc_pair_stats().size() << " pairs, "
+                      << rpc_unknown_calls << " unknown calls\n";
             // The DMA channel registers: a channel with the STR bit (0x100)
             // still set was started and never completed. MADR/QWC/TADR show
             // the post-transfer state, and the start line counts what the
@@ -1324,6 +1399,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
         if (compare_interpreter) {
             Kernel reference_kernel;
+            reference_kernel.set_strict_rpc(strict_rpc);
             if (disc_image != nullptr) {
                 reference_kernel.set_disc_files(disc_image.get());
             }

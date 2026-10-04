@@ -1047,6 +1047,184 @@ int main() {
               "the liblgdev device sync answers the completed status");
     }
 
+    // Slice-73 RPC telemetry (P07): per-pair classification, call and
+    // bind recording from real packets, and the strict stop. Recording
+    // is observation only: no reply byte changes on either path.
+    {
+        check(Kernel::classify_rpc_pair(0x50434456u, 3u)
+                      == RpcPairClass::ImplementedVerified
+                  && Kernel::classify_rpc_pair(0x53545250u, 7u)
+                         == RpcPairClass::ImplementedVerified
+                  && Kernel::classify_rpc_pair(0x80000006u, 0u)
+                         == RpcPairClass::ImplementedVerified,
+              "disc, cache and file-open pairs are implemented-verified");
+        check(Kernel::classify_rpc_pair(0x80000001u, 0xFFu)
+                      == RpcPairClass::CompatConstant
+                  && Kernel::classify_rpc_pair(0x80000006u, 0xFFu)
+                         == RpcPairClass::CompatConstant
+                  && Kernel::classify_rpc_pair(0x80000400u, 0xFEu)
+                         == RpcPairClass::CompatConstant
+                  && Kernel::classify_rpc_pair(0x80001300u, 0x80001363u)
+                         == RpcPairClass::CompatConstant,
+              "version and status answers are compat constants");
+        check(Kernel::classify_rpc_pair(0x046D046Du, 12u)
+                      == RpcPairClass::ProvisionalExplicit
+                  && Kernel::classify_rpc_pair(0x50434456u, 1u)
+                         == RpcPairClass::ProvisionalExplicit,
+              "partial replies are provisional-explicit");
+        check(Kernel::classify_rpc_pair(0x80000400u, 1u)
+                      == RpcPairClass::Unknown
+                  && Kernel::classify_rpc_pair(0x5042474Du, 8u)
+                         == RpcPairClass::Unknown
+                  && Kernel::classify_rpc_pair(0u, 1u)
+                         == RpcPairClass::Unknown,
+              "unlisted pairs, even on named SIDs, are unknown");
+        check(Kernel::rpc_pair_key(0x80000001u, 0xFFu)
+                      > Kernel::rpc_pair_key(0x80000001u, 0u)
+                  && Kernel::rpc_pair_class_name(RpcPairClass::Unknown) != nullptr
+                  && Kernel::rpc_pair_candidate_name(0x80000400u) != nullptr
+                  && Kernel::rpc_pair_note(0x50434456u, 3u) != nullptr,
+              "pair keys order and every name/note is present");
+    }
+
+    // Calls and binds are recorded with caller, sizes and buffers; the
+    // strict stop names the first unknown pair with its full context.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        check(setup_root(kernel, state), "telemetry root ready");
+        check(!kernel.strict_rpc(), "strict RPC mode is off by default");
+        RegisterBank sif_registers(0x1000F200u, 0x100u);
+        sif_registers.map_into(state.memory());
+        RegisterBank sif0(0x1000C000u, 0x100u);
+        sif0.map_into(state.memory());
+        DmacStatusUnit dmac;
+        dmac.map_into(state.memory());
+        kernel.set_dmac_unit(&dmac);
+        constexpr std::uint32_t packet = 0x00100200;
+        constexpr std::uint32_t descriptors = 0x00100300;
+        constexpr std::uint32_t iop_buffer = 0x00080000;
+        constexpr std::uint32_t ee_buffer = 0x00180000;
+        constexpr std::uint32_t recv_buffer = 0x00181000;
+        state.memory().write_word(packet + 0, 20);
+        state.memory().write_word(packet + 8, 0x80000002u);  // INIT_CMD
+        state.memory().write_word(packet + 16, ee_buffer);
+        state.memory().write_word(descriptors + 0, packet);
+        state.memory().write_word(descriptors + 4, iop_buffer);
+        state.memory().write_word(descriptors + 8, 20);
+        state.memory().write_word(descriptors + 12, 0);
+        state.write_gpr32(4, descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled,
+              "telemetry handshake transfers");
+        state.set_pc(0x00100020u);
+        state.memory().write_word(packet + 0, 64);
+        state.memory().write_word(packet + 8, 0x80000009u);  // RPC_BIND
+        state.memory().write_word(packet + 16, 5);
+        state.memory().write_word(packet + 20, 0x00100500u);
+        state.memory().write_word(packet + 24, 2);
+        state.memory().write_word(packet + 28, 0x00100600u);
+        state.memory().write_word(packet + 32, 0x80000001u);
+        state.memory().write_word(descriptors + 8, 64);
+        state.write_gpr32(4, descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled,
+              "telemetry bind transfers");
+        const std::uint32_t server_handle =
+            state.memory().read_word(ee_buffer + 36);
+        const std::uint32_t server_buffer =
+            state.memory().read_word(ee_buffer + 40);
+        check(server_handle != 0 && server_buffer != 0,
+              "the bind hands out a server");
+        check(kernel.rpc_bind_stats().count(0x80000001u) == 1
+                  && kernel.rpc_bind_stats().at(0x80000001u).count == 1
+                  && kernel.rpc_bind_stats().at(0x80000001u).first_pc
+                         == 0x00100020u
+                  && kernel.rpc_bind_stats().at(0x80000001u).first_thread == 1,
+              "the bind is recorded with caller pc and thread");
+        state.memory().write_word(0x0066829Cu, 0x00275520u);
+        state.memory().write_word(server_buffer + 0, 0xAAAAAAAAu);
+        state.memory().write_word(server_buffer + 4, 0xBBBBBBBBu);
+        const auto send_call = [&](std::uint32_t function,
+                                   std::uint32_t recv_size, std::uint32_t pc,
+                                   std::uint32_t handle) {
+            state.set_pc(pc);
+            state.memory().write_word(packet + 0, 64);
+            state.memory().write_word(packet + 8, 0x8000000Au);  // RPC_CALL
+            state.memory().write_word(packet + 16, 7);
+            state.memory().write_word(packet + 20, 0x00100500u);
+            state.memory().write_word(packet + 24, 3);
+            state.memory().write_word(packet + 28, 0x00100600u);
+            state.memory().write_word(packet + 32, function);
+            state.memory().write_word(packet + 36, 8);
+            state.memory().write_word(packet + 40, recv_buffer);
+            state.memory().write_word(packet + 44, recv_size);
+            state.memory().write_word(packet + 52, handle);
+            state.write_gpr32(4, descriptors);
+            state.write_gpr32(5, 1);
+            return kernel.sif_set_dma(state);
+        };
+        check(send_call(0xFFu, 8u, 0x00100040u, server_handle)
+                      == ServiceOutcome::Handled
+                  && state.memory().read_word(recv_buffer) == 0x00275520u,
+              "a known version call answers its constant");
+        const std::uint64_t version_key =
+            Kernel::rpc_pair_key(0x80000001u, 0xFFu);
+        check(kernel.rpc_pair_stats().count(version_key) == 1,
+              "the known call is recorded");
+        const RpcPairStats& version_stats =
+            kernel.rpc_pair_stats().at(version_key);
+        check(version_stats.calls == 1
+                  && version_stats.calls_by_thread.count(1) == 1
+                  && version_stats.first_pc == 0x00100040u
+                  && version_stats.last_pc == 0x00100040u
+                  && version_stats.first_send_size == 8
+                  && version_stats.first_recv_size == 8
+                  && version_stats.first_result_size == 8
+                  && version_stats.first_recv_buffer == recv_buffer
+                  && version_stats.first_request_words[0] == 0xAAAAAAAAu
+                  && version_stats.first_request_words[1] == 0xBBBBBBBBu,
+              "the known call carries caller, sizes, buffer and request");
+        check(send_call(0xFFu, 8u, 0x00100060u, server_handle)
+                      == ServiceOutcome::Handled
+                  && kernel.rpc_pair_stats().at(version_key).calls == 2
+                  && kernel.rpc_pair_stats().at(version_key).last_pc
+                         == 0x00100060u,
+              "a repeat call counts and moves the last pc");
+        check(send_call(0x1234u, 0u, 0x00100080u, server_handle)
+                      == ServiceOutcome::Handled,
+              "an unknown call answers empty by default");
+        const std::uint64_t unknown_key =
+            Kernel::rpc_pair_key(0x80000001u, 0x1234u);
+        check(kernel.rpc_pair_stats().count(unknown_key) == 1
+                  && kernel.rpc_pair_stats().at(unknown_key).calls == 1
+                  && kernel.rpc_pair_stats().at(unknown_key).first_result_size
+                         == 0,
+              "the unknown call is recorded as an empty result");
+        kernel.set_strict_rpc(true);
+        check(kernel.strict_rpc(), "strict RPC mode turns on");
+        check(send_call(0xFFu, 8u, 0x001000A0u, server_handle)
+                      == ServiceOutcome::Handled,
+              "a known call still answers under strict mode");
+        bool strict_fired = false;
+        try {
+            send_call(0x1234u, 0u, 0x001000C0u, server_handle);
+        } catch (const std::runtime_error& error) {
+            const std::string_view message(error.what());
+            strict_fired = message.find("Strict RPC stop") != std::string_view::npos
+                && message.find("0x80000001") != std::string_view::npos
+                && message.find("0x001000C0") != std::string_view::npos;
+        }
+        check(strict_fired,
+              "strict mode stops the unknown pair with sid and pc");
+        kernel.set_strict_rpc(false);
+        check(send_call(0x1234u, 0u, 0x001000E0u, server_handle)
+                      == ServiceOutcome::Handled,
+              "default mode answers empty again after strict turns off");
+    }
+
     // Handled services advance the model's clock (decision 0016): a counting
     // timer moves by its clock's share of one millisecond, its compare fires
     // when the counter crosses COMP, and a frame of slices raises VBlank.

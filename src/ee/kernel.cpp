@@ -2,6 +2,7 @@
 
 #include "gt4recomp/disc_image.hpp"
 
+#include <cstdio>
 #include <stdexcept>
 #include <utility>
 
@@ -267,6 +268,278 @@ std::vector<std::uint32_t> Kernel::sif_server_sids() const {
         sids.push_back(sid);
     }
     return sids;
+}
+
+const std::map<std::uint64_t, RpcPairStats>& Kernel::rpc_pair_stats() const noexcept {
+    return rpc_pair_stats_;
+}
+
+const std::map<std::uint32_t, RpcBindStats>& Kernel::rpc_bind_stats() const noexcept {
+    return rpc_bind_stats_;
+}
+
+std::uint64_t Kernel::rpc_pair_key(std::uint32_t sid,
+                                   std::uint32_t function) noexcept {
+    return (static_cast<std::uint64_t>(sid) << 32) | function;
+}
+
+RpcPairClass Kernel::classify_rpc_pair(std::uint32_t sid,
+                                       std::uint32_t function) noexcept {
+    // Slice 73 (P07): every answered pair names its evidence; anything
+    // else is Unknown, including SIDs the Opus map identifies by constant
+    // only (plan section 4.4, item 6: a found SID is a candidate, not a
+    // protocol). Two model replies carry disputed identities (0x80000400
+    // and 0x80001300): the values are pinned by the game's own checks,
+    // the server names are not, and the notes below say so.
+    if (sid == 0x50434456u) {
+        if (function == 2u || function == 3u || function == 4u) {
+            return RpcPairClass::ImplementedVerified;
+        }
+        if (function == 1u) {
+            return RpcPairClass::ProvisionalExplicit;
+        }
+        return RpcPairClass::Unknown;
+    }
+    if (sid == 0x53545250u) {
+        if (function == 3u || function == 4u || function == 7u) {
+            return RpcPairClass::ImplementedVerified;
+        }
+        return RpcPairClass::Unknown;
+    }
+    if (sid == 0x80000006u) {
+        if (function == 0u) {
+            return RpcPairClass::ImplementedVerified;
+        }
+        if (function == 0xFFu) {
+            return RpcPairClass::CompatConstant;
+        }
+        return RpcPairClass::Unknown;
+    }
+    if (sid == 0x80000001u) {
+        if (function == 0xFFu) {
+            return RpcPairClass::CompatConstant;
+        }
+        return RpcPairClass::Unknown;
+    }
+    if (sid == 0x80000400u) {
+        if (function == 0xFEu) {
+            return RpcPairClass::CompatConstant;
+        }
+        return RpcPairClass::Unknown;
+    }
+    if (sid == 0x80001300u) {
+        if (function == 0x80001363u) {
+            return RpcPairClass::CompatConstant;
+        }
+        return RpcPairClass::Unknown;
+    }
+    if (sid == 0x046D046Du) {
+        if (function == 12u || function == 4u) {
+            return RpcPairClass::ProvisionalExplicit;
+        }
+        return RpcPairClass::Unknown;
+    }
+    return RpcPairClass::Unknown;
+}
+
+const char* Kernel::rpc_pair_class_name(RpcPairClass value) noexcept {
+    switch (value) {
+        case RpcPairClass::ImplementedVerified: return "implemented-verified";
+        case RpcPairClass::CompatConstant: return "compat-constant";
+        case RpcPairClass::AbsenceOrFailure: return "absence-or-failure";
+        case RpcPairClass::ProvisionalExplicit: return "provisional-explicit";
+        case RpcPairClass::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+const char* Kernel::rpc_pair_candidate_name(std::uint32_t sid) noexcept {
+    // Established means the boot shows registration, buffers, completion
+    // and a consumer; candidate means the Opus map names the SID by
+    // constant only. Disputed means the model comment and the Opus map
+    // disagree and the boot has not settled it.
+    switch (sid) {
+        case 0u: return "unbound handle (no server)";
+        case 0x50434456u: return "PCDV (PDICDVD primary, established)";
+        case 0x50636476u: return "Pcdv secondary channel (Opus candidate)";
+        case 0x53545250u: return "PRTS block cache (PDISTR, established)";
+        case 0x4D504731u: return "MPG1 MPEG stream (PDISTR, Opus candidate)";
+        case 0x4D504732u: return "MPG2 MPEG stream (PDISTR, Opus candidate)";
+        case 0x5042474Du: return "PBGM stream (PDISTR, Opus candidate)";
+        case 0x564F4943u: return "VOIC stream (PDISTR, Opus candidate)";
+        case 0x53505550u: return "SPUP audio (PDISPU2, Opus candidate)";
+        case 0x53505554u: return "SPUT audio transfer (PDISPU2, Opus candidate)";
+        case 0x80000001u: return "SIF manager (SIFMAN, established)";
+        case 0x80000006u: return "FILEIO file server (established)";
+        case 0x80000592u: return "SCE-range numeric SID (unidentified)";
+        // String-coded worker servers seen bound in the boot: the four
+        // ASCII bytes are read mechanically (the same reading that spells
+        // PCDV, MPG1 or SPUP), but no function, buffer or consumer is
+        // pinned, so they stay unidentified candidates.
+        case 0x424B5550u: return "BKUP worker (string-coded, unidentified)";
+        case 0x45535550u: return "ESUP worker (string-coded, unidentified)";
+        case 0x50555354u: return "PUST worker (string-coded, unidentified)";
+        case 0x534D5550u: return "SMUP worker (string-coded, unidentified)";
+        case 0x54485550u: return "THUP worker (string-coded, unidentified)";
+        case 0x62737550u: return "bsuP worker (string-coded, unidentified)";
+        case 0x80000400u: return "MCSERV memory card vs fileio/CDVD (identity disputed)";
+        case 0x80001300u: return "DBCMAN pad bus vs disc subsystem (identity disputed)";
+        case 0x8000131Cu: return "DBC socket channel A (Opus candidate)";
+        case 0x8000131Eu: return "DBC socket channel B port 0 (Opus candidate)";
+        case 0x8000131Fu: return "DBC socket channel B port 1 (Opus candidate)";
+        case 0x046D046Du: return "LGDEV Logitech device (banner in memory)";
+        default: break;
+    }
+    return "unidentified SID";
+}
+
+const char* Kernel::rpc_pair_note(std::uint32_t sid,
+                                  std::uint32_t function) noexcept {
+    if (sid == 0x50434456u) {
+        if (function == 2u) {
+            return "volume registration: checksum recomputed from the image, "
+                   "loud on mismatch; engine keeps the size at task+0xEC";
+        }
+        if (function == 3u) {
+            return "sector read {LBA, size, dest} from the image; library "
+                   "checks CD001 at 0x00548E90 and walks the ISO";
+        }
+        if (function == 4u) {
+            return "registered volume space size from the image; zeros "
+                   "before registration read as failure and retry";
+        }
+        if (function == 1u) {
+            return "completion-poll shape (send 64/recv 0) from slice 17; "
+                   "payload unpinned, empty reply";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    if (sid == 0x53545250u) {
+        if (function == 3u) {
+            return "block read {LBA, size, flags} cached under a fresh "
+                   "handle; the client needs non-zero to build its object";
+        }
+        if (function == 4u || function == 7u) {
+            return "copy-out {handle, dest, size} from the handle cursor; "
+                   "consumer 0x44D6BC writes stream+0x94 file object";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    if (sid == 0x80000006u) {
+        if (function == 0u) {
+            return "open path at +8, reply {handle, size} from the ISO; "
+                   "handle 0 is valid not-found (0x005B6D6C)";
+        }
+        if (function == 0xFFu) {
+            return "version: four bytes at 0x0065829C (3000), checked "
+                   "at 0x005B6368";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    if (sid == 0x80000001u) {
+        if (function == 0xFFu) {
+            return "version: word at 0x0066829C plus flag 2";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    if (sid == 0x80000400u) {
+        if (function == 0xFEu) {
+            return "minimums 0x20A/0x20E accepted at 0x0058D674/0x0058D694; "
+                   "module identity disputed (MCSERV vs fileio)";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    if (sid == 0x80001300u) {
+        if (function == 0x80001363u) {
+            return "first word 0x310 accepted by (word>>4)==0x31 at "
+                   "0x0058F840; server identity disputed (DBCMAN vs disc)";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    if (sid == 0x046D046Du) {
+        if (function == 12u) {
+            return "completed status 0x010B2400 accepted at 0x005608BC; "
+                   "remaining 572 bytes zero, unverified";
+        }
+        if (function == 4u) {
+            return "media signature 0x046DC298 at +0x5C for 0x0055585C; "
+                   "remaining bytes zero, unverified";
+        }
+        return "silent empty result; strict mode stops here";
+    }
+    return "silent empty result; strict mode stops here";
+}
+
+void Kernel::set_strict_rpc(bool strict) noexcept {
+    strict_rpc_ = strict;
+}
+
+bool Kernel::strict_rpc() const noexcept {
+    return strict_rpc_;
+}
+
+void Kernel::record_rpc_bind(GuestState& state, std::uint32_t sid) {
+    RpcBindStats& stats = rpc_bind_stats_[sid];
+    if (stats.count == 0) {
+        stats.first_pc = state.pc();
+        stats.first_thread = current_thread_id_;
+    }
+    ++stats.count;
+    ++stats.counts_by_thread[current_thread_id_];
+}
+
+void Kernel::record_rpc_call(GuestState& state, std::uint32_t sid,
+                             std::uint32_t function, std::uint32_t send_size,
+                             std::uint32_t recv_buffer, std::uint32_t recv_size,
+                             std::uint32_t server_buffer,
+                             std::uint32_t result_size) {
+    const std::uint64_t key = rpc_pair_key(sid, function);
+    RpcPairStats& stats = rpc_pair_stats_[key];
+    const std::uint32_t pc = state.pc();
+    if (stats.calls == 0) {
+        stats.sid = sid;
+        stats.function = function;
+        stats.first_pc = pc;
+        stats.first_send_size = send_size;
+        stats.first_recv_size = recv_size;
+        stats.first_result_size = result_size;
+        stats.first_recv_buffer = recv_buffer;
+        stats.max_send_size = send_size;
+        stats.max_recv_size = recv_size;
+        stats.max_result_size = result_size;
+        if (server_buffer != 0 && state.memory().contains(server_buffer, 16)) {
+            for (std::uint32_t index = 0; index < 4; ++index) {
+                stats.first_request_words[index] =
+                    state.memory().read_word(server_buffer + index * 4);
+            }
+        }
+    }
+    ++stats.calls;
+    ++stats.calls_by_thread[current_thread_id_];
+    stats.last_pc = pc;
+    if (send_size > stats.max_send_size) {
+        stats.max_send_size = send_size;
+    }
+    if (recv_size > stats.max_recv_size) {
+        stats.max_recv_size = recv_size;
+    }
+    if (result_size > stats.max_result_size) {
+        stats.max_result_size = result_size;
+    }
+    bool seen = false;
+    for (const std::uint32_t sample : stats.sample_pcs) {
+        if (sample == pc) {
+            seen = true;
+            break;
+        }
+    }
+    if (!seen) {
+        if (stats.sample_pcs.size() < 4) {
+            stats.sample_pcs.push_back(pc);
+        } else {
+            ++stats.extra_pcs;
+        }
+    }
 }
 
 const std::vector<KernelInterruptHandler>& Kernel::interrupt_handlers() const noexcept {
@@ -2371,6 +2644,7 @@ void Kernel::answer_sif_rpc_bind(GuestState& state, std::uint32_t command_buffer
         throw std::runtime_error(
             "The EE command buffer is outside the mapped guest memory");
     }
+    record_rpc_bind(state, sid);
     // Answer with the SIFRPC end packet (SifRpcRendPkt_t, 64 bytes) the
     // client's bind wait is waiting for: its own handles echoed back plus a
     // non-null server handle and the model server's buffers.
@@ -2413,6 +2687,36 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
     const std::uint32_t sd = state.memory().read_word(command_buffer + 52);
     const SifRpcServer* server = find_sif_server_by_handle(sd);
     const std::uint32_t sid = server == nullptr ? 0 : server->sid;
+    const std::uint32_t send_size =
+        state.memory().read_word(command_buffer + 36);
+    const std::uint32_t server_buffer =
+        server == nullptr ? 0 : server->buffer;
+    if (strict_rpc_
+        && classify_rpc_pair(sid, rpc_number) == RpcPairClass::Unknown) {
+        // Strict RPC mode (slice 73, P07): the first unknown pair stops
+        // with the full call context instead of answering the silent
+        // empty result. The default path below is untouched, so the boot
+        // keeps its current behavior unless --strict-rpc is set.
+        std::uint32_t request_words[4] = {};
+        if (server_buffer != 0
+            && state.memory().contains(server_buffer, 16)) {
+            for (std::uint32_t index = 0; index < 4; ++index) {
+                request_words[index] =
+                    state.memory().read_word(server_buffer + index * 4);
+            }
+        }
+        char context[320];
+        std::snprintf(context, sizeof context,
+                      "Strict RPC stop: unknown pair sid 0x%08X fn 0x%08X "
+                      "at pc 0x%08X thread %u (send %u recv %u recvbuf "
+                      "0x%08X server-buf 0x%08X sd 0x%08X request %08X "
+                      "%08X %08X %08X)",
+                      sid, rpc_number, state.pc(), current_thread_id_,
+                      send_size, recv_size, recvbuf, server_buffer, sd,
+                      request_words[0], request_words[1], request_words[2],
+                      request_words[3]);
+        throw std::runtime_error(context);
+    }
     if (sid == 0x50434456u && server != nullptr) {
         if (rpc_number == 2u) {
             // The volume registration: {descriptor block, checksum}.
@@ -2451,6 +2755,10 @@ void Kernel::answer_sif_rpc_call(GuestState& state, std::uint32_t command_buffer
         result_size = sif_rpc_result(state, sid, rpc_number, result,
                                      sizeof result);
     }
+    // Telemetry only: the reply bytes above are untouched, so the default
+    // behavior is identical with or without an observer.
+    record_rpc_call(state, sid, rpc_number, send_size, recvbuf, recv_size,
+                    server_buffer, result_size);
     if (recv_size > 0) {
         if (!state.memory().contains(recvbuf, recv_size)) {
             throw std::runtime_error(

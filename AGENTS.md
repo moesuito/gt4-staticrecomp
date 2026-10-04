@@ -304,9 +304,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **P07 RPC telemetry (slice 73)**:
-  per-(SID, function) inventory with implementation classes, strict
-  unknown-stop mode, behind the green differential. Order adapts only
+- Next: **P08 comparator widening (slice 74)**:
+  canonical snapshots (scratchpad, threads, semaphores, devices) in
+  the differential, still behind the green 90k run. Order adapts only
   on new evidence, with cause recorded. Tripwires armed; M35's promoter
   watched. The
   curriculum's remaining units (the OSD configuration services, a

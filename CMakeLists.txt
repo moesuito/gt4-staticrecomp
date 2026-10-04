@@ -323,6 +323,15 @@ if(BUILD_TESTING)
             set_tests_properties(gt4boot_originating PROPERTIES
                 FIXTURES_REQUIRED gt4boot
                 PASS_REGULAR_EXPRESSION "00886740: 00000000 00000000 00000001 00000000 00000001 00000001;boundary: syscall 0x00001604 service 0x100;thread 2: status 0x4, wait 2/11")
+            # Slice-73 RPC telemetry (P07): a short disc run prints the
+            # per-pair inventory, pinned here at its 400-service shape
+            # (one compat-constant pair, zero unknown calls).
+            add_test(NAME gt4boot_rpc_inventory
+                COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"
+                        --services 400 --threads)
+            set_tests_properties(gt4boot_rpc_inventory PROPERTIES
+                FIXTURES_REQUIRED gt4boot
+                PASS_REGULAR_EXPRESSION "rpc pair: sid 0x80000001 fn 0x000000ff;rpc inventory: 1 pairs, 0 unknown calls")
         else()
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 3000 --compare-interpreter)
@@ -332,6 +341,14 @@ if(BUILD_TESTING)
                 FIXTURES_REQUIRED gt4boot
                 PASS_REGULAR_EXPRESSION "services handled 3000"
                 FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at")
+            # Slice-73 RPC telemetry (P07) without a disc: the same short
+            # run prints the same 400-service inventory shape.
+            add_test(NAME gt4boot_rpc_inventory
+                COMMAND gt4boot "${GT4_LOCAL_CORE}"
+                        --services 400 --threads)
+            set_tests_properties(gt4boot_rpc_inventory PROPERTIES
+                FIXTURES_REQUIRED gt4boot
+                PASS_REGULAR_EXPRESSION "rpc pair: sid 0x80000001 fn 0x000000ff;rpc inventory: 1 pairs, 0 unknown calls")
         endif()
         # The stop-time memory view: a short run prints the requested guest
         # words, so the --dump option stays exercised.

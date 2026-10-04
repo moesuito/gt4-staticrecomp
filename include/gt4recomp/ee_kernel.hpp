@@ -75,6 +75,49 @@ struct KernelSemaphore {
     std::uint32_t option = 0;
 };
 
+// How one (SID, function) RPC pair is classified (slice 73, P07). The
+// labels are observation only: they never change a reply. Names from the
+// Opus SID map are candidates until a pair shows registration, buffers,
+// completion and a consumer in the boot (plan section 4.4, item 6).
+enum class RpcPairClass {
+    ImplementedVerified,   // real data path, consumed by the game
+    CompatConstant,        // compatibility constant the game's check accepts
+    AbsenceOrFailure,      // valid absence or failure answer, modeled
+    ProvisionalExplicit,   // partial answer, explicitly unverified rest
+    Unknown                // no model beyond the empty result
+};
+
+// One observed (SID, function) pair: counts, callers, sizes and samples.
+// Telemetry only: it never enters the snapshot blob, so checkpoints keep
+// their compatibility identity and the differential stays exact.
+struct RpcPairStats {
+    std::uint32_t sid = 0;
+    std::uint32_t function = 0;
+    std::uint64_t calls = 0;
+    std::map<std::uint32_t, std::uint64_t> calls_by_thread;
+    std::uint32_t first_pc = 0;
+    std::uint32_t last_pc = 0;
+    std::vector<std::uint32_t> sample_pcs;
+    std::uint32_t extra_pcs = 0;
+    std::uint32_t first_send_size = 0;
+    std::uint32_t max_send_size = 0;
+    std::uint32_t first_recv_size = 0;
+    std::uint32_t max_recv_size = 0;
+    std::uint32_t first_result_size = 0;
+    std::uint32_t max_result_size = 0;
+    std::uint32_t first_recv_buffer = 0;
+    std::uint32_t first_request_words[4] = {};
+};
+
+// One bound SID: how often the game bound it and who bound it first.
+// Telemetry only, like the pair stats above.
+struct RpcBindStats {
+    std::uint64_t count = 0;
+    std::uint32_t first_pc = 0;
+    std::uint32_t first_thread = 0;
+    std::map<std::uint32_t, std::uint64_t> counts_by_thread;
+};
+
 // One thread plus its saved register context. The context's pc is where the
 // thread resumes; a running thread's live registers are in GuestState.
 struct KernelThread {
@@ -333,6 +376,28 @@ public:
     [[nodiscard]] const std::vector<KernelSemaphore>& semaphores() const noexcept;
     // The SIF RPC servers the game has bound, sorted by sid.
     [[nodiscard]] std::vector<std::uint32_t> sif_server_sids() const;
+    // The RPC telemetry of slice 73 (P07): per-(SID, function) call
+    // stats and per-SID bind stats from the real boot, observation
+    // only. Sorted by key/sid; empty when nothing ran yet.
+    [[nodiscard]] const std::map<std::uint64_t, RpcPairStats>& rpc_pair_stats() const noexcept;
+    [[nodiscard]] const std::map<std::uint32_t, RpcBindStats>& rpc_bind_stats() const noexcept;
+    // The pair key: the sid in the high half, the function below it.
+    static std::uint64_t rpc_pair_key(std::uint32_t sid, std::uint32_t function) noexcept;
+    // The honest per-pair classification and its short evidence note:
+    // the consumer and the check that pins the label. Unknown pairs
+    // name the Opus-map candidate, explicitly as a candidate.
+    static RpcPairClass classify_rpc_pair(std::uint32_t sid,
+                                          std::uint32_t function) noexcept;
+    static const char* rpc_pair_class_name(RpcPairClass value) noexcept;
+    static const char* rpc_pair_candidate_name(std::uint32_t sid) noexcept;
+    static const char* rpc_pair_note(std::uint32_t sid,
+                                     std::uint32_t function) noexcept;
+    // Strict RPC mode: the first unknown pair stops loudly with the full
+    // call context instead of answering the silent empty result. Off by
+    // default, so the boot keeps its current behavior; gt4boot turns it
+    // on only with --strict-rpc.
+    void set_strict_rpc(bool strict) noexcept;
+    [[nodiscard]] bool strict_rpc() const noexcept;
     [[nodiscard]] const std::vector<KernelInterruptHandler>& interrupt_handlers() const noexcept;
     [[nodiscard]] const std::vector<KernelInterruptHandler>& dmac_handlers() const noexcept;
     // The guest handler a SetSyscall installed for the number, or zero.
@@ -560,6 +625,14 @@ private:
     // acknowledgement the game's command-layer init spins on (decision 0015).
     void answer_sif_set_sreg(GuestState& state, std::uint32_t command_buffer,
                              std::uint32_t size);
+    // Records one bind and one call into the telemetry maps. Read-only
+    // against the guest: no reply byte changes, so the differential and
+    // the checkpoints never see them.
+    void record_rpc_bind(GuestState& state, std::uint32_t sid);
+    void record_rpc_call(GuestState& state, std::uint32_t sid,
+                         std::uint32_t function, std::uint32_t send_size,
+                         std::uint32_t recv_buffer, std::uint32_t recv_size,
+                         std::uint32_t server_buffer, std::uint32_t result_size);
 
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
@@ -646,6 +719,12 @@ private:
     std::uint32_t ee_command_buffer_ = 0;
     std::map<std::uint32_t, SifRpcServer> sif_rpc_servers_;
     std::string sif_iop_image_;
+    // Slice-73 RPC telemetry (P07): observation only, never serialized
+    // into the snapshot blob and never compared by the differential.
+    // Strict mode stops the first unknown pair loudly; off by default.
+    std::map<std::uint64_t, RpcPairStats> rpc_pair_stats_;
+    std::map<std::uint32_t, RpcBindStats> rpc_bind_stats_;
+    bool strict_rpc_ = false;
     // True between a reset command and the first following register read:
     // the model IOP's reboot completes there (see answer_sif_reset).
     bool sif_reboot_pending_ = false;
