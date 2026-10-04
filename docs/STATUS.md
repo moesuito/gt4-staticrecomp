@@ -1,12 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 81 (traffic design, DRAFT 0037) — no
-single deliverable event releases W_B: unlock ordered as sequence +
-ranked candidates (phase-step first, but both tables have zero static
-referrers — first deliverable is the walker hunt D5); 8 fabrications
-prohibited; falsifiable acceptances set. 53/53 + Python 73
-owner-gated. Next: slice 82, walker hunt (who reads the table
-pointer). This is the
+Updated 2026-10-04 after slice 82 (walker hunt, D5 closed) — the
+walker is 0x005BC4C8 (arg-less, self-fed from immediates, not
+BSS/arg/stack): one early-boot pass walks 370 BUILD wrappers
+descending (table2[59..0] incl. BUILD #27, then table1[309..0]) behind
+a one-shot guard with a single startup caller; the 5M census shows
+every target exactly once, TEARDOWN zero, flag spent — the BUILD
+trigger already fired and cannot re-fire here. 53/53 + Python 73.
+Next: slice 83 per owner order (D2/D4 live-boot or reference legs).
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1051,6 +1053,20 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
+- Slice 82 (walker hunt, 2026-10-04): **D5 closed, BUILD trigger
+  named**. One 370-word run (-1 gate + 310 table1 + 60 table2, all
+  a0=1 BUILD wrappers); walker self-fed from immediates (BSS/arg/stack
+  corrected); one-shot guard + single startup caller; 5M census once
+  each, TEARDOWN zero, flag spent — re-fire impossible on this horizon
+  (`docs/reverse-engineering/slice82-walker-hunt.md`).
+- Slice 82 (walker, 2026-10-04): **D5 closed, BUILD spent**.
+  Walker 0x005BC4C8 + one-shot guard, 370 BUILDs once, TEARDOWN zero.
+  Shapes owner-verified. Owner-checked
+  (`docs/reverse-engineering/slice82-walker-hunt.md`).
+- Slice 82 (walker, 2026-10-04): **D5 closed, BUILD spent**.
+  Walker 0x005BC4C8 + one-shot guard, 370 BUILDs once, TEARDOWN zero.
+  Shapes owner-verified. Owner-checked
+  (`docs/reverse-engineering/slice82-walker-hunt.md`).
 - Slice 81 (design, 2026-10-04): **no savior packet**.
   Ordered unlock + ranked candidates + 8 prohibitions; first job is
   the walker hunt. Owner-checked
