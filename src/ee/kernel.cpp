@@ -1,6 +1,7 @@
 #include "gt4recomp/ee_kernel.hpp"
 
 #include "gt4recomp/disc_image.hpp"
+#include "gt4recomp/ee_compare.hpp"
 
 #include <cstdio>
 #include <stdexcept>
@@ -2469,6 +2470,410 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     prts_blocks_ = std::move(prts_blocks);
     next_prts_handle_ = next_prts_handle;
     originating_packet_sent_ = originating_packet_sent;
+}
+
+std::optional<std::string> Kernel::describe_kernel_difference(
+    const Kernel& other) const {
+    // One helper per value shape; the first mismatch wins, so every
+    // check below runs only while no difference is recorded yet.
+    std::string difference;
+    const auto fail32 = [&](const std::string& field, std::uint32_t left,
+                            std::uint32_t right) {
+        if (left != right && difference.empty()) {
+            difference = "kernel " + field + ": left " + hex_text(left)
+                + ", right " + hex_text(right);
+        }
+    };
+    const auto fail_signed = [&](const std::string& field, std::int32_t left,
+                                 std::int32_t right) {
+        if (left != right && difference.empty()) {
+            difference = "kernel " + field + ": left "
+                + std::to_string(left) + ", right " + std::to_string(right);
+        }
+    };
+    const auto find_thread = [](const std::vector<KernelThread>& threads,
+                                std::uint32_t id) {
+        for (const KernelThread& thread : threads) {
+            if (thread.id == id) {
+                return &thread;
+            }
+        }
+        return static_cast<const KernelThread*>(nullptr);
+    };
+    if (threads_.size() != other.threads_.size()) {
+        return "kernel thread count: left "
+            + std::to_string(threads_.size()) + ", right "
+            + std::to_string(other.threads_.size());
+    }
+    for (const KernelThread& thread : threads_) {
+        const KernelThread* match = find_thread(other.threads_, thread.id);
+        if (match == nullptr) {
+            return "kernel thread " + std::to_string(thread.id)
+                + " missing on the right";
+        }
+        const std::string owner = "thread " + std::to_string(thread.id);
+        fail32(owner + " status", thread.status, match->status);
+        fail32(owner + " function", thread.function, match->function);
+        fail32(owner + " stack", thread.stack, match->stack);
+        fail32(owner + " stack size", thread.stack_size, match->stack_size);
+        fail32(owner + " gp", thread.gp, match->gp);
+        fail_signed(owner + " initial priority", thread.initial_priority,
+                    match->initial_priority);
+        fail_signed(owner + " current priority", thread.current_priority,
+                    match->current_priority);
+        fail32(owner + " attr", thread.attr, match->attr);
+        fail32(owner + " option", thread.option, match->option);
+        fail32(owner + " wait type", thread.wait_type, match->wait_type);
+        fail32(owner + " wait id", thread.wait_id, match->wait_id);
+        fail32(owner + " wakeup count", thread.wakeup_count,
+               match->wakeup_count);
+        if (difference.empty()) {
+            if (const std::optional<std::string> context =
+                    compare_contexts(thread.context, match->context,
+                                     ("kernel " + owner + " saved context")
+                                         .c_str())) {
+                return context;
+            }
+        }
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    for (const KernelThread& thread : other.threads_) {
+        if (find_thread(threads_, thread.id) == nullptr) {
+            return "kernel thread " + std::to_string(thread.id)
+                + " missing on the left";
+        }
+    }
+    const auto find_semaphore =
+        [](const std::vector<KernelSemaphore>& semaphores, std::uint32_t id) {
+            for (const KernelSemaphore& semaphore : semaphores) {
+                if (semaphore.id == id) {
+                    return &semaphore;
+                }
+            }
+            return static_cast<const KernelSemaphore*>(nullptr);
+        };
+    if (semaphores_.size() != other.semaphores_.size()) {
+        return "kernel semaphore count: left "
+            + std::to_string(semaphores_.size()) + ", right "
+            + std::to_string(other.semaphores_.size());
+    }
+    for (const KernelSemaphore& semaphore : semaphores_) {
+        const KernelSemaphore* match =
+            find_semaphore(other.semaphores_, semaphore.id);
+        if (match == nullptr) {
+            return "kernel semaphore " + std::to_string(semaphore.id)
+                + " missing on the right";
+        }
+        const std::string owner =
+            "semaphore " + std::to_string(semaphore.id);
+        fail_signed(owner + " count", semaphore.count, match->count);
+        fail_signed(owner + " max count", semaphore.max_count,
+                    match->max_count);
+        fail_signed(owner + " init count", semaphore.init_count,
+                    match->init_count);
+        fail_signed(owner + " wait threads", semaphore.wait_threads,
+                    match->wait_threads);
+        fail32(owner + " attr", semaphore.attr, match->attr);
+        fail32(owner + " option", semaphore.option, match->option);
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    for (const KernelSemaphore& semaphore : other.semaphores_) {
+        if (find_semaphore(semaphores_, semaphore.id) == nullptr) {
+            return "kernel semaphore " + std::to_string(semaphore.id)
+                + " missing on the left";
+        }
+    }
+    fail32("next thread id", next_thread_id_, other.next_thread_id_);
+    fail32("next semaphore id", next_semaphore_id_,
+           other.next_semaphore_id_);
+    fail32("current thread id", current_thread_id_,
+           other.current_thread_id_);
+    if (syscall_table_ready_ != other.syscall_table_ready_) {
+        return std::string("kernel syscall table ready: left ")
+            + (syscall_table_ready_ ? "set" : "clear") + ", right "
+            + (other.syscall_table_ready_ ? "set" : "clear");
+    }
+    for (std::uint32_t index = 0; index < syscall_table_entries; ++index) {
+        if (patched_handlers_[index] != other.patched_handlers_[index]) {
+            return "kernel syscall patch " + std::to_string(index)
+                + ": left " + hex_text(patched_handlers_[index])
+                + ", right " + hex_text(other.patched_handlers_[index]);
+        }
+    }
+    fail32("osd config", osd_config_, other.osd_config_);
+    for (std::size_t index = 0; index < osd_config2_.size(); ++index) {
+        if (osd_config2_[index] != other.osd_config2_[index]) {
+            return "kernel osd config2 byte " + std::to_string(index)
+                + ": left " + hex_byte(osd_config2_[index]) + ", right "
+                + hex_byte(other.osd_config2_[index]);
+        }
+    }
+    if (gs_imr_ != other.gs_imr_ && difference.empty()) {
+        difference = "kernel gs imr: left " + hex_text64(gs_imr_)
+            + ", right " + hex_text64(other.gs_imr_);
+    }
+    if (deferred_calls_.size() != other.deferred_calls_.size()) {
+        return "kernel deferred call count: left "
+            + std::to_string(deferred_calls_.size()) + ", right "
+            + std::to_string(other.deferred_calls_.size());
+    }
+    for (std::size_t index = 0; index < deferred_calls_.size(); ++index) {
+        const DeferredCall& call = deferred_calls_[index];
+        const DeferredCall& match = other.deferred_calls_[index];
+        const std::string owner =
+            "deferred call " + std::to_string(index);
+        const auto kind_name = [](DeferredCall::Kind kind) {
+            return kind == DeferredCall::Kind::Interrupt ? "interrupt"
+                                                        : "patch";
+        };
+        if (call.kind != match.kind && difference.empty()) {
+            difference = "kernel " + owner + " kind: left "
+                + kind_name(call.kind) + ", right "
+                + kind_name(match.kind);
+        }
+        fail32(owner + " resume pc", call.resume_pc, match.resume_pc);
+        fail32(owner + " caller ra", call.caller_ra, match.caller_ra);
+        fail32(owner + " thread id", call.thread_id, match.thread_id);
+        fail32(owner + " cause", call.cause, match.cause);
+        if (call.handlers.size() != match.handlers.size()
+            && difference.empty()) {
+            difference = "kernel " + owner + " handler count: left "
+                + std::to_string(call.handlers.size()) + ", right "
+                + std::to_string(match.handlers.size());
+        } else {
+            for (std::size_t handler = 0;
+                 handler < call.handlers.size() && difference.empty();
+                 ++handler) {
+                fail32(owner + " handler " + std::to_string(handler),
+                       call.handlers[handler].handler,
+                       match.handlers[handler].handler);
+                fail32(owner + " handler " + std::to_string(handler)
+                           + " argument",
+                       call.handlers[handler].argument,
+                       match.handlers[handler].argument);
+            }
+        }
+        if (call.next_handler != match.next_handler && difference.empty()) {
+            difference = "kernel " + owner + " next handler: left "
+                + std::to_string(call.next_handler) + ", right "
+                + std::to_string(match.next_handler);
+        }
+        if (difference.empty()) {
+            if (const std::optional<std::string> context = compare_contexts(
+                    call.context, match.context,
+                    ("kernel " + owner + " saved context").c_str())) {
+                return context;
+            }
+        }
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    fail32("next handler id", next_handler_id_, other.next_handler_id_);
+    if (sif_software_registers_.size()
+            != other.sif_software_registers_.size()) {
+        return "kernel SIF software register count: left "
+            + std::to_string(sif_software_registers_.size()) + ", right "
+            + std::to_string(other.sif_software_registers_.size());
+    }
+    for (const auto& [index, value] : sif_software_registers_) {
+        const auto found = other.sif_software_registers_.find(index);
+        if (found == other.sif_software_registers_.end()) {
+            return "kernel SIF software register " + hex_text(index)
+                + " missing on the right";
+        }
+        fail32("SIF software register " + hex_text(index), value,
+               found->second);
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    if (interrupt_queue_.size() != other.interrupt_queue_.size()) {
+        return "kernel interrupt queue length: left "
+            + std::to_string(interrupt_queue_.size()) + ", right "
+            + std::to_string(other.interrupt_queue_.size());
+    }
+    for (std::size_t index = 0; index < interrupt_queue_.size(); ++index) {
+        const InterruptRequest& request = interrupt_queue_[index];
+        const InterruptRequest& match = other.interrupt_queue_[index];
+        const std::string owner =
+            "interrupt queue entry " + std::to_string(index);
+        const auto queue_kind_name = [](InterruptRequest::Kind kind) {
+            return kind == InterruptRequest::Kind::Dmac ? "dmac" : "intc";
+        };
+        if (request.kind != match.kind && difference.empty()) {
+            difference = "kernel " + owner + " kind: left "
+                + queue_kind_name(request.kind) + ", right "
+                + queue_kind_name(match.kind);
+        }
+        fail32(owner + " number", request.number, match.number);
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    const auto compare_handlers = [&](const char* list,
+                                      const std::vector<KernelInterruptHandler>&
+                                          left,
+                                      const std::vector<KernelInterruptHandler>&
+                                          right)
+        -> std::optional<std::string> {
+        if (left.size() != right.size()) {
+            return "kernel " + std::string(list) + " count: left "
+                + std::to_string(left.size()) + ", right "
+                + std::to_string(right.size());
+        }
+        for (std::size_t index = 0; index < left.size(); ++index) {
+            const std::string owner =
+                std::string(list) + " " + std::to_string(left[index].id);
+            if (left[index].id != right[index].id
+                || left[index].cause != right[index].cause
+                || left[index].handler != right[index].handler
+                || left[index].argument != right[index].argument) {
+                if (left[index].cause != right[index].cause) {
+                    return "kernel " + owner + " cause: left "
+                        + hex_text(left[index].cause) + ", right "
+                        + hex_text(right[index].cause);
+                }
+                if (left[index].handler != right[index].handler) {
+                    return "kernel " + owner + " handler: left "
+                        + hex_text(left[index].handler) + ", right "
+                        + hex_text(right[index].handler);
+                }
+                if (left[index].argument != right[index].argument) {
+                    return "kernel " + owner + " argument: left "
+                        + hex_text(left[index].argument) + ", right "
+                        + hex_text(right[index].argument);
+                }
+                return "kernel " + owner + " registration order differs";
+            }
+        }
+        return std::nullopt;
+    };
+    if (const std::optional<std::string> handlers = compare_handlers(
+            "interrupt handler", interrupt_handlers_,
+            other.interrupt_handlers_)) {
+        return handlers;
+    }
+    if (const std::optional<std::string> handlers = compare_handlers(
+            "DMAC handler", dmac_handlers_, other.dmac_handlers_)) {
+        return handlers;
+    }
+    fail32("next DMA id", next_dma_id_, other.next_dma_id_);
+    if (sif_ready_ != other.sif_ready_) {
+        return std::string("kernel SIF ready: left ")
+            + (sif_ready_ ? "set" : "clear") + ", right "
+            + (other.sif_ready_ ? "set" : "clear");
+    }
+    fail32("EE command buffer", ee_command_buffer_,
+           other.ee_command_buffer_);
+    if (sif_rpc_servers_.size() != other.sif_rpc_servers_.size()) {
+        return "kernel SIF server count: left "
+            + std::to_string(sif_rpc_servers_.size()) + ", right "
+            + std::to_string(other.sif_rpc_servers_.size());
+    }
+    for (const auto& [sid, server] : sif_rpc_servers_) {
+        const auto found = other.sif_rpc_servers_.find(sid);
+        if (found == other.sif_rpc_servers_.end()) {
+            return "kernel SIF server " + hex_text(sid)
+                + " missing on the right";
+        }
+        const std::string owner = "SIF server " + hex_text(sid);
+        fail32(owner + " handle", server.handle, found->second.handle);
+        fail32(owner + " buffer", server.buffer, found->second.buffer);
+        fail32(owner + " connection buffer", server.connection_buffer,
+               found->second.connection_buffer);
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    if (sif_iop_image_ != other.sif_iop_image_) {
+        return "kernel IOP image: left \"" + sif_iop_image_
+            + "\", right \"" + other.sif_iop_image_ + "\"";
+    }
+    if (sif_reboot_pending_ != other.sif_reboot_pending_) {
+        return std::string("kernel SIF reboot pending: left ")
+            + (sif_reboot_pending_ ? "set" : "clear") + ", right "
+            + (other.sif_reboot_pending_ ? "set" : "clear");
+    }
+    fail32("idle interrupt count", idle_interrupts_,
+           other.idle_interrupts_);
+    fail32("service clock accumulator", busclk_accumulator_,
+           other.busclk_accumulator_);
+    for (std::uint32_t index = 0; index < 4; ++index) {
+        fail32("service clock remainder " + std::to_string(index),
+               timer_remainders_[index], other.timer_remainders_[index]);
+    }
+    fail32("disc volume LBA", disc_volume_lba_, other.disc_volume_lba_);
+    if (disc_files_by_handle_.size() != other.disc_files_by_handle_.size()) {
+        return "kernel disc file count: left "
+            + std::to_string(disc_files_by_handle_.size()) + ", right "
+            + std::to_string(other.disc_files_by_handle_.size());
+    }
+    for (const auto& [handle, path] : disc_files_by_handle_) {
+        const auto found = other.disc_files_by_handle_.find(handle);
+        if (found == other.disc_files_by_handle_.end()) {
+            return "kernel disc file handle " + std::to_string(handle)
+                + " missing on the right";
+        }
+        if (path != found->second) {
+            return "kernel disc file handle " + std::to_string(handle)
+                + ": left \"" + path + "\", right \"" + found->second
+                + "\"";
+        }
+    }
+    fail32("next disc handle", next_disc_handle_,
+           other.next_disc_handle_);
+    if (prts_blocks_.size() != other.prts_blocks_.size()) {
+        return "kernel block cache entry count: left "
+            + std::to_string(prts_blocks_.size()) + ", right "
+            + std::to_string(other.prts_blocks_.size());
+    }
+    for (const auto& [handle, block] : prts_blocks_) {
+        const auto found = other.prts_blocks_.find(handle);
+        if (found == other.prts_blocks_.end()) {
+            return "kernel block cache handle " + std::to_string(handle)
+                + " missing on the right";
+        }
+        const std::string owner =
+            "block cache handle " + std::to_string(handle);
+        fail32(owner + " LBA", block.lba, found->second.lba);
+        if (block.data.size() != found->second.data.size()
+            && difference.empty()) {
+            difference = "kernel " + owner + " size: left "
+                + std::to_string(block.data.size()) + ", right "
+                + std::to_string(found->second.data.size());
+        } else {
+            for (std::size_t offset = 0;
+                 offset < block.data.size() && difference.empty();
+                 ++offset) {
+                if (block.data[offset] != found->second.data[offset]) {
+                    difference = "kernel " + owner + " byte "
+                        + std::to_string(offset) + ": left "
+                        + hex_byte(block.data[offset]) + ", right "
+                        + hex_byte(found->second.data[offset]);
+                }
+            }
+        }
+        fail32(owner + " cursor", block.cursor, found->second.cursor);
+        if (!difference.empty()) {
+            return difference;
+        }
+    }
+    fail32("next block cache handle", next_prts_handle_,
+           other.next_prts_handle_);
+    if (originating_packet_sent_ != other.originating_packet_sent_) {
+        return std::string("kernel originating packet sent: left ")
+            + (originating_packet_sent_ ? "set" : "clear") + ", right "
+            + (other.originating_packet_sent_ ? "set" : "clear");
+    }
+    if (!difference.empty()) {
+        return difference;
+    }
+    return std::nullopt;
 }
 
 std::uint32_t Kernel::answer_disc_volume(GuestState& state,

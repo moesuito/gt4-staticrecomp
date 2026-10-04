@@ -1,12 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 73 (P07 RPC telemetry, decision 0035
-accepted): per-(SID, function) observation with honest classes and an
-opt-in strict stop, no reply byte changed; strict stop verified live
-by owner (exit 1 at 0x80000592/fn 0 with full context); default boot
-byte-identical. 52/52 genuine green + Python 73 owner-gated, binaries
-freshness-checked. Next: P08 comparator widening (slice 74) behind
-the green differential. This is the
+Updated 2026-10-04 after slice 74 (P08 widened comparator, decision
+0036 accepted): the differential compares canonical snapshots field
+by field (registers, all RAM regions incl. scratchpad, kernel
+tables, 19 device banks) and names the first divergence; blind-spot
+fixtures green in the new ee_compare suite; 90k differential still
+green under the wider lens. 53/53 + Python 73 owner-gated, binaries
+freshness-checked, new files ASCII-clean. Next: P09 fresh prefix +
+independent observation (slice 75). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1046,6 +1047,9 @@ proceeds. Details live in the linked evidence documents.
   translation_model 2, WILL_FAIL removed, decision 0034 accepted
   (`docs/reverse-engineering/slice72-optiona-prototype.md`,
   `docs/decisions/0034-delivery-granularity-contract.md`).
+- Slice 74 (P08, 2026-10-04): **widened comparator**.
+  Canonical snapshots, first-divergence diagnosis, ee_compare suite.
+  Owner-checked (`docs/decisions/0036-p08-widened-state-comparison.md`).
 - Slice 73 (P07, 2026-10-04): **RPC telemetry + strict mode**.
   Per-pair classes, all-4-kernels flag, inventory test; strict verified
   live by owner. No reply changed. Owner-checked

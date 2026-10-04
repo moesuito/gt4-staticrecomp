@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -334,6 +335,24 @@ public:
     // never serialized. Exposed for unit tests and the checkpoint tooling.
     [[nodiscard]] std::vector<std::uint8_t> save_kernel_state() const;
     void load_kernel_state(std::span<const std::uint8_t> bytes);
+    // Observation only (decision 0036, PLAN.md P08): names the first
+    // semantic field where this kernel differs from another, or empty
+    // when they match. The walk covers exactly what save_kernel_state
+    // serializes, so the two must grow together: threads with their
+    // saved contexts, semaphores, the id counters and the running
+    // thread, the syscall patches, OSD and GS state, the deferred-call
+    // stack, the handler tables, the pending queue, the SIF/RPC servers
+    // and registers, the service-clock leftovers, the disc handles and
+    // the block-cache entries with their cursors. Host pointers the
+    // boot relinks (disc sources, device units, the service table),
+    // the diagnostic RPC telemetry (never serialized) and the
+    // strict-mode config flag are not guest state and never compared.
+    // Order is incidental nowhere: maps compare by key, threads and
+    // semaphores by id; the handler chains, the pending queue and the
+    // deferred stack keep their order because dispatch reads them in
+    // order. Never touches the guest and never changes either side.
+    [[nodiscard]] std::optional<std::string> describe_kernel_difference(
+        const Kernel& other) const;
     // Answers the game's CD driver volume registration (sid 0x50434456,
     // RPC 2): the request is {block, checksum}, where the checksum is the
     // library's index-weighted byte sum (0x00548D20) over the 0x800-byte

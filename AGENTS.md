@@ -304,11 +304,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **P08 comparator widening (slice 74)**:
-  canonical snapshots (scratchpad, threads, semaphores, devices) in
-  the differential, still behind the green 90k run. Order adapts only
-  on new evidence, with cause recorded. Tripwires armed; M35's promoter
-  watched. The
+- Next: **P09 fresh prefix + independent observation (slice 75)**:
+  new boot from the entry under the widened lens, first divergence
+  vs the reference hunt. Order adapts only on new evidence, with
+  cause recorded. Tripwires armed; M35's promoter watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

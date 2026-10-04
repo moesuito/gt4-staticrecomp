@@ -25,6 +25,7 @@ add_library(gt4recomp_decode STATIC
     src/ee/functions.cpp
     src/ee/state.cpp
     src/ee/checkpoint.cpp
+    src/ee/compare.cpp
     src/ee/interpreter.cpp
     src/ee/driver.cpp
     src/ee/services.cpp
@@ -94,6 +95,9 @@ if(BUILD_TESTING)
     add_executable(ee_checkpoint_tests tests/unit/ee_checkpoint_test.cpp)
     target_link_libraries(ee_checkpoint_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_checkpoint COMMAND ee_checkpoint_tests)
+    add_executable(ee_compare_tests tests/unit/ee_compare_test.cpp)
+    target_link_libraries(ee_compare_tests PRIVATE gt4recomp_decode)
+    add_test(NAME ee_compare COMMAND ee_compare_tests)
     add_executable(ee_device_tests tests/unit/ee_device_test.cpp)
     target_link_libraries(ee_device_tests PRIVATE gt4recomp_decode)
     add_test(NAME ee_device COMMAND ee_device_tests)

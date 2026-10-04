@@ -13,6 +13,7 @@
 #include "gt4build_info.hpp"
 #include "gt4recomp/disc_image.hpp"
 #include "gt4recomp/ee_checkpoint.hpp"
+#include "gt4recomp/ee_compare.hpp"
 #include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_driver.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
@@ -30,6 +31,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -215,6 +217,36 @@ void restore_banks(BootDevices& devices,
     devices.spr_dma.restore_registers(banks[16]);
     devices.intc.restore_registers(banks[17]);
     devices.sio.restore_registers(banks[18]);
+}
+
+// The snapshot_banks order as diagnostic labels: the comparator matches
+// banks by name, so these only name the diagnosis, never the semantics.
+const std::vector<std::string>& bank_names() {
+    static const std::vector<std::string> names = {
+        "timer", "dmac", "sif0", "sif", "gif", "vif0", "vif1",
+        "vif0-fifo", "vif1-fifo", "gif-fifo", "ipu", "ipu-fifo",
+        "vif0-dma", "vif1-dma", "gif-dma", "ipu-port", "spr", "intc",
+        "sio",
+    };
+    return names;
+}
+
+// The same observation snapshot_banks takes, with the labels above, for
+// the widened differential. Still observation only: registering a value
+// reads device storage, never a guest MMIO access.
+std::vector<NamedBank> snapshot_named_banks(const BootDevices& devices) {
+    const std::vector<BankRegisters> banks = snapshot_banks(devices);
+    const std::vector<std::string>& names = bank_names();
+    if (banks.size() != names.size()) {
+        throw std::runtime_error(
+            "The bank snapshot outgrew its diagnostic labels");
+    }
+    std::vector<NamedBank> named;
+    named.reserve(banks.size());
+    for (std::size_t index = 0; index < banks.size(); ++index) {
+        named.push_back({names[index], banks[index]});
+    }
+    return named;
 }
 
 std::vector<std::uint8_t> read_file_bytes(const std::filesystem::path& path) {
@@ -554,49 +586,24 @@ std::uint64_t memory_digest(const GuestState& state) {
     return hash;
 }
 
-// Every piece of guest state the boot can change, plus the memory digest.
-bool states_match(const GuestState& left, const GuestState& right) {
-    for (std::uint8_t index = 0; index < 32; ++index) {
-        if (left.read_gpr64(index) != right.read_gpr64(index)
-            || left.read_gpr_high64(index) != right.read_gpr_high64(index)
-            || left.read_fpr(index) != right.read_fpr(index)
-            || left.read_cp0(index) != right.read_cp0(index)) {
-            std::cerr << "state differs at register " << static_cast<unsigned>(index) << '\n';
-            return false;
-        }
-        for (std::uint8_t lane = 0; lane < 4; ++lane) {
-            if (left.read_vf_lane(index, lane) != right.read_vf_lane(index, lane)) {
-                std::cerr << "VU0 VF" << static_cast<unsigned>(index) << " lane "
-                          << static_cast<unsigned>(lane) << " differs\n";
-                return false;
-            }
-        }
-        if (left.read_vi(index) != right.read_vi(index)) {
-            std::cerr << "VU0 VI" << static_cast<unsigned>(index) << " differs\n";
-            return false;
-        }
-    }
-    for (std::uint8_t lane = 0; lane < 4; ++lane) {
-        if (left.read_acc_lane(lane) != right.read_acc_lane(lane)) {
-            std::cerr << "VU0 accumulator lane " << static_cast<unsigned>(lane)
-                      << " differs\n";
-            return false;
-        }
-    }
-    if (left.hi() != right.hi() || left.lo() != right.lo()
-        || left.hi1() != right.hi1() || left.lo1() != right.lo1()
-        || left.fpu_accumulator() != right.fpu_accumulator()
-        || left.fpu_control() != right.fpu_control()
-        || left.shift_amount_cache() != right.shift_amount_cache()
-        || left.vu0_clip_flag() != right.vu0_clip_flag()
-        || left.vu0_mac_flag() != right.vu0_mac_flag()
-        || left.vu0_status_flag() != right.vu0_status_flag()
-        || left.pc() != right.pc()) {
-        std::cerr << "state differs in HI/LO, the FPU, VU0 flags, the shift cache or the pc\n";
-        return false;
-    }
-    if (memory_digest(left) != memory_digest(right)) {
-        std::cerr << "state differs in the guest memory window\n";
+// Every piece of guest state the boot can change: the live registers,
+// every mapped RAM region (main memory, the scratchpad, the GS block),
+// the kernel tables (threads with their saved contexts, semaphores,
+// handlers, the pending queue, SIF/RPC state, the service-clock
+// leftovers, disc and block-cache handles) and every device bank.
+// The old comparator only covered the live registers and the main RAM
+// window, so a scratchpad-only, semaphore-only or device-register-only
+// divergence passed blind; the widened one names the first divergent
+// component. Observation only: nothing here changes either side.
+bool states_match(const GuestState& left_state, const Kernel& left_kernel,
+                  const BootDevices& left_devices,
+                  const GuestState& right_state, const Kernel& right_kernel,
+                  const BootDevices& right_devices) {
+    const std::optional<std::string> difference = compare_full_states(
+        left_state, left_kernel, snapshot_named_banks(left_devices),
+        right_state, right_kernel, snapshot_named_banks(right_devices));
+    if (difference.has_value()) {
+        std::cerr << "state differs at " << *difference << '\n';
         return false;
     }
     return true;
@@ -1016,7 +1023,8 @@ int wmain(int argc, wchar_t* argv[]) {
                           << std::setfill(' ') << '\n';
                 throw std::runtime_error("Resumed and direct stops differ");
             }
-            if (!states_match(resumed_state, direct_state)) {
+            if (!states_match(resumed_state, resumed_kernel, resumed_devices,
+                              direct_state, direct_kernel, direct_devices)) {
                 throw std::runtime_error("Resumed and direct states differ");
             }
             std::cout << "resume states identical (" << total_services
@@ -1439,13 +1447,15 @@ int wmain(int argc, wchar_t* argv[]) {
                           << reference.boundary.pc << std::dec << std::setfill(' ') << '\n';
                 return 1;
             }
-            if (!states_match(driver_state, reference_state)) {
+            if (!states_match(driver_state, driver_kernel, driver_devices,
+                              reference_state, reference_kernel,
+                              reference_devices)) {
                 std::cerr << "the driver and the interpreter states differ\n";
                 return 1;
             }
             std::cout << "interpreter: " << reference.interpreted_steps
-                      << " instructions, state identical (registers, HI/LO, FPU, VU0, "
-                         "CP0, pc, memory digest)\n";
+                      << " instructions, state identical (registers, RAM "
+                         "regions, kernel, device banks)\n";
         }
         return 0;
     } catch (const std::exception& error) {
