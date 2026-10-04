@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 75 (P09 fresh prefix + IOP-image fix)
-— differential green to 800k under the P08 lens; the one red find
-(resume disagreed on the SIF IOP image) was a one-word self-move bug
-in load_kernel_state, fixed with a falsified regression test and a
-green 3000+400 verify-resume; stationary phase to 1M (no new pairs,
-no natural wakeups). 53/53 + Python 73 owner-gated, binaries
-freshness-checked. Next: slice 76, march the fresh prefix further
-with new checkpoints + inventory per stop. This is the
+Updated 2026-10-04 after slice 76 (march + inventory to 5M) — fresh
+legs at 1.2/1.5/2/3/4M repeat the known set exactly (22 pairs, same
+census, T2 0x0382); at 5M the first in-cycle stop (iSignalSema,
+thread 3 on sema 768103) and the first NATURAL wake on resume+2000
+(blocked→live, back to idle); the 9-service mix is identical at
+3k/3M/5M, so the stationary phase is a limit cycle from 3k, not a
+new regime at 5M. 53/53 + Python 73 owner-gated. Next: slice 77,
+identify the 5M wake's signaler (sema-768103 writer hunt). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1047,6 +1047,9 @@ proceeds. Details live in the linked evidence documents.
   translation_model 2, WILL_FAIL removed, decision 0034 accepted
   (`docs/reverse-engineering/slice72-optiona-prototype.md`,
   `docs/decisions/0034-delivery-granularity-contract.md`).
+- Slice 76 (march, 2026-10-04): **stationary to 5M, first natural
+  wake**. Limit cycle since 3k; 5M in-cycle stop + wake on resume.
+  Owner-checked (`docs/reverse-engineering/slice76-march-inventory.md`).
 - Slice 75 (P09, 2026-10-04): **fresh prefix + IOP-image fix**.
   Green to 800k; one-word self-move fixed, falsified regression,
   3000+400 verify green. Owner-checked
