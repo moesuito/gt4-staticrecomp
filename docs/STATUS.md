@@ -1,11 +1,10 @@
 # Project status
 
-Updated 2026-10-04 after slice 50 (fifteenth item) — the
-M17–M21 advanced-control arc is now a worked explanation (dual-
-identity slots, COP0/traps/shifts, trap slots + eret, two
-verified modules; M27/M28/M29 as pointers). Owner checked
-representation refs + voice. Next is slice 51: the M22–M24 VU0-
-macro arc lesson. This is the
+Updated 2026-10-04 after slice 51 (sixteenth item) — the
+M22–M24 VU0-macro arc is now a worked explanation (register
+file, moves, full macro set, trapping/parallel arithmetic down
+to 4 words; M25 as pointer). Owner checked code + voice. Next
+is slice 52: the M25–M29 scale-up arc lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1030,6 +1029,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 51 (lesson, 2026-10-04): **M22–M24 VU0-macro arc
+  written**. Register file, full macro set, trapping arithmetic
+  to 4 words. Owner-checked
+  (`docs/lessons/m22-m24-vu0-macro.md`).
 - Slice 50 (lesson, 2026-10-04): **M17–M21 advanced
   control written**. Dual-identity slots, COP0/traps, 57-function
   module; later slices as pointers. Owner-checked
@@ -1424,8 +1427,8 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 51)**. Fifteen items committed and owner-checked;
-  next the M22–M24 VU0-macro arc. Tripwires armed; M35's
+  (slice 52)**. Sixteen items committed and owner-checked;
+  next the M25–M29 scale-up arc. Tripwires armed; M35's
   promoter watched; and the curriculum's remaining units (a
   counting timer with interrupt delivery and the jump-table
   dispatch) stay listed in `docs/requirements.md`.
