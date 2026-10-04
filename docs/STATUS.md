@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 53 (eighteenth item) — the
-M14 live-observation arc is now a worked explanation (channel
-without touching the game, byte-identical text image, savestate
-anchor, consumption history with adoption-to-correction). Owner
-checked sources + voice. Next is slice 54: the checkpoint-system
-lesson (slices C1–C3 + decisions 0022/0024). This is the
-first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after slice 54 (nineteenth item) — the
+checkpoint system is now a worked explanation (map-first design,
+C1/C2/C3 snapshots, clean-stop hooks, chained replay proof,
+tolerant flag, unimplemented autosave labeled). Owner checked
+plan + voice. The lessons backlog is exhausted; next
+designation goes to the owner (options in the summary). This is
+the first document to read in a new session; it is kept current
+as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1030,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 54 (lesson, 2026-10-04): **checkpoint system
+  written**. Map-first, C1/C2/C3, clean-stop hooks, chained
+  proof, autosave labeled unbuilt. Owner-checked
+  (`docs/lessons/checkpoint-system.md`). Lessons backlog
+  EXHAUSTED — next designation with the owner.
 - Slice 53 (lesson, 2026-10-04): **M14 live observation
   written**. Read-only channel, identical image, anchor,
   adoption-to-correction. Owner-checked
@@ -1435,13 +1440,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the lessons backlog
-  (slice 54)**. Eighteen items committed and owner-checked;
-  next the checkpoint-system lesson (slices C1–C3 + decisions
-  0022/0024). Tripwires armed; M35's promoter watched; and the
-  curriculum's remaining units (a counting timer with interrupt
-  delivery and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **designation with the
+  owner**. Lessons backlog exhausted (19 items, all owner-checked);
+  event work parked behind tripwires; scout parked. Tripwires
+  armed; M35's promoter watched; and the curriculum's remaining
+  units (a counting timer with interrupt delivery and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
