@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 37 (second lesson) — the M30
-SIF/RPC arc is now a worked explanation (register/DMA layer,
-seeded IOP, first injected interrupt, RPC replies, peripheral
-windows, idle VBlank to 3,000 identical services; 0026 correction
-explicit). Owner checked fidelity + voice. Next is slice 38: the
-thread-scheduler + kernel-patches lesson. This is the
+Updated 2026-10-04 after slice 38 (third lesson) — the
+scheduler + kernel-patches foundation is now a worked explanation
+(four states, two switch rules, semaphore contract with aliases,
+synthetic table + return stub + KSEG0 alias; scope honestly ends
+pre-payoff). Owner checked refs + voice. Next is slice 39: the
+timer/OSD arc lesson (slices 5–6 + decisions 0007/0008). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1030,6 +1030,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 38 (lesson, 2026-10-04): **scheduler + kernel
+  patches written**. Four states, two switch rules, semaphore
+  contract, synthetic table + stub + KSEG0; scope ends pre-payoff.
+  Owner-checked (`docs/lessons/m30-scheduler-patches.md`).
 - Slice 37 (lesson, 2026-10-04): **M30 SIF/RPC arc
   written**. Register/DMA layer, seeded IOP, first injected
   interrupt, RPC replies, peripheral windows, idle VBlank to 3,000
@@ -1372,12 +1376,11 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 38)**. Two lessons committed and owner-checked; next the
-  thread-scheduler + kernel-patches foundation (slices 3–4 +
-  decisions 0005/0006). Tripwires armed; M35's promoter watched;
-  and the curriculum's remaining units (a counting timer with
-  interrupt delivery and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+  (slice 39)**. Three lessons committed and owner-checked; next
+  the timer/OSD arc (slices 5–6 + decisions 0007/0008). Tripwires
+  armed; M35's promoter watched; and the curriculum's remaining
+  units (a counting timer with interrupt delivery and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

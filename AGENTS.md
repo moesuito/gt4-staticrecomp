@@ -302,10 +302,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **the lessons backlog (slice 38)**:
-  two lessons committed and owner-checked; next the
-  thread-scheduler + kernel-patches foundation (slices 3–4 +
-  decisions 0005/0006). The
+- Next: **the lessons backlog (slice 39)**:
+  three lessons committed and owner-checked; next the timer/OSD
+  arc (slices 5–6 + decisions 0007/0008). The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
