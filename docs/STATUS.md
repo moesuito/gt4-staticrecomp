@@ -1,14 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 77 (sema-768103 signaler identified) — the
-5M wake's writer is the delay dispatcher firing a delay expiry inside the
-TIM2 handler (iSignalSema at 0x005adcd4 from wrapper 0x005AEF58, cause 11,
-handler 0x005b8158, a1=a2 = 1 service slice): a private one-shot delay of
-pool worker thread 3, one of 77 identical expiries per 2000 services — the
-standing limit cycle, not P10's main-thread producer (sema 63 untouched).
-Wrapper shape owner-verified in disassembly. 53/53 + Python 73
-owner-gated, binaries freshness-checked. Next: hunt who can release
-sema 63 (the main thread's wait). This is the
+Updated 2026-10-04 after slice 78 (sema-63 writer hunt closed) — the
+main thread's wait is a guest-side knot, not a model gap: A=B=0x13F
+(sema 63, init 1) with 2 units ever for 3 takes (init pulse consumed by
+W_A, W_B starves); the lone signal in 5M services is the init pulse
+0x00548750 (C-slot=0x147/sema-71 discriminant rules the sibling out;
+tail/callback/self-signal eliminated), and every signaler is dead from
+the stop state. P10 opens only with originating traffic (M32) or a
+later phase. 53/53 + Python 73 on the reverted tree. Next: slice 79
+per owner order (tripwires armed; M35's promoter watched). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1048,6 +1048,14 @@ proceeds. Details live in the linked evidence documents.
   translation_model 2, WILL_FAIL removed, decision 0034 accepted
   (`docs/reverse-engineering/slice72-optiona-prototype.md`,
   `docs/decisions/0034-delivery-granularity-contract.md`).
+- Slice 78 (sema-63 hunt, 2026-10-04): **guest-side knot, no producer
+  in reach**. Full [0,5M] census = exactly 5 init events (two fresh
+  lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
+  sibling object; 5M object dump byte-identical to 3M. P10 stays shut
+  (`docs/reverse-engineering/slice78-sema63-hunt.md`).
+- Slice 78 (knot hunt, 2026-10-04): **sema 63 is guest-side**.
+  A=B=0x13F, 2 units for 3 takes, lone signaler dead; no model gap.
+  Owner-checked (`docs/reverse-engineering/slice78-sema63-hunt.md`).
 - Slice 77 (signal hunt, 2026-10-04): **sema-768103 writer found**.
   Delay expiry via TIM2, private one-shot, not the main's producer.
   Wrapper owner-verified. Owner-checked

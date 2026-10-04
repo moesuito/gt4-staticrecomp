@@ -304,10 +304,11 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **slice 78, sema-63 writer hunt**:
-  who can release the main thread's semaphore, observed naturally.
-  P10 opens only with that chain. Order adapts only on new evidence,
-  with cause recorded. Tripwires armed; M35's promoter watched. The
+- Next: **slice 79, PCSX2 independent observation**:
+  setup + first reference captures for the causal hunt (P10 needs
+  originating traffic or a later phase; the model side is exhausted).
+  Order adapts only on new evidence, with cause recorded. Tripwires
+  armed; M35's promoter watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
