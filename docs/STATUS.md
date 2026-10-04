@@ -1,11 +1,12 @@
 # Project status
 
-Updated 2026-10-04 after external-feedback triage (slice 63) — both
-reviews archived in git, code claims owner-verified, plan changed to
-contracts-first (timer → DMA/interrupt → jr/ERET → telemetry → fresh
-prefix → causal hunt). 50/50 + Python 73 owner-gated. **Awaiting owner
-order to resume implementation (slice 64: DMA + handler args + idle).**
-This is the
+Updated 2026-10-04 after adopting PLAN.md — the GPT-authored roadmap
+(menu-first, gates G0–G7, slices P00–P10) is now the execution plan;
+it consolidates both reviews with mandatory caveats and keeps the
+contracts-first order (P00 baseline → timer/interrupt → JR/ERET → DMA
+→ RPC/comparator → fresh prefix → causal hunt). 50/50 + Python 73
+owner-gated. **Next: slice 64 = P00 (checkpoint baseline +
+compatibility policy), then P01+P02.** This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1033,9 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 64 (plan, 2026-10-04): **PLAN.md adopted as the roadmap**.
+  Menu-first to G3, P00 first, OPUS overclaims corrected with
+  prohibitions (`PLAN.md` at root).
 - Slice 63 (triage, 2026-10-04): **feedbacks externos arquivados,
   plano mudou para contracts-first**. Code claims owner-verified;
   resto marcado High/Hypothesis
