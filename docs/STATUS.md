@@ -1,10 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 62 (tripwire re-check 01) — SAME:
-17 threads thread-for-thread, packet fired once to no effect,
-50/50 + Python 73 owner-gated. **Work STOPPED here by owner
-order for external review: no further slices dispatched.**
-Tree green and clean at the commit below. This is the
+Updated 2026-10-04 after external-feedback triage (slice 63) — both
+reviews archived in git, code claims owner-verified, plan changed to
+contracts-first (timer → DMA/interrupt → jr/ERET → telemetry → fresh
+prefix → causal hunt). 50/50 + Python 73 owner-gated. **Awaiting owner
+order to resume implementation (slice 64: DMA + handler args + idle).**
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1031,6 +1032,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 63 (triage, 2026-10-04): **feedbacks externos arquivados,
+  plano mudou para contracts-first**. Code claims owner-verified;
+  resto marcado High/Hypothesis
+  (`docs/reverse-engineering/feedback-triage-2026-10-04.md`).
 - Slice 62 (re-check 01, 2026-10-04): **SAME, STOP**.
   Census identical, packet once to no effect, 50/50 + 73
   owner-gated. No further slices per owner order

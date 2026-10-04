@@ -304,9 +304,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **STOPPED for external review (owner order)**:
-  no slices dispatched until the owner returns with feedback.
-  Tripwires armed; M35's promoter watched. The
+- Next: **awaiting owner order to resume (slice 64)**:
+  triage done, plan is contracts-first (DMA + handler args + idle);
+  no implementation slices until the owner confirms. Tripwires armed;
+  M35's promoter watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
