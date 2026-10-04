@@ -1,10 +1,10 @@
 # Project status
 
-Updated 2026-10-04 after slice 51 (sixteenth item) — the
-M22–M24 VU0-macro arc is now a worked explanation (register
-file, moves, full macro set, trapping/parallel arithmetic down
-to 4 words; M25 as pointer). Owner checked code + voice. Next
-is slice 52: the M25–M29 scale-up arc lesson. This is the
+Updated 2026-10-04 after slice 52 (seventeenth item) — the
+M25–M29 scale-up arc is now a worked explanation (shared
+executor, survey, boundaries, dispatch, whole game as one
+module; M30 as pointer). Owner checked executor + voice. Next
+is slice 53: the M14 live-observation lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1029,6 +1029,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 52 (lesson, 2026-10-04): **M25–M29 scale-up arc
+  written**. Shared executor, survey, boundaries, dispatch,
+  whole game. Owner-checked
+  (`docs/lessons/m25-m29-scale-up.md`).
 - Slice 51 (lesson, 2026-10-04): **M22–M24 VU0-macro arc
   written**. Register file, full macro set, trapping arithmetic
   to 4 words. Owner-checked
@@ -1427,8 +1431,8 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 52)**. Sixteen items committed and owner-checked;
-  next the M25–M29 scale-up arc. Tripwires armed; M35's
+  (slice 53)**. Seventeen items committed and owner-checked;
+  next the M14 live-observation lesson. Tripwires armed; M35's
   promoter watched; and the curriculum's remaining units (a
   counting timer with interrupt delivery and the jump-table
   dispatch) stay listed in `docs/requirements.md`.
