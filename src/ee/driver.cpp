@@ -20,6 +20,22 @@ std::string fault_context(std::uint32_t pc, const std::exception& error) {
     return message.str();
 }
 
+// Builds the reported boundary from the current state after a module stop:
+// the pc, the guest word there when mapped, and the v1 service number for a
+// pending syscall. The kind comes from the module's exit reason, never from
+// an inference over the registers.
+Boundary report_boundary(const GuestState& state, BoundaryKind kind) {
+    Boundary boundary{kind, state.pc(), 0, 0};
+    if ((boundary.pc & 0x3u) == 0 && state.memory().contains(boundary.pc, 4)) {
+        boundary.word = state.memory().read_word(boundary.pc);
+    }
+    if (kind == BoundaryKind::Syscall) {
+        // The PS2 ABI passes the service number in v1 (register 3).
+        boundary.service = state.read_gpr32(3);
+    }
+    return boundary;
+}
+
 } // namespace
 
 Module module_from_entries(std::span<const ModuleEntry> entries) {
@@ -39,8 +55,7 @@ Module module_from_entries(std::span<const ModuleEntry> entries) {
         [table](GuestState& state, std::uint32_t address) {
             for (const ModuleEntry& entry : *table) {
                 if (entry.address == address) {
-                    entry.execute(state);
-                    return;
+                    return entry.execute(state);
                 }
             }
             throw std::logic_error(
@@ -52,13 +67,9 @@ Module module_from_entries(std::span<const ModuleEntry> entries) {
 Boundary classify_boundary(const GuestState& state) {
     const std::uint32_t pc = state.pc();
 
-    // A normal return through jr ra leaves the pc at the link register's
-    // value; that is the only signal a plain translated function gives. A
-    // trapping stop whose address happens to equal ra is indistinguishable
-    // and would be reported as a return; no such case has been observed.
-    if (pc == static_cast<std::uint32_t>(state.read_gpr64(31))) {
-        return Boundary{BoundaryKind::Returned, pc, 0, 0};
-    }
+    // No pc == ra inference here: a return is reported by the module that
+    // applied it, and a trap or an ordinary word can sit at the link
+    // address. The word at the pc names every stop this view can see.
     if ((pc & 0x3u) != 0 || !state.memory().contains(pc, 4)) {
         return Boundary{BoundaryKind::Unmapped, pc, 0, 0};
     }
@@ -152,7 +163,9 @@ bool Driver::pending_transfer() const noexcept {
     return interpreter_.pending_transfer();
 }
 
-RunResult Driver::run(ServiceTable& services, const RunOptions& options) {    RunResult result;
+RunResult Driver::run(ServiceTable& services, const RunOptions& options) {
+    RunResult result;
+    bridge_step_due_ = false;
     while (true) {
         if (result.stats.module_calls + result.stats.interpreted_steps
             >= options.step_limit) {
@@ -164,20 +177,29 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {    Ru
             && options.start_interrupt(state_)) {
             continue;
         }
-        // Translated code runs only when the pc names a module entry and no
-        // interpreted delay slot is in flight; anything else is the bridge's.
-        if (!interpreter_.pending_transfer() && module_.has_entry(state_.pc())) {
+        // Translated code runs only when the pc names a module entry, no
+        // interpreted delay slot is in flight, and the bridge does not own
+        // the next step; anything else is the bridge's.
+        if (!bridge_step_due_ && !interpreter_.pending_transfer()
+            && module_.has_entry(state_.pc())) {
             const std::uint32_t entry_pc = state_.pc();
+            BoundaryKind module_exit;
             try {
-                module_.call_entry(state_, entry_pc);
+                module_exit = module_.call_entry(state_, entry_pc);
             } catch (const std::exception& error) {
                 throw std::runtime_error(fault_context(entry_pc, error));
             }
             ++result.stats.module_calls;
-            const Boundary boundary = classify_boundary(state_);
-            if (boundary.kind == BoundaryKind::Syscall) {
+            // The exit reason is the module's own report. A return or an
+            // applied eret continues the run; a pending indirect transfer
+            // continues through the bridge first (see below). Anything
+            // applied already (a service, a link write, a delay slot) is
+            // never repeated: the module only stops with the reason where
+            // the interpreter stops, and both engines resume exactly there.
+            if (module_exit == BoundaryKind::Syscall) {
                 const ServiceOutcome outcome = handle_syscall(
-                    boundary.pc, boundary.service, services, options, result.stats);
+                    state_.pc(), state_.read_gpr32(3), services, options,
+                    result.stats);
                 if (outcome == ServiceOutcome::Handled
                     || outcome == ServiceOutcome::Switched
                     || outcome == ServiceOutcome::Jumped) {
@@ -188,32 +210,40 @@ RunResult Driver::run(ServiceTable& services, const RunOptions& options) {    Ru
                         && options.start_idle_interrupt(state_)) {
                         continue;
                     }
-                    result.boundary = Boundary{BoundaryKind::NoRunnableThread,
-                                               boundary.pc, boundary.word,
-                                               boundary.service};
+                    result.boundary = report_boundary(
+                        state_, BoundaryKind::NoRunnableThread);
                     return result;
                 }
-                result.boundary = boundary;
+                result.boundary = report_boundary(state_, BoundaryKind::Syscall);
                 return result;
             }
-            switch (boundary.kind) {
+            switch (module_exit) {
             case BoundaryKind::Returned:
-            case BoundaryKind::IndirectTransfer:
             case BoundaryKind::ExceptionReturn:
-                // The module handed control back in a state the interpreter
-                // can continue from: a return to ra, a runtime transfer the
-                // module could not dispatch, or an eret whose derived pc it
-                // already applied.
+                // The module handed control back in a state the loop can
+                // continue from: a return to the captured target or an eret
+                // whose derived pc it already applied.
                 continue;
+            case BoundaryKind::IndirectTransfer: {
+                // A pending transfer the module left for the bridge. The stop
+                // applied nothing, so running the same entry again could only
+                // repeat it: the bridge owns the next step even when the
+                // transfer word is itself a module entry.
+                bridge_step_due_ = true;
+                continue;
+            }
             default:
-                result.boundary = boundary;
+                result.boundary = report_boundary(state_, module_exit);
                 return result;
             }
         }
 
         // The bridge: one interpreted instruction, exactly as the
-        // differential tests verify against the module.
+        // differential tests verify against the module. This is also where
+        // a pending transfer lands: the module applied nothing there, so
+        // the link, the slot and the jump all run here, exactly once.
         const std::uint32_t pc = state_.pc();
+        bridge_step_due_ = false;
         if ((pc & 0x3u) != 0 || !state_.memory().contains(pc, 4)) {
             result.boundary = Boundary{BoundaryKind::Unmapped, pc, 0, 0};
             return result;

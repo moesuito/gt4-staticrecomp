@@ -23,12 +23,14 @@ class TranslateCliTests(unittest.TestCase):
         second = self.run_tool("0x577878")
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(first.stdout, second.stdout)
-        self.assertIn("inline void function_00577878(ee::GuestState& state)", first.stdout)
-        self.assertIn("state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)))",
-                      first.stdout)
-        # The delay slot statement must appear before the return statement.
+        self.assertIn("inline ee::BoundaryKind function_00577878(ee::GuestState& state)", first.stdout)
+        self.assertIn("return ee::BoundaryKind::Returned;", first.stdout)
+        # The return target is captured before the delay slot runs, and the
+        # slot still executes before the return to the captured target.
+        capture = first.stdout.index("state.read_gpr64(31)); // capture before the slot")
         delay = first.stdout.index("sw a2, 0x4(a0)")
-        ret = first.stdout.index("return to ra")
+        ret = first.stdout.index("return to the captured target")
+        self.assertLess(capture, delay)
         self.assertLess(delay, ret)
 
     def test_output_file_matches_stdout(self):
@@ -50,9 +52,10 @@ class TranslateCliTests(unittest.TestCase):
     def test_calls_translate_the_direct_call_tree(self):
         result = self.run_tool("0x10c0c0", 2000)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("inline void function_0010c0c0(ee::GuestState& state);", result.stdout)
-        self.assertIn("inline void function_0044cb58(ee::GuestState& state);", result.stdout)
-        self.assertIn("function_0044cb58(state);", result.stdout)
+        self.assertIn("inline ee::BoundaryKind function_0010c0c0(ee::GuestState& state);", result.stdout)
+        self.assertIn("inline ee::BoundaryKind function_0044cb58(ee::GuestState& state);", result.stdout)
+        self.assertIn("= function_0044cb58(state);", result.stdout)
+        self.assertIn("!= ee::BoundaryKind::Returned", result.stdout)
         self.assertIn("state.write_gpr64(31, 0x0010c0d0u); // link", result.stdout)
 
     def test_indirect_calls_become_boundaries(self):
@@ -87,7 +90,7 @@ class TranslateCliTests(unittest.TestCase):
         result = subprocess.run([str(TOOL), str(CORE), "--functions", "256", "0x577878", "64"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("inline void function_00577878", result.stdout)
+        self.assertIn("inline ee::BoundaryKind function_00577878", result.stdout)
 
 
 if __name__ == "__main__":

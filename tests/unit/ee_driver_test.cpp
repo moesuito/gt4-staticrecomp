@@ -1,5 +1,6 @@
 // Unit tests for the boundary driver and its service layer, with no game
-// data: fake modules prove that the driver executes entries, resolves
+// data: fake modules prove that the driver executes entries, trusts the
+// explicit exit reason each one reports (never a pc == ra guess), resolves
 // syscalls through the service table, bridges through the interpreter when
 // the module cannot pass a boundary, and reports what nothing can resolve.
 #include "gt4recomp/ee_driver.hpp"
@@ -41,22 +42,81 @@ void write_words(GuestState& state, std::uint32_t address,
 }
 
 // Fake module functions: each one behaves like a generated function and
-// leaves the pc where the translator would.
-void stop_at_syscall(GuestState& state) { state.set_pc(0x00100010u); }
-void stop_at_jalr(GuestState& state) { state.set_pc(0x00100040u); }
-void stop_at_break(GuestState& state) { state.set_pc(0x00100020u); }
-void stop_at_eret(GuestState& state) { state.set_pc(0x00100030u); }
-void stop_at_unsupported(GuestState& state) { state.set_pc(0x00100050u); }
-void stop_at_ordinary(GuestState& state) { state.set_pc(0x00100060u); }
-void stop_at_unmapped(GuestState& state) { state.set_pc(0x00200000u); }
-void return_to_loop(GuestState& state) {
+// reports the explicit exit reason the emitter would produce for the same
+// stop, leaving the pc where the translator would.
+BoundaryKind stop_at_syscall(GuestState& state) {
+    state.set_pc(0x00100010u);
+    return BoundaryKind::Syscall;
+}
+BoundaryKind stop_at_jalr(GuestState& state) {
+    state.set_pc(0x00100040u);
+    return BoundaryKind::IndirectTransfer;
+}
+BoundaryKind stop_at_break(GuestState& state) {
+    state.set_pc(0x00100020u);
+    return BoundaryKind::Break;
+}
+BoundaryKind stop_at_eret(GuestState& state) {
+    // What the translator emits for eret: derive the pc from CP0, clear the
+    // level the return leaves, and report the applied return. The pc never
+    // sits at the eret word itself, unlike the old mock.
+    const std::uint32_t status = state.read_cp0(12);
+    if ((status & 0x00000004u) != 0) {
+        state.set_pc(state.read_cp0(30));
+        state.write_cp0(12, status & ~0x00000004u);
+    } else {
+        state.set_pc(state.read_cp0(14));
+        state.write_cp0(12, status & ~0x00000002u);
+    }
+    return BoundaryKind::ExceptionReturn;
+}
+BoundaryKind stop_at_unsupported(GuestState& state) {
+    state.set_pc(0x00100050u);
+    return BoundaryKind::UnsupportedWord;
+}
+BoundaryKind stop_at_ordinary(GuestState& state) {
+    state.set_pc(0x00100060u);
+    return BoundaryKind::InstructionStop;
+}
+BoundaryKind stop_at_unmapped(GuestState& state) {
+    state.set_pc(0x00200000u);
+    return BoundaryKind::Unmapped;
+}
+BoundaryKind return_to_loop(GuestState& state) {
     // A real module stop is a boundary word or a return; the loop then runs
     // in the bridge until the work budget stops it.
     state.write_gpr64(31, 0x00100070u);
     state.set_pc(0x00100070u);
+    return BoundaryKind::Returned;
 }
-void return_through_ra(GuestState& state) {
+BoundaryKind return_through_ra(GuestState& state) {
     state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));
+    return BoundaryKind::Returned;
+}
+// A known indirect target reached through the module's own table: the leaf
+// reports its reason and the dispatching entry propagates it unwritten, like
+// generated code does after detail::call_entry.
+BoundaryKind leaf_returns(GuestState& state) {
+    state.write_gpr64(3, 9);
+    state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));
+    return BoundaryKind::Returned;
+}
+BoundaryKind stop_at_known_jr(GuestState& state) {
+    state.write_gpr64(2, state.read_gpr64(2) + 7);  // the delay slot, once
+    return leaf_returns(state);
+}
+BoundaryKind leaf_traps(GuestState& state) {
+    state.set_pc(0x00100020u);
+    return BoundaryKind::Break;
+}
+BoundaryKind stop_at_known_jr_to_trap(GuestState& state) {
+    return leaf_traps(state);
+}
+BoundaryKind stop_at_self_transfer(GuestState& state) {
+    // A pending transfer whose word is itself a module entry: running the
+    // entry again could only repeat the stop, so the bridge must run next.
+    state.set_pc(window_base);
+    return BoundaryKind::IndirectTransfer;
 }
 
 struct StopCase {
@@ -74,7 +134,7 @@ const StopCase stop_cases[] = {
     {"jalr", 0x00100040u, jalr_word, 0, BoundaryKind::IndirectTransfer},
     {"unsupported", 0x00100050u, unsupported_word, 0, BoundaryKind::UnsupportedWord},
     {"ordinary", 0x00100060u, ordinary_word, 0, BoundaryKind::InstructionStop},
-    {"returned", 0x00100070u, ordinary_word, 0x00100070u, BoundaryKind::Returned},
+    {"trap-equals-ra", 0x00100020u, break_word, 0x00100020u, BoundaryKind::Break},
     {"unmapped", 0x00200000u, 0, 0, BoundaryKind::Unmapped},
     {"misaligned", 0x00100001u, 0, 0, BoundaryKind::Unmapped},
 };
@@ -127,10 +187,7 @@ int main() {
                       << static_cast<int>(boundary.kind) << '\n';
             ++failures;
         }
-        if (mapped && boundary.word != test.word
-            && test.expected != BoundaryKind::Returned) {
-            // A return is classified before the word is read; its boundary
-            // carries no word.
+        if (mapped && boundary.word != test.word) {
             std::cerr << test.label << ": boundary word mismatch\n";
             ++failures;
         }
@@ -244,6 +301,102 @@ int main() {
                   && result.boundary.pc == 0x00200000u,
               "an unmapped pc is a boundary");
         check(result.stats.interpreted_steps == 0, "nothing was stepped at an unmapped pc");
+    }
+
+    // A trap whose pc equals ra stops as a trap, never as a return.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100020u, {break_word});
+        state.write_gpr64(31, 0x00100020u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_break}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 0,
+              "the trap stopped the module without bridge steps");
+        check(result.boundary.kind == BoundaryKind::Break
+                  && result.boundary.pc == 0x00100020u,
+              "a trap with pc equal to ra is reported as a trap");
+    }
+
+    // An applied eret continues at the derived pc: EXL and ERL land on the
+    // same ordinary destination, which the bridge then steps through.
+    for (const bool error_level : {false, true}) {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100080u, {ordinary_word, unsupported_word});
+        state.write_gpr64(31, window_base);  // ra differs from the destination
+        state.write_cp0(12, error_level ? 0x00000004u : 0x00000002u);
+        state.write_cp0(error_level ? 30 : 14, 0x00100080u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_eret}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 2,
+              error_level ? "the ERL return reached the bridge and stepped twice"
+                          : "the EXL return reached the bridge and stepped twice");
+        check(result.boundary.kind == BoundaryKind::UnsupportedWord
+                  && result.boundary.pc == 0x00100084u,
+              error_level ? "the ERL run stopped past the common destination"
+                          : "the EXL run stopped past the common destination");
+        check(state.read_cp0(12) == 0, "the applied return cleared its level");
+    }
+
+    // A known indirect target dispatches inside the module: the delay slot
+    // ran once there, so the bridge only steps what the return lands on.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100090u, {unsupported_word});
+        state.write_gpr64(31, 0x00100090u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_known_jr}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 1,
+              "the internal dispatch ran the slot and the leaf in one call");
+        check(state.read_gpr64(2) == 7 && state.read_gpr64(3) == 9,
+              "the slot effect ran exactly once before the leaf effect");
+        check(result.boundary.kind == BoundaryKind::UnsupportedWord
+                  && result.boundary.pc == 0x00100090u,
+              "the propagated return landed on ra and the bridge reported it");
+    }
+
+    // A trap inside an internal call propagates without being overwritten by
+    // the dispatching entry.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, 0x00100020u, {break_word});
+        state.write_gpr64(31, 0x00100090u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_known_jr_to_trap}};
+        ServiceTable services;
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1 && result.stats.interpreted_steps == 0,
+              "the inner trap stopped the outer call without bridge steps");
+        check(result.boundary.kind == BoundaryKind::Break
+                  && result.boundary.pc == 0x00100020u,
+              "the inner trap reason reached the driver unchanged");
+    }
+
+    // A pending transfer at the entry's own address still reaches the
+    // bridge: the entry runs once, the transfer and its slot apply there.
+    {
+        GuestState state = make_state(window_base);
+        write_words(state, window_base, {jalr_word, ordinary_word, syscall_word, unsupported_word});
+        state.write_gpr64(25, window_base + 8);  // t9: the jalr target
+        state.write_gpr64(3, 0x42u);
+        const ModuleEntry entries[] = {{window_base, &stop_at_self_transfer}};
+        ServiceTable services;
+        FakeService service;
+        services.add(0x42u, make_fake_service(service));
+        Driver driver(state, module_from_entries(entries));
+        const RunResult result = driver.run(services, RunOptions{});
+        check(result.stats.module_calls == 1, "the pending entry ran exactly once");
+        check(result.stats.interpreted_steps == 4,
+              "the bridge applied the transfer, its slot, the service call and the stop");
+        check(service.calls == 1, "the reached service ran once");
+        check(result.boundary.kind == BoundaryKind::UnsupportedWord
+                  && result.boundary.pc == window_base + 12,
+              "the run stopped past the reached target");
     }
 
     // The interpreted-side budget bounds a looping bridge.

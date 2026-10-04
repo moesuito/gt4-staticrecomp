@@ -1,12 +1,14 @@
 #pragma once
 
 // The driver executes a translated module as a program. It runs the module
-// entry that owns the current pc; when the module stops at a boundary it
-// cannot pass (a syscall, an unknown indirect target, a jr-ra return), the
-// driver resolves it: registered BIOS services run, and the step-by-step
-// interpreter — the reference the module was verified against — fills the
-// gap until the next module entry. A boundary that nothing can resolve is
-// reported, never guessed past.
+// entry that owns the current pc; when the module stops it reports an
+// explicit exit reason (a jr-ra return applied, a pending syscall, a trap, a
+// pending indirect transfer, an applied eret, an unsupported word, a trapping
+// stop), never an inference from the register state. The driver resolves what
+// the module cannot pass: registered BIOS services run once, and the
+// step-by-step interpreter (the reference the module was verified against)
+// fills the gap until the next module entry. A boundary that nothing can
+// resolve is reported, never guessed past.
 
 #include "gt4recomp/ee_decode.hpp"
 #include "gt4recomp/ee_interpreter.hpp"
@@ -20,15 +22,21 @@
 
 namespace gt4recomp::ee {
 
-// Why the run stopped. Each kind maps to a stop shape the translator emits
-// (docs/reverse-engineering/m30-driver-first-slice.md) or to a driver limit.
+// Why the run stopped. A translated module reports one of these explicitly
+// as its exit reason; the driver trusts it instead of inferring the stop
+// from the register state. StepLimit, NoRunnableThread, Unmapped and
+// IllegalDelaySlot are driver-side: the module never emits them.
 enum class BoundaryKind {
     Syscall,           // pc at a syscall; the PS2 service number is in v1
     Break,             // pc at a break
-    ExceptionReturn,   // eret derived the pc from CP0
+    ExceptionReturn,   // eret derived the pc from CP0 and cleared the level
     UnsupportedWord,   // pc at a word outside the model
-    IndirectTransfer,  // pc at a jalr/jr whose runtime target is not in the module
-    Returned,          // pc equals ra: the module returned through jr ra
+    IndirectTransfer,  // an indirect transfer the module did not apply: the pc
+                        // is at the transfer word, the link register and the
+                        // delay slot are untouched, the bridge completes it
+    Returned,          // the module applied a jr-ra return; the pc is the
+                        // target captured before the delay slot, which may
+                        // differ from ra when the slot rewrote it
     InstructionStop,   // pc at an ordinary instruction; with the current
                        // translator this is a trapping arithmetic overflow
     IllegalDelaySlot,  // a transfer inside a delay slot; stopped before it
@@ -44,10 +52,12 @@ struct Boundary {
     std::uint32_t service = 0;  // Syscall only: the full v1 value
 };
 
-// One callable function of a translated module.
+// One callable function of a translated module. The exit reason is the
+// stop the function reports: callers propagate a non-return reason to their
+// own caller without touching the state, and the driver resolves it.
 struct ModuleEntry {
     std::uint32_t address;
-    void (*execute)(GuestState&);
+    BoundaryKind (*execute)(GuestState&);
 };
 
 // The entry table of a translated module. The generated header provides
@@ -55,15 +65,17 @@ struct ModuleEntry {
 // tests adapt a fixed list with module_from_entries.
 struct Module {
     std::function<bool(std::uint32_t address)> has_entry;
-    std::function<void(GuestState& state, std::uint32_t address)> call_entry;
+    std::function<BoundaryKind(GuestState& state, std::uint32_t address)> call_entry;
 };
 
 [[nodiscard]] Module module_from_entries(std::span<const ModuleEntry> entries);
 
-// Classifies a stop from the guest state: the word at the pc and, for a
-// normal return, the link register. This is the module-stop view, where the
-// pc is the only signal; an interpreter stop carries its reason directly and
-// uses boundary_from_step instead.
+// Names a stop from the guest word at the pc, without any register
+// inference: a return is never guessed from pc == ra, because a trap or an
+// ordinary word can sit at that address too. The driver classifies module
+// stops from the reported exit reason instead; this stays as the word view
+// for tests and for building a report from state. An interpreter stop
+// carries its reason directly and uses boundary_from_step instead.
 [[nodiscard]] Boundary classify_boundary(const GuestState& state);
 
 // The boundary named by an interpreter stop. The step outcome says why the
@@ -133,6 +145,10 @@ private:
     GuestState& state_;
     Module module_;
     Interpreter interpreter_;
+    // Set when the module reported a pending indirect transfer: re-entering
+    // the same entry could only repeat the same stop (nothing was applied),
+    // so the bridge owns the next step. Cleared when the bridge steps.
+    bool bridge_step_due_ = false;
 };
 
 } // namespace gt4recomp::ee

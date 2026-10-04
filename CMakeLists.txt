@@ -526,4 +526,25 @@ if(BUILD_TESTING)
         target_link_libraries(ee_translation_101c28_tests PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME ee_translation_101c28 COMMAND ee_translation_101c28_tests "${GT4_LOCAL_CORE}")
     endif()
+
+    # P05 module-exit fixtures: original synthetic words from a committed
+    # spec, translated by the real gt4translate at build time, compiled in,
+    # and executed through the boundary driver against the interpreter.
+    # No game content, so no CORE is needed.
+    if(WIN32)
+        set(GT4_P05_EXITS_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-p05-exits.hpp")
+        add_custom_command(
+            OUTPUT "${GT4_P05_EXITS_HEADER}"
+            COMMAND gt4translate dummy-core --synth
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/synth-module-exits.txt"
+                    "${GT4_P05_EXITS_HEADER}"
+            DEPENDS gt4translate "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/synth-module-exits.txt"
+            VERBATIM)
+        add_executable(ee_module_exit_tests
+            tests/unit/ee_module_exit_test.cpp
+            "${GT4_P05_EXITS_HEADER}")
+        target_include_directories(ee_module_exit_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(ee_module_exit_tests PRIVATE gt4recomp_decode)
+        add_test(NAME ee_module_exit COMMAND ee_module_exit_tests)
+    endif()
 endif()

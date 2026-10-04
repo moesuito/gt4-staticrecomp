@@ -1,0 +1,59 @@
+# P05 module-exit fixtures: original synthetic words, no game content.
+# Read by gt4translate --synth. tests/unit/ee_module_exit_test.cpp writes
+# these same words into guest memory; the two tables must match.
+base 0x00100000
+seed 0x00100000
+seed 0x00100010
+seed 0x00100020
+seed 0x00100014
+seed 0x00100030
+seed 0x00100038
+seed 0x00100040
+seed 0x00100060
+seed 0x00100074
+seed 0x0010007C
+max 256
+functions 32
+# 0x00100000 jr_case: jr ra with a slot that rewrites ra.
+word 0x03E00008
+word 0x241F2000
+word 0x00000000
+word 0x00000000
+# 0x00100010 eret_case: bare eret, the pc comes from CP0.
+word 0x42000018
+# 0x00100014 break_case: bare trap.
+word 0x0000000D
+word 0x00000000
+word 0x00000000
+# 0x00100020 syscall_case: bare syscall plus a bridge tail.
+word 0x0000000C
+word 0x24080001
+word 0x00200000
+word 0x00000000
+# 0x00100030 ind_known: jr t0 to the leaf below (known at run time).
+word 0x01000008
+word 0x24420007
+# 0x00100038 ind_unknown: same shape, the test points t0 elsewhere.
+word 0x01000008
+word 0x24420007
+# 0x00100040 leaf: the known target, returns through ra.
+word 0x24030009
+word 0x03E00008
+word 0x00000000
+word 0x00000000
+# 0x00100050 ra landing: an unsupported word that stops the bridge.
+word 0x00200000
+word 0x00000000
+word 0x00000000
+word 0x00000000
+# 0x00100060 beql_case: likely branch with a syscall in the taken-only slot.
+word 0x51000002
+word 0x0000000C
+word 0x24080002
+word 0x03E00008
+word 0x00000000
+# 0x00100074 ind_known2: jr t0 to the trapping leaf below.
+word 0x01000008
+word 0x00000000
+# 0x0010007C leaf2: a trap reached only through the internal dispatch.
+word 0x0000000D

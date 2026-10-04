@@ -524,7 +524,7 @@ Module make_boot_module() {
     return Module{
         [](std::uint32_t address) { return translated::has_entry(address); },
         [](GuestState& state, std::uint32_t address) {
-            translated::call_entry(state, address);
+            return translated::call_entry(state, address);
         },
     };
 }

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -563,10 +564,6 @@ std::string label_for(std::uint32_t address) {
     return "label_" + hex_value(address, 8);
 }
 
-std::string call_expression(std::uint32_t target) {
-    return "function_" + hex_value(target, 8) + "(state);";
-}
-
 // The body of one translated function, in execution-correct order.
 std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit) {
     std::ostringstream body;
@@ -574,9 +571,19 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
     // Branch decisions are evaluated once, before their delay slots; the
     // variables live at the top of the function so a forward goto can never
     // skip an initialization (which C++ forbids when the variable has one).
+    // The same holds for the per-transfer exit reasons and the captured
+    // return targets: callers assign them and propagate them, never jumping
+    // over an initialization.
     for (const auto address : unit.reachable) {
         if (classify(decode(word_at(text, address)), address).kind == FlowKind::Branch) {
             body << "    bool taken_" << hex_value(address, 8) << " = false;\n";
+        }
+        if (classify(decode(word_at(text, address)), address).kind == FlowKind::Call) {
+            body << "    ee::BoundaryKind exit_" << hex_value(address, 8)
+                 << " = ee::BoundaryKind::Returned;\n";
+        }
+        if (classify(decode(word_at(text, address)), address).kind == FlowKind::Return) {
+            body << "    std::uint32_t return_" << hex_value(address, 8) << " = 0;\n";
         }
     }
     if (unit.scan_start < unit.entry) {
@@ -607,10 +614,25 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                      << "        state.set_pc(state.read_cp0(14));\n"
                      << "        state.write_cp0(12, state.read_cp0(12) & ~0x00000002u);\n"
                      << "    }\n"
-                     << "    return;\n\n";
+                     << "    return ee::BoundaryKind::ExceptionReturn;\n\n";
             } else {
+                // Every other halt stops with the pc at its own word and an
+                // explicit reason: a syscall waits for its service, a trap
+                // waits for a handler the model does not have, an unmodeled
+                // word waits for the model, and a direct call outside the
+                // file-backed text waits for the bridge (a pending transfer
+                // like an unknown indirect: the link and the slot are still
+                // to apply). The interpreter stops at the same word.
+                const char* reason = "ee::BoundaryKind::UnsupportedWord";
+                if (instruction.operation == Operation::Syscall) {
+                    reason = "ee::BoundaryKind::Syscall";
+                } else if (instruction.operation == Operation::Break) {
+                    reason = "ee::BoundaryKind::Break";
+                } else if (instruction.operation == Operation::Jal) {
+                    reason = "ee::BoundaryKind::IndirectTransfer";
+                }
                 body << "    state.set_pc(0x" << hex_value(address, 8) << "u);\n"
-                     << "    return;\n\n";
+                     << "    return " << reason << ";\n\n";
             }
             continue;
         }
@@ -653,7 +675,8 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                 if (instruction.operation != Operation::Unsupported) {
                     return std::string("if (!ee::execute_plain_effect(state, ee::decode(0x")
                         + hex_value(instruction.word, 8) + "u))) { state.set_pc(0x"
-                        + hex_value(at, 8) + "u); return; }";
+                        + hex_value(at, 8)
+                        + "u); return ee::BoundaryKind::InstructionStop; }";
                 }
                 throw std::runtime_error("No C++ statement for "
                     + format_instruction(instruction.word, at) + " at 0x"
@@ -686,7 +709,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             comment(address + 4, word_at(text, address + 4), "    ");
             body << "    // the delay slot is unmodeled: the module stops there\n"
                  << "    state.set_pc(0x" << hex_value(address + 4, 8) << "u);\n"
-                 << "    return;\n\n";
+                 << "    return ee::BoundaryKind::UnsupportedWord;\n\n";
             consumed_delay_slots.insert(address + 4);
             continue;
         }
@@ -708,9 +731,20 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                 }
                 comment(address + 4, word_at(text, address + 4), "        ");
                 if (unit.trap_slots.contains(address + 4)) {
+                    // The delay slot traps or is unmodeled: the taken path
+                    // stops there with the reason its own word carries, where
+                    // the interpreter stops too. The slot never runs, so no
+                    // service the driver might handle has been applied.
+                    const auto slot_operation = decode(word_at(text, address + 4)).operation;
+                    const char* slot_reason = "ee::BoundaryKind::UnsupportedWord";
+                    if (slot_operation == Operation::Syscall) {
+                        slot_reason = "ee::BoundaryKind::Syscall";
+                    } else if (slot_operation == Operation::Break) {
+                        slot_reason = "ee::BoundaryKind::Break";
+                    }
                     body << "        // the delay slot traps or is unmodeled: the taken path stops\n"
                          << "        state.set_pc(0x" << hex_value(address + 4, 8) << "u);\n"
-                         << "        return;\n";
+                         << "        return " << slot_reason << ";\n";
                 } else {
                     body << "        " << statement_at(address + 4)
                          << " // delay slot (runs only when taken)\n";
@@ -749,39 +783,48 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             if (instruction.operation == Operation::Jal) {
                 // Direct call: the link is written, the delay slot runs, then
                 // the callee executes; execution resumes at pc+8, which is the
-                // next emitted statement.
+                // next emitted statement. A stop inside the callee propagates
+                // with its own reason: the pc check also catches a plain
+                // return that landed elsewhere, so the caller never resumes
+                // past a stop and never repeats what the callee applied.
+                const auto exit = "exit_" + hex_value(address, 8);
                 body << "    state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
                      << "u); // link\n";
                 comment(address + 4, word_at(text, address + 4));
                 body << "    " << statement_at(address + 4)
                      << " // delay slot (always executes)\n";
-                body << "    " << call_expression(flow.target) << "\n";
-                body << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
-                     << "u) { return; } // a service boundary stopped the callee\n\n";
+                body << "    " << exit << " = function_" << hex_value(flow.target, 8)
+                     << "(state);\n";
+                body << "    if (" << exit << " != ee::BoundaryKind::Returned || state.pc() != 0x"
+                     << hex_value(address + 8, 8)
+                     << "u) { return " << exit << "; } // the callee stopped: propagate\n\n";
             } else {
                 // Indirect call through the module's own entry table. The
                 // target is read before the link (a shared rd == rs encoding
                 // still jumps to the old value), an unknown target stops at
-                // the transfer, and a boundary in the callee propagates.
+                // the transfer with nothing applied, and a stop in the callee
+                // propagates with its own reason.
                 const auto rs = static_cast<unsigned>(instruction.rs);
                 const auto rd = static_cast<unsigned>(instruction.rd);
                 const auto target = "target_" + hex_value(address, 8);
+                const auto exit = "exit_" + hex_value(address, 8);
                 body << "    {\n"
                      << "    const std::uint32_t " << target
                      << " = static_cast<std::uint32_t>(state.read_gpr64(" << rs << "));\n"
                      << "    if (!detail::has_entry(" << target << ")) {\n"
                      << "        state.set_pc(0x" << hex_value(address, 8)
                      << "u); // unknown indirect target: stop at the transfer\n"
-                     << "        return;\n"
+                     << "        return ee::BoundaryKind::IndirectTransfer;\n"
                      << "    }\n"
                      << "    state.write_gpr64(" << rd << ", 0x"
                      << hex_value(address + 8, 8) << "u); // link\n";
                 comment(address + 4, word_at(text, address + 4), "    ");
                 body << "    " << statement_at(address + 4)
                      << " // delay slot (always executes)\n";
-                body << "    detail::call_entry(state, " << target << ");\n"
-                     << "    if (state.pc() != 0x" << hex_value(address + 8, 8)
-                     << "u) { return; } // a boundary stopped the callee\n"
+                body << "    " << exit << " = detail::call_entry(state, " << target << ");\n"
+                     << "    if (" << exit << " != ee::BoundaryKind::Returned || state.pc() != 0x"
+                     << hex_value(address + 8, 8)
+                     << "u) { return " << exit << "; } // the callee stopped: propagate\n"
                      << "    }\n\n";
             }
             if (unit.labels.contains(address + 4)) {
@@ -793,8 +836,12 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         }
         case FlowKind::IndirectJump: {
             // A computed jump through the module's entry table: the target
-            // returns through this function's ra, so the module returns after
-            // the call; an unknown target stops at the transfer.
+            // is captured before the delay slot (which may rewrite the
+            // register), an unknown target stops at the transfer with
+            // nothing applied, and a known one runs with the reason it
+            // reports propagating to this function's caller. The target
+            // returns through this function's ra, so a plain return ends
+            // this function too.
             const auto rs = static_cast<unsigned>(instruction.rs);
             const auto target = "target_" + hex_value(address, 8);
             comment(address, word);
@@ -804,31 +851,45 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                  << "    if (!detail::has_entry(" << target << ")) {\n"
                  << "        state.set_pc(0x" << hex_value(address, 8)
                  << "u); // unknown computed target: stop at the transfer\n"
-                 << "        return;\n"
+                 << "        return ee::BoundaryKind::IndirectTransfer;\n"
                  << "    }\n";
             comment(address + 4, word_at(text, address + 4), "    ");
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n"
-                 << "    detail::call_entry(state, " << target << ");\n"
-                 << "    return; // the target returns through this function's ra\n"
+                 << "    return detail::call_entry(state, " << target << ");\n"
                  << "    }\n\n";
             consumed_delay_slots.insert(address + 4);
             break;
         }
-        case FlowKind::Return:
+        case FlowKind::Return: {
+            // The return target is captured before the delay slot, exactly
+            // like the interpreter captures it before running the slot: a
+            // slot that rewrites ra changes where execution resumes, not
+            // where this jump goes.
+            const auto saved = "return_" + hex_value(address, 8);
             comment(address, word);
+            body << "    " << saved
+                 << " = static_cast<std::uint32_t>(state.read_gpr64(31));"
+                 << " // capture before the slot\n";
             comment(address + 4, word_at(text, address + 4));
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n";
-            body << "    state.set_pc(static_cast<std::uint32_t>(state.read_gpr64(31)));"
-                 << " // return to ra\n"
-                 << "    return;\n\n";
+            body << "    state.set_pc(" << saved << "); // return to the captured target\n"
+                 << "    return ee::BoundaryKind::Returned;\n\n";
             consumed_delay_slots.insert(address + 4);
             break;
+        }
         default:
             throw std::logic_error("unexpected flow kind during emission");
         }
     }
+    // Totality guard: every path above returns, but a function whose
+    // translation ends without a transfer (a truncation at the text edge)
+    // must still report where it stopped instead of falling off with a stale
+    // pc. No current fixture reaches this; the boot differential would catch
+    // it if one did.
+    body << "    state.set_pc(0x" << hex_value(unit.extent_end, 8) << "u);\n"
+         << "    return ee::BoundaryKind::UnsupportedWord; // fell off the translated extent\n";
     return body.str();
 }
 // Every direct-call target inside the text: the seeds of a whole-program
@@ -1139,6 +1200,106 @@ void run_survey(const ImageRecord& text, std::size_t max_functions) {
 
 } // namespace
 
+// One synthetic fixture program for gt4translate --synth: original
+// hand-assembled words with no game content, so the generated header is
+// committable test data. The spec file is plain ASCII:
+//
+//     base 0x00100000
+//     seed 0x00100000
+//     max 256
+//     functions 32
+//     word 0x03e00008
+//     ...
+//
+// Words are laid out from the base in file order; every seed must name an
+// aligned word inside the image.
+struct SynthSpec {
+    ImageRecord text;
+    std::vector<std::uint32_t> seeds;
+    std::size_t max_instructions = 0;
+    std::size_t max_functions = 0;
+};
+
+SynthSpec load_synth_spec(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("Cannot open the synth spec file");
+    }
+    SynthSpec spec;
+    std::uint32_t base = 0;
+    bool has_base = false;
+    std::vector<std::uint32_t> words;
+    std::string line;
+    std::size_t line_number = 0;
+    const auto parse_number_token = [&](const std::string& token) {
+        try {
+            const unsigned long value = std::stoul(token, nullptr, 0);
+            if (value > 0xfffffffful) {
+                throw std::runtime_error("value does not fit 32 bits");
+            }
+            return static_cast<std::uint32_t>(value);
+        } catch (const std::exception&) {
+            throw std::runtime_error("Bad number '" + token + "' at spec line "
+                                     + std::to_string(line_number));
+        }
+    };
+    while (std::getline(input, line)) {
+        ++line_number;
+        const auto comment = line.find('#');
+        if (comment != std::string::npos) {
+            line.erase(comment);
+        }
+        std::istringstream tokens(line);
+        std::string keyword;
+        if (!(tokens >> keyword)) {
+            continue;
+        }
+        std::string value;
+        if (!(tokens >> value)) {
+            throw std::runtime_error("Missing value at spec line "
+                                     + std::to_string(line_number));
+        }
+        if (keyword == "base") {
+            base = parse_number_token(value);
+            has_base = true;
+        } else if (keyword == "seed") {
+            spec.seeds.push_back(parse_number_token(value));
+        } else if (keyword == "max") {
+            spec.max_instructions = parse_number_token(value);
+        } else if (keyword == "functions") {
+            spec.max_functions = parse_number_token(value);
+        } else if (keyword == "word") {
+            words.push_back(parse_number_token(value));
+        } else {
+            throw std::runtime_error("Unknown keyword '" + keyword + "' at spec line "
+                                     + std::to_string(line_number));
+        }
+    }
+    if (!has_base || base % 4 != 0) {
+        throw std::runtime_error("The synth spec needs an aligned base address");
+    }
+    if (spec.seeds.empty() || words.empty() || spec.max_instructions == 0
+        || spec.max_functions == 0) {
+        throw std::runtime_error(
+            "The synth spec needs seeds, words, a nonzero max and a nonzero function count");
+    }
+    const std::uint64_t image_end =
+        static_cast<std::uint64_t>(base) + words.size() * 4;
+    for (const auto seed : spec.seeds) {
+        if (seed % 4 != 0 || seed < base || static_cast<std::uint64_t>(seed) + 4 > image_end) {
+            throw std::runtime_error("A synth seed is outside the word image");
+        }
+    }
+    spec.text.guest_address = base;
+    spec.text.bytes.reserve(words.size() * 4);
+    for (const auto word : words) {
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            spec.text.bytes.push_back(static_cast<std::uint8_t>(word >> shift));
+        }
+    }
+    return spec;
+}
+
 int wmain(int argc, wchar_t* argv[]) {
     try {
         std::size_t max_functions = default_max_module_functions;
@@ -1167,63 +1328,94 @@ int wmain(int argc, wchar_t* argv[]) {
             return 0;
         }
         const int positional = argc - first;
-        const bool positional_ok = whole_program ? (positional == 1 || positional == 2)
-                                                 : (positional >= 2 && positional <= 4);
+        // The synthetic fixture path takes a spec file and an output file
+        // instead of a CORE and guest addresses; everything after argument
+        // parsing is shared with the game path.
+        const bool synthetic =
+            argc - first == 3 && std::wstring_view(argv[first]) == L"--synth";
+        const bool positional_ok = synthetic
+            ? true
+            : (whole_program ? (positional == 1 || positional == 2)
+                             : (positional >= 2 && positional <= 4));
         if (!positional_ok) {
             std::cerr << "Usage: gt4translate CORE.GT4 [--functions N] start-address max-instructions "
                          "[output-file [halt-address]]\n"
                          "       gt4translate CORE.GT4 [--functions N] --all max-instructions "
                          "[output-file]\n"
                          "       gt4translate CORE.GT4 [--functions N] --survey\n"
+                         "       gt4translate CORE.GT4 --synth spec-file output-file\n"
                          "Translates a function and its direct call tree into a C++ header:\n"
                          "plain instructions, conditional branches (including likely and link\n"
                          "forms), in-function jumps, direct 'jal' calls (translated recursively)\n"
                          "and multiple 'jr ra' returns. With a halt address the walk stops there\n"
                          "instead of translating further (a syscall or an unsupported word); the\n"
-                         "emitted module sets the pc at that address and returns, exactly where\n"
-                         "the interpreter stops. Indirect transfers (jalr and computed jr) now\n"
+                         "emitted module sets the pc at that address and returns an explicit\n"
+                         "exit reason, exactly where the interpreter stops. Indirect transfers\n"
+                         "(jalr and computed jr) capture their target before the delay slot,\n"
                          "dispatch through the module's own entry table at run time and stop at\n"
-                         "the transfer only when the target is unknown; instructions the model\n"
-                         "does not run stop the module the same way. Exceptions and unsupported\n"
-                         "words stop identically.\n"
+                         "the transfer with IndirectTransfer only when the target is unknown;\n"
+                         "instructions the model does not run stop the module the same way.\n"
+                         "Every generated function reports a BoundaryKind: Returned for an\n"
+                         "applied 'jr ra' (target captured before the slot), ExceptionReturn\n"
+                         "for an applied eret, Syscall/Break/UnsupportedWord at the stopping\n"
+                         "word, IndirectTransfer for a transfer left to the bridge, and\n"
+                         "InstructionStop for a trapping arithmetic overflow. Callers\n"
+                         "propagate a callee's reason without overwriting it. Exceptions and\n"
+                         "unsupported words stop identically.\n"
                          "max-instructions bounds the whole module; --functions N bounds its\n"
                          "function count (default 256). --all translates every direct-call\n"
                          "target in the text (plus the ELF entry) as one whole-program module.\n"
                          "Without an output file the header is printed to stdout. --survey tries\n"
-                         "every direct-call target in the text and reports the outcome.\n";
+                         "every direct-call target in the text and reports the outcome. --synth\n"
+                         "translates original synthetic words from a spec file (base, seeds,\n"
+                         "max, functions, words) for committable fixtures; the header carries\n"
+                         "no game content (the CORE argument is ignored).\n";
             return 2;
         }
-        const auto core = gt4recomp::tools::read_verified_core(argv[1]);
-        const auto image = reconstruct_core(core);
-        const auto& text = image.text;
-        const std::uint64_t text_end =
-            static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
 
+        ImageRecord text;
         std::vector<std::uint32_t> seeds;
         std::size_t max_instructions = 0;
         std::uint32_t halt_address = 0;
         std::uint32_t start = 0;
         int output_index = -1;
-        if (whole_program) {
-            max_instructions = gt4recomp::tools::parse_number(argv[first]);
-            const auto targets = direct_call_targets(text);
-            seeds.assign(targets.begin(), targets.end());
-            seeds.push_back(0x00100008);  // the ELF entry, so a driver can start there
-            std::sort(seeds.begin(), seeds.end());
-            seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
+        bool game_derived = true;
+        if (synthetic) {
+            SynthSpec spec = load_synth_spec(argv[first + 1]);
+            text = std::move(spec.text);
+            seeds = std::move(spec.seeds);
+            max_instructions = spec.max_instructions;
+            max_functions = spec.max_functions;
             start = seeds.front();
-            if (positional == 2) {
-                output_index = first + 1;
-            }
+            output_index = first + 2;
+            game_derived = false;
         } else {
-            start = gt4recomp::tools::parse_number(argv[first]);
-            max_instructions = gt4recomp::tools::parse_number(argv[first + 1]);
-            halt_address = positional == 4 ? gt4recomp::tools::parse_number(argv[first + 3]) : 0;
-            seeds.push_back(start);
-            if (positional >= 3) {
-                output_index = first + 2;
+            const auto core = gt4recomp::tools::read_verified_core(argv[1]);
+            const auto image = reconstruct_core(core);
+            text = image.text;
+            if (whole_program) {
+                max_instructions = gt4recomp::tools::parse_number(argv[first]);
+                const auto targets = direct_call_targets(text);
+                seeds.assign(targets.begin(), targets.end());
+                seeds.push_back(0x00100008);  // the ELF entry, so a driver can start there
+                std::sort(seeds.begin(), seeds.end());
+                seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
+                start = seeds.front();
+                if (positional == 2) {
+                    output_index = first + 1;
+                }
+            } else {
+                start = gt4recomp::tools::parse_number(argv[first]);
+                max_instructions = gt4recomp::tools::parse_number(argv[first + 1]);
+                halt_address = positional == 4 ? gt4recomp::tools::parse_number(argv[first + 3]) : 0;
+                seeds.push_back(start);
+                if (positional >= 3) {
+                    output_index = first + 2;
+                }
             }
         }
+        const std::uint64_t text_end =
+            static_cast<std::uint64_t>(text.guest_address) + text.bytes.size();
         if (halt_address != 0 && halt_address % 4 != 0) {
             throw std::runtime_error("Expected an aligned halt address");
         }
@@ -1249,13 +1441,20 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         std::ostringstream output;
-        output << "#pragma once\n\n"
-               << "// Generated by gt4translate from the pinned Gran Turismo 4 (USA) v2.00\n"
-               << "// CORE. Entry 0x" << hex_value(start, 8) << ", " << units.size()
-               << " function(s), " << total_instructions << " instructions.\n"
-               << "// This file is derived from game code: keep it in ignored directories\n"
-               << "// and never commit it.\n\n"
-               << "#include \"gt4recomp/ee_interpreter.hpp\"\n\n"
+        output << "#pragma once\n\n";
+        if (game_derived) {
+            output << "// Generated by gt4translate from the pinned Gran Turismo 4 (USA) v2.00\n"
+                   << "// CORE. Entry 0x" << hex_value(start, 8) << ", " << units.size()
+                   << " function(s), " << total_instructions << " instructions.\n"
+                   << "// This file is derived from game code: keep it in ignored directories\n"
+                   << "// and never commit it.\n\n";
+        } else {
+            output << "// Generated by gt4translate --synth from original synthetic words\n"
+                   << "// (no game content). Entry 0x" << hex_value(start, 8) << ", "
+                   << units.size() << " function(s), " << total_instructions
+                   << " instructions.\n\n";
+        }
+        output << "#include \"gt4recomp/ee_driver.hpp\"\n\n"
                << "#include <bit>\n"
                << "#include <cstdint>\n"
                << "#include <stdexcept>\n\n"
@@ -1538,7 +1737,7 @@ int wmain(int argc, wchar_t* argv[]) {
                << "}\n\n"
                << "} // namespace detail\n\n";
         for (const auto& [entry, unit] : units) {
-            output << "inline void function_" << hex_value(entry, 8)
+            output << "inline ee::BoundaryKind function_" << hex_value(entry, 8)
                    << "(ee::GuestState& state);\n";
         }
         output << "\n"
@@ -1554,28 +1753,32 @@ int wmain(int argc, wchar_t* argv[]) {
         output << "    default: return false;\n"
                << "    }\n"
                << "}\n\n"
-               << "// Executes the runtime target; callers check has_entry first.\n"
-               << "inline void call_entry(ee::GuestState& state, std::uint32_t target) {\n"
+               << "// Executes the runtime target and reports its exit reason;\n"
+                << "// callers check has_entry first. An address outside the table\n"
+                << "// keeps a pending-transfer stop at the dispatching word.\n"
+               << "inline ee::BoundaryKind call_entry(ee::GuestState& state, std::uint32_t target) {\n"
                << "    switch (target) {\n";
         for (const auto& [entry, unit] : units) {
-            output << "    case 0x" << hex_value(entry, 8) << "u: function_"
-                   << hex_value(entry, 8) << "(state); return;\n";
+            output << "    case 0x" << hex_value(entry, 8) << "u: return function_"
+                   << hex_value(entry, 8) << "(state);\n";
         }
-        output << "    default: state.set_pc(target); return;\n"
+        output << "    default: state.set_pc(target);\n"
+                << "        return ee::BoundaryKind::IndirectTransfer;\n"
                << "    }\n"
                << "}\n\n"
                << "} // namespace detail\n\n"
                << "// The module's entry table, for a boundary driver: has_entry names\n"
                << "// every address the module can be entered at, call_entry executes\n"
-               << "// one. An address that is not an entry is never called.\n"
+               << "// one and reports its exit reason. An address that is not an\n"
+                << "// entry is never called.\n"
                << "[[nodiscard]] inline bool has_entry(std::uint32_t target) {\n"
                << "    return detail::has_entry(target);\n"
                << "}\n\n"
-               << "inline void call_entry(ee::GuestState& state, std::uint32_t target) {\n"
-               << "    detail::call_entry(state, target);\n"
+               << "inline ee::BoundaryKind call_entry(ee::GuestState& state, std::uint32_t target) {\n"
+               << "    return detail::call_entry(state, target);\n"
                << "}\n\n";
         for (const auto& [entry, unit] : units) {
-            output << "inline void function_" << hex_value(entry, 8)
+            output << "inline ee::BoundaryKind function_" << hex_value(entry, 8)
                    << "(ee::GuestState& state) {\n"
                    << emit_unit_body(text, unit) << "}\n\n";
         }

@@ -1,14 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 67 (P04, PLAN.md order) — handler and
-argument travel as one pair with (cause, argument, pc) frames,
-interrupted-idle is explicit with GetThreadId 0, and the interrupt
-return dispatches over idle without restoring waiters as RUN
-(non-nesting/non-preemption kept); interrupt_model at 3, old files
-forensic. a2 verified by owner against pinned ps2sdk (BIOS handler
-takes (cause, arg, addr) and forwards addr). 50/50 + Python 73
-owner-gated, binaries freshness-checked. **Next: P05 (slice 68, JR
-and explicit AOT exit reasons).** This is the
+Updated 2026-10-04 after slice 68 (P05, PLAN.md order) — jr-ra targets
+are captured before the delay slot and every generated function
+reports an explicit BoundaryKind exit (no pc == ra inference, calls
+propagate without overwrite, pending transfers reach the bridge
+first); the real-emitter 11-leg fixture matches the interpreter on
+effect and stop reason. 51/51 + Python 73 owner-gated, binaries
+freshness-checked. **Next: P06 (slice 69, DMA with real payload, tags
+and completion).** This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1035,6 +1034,13 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 68 (P05, 2026-10-04): **JR capture + explicit module exits**.
+  Pre-slot ra capture, BoundaryKind returns with propagation,
+  bridge-first pending transfers, gt4translate --synth with an
+  11-leg real-emitter fixture; whole-program coverage identical
+  (15,068 functions, 924,991 instructions); boot differential exact.
+  (`docs/decisions/0032-p05-jr-and-explicit-module-exit.md`,
+  `docs/reverse-engineering/slice68-p05-jr-exits.md`).
 - Slice 67 (P04, 2026-10-04): **handler args + explicit idle**.
   Pairs, (cause, argument, pc) frames, idle sentinel, dispatch on
   return; interrupt_model 3. Owner-checked, a2 independently verified
