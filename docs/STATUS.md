@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 49 (fourteenth item) — the
-M13–M16 first-execution arc is now a worked explanation (best
-candidate, 6 states, observed-use slices, SLT-64bit catch,
-COP1/MMI/startup, unaligned/multiply, M17 bridge; M22–M29 as
-continuation). Owner checked sources + voice. Next is slice 50:
-the M17–M21 advanced-control arc lesson. This is the
+Updated 2026-10-04 after slice 50 (fifteenth item) — the
+M17–M21 advanced-control arc is now a worked explanation (dual-
+identity slots, COP0/traps/shifts, trap slots + eret, two
+verified modules; M27/M28/M29 as pointers). Owner checked
+representation refs + voice. Next is slice 51: the M22–M24 VU0-
+macro arc lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1030,6 +1030,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 50 (lesson, 2026-10-04): **M17–M21 advanced
+  control written**. Dual-identity slots, COP0/traps, 57-function
+  module; later slices as pointers. Owner-checked
+  (`docs/lessons/m17-m21-advanced-control.md`).
 - Slice 49 (lesson, 2026-10-04): **M13–M16 first
   execution written**. Best candidate, 6 states, SLT catch,
   startup 942,695, M17 bridge. Owner-checked
@@ -1420,8 +1424,8 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 50)**. Fourteen items committed and owner-checked;
-  next the M17–M21 advanced-control arc. Tripwires armed; M35's
+  (slice 51)**. Fifteen items committed and owner-checked;
+  next the M22–M24 VU0-macro arc. Tripwires armed; M35's
   promoter watched; and the curriculum's remaining units (a
   counting timer with interrupt delivery and the jump-table
   dispatch) stay listed in `docs/requirements.md`.
