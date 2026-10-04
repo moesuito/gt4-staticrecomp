@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 44 (ninth lesson, first M32)
-  — the delay march + tripwire arc is now a worked explanation
-  (honest maturation, lottery verdict, coalescing, audit, chain
-  of negatives to the specified 0026 packet with census tripwire;
-  fossil kept as forward pointer). Owner checked numbers + voice.
-  Next is slice 45: the M33 recon + asset-dumps lesson. This is
-  the first document to read in a new session; it is kept current
-  as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after slice 45 (tenth lesson) — the M33
+recon + assets arc is now a worked explanation (dry pipe, unbuilt
+dispatcher, printer feeders, neutral switch, silent watch, asset
+trailheads with [V]/[S] grades kept; absence proven six ways
+before modeled traffic). Owner checked sources + voice. Next is
+slice 46: the M32 tripwire/event lesson (slices 29–31 + decision
+0026). This is the
+first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1031,10 @@ Updated 2026-10-04 after slice 44 (ninth lesson, first M32)
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 45 (lesson, 2026-10-04): **M33 recon + assets
+  written**. Dry pipe, unbuilt dispatcher, silence 6 ways, asset
+  trailheads with grades kept. Owner-checked
+  (`docs/lessons/m33-recon-assets.md`).
 - Slice 44 (lesson, 2026-10-04): **M32 march + tripwire
   written**. Maturation, lottery, coalescing, audit, negatives
   chain to specified packet + tripwire. Owner-checked
@@ -1400,11 +1405,11 @@ Updated 2026-10-04 after slice 44 (ninth lesson, first M32)
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 45)**. Nine lessons committed and owner-checked; next
-  the M33 recon + asset-dumps arc. Tripwires armed; M35's
-  promoter watched; and the curriculum's remaining units (a
-  counting timer with interrupt delivery and the jump-table
-  dispatch) stay listed in `docs/requirements.md`.
+  (slice 46)**. Ten lessons committed and owner-checked; next
+  the M32 tripwire/event arc (slices 29–31 + decision 0026).
+  Tripwires armed; M35's promoter watched; and the curriculum's
+  remaining units (a counting timer with interrupt delivery and
+  the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
