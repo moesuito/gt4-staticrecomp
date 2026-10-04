@@ -1025,6 +1025,15 @@ int wmain(int argc, wchar_t* argv[]) {
         });
         driver_devices.wire_kernel(driver_kernel);
         auto driver_state = make_boot_state(image, driver_devices);
+        // Option-A poll points (decision 0034): translated code asks the
+        // kernel to deliver a synchronously raised DMA completion at the
+        // next guest instruction, the pc the interpreter uses. The hook
+        // lives on this state object, so a resumed run keeps it (the
+        // snapshot applies onto the same object); the reference engine
+        // never runs translated code, so it needs none.
+        driver_state.set_dma_start_poll([&driver_kernel](GuestState& running) {
+            return driver_kernel.start_interrupt(running);
+        });
         // Resuming rebuilds everything identically, then applies the
         // snapshot over it: registers, RAM bytes, kernel state and device
         // registers in map order. Counters recount from zero, so --services

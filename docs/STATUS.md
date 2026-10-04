@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 71 (raise census): 21.8% of raises land
-inside translated code, all from one guest function (004aba50) doing
-VIF1/GIF DMA; 78.2% loop-top deliver identically; the divergent
-handler is pure (no syscalls). Draft decision 0034 recommends emitter
-poll points at DMA STR writes (option A), prototype behind the blind
-gate. WILL_FAIL markers stay; P07/P09 wait for green. 51/51 + Python
-73 owner-gated. Next: slice 72, prototype option A (1606 green, then
-90k green). This is the
+Updated 2026-10-04 after slice 72 (option-A prototype, decision 0034
+accepted, incident 1606 closed): translated code polls the pending
+queue after a falling-through sw that starts a completing DMA transfer
+(STR in a VIF0/VIF1/GIF CHCR), so synchronous completions deliver at
+the next guest instruction on both engines. 1606 and 90k differentials
+green by owner rerun (exit 0, state identical); translation_model 2;
+WILL_FAIL markers removed, loud FAIL regex kept. 51/51 genuine green +
+Python 73 owner-gated, binaries freshness-checked. Next: P07 RPC
+telemetry (slice 73) behind the green differential. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1034,6 +1035,16 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 72 (option A, 2026-10-04): **contract landed, 1606 closed**.
+  Emitter poll after falling-through sw (STR in a completing CHCR);
+  1606 + 90k differentials green, recensus with zero divergent pairs;
+  translation_model 2, WILL_FAIL removed, decision 0034 accepted
+  (`docs/reverse-engineering/slice72-optiona-prototype.md`,
+  `docs/decisions/0034-delivery-granularity-contract.md`).
+- Slice 72 (option A, 2026-10-04): **poll points land, 1606
+  closed**. STR-write polls, 1606 + 90k green by owner rerun,
+  translation_model 2, markers out, FAIL regex stays. Owner-checked
+  (`docs/decisions/0034-delivery-granularity-contract.md`).
 - Slice 71 (census, 2026-10-04): **raises sized, 0034 drafted**.
   21.8% in-module from one function, handler pure; option A
   recommended. Owner-checked

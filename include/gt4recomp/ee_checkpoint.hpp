@@ -91,7 +91,7 @@ struct ModelCompatibility {
     std::uint32_t time_model = 3;         // the service clock and timer advance
     std::uint32_t interrupt_model = 3;    // occurrence, pending, mask, dispatch, handler frames
     std::uint32_t rpc_model = 1;          // SIF/RPC replies and backing stores
-    std::uint32_t translation_model = 1;  // decoder and AOT emitter semantics
+    std::uint32_t translation_model = 2;  // decoder and AOT emitter semantics
 };
 
 // The semantics this binary implements. Every domain starts at 1 (the P00
@@ -105,7 +105,9 @@ struct ModelCompatibility {
 // Slice 67 (P04, decision 0031) bumped interrupt to 3 (handler and
 // argument travel as one pair with (cause, argument, pc) frames,
 // explicit interrupted-idle with GetThreadId 0, return dispatch over
-// idle).
+// idle). Slice 72 (decision 0034, option A) bumped translation to 2
+// (emitter poll points after falling-through sw: a store that starts a
+// completing DMA transfer delivers at the next guest instruction).
 [[nodiscard]] constexpr ModelCompatibility current_model_compatibility() noexcept {
     return ModelCompatibility{};
 }

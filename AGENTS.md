@@ -304,11 +304,11 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **slice 72, option-A prototype (decision 0034)**:
-  emitter poll points at DMA STR writes; 1606 green then 90k green,
-  census zero, only then remove WILL_FAIL. P07 telemetry waits for a
-  green differential. Order adapts only on new evidence, with cause
-  recorded. Tripwires armed; M35's promoter watched. The
+- Next: **P07 RPC telemetry (slice 73)**:
+  per-(SID, function) inventory with implementation classes, strict
+  unknown-stop mode, behind the green differential. Order adapts only
+  on new evidence, with cause recorded. Tripwires armed; M35's promoter
+  watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

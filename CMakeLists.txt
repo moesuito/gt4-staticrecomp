@@ -298,18 +298,17 @@ if(BUILD_TESTING)
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"
                         --services 90000 --compare-interpreter)
-            # Incident 2026-10-04 (slice 69): the driver/interpreter
-            # differential is red (first divergence at service 1606), and a
-            # PASS-only regex stays green on a nonzero exit, so the mismatch
-            # phrases below fail the gate loudly while WILL_FAIL keeps the
-            # suite honest-but-green until the hunt closes it. Removing
-            # WILL_FAIL is part of closing that incident: a fixed
-            # differential XPASSes and goes red until the marker is gone.
+            # Incident 2026-10-04 (slices 69-72): the driver/interpreter
+            # differential diverged at service 1606 (delivery granularity:
+            # a synchronous DMA completion raised mid-module and the two
+            # engines delivered at different guest pcs). Decision 0034
+            # (option A, slice 72) closed it with emitter poll points after
+            # falling-through sw stores, so both legs run green without a
+            # marker; the mismatch phrases below still fail the gate loudly.
             set_tests_properties(gt4boot_services PROPERTIES
                 FIXTURES_REQUIRED gt4boot
                 PASS_REGULAR_EXPRESSION "services handled 90000"
-                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at"
-                WILL_FAIL TRUE)
+                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at")
             # The first originating event (decision 0026): a fresh disc
             # boot delivers the synthesized SIF pump packet, so the pump
             # queue reads back drained with the packet words, while the
@@ -327,14 +326,12 @@ if(BUILD_TESTING)
         else()
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 3000 --compare-interpreter)
-            # Same incident as the disc variant: this leg also diverges
-            # (memory window, exit 1), so it carries the same loud gate
-            # and the same WILL_FAIL marker until the hunt closes it.
+            # Same incident as the disc variant, closed by the same slice-72
+            # contract: this leg carries the same loud gate, without a marker.
             set_tests_properties(gt4boot_services PROPERTIES
                 FIXTURES_REQUIRED gt4boot
                 PASS_REGULAR_EXPRESSION "services handled 3000"
-                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at"
-                WILL_FAIL TRUE)
+                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at")
         endif()
         # The stop-time memory view: a short run prints the requested guest
         # words, so the --dump option stays exercised.

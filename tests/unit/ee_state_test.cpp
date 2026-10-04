@@ -148,6 +148,65 @@ int main() {
     state.memory().write_word(base + 0x30, 0xcafebabeu);
     check(state.memory().read_word(base + 0x30) == 0xcafebabeu, "state memory access");
 
+    // DMA start polls (decision 0034): only a completing channel CHCR with
+    // STR set fires, and only when a delivery path is wired.
+    {
+        GuestState polled(make_memory());
+        polled.set_pc(0x00100000u);
+        check(!polled.poll_dma_start(0x10009000u, 0x100001c5u, 0x00100004u)
+                  && polled.pc() == 0x00100000u,
+              "no hook means no poll and no pc change");
+        std::uint32_t delivered_pc = 0;
+        int deliveries = 0;
+        polled.set_dma_start_poll(
+            [&](GuestState& running) {
+                delivered_pc = running.pc();
+                ++deliveries;
+                return true;
+            });
+        check(polled.poll_dma_start(0x10009000u, 0x100001c5u, 0x00100004u)
+                  && deliveries == 1 && delivered_pc == 0x00100004u
+                  && polled.pc() == 0x00100004u,
+              "VIF1 CHCR with STR sets the next pc and polls");
+        check(!polled.poll_dma_start(0x10009000u, 0x000000c5u, 0x00100008u)
+                  && deliveries == 1 && polled.pc() == 0x00100004u,
+              "CHCR without STR never polls");
+        check(!polled.poll_dma_start(0x10009020u, 0x100001c5u, 0x00100008u)
+                  && deliveries == 1 && polled.pc() == 0x00100004u,
+              "QWC offset never polls");
+        check(!polled.poll_dma_start(0x00100000u, 0x100001c5u, 0x00100008u)
+                  && deliveries == 1 && polled.pc() == 0x00100004u,
+              "plain RAM never polls");
+        check(polled.poll_dma_start(0x10008000u, 0x00000100u, 0x0010000cu)
+                  && deliveries == 2 && delivered_pc == 0x0010000cu
+                  && polled.pc() == 0x0010000cu,
+              "VIF0 CHCR with STR polls");
+        check(polled.poll_dma_start(0x1000a000u, 0x00000100u, 0x00100010u)
+                  && deliveries == 3 && delivered_pc == 0x00100010u
+                  && polled.pc() == 0x00100010u,
+              "GIF CHCR with STR polls");
+        polled.set_dma_start_poll(
+            [&](GuestState&) { return false; });
+        check(!polled.poll_dma_start(0x10009000u, 0x100001c5u, 0x00100014u)
+                  && polled.pc() == 0x00100014u,
+              "a refusing hook still reports false");
+    }
+    // The KSEG0 mirror of a channel CHCR polls once the alias is on.
+    {
+        GuestMemory aliased_ram(0, 0x2000000);
+        GuestState aliased(std::move(aliased_ram));
+        aliased.memory().enable_segment_alias();
+        bool delivered = false;
+        aliased.set_dma_start_poll(
+            [&](GuestState&) {
+                delivered = true;
+                return true;
+            });
+        check(aliased.poll_dma_start(0x90009000u, 0x100001c5u, 0x00100004u)
+                  && delivered,
+              "KSEG0 CHCR mirror polls with the alias on");
+    }
+
     if (failures != 0) {
         return 1;
     }

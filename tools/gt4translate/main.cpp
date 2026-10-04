@@ -717,7 +717,26 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         switch (flow.kind) {
         case FlowKind::FallThrough:
             comment(address, word);
-            body << "    " << statement_at(address) << "\n\n";
+            body << "    " << statement_at(address) << "\n";
+            if (instruction.operation == Operation::Sw) {
+                // Option-A poll point (decision 0034): a store that starts a
+                // DMA transfer raises synchronously, so the module asks the
+                // driver to deliver at the next guest instruction, the pc the
+                // interpreter uses. poll_dma_start only fires on a word write
+                // to a completing channel CHCR with STR set (and only when a
+                // delivery path is wired); anything else falls through with
+                // the pc untouched. Swl/Swr and delay-slot stores carry no
+                // poll: the census shows every in-module raise comes from a
+                // plain falling-through sw, and the re-run census below keeps
+                // that claim checked.
+                body << "    if (state.poll_dma_start(detail::effective_address(state, "
+                     << static_cast<unsigned>(instruction.rs) << ", "
+                     << instruction.signed_immediate() << "), state.read_gpr32("
+                     << static_cast<unsigned>(instruction.rt) << "), 0x"
+                     << hex_value(address + 4, 8)
+                     << "u)) { return ee::BoundaryKind::Returned; }\n";
+            }
+            body << "\n";
             break;
         case FlowKind::Branch: {
             const auto taken = "taken_" + hex_value(address, 8);

@@ -594,6 +594,38 @@ void GuestState::set_pc(std::uint32_t value) noexcept {
     pc_ = value;
 }
 
+void GuestState::set_dma_start_poll(DmaStartPoll poll) {
+    dma_start_poll_ = std::move(poll);
+}
+
+bool GuestState::poll_dma_start(std::uint32_t address, std::uint32_t value,
+                                std::uint32_t next_pc) {
+    if (dma_start_poll_ == nullptr) {
+        return false;
+    }
+    // The completing DMA channel windows (DmaChannel in ee_device.hpp, wired
+    // by the boot): VIF0 at 0x10008000, VIF1 at 0x10009000, GIF at 0x1000A000,
+    // with CHCR at +0x00 and the start bit STR at 0x100. Only a word write to
+    // CHCR with STR set starts a transfer (any other width stops in the
+    // device); the fold below applies only when the segment alias is on, the
+    // same condition GuestMemory::physical_address uses, so KSEG0/KSEG1 and
+    // the 0x20000000 mirror match their physical window.
+    std::uint32_t physical = address;
+    if (memory_.segment_alias_enabled()
+        && ((address >= 0x80000000u && address < 0xc0000000u)
+            || (address >= 0x20000000u && address < 0x40000000u))) {
+        physical = address & 0x1fffffffu;
+    }
+    const bool is_start = (physical == 0x10008000u || physical == 0x10009000u
+                           || physical == 0x1000a000u)
+        && (value & 0x00000100u) != 0;
+    if (!is_start) {
+        return false;
+    }
+    set_pc(next_pc);
+    return dma_start_poll_(*this);
+}
+
 GuestMemory& GuestState::memory() noexcept {
     return memory_;
 }

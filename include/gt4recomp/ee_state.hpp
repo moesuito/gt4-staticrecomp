@@ -171,6 +171,23 @@ public:
     [[nodiscard]] std::uint32_t pc() const noexcept;
     void set_pc(std::uint32_t value) noexcept;
 
+    // A synchronous DMA start can raise an interrupt while translated code
+    // runs: the emitter checks the queue after a store that sets the STR
+    // bit in a completing channel window (decision 0034). The hook delivers
+    // what is pending (the driver wires Kernel::start_interrupt here) and
+    // reports whether it injected a handler. Null means no delivery path:
+    // poll_dma_start then answers false without touching the pc, so unit
+    // tests and the interpreter reference (which delivers per instruction
+    // and never runs translated code) see no change.
+    using DmaStartPoll = std::function<bool(GuestState& state)>;
+    void set_dma_start_poll(DmaStartPoll poll);
+    // True when the store at address with value started a completing DMA
+    // transfer and the hook injected its handler. On a match the pc is set
+    // to next_pc first (the next guest instruction, where the interpreter
+    // delivers), so the caller can return to the driver from there.
+    bool poll_dma_start(std::uint32_t address, std::uint32_t value,
+                        std::uint32_t next_pc);
+
     [[nodiscard]] GuestMemory& memory() noexcept;
     [[nodiscard]] const GuestMemory& memory() const noexcept;
 
@@ -254,6 +271,11 @@ private:
     std::uint32_t vu0_status_flag_ = 0;
     std::uint32_t pc_ = 0;
     GuestMemory memory_;
+    // The delivery path translated DMA poll points call into, set by the
+    // driver. Never part of the guest state: snapshots and the differential
+    // compare registers and memory only, and a resumed run keeps the same
+    // object the boot wired.
+    DmaStartPoll dma_start_poll_;
 };
 
 } // namespace gt4recomp::ee
