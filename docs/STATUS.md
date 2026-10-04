@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 47 (retroactive notes) — the
-M2–M5 foundation is written down with stated provenance (pinned
-hashes quoted verbatim and owner-checked, zero-fill policy
-labeled, decoder accounting + Ghidra independence; thin record
-labeled, not backfilled). Owner caught one wrong hash suffix and
-fixed it. Next is slice 48: the M7–M12 tooling-arc lesson. This
-is the first document to read in a new session; it is kept current
-as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after slice 48 (thirteenth item) — the
+M7–M12 tooling arc is now a worked explanation (flow/map/state/
+interpreter/generated suites with independent oracle; later dual
+roles explicit; m7 cross-ref deliberate). Owner checked tools +
+voice. Next is slice 49: the M13–M16 first-real-execution arc
+lesson. This is the
+first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1030,10 @@ as work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 48 (lesson, 2026-10-04): **M7–M12 tooling arc
+  written**. Flow/map/state/interpreter/suites; dual roles
+  explicit. Owner-checked
+  (`docs/lessons/m7-m12-tooling.md`).
 - Slice 47 (notes, 2026-10-04): **M2–M5 foundation,
   provenance stated**. Verbatim hashes owner-checked (one suffix
   fixed: native `…935c`); zero-fill labeled; decoder + Ghidra.
@@ -1412,11 +1416,11 @@ as work proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 48)**. Twelve items committed and owner-checked (one
-  hash suffix fixed by review); next the M7–M12 tooling arc.
-  Tripwires armed; M35's promoter watched; and the curriculum's
-  remaining units (a counting timer with interrupt delivery and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+  (slice 49)**. Thirteen items committed and owner-checked;
+  next the M13–M16 first-real-execution arc. Tripwires armed;
+  M35's promoter watched; and the curriculum's remaining units
+  (a counting timer with interrupt delivery and the jump-table
+  dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
