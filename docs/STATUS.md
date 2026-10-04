@@ -1,13 +1,12 @@
 # Project status
 
-Updated 2026-10-03 after slice 32 (service-surface inventory) —
-fully covered, nothing to implement: 144 distinct syscall numbers
-(all statically named, zero computed), 69 kernel-registered + 3
-tool-side + 13 guest-patched, rest stub-only with no callers; all
-39 observed firings check out; the driver stops loudly on anything
-unanswered and never has. Owner re-counted 69 + OSD present, and
-retired the stale OSD/BIOS remainder. Next is slice 33: hunt the
-ring producer statically (tripwire promoter #2). This is the
+Updated 2026-10-03 after slice 33 (ring-producer hunt) —
+proven unknown with a recorded sweep (zero writer immediates,
+creator posts nothing, delay dispatcher exonerated, era bounded to
+(800, 60000] over 12 checkpoints). Owner verified the loop decode
+and adds the replay insight: every fresh boot replays the posting
+era, so slice 34 catches the poster live — fresh boot with the
+write-watch on the ring slots, bounded ~60k services. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1031,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 33 (ring producer, 2026-10-03): **proven unknown,
+  era (800, 60000]**. Zero writer immediates, creator/init
+  exonerated, delay dispatcher exonerated, 12-file census. Owner
+  verified loop decode; replay insight: fresh boot replays the era
+  (`docs/reverse-engineering/m32-slice33-ring-producer.md`).
 - Slice 32 (service surface, 2026-10-03): **fully covered,
   nothing to implement**. 144 named numbers, 69 + 3 + 13 covered,
   39/39 firings check out, loud-stop property holds. Stale OSD/BIOS
@@ -1348,15 +1352,15 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **hunt the ring producer
-  (slice 33)**. Surface covered (owner re-counted), tripwire armed:
-  identify thread 2's job producer statically (who writes the ring
-  slots / signals sema 11) — bounded hunt; if found, it specs the
-  next event slice. Then milestone traffic per decision 0023. M35
-  pad stays queued (no PADMAN bound at this phase); and the
-  curriculum's remaining units (a counting timer with interrupt
-  delivery and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **catch the poster live
+  (slice 34)**. Proven-unknown with bounds (owner-verified loop):
+  fresh boot replays the posting era, so run it with the
+  write-watch on the ring slots — the poster names itself by
+  writer pc (~60k services, pure observation). Then milestone
+  traffic per decision 0023. M35 pad stays queued (no PADMAN bound
+  at this phase); and the curriculum's remaining units (a counting
+  timer with interrupt delivery and the jump-table dispatch) stay
+  listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
