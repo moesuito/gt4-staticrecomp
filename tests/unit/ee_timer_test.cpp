@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace gt4recomp::ee;
@@ -254,7 +255,7 @@ int main() {
             check(timer.register_value(base + TimerUnit::count_offset)
                           == 0x100u
                       && !crossed.compare_edge && !crossed.overflow_edge,
-                  "a gated timer does not advance (P03 owns the gate modes)");
+                  "a gated timer does not advance (explicit limit, decision 0030)");
         }
         // ZeroReturn restarts the period on a compare passage.
         {
@@ -267,6 +268,146 @@ int main() {
                       && crossed.compare_edge,
                   "ZeroReturn restarts the counter on a compare");
         }
+    }
+
+    // ZeroReturn over several periods with the guest's acknowledge rhythm:
+    // COMP 0x10, then three whole periods. Each period's passage sets
+    // EQUF once; acknowledging between advances lets the guest's
+    // extended-time routine count every period exactly, ending at zero.
+    {
+        constexpr std::uint32_t base = TimerUnit::window_base;
+        constexpr std::uint32_t mode_address = base + TimerUnit::mode_offset;
+        TimerUnit timer;
+        timer.write_register(base + TimerUnit::count_offset, 4, 0);
+        timer.write_register(base + TimerUnit::compare_offset, 4, 0x10u);
+        timer.write_register(base + TimerUnit::mode_offset, 4, 0x1C0u);
+        const TimerUnit::TimerAdvance jumped = timer.add_ticks(0, 0x35u);
+        check(timer.register_value(base + TimerUnit::count_offset) == 0x05u
+                  && jumped.compare_edge,
+              "ZeroReturn spans whole periods and lands the remainder");
+        timer.write_register(base + TimerUnit::count_offset, 4, 0);
+        timer.write_register(mode_address, 4, 0x5C0u);  // keep CUE|CMPE|ZRET, ack EQUF
+        std::uint32_t periods = 0;
+        for (int round = 0; round < 3; ++round) {
+            if (timer.add_ticks(0, 0x10u).compare_edge) {
+                ++periods;
+            }
+            timer.write_register(mode_address, 4, 0x5C0u);
+        }
+        check(periods == 3
+                  && timer.register_value(base + TimerUnit::count_offset) == 0,
+              "the acknowledge rhythm counts every ZeroReturn period");
+    }
+
+    // Decomposition (decision 0030): one advance of N ticks reaches the
+    // same COUNT, flags and edge-OR as any split of N with no guest
+    // writes between the pieces, so a large jump never skips a crossing
+    // the pieces would have seen. Each row starts from identical
+    // register writes; flags are sticky, so rows never share a unit.
+    {
+        constexpr std::uint32_t base = TimerUnit::window_base;
+        struct SplitCase {
+            std::uint32_t count;
+            std::uint32_t compare;
+            std::uint32_t mode;
+            std::uint32_t total;
+            std::uint32_t split;
+            const char* label;
+        };
+        const SplitCase cases[] = {
+            {0x0000u, 0x0100u, 0x180u, 0x0100u, 0x0040u,
+             "plain compare, mid split"},
+            {0x0000u, 0x0100u, 0x180u, 0x0100u, 0x0100u,
+             "split exactly at the crossing"},
+            {0x0100u, 0x0050u, 0x180u, 0x0010u, 0x0008u,
+             "behind-counter silence"},
+            {0xFFF0u, 0x0005u, 0x380u, 0x0020u, 0x000Bu,
+             "wrap plus compare, odd split"},
+            {0xFFF0u, 0x5000u, 0x382u, 576u, 200u, "P03 acceptance row"},
+            {0x0000u, 0x0010u, 0x1C0u, 0x0035u, 0x0011u,
+             "ZeroReturn multi-period"},
+            {0xFFF0u, 0xFFF8u, 0x380u, 0x0040u, 0x0020u,
+             "compare then wrap"},
+            {0x1234u, 0x1234u, 0x180u, 0x0001u, 0x0001u,
+             "compare at start waits a cycle"},
+        };
+        const auto program = [&](TimerUnit& timer, const SplitCase& row) {
+            timer.write_register(base + TimerUnit::count_offset, 4, row.count);
+            timer.write_register(base + TimerUnit::compare_offset, 4,
+                                 row.compare);
+            timer.write_register(base + TimerUnit::mode_offset, 4, row.mode);
+        };
+        for (const SplitCase& row : cases) {
+            TimerUnit whole;
+            program(whole, row);
+            const TimerUnit::TimerAdvance whole_edges =
+                whole.add_ticks(0, row.total);
+            TimerUnit pieces;
+            program(pieces, row);
+            const TimerUnit::TimerAdvance first =
+                pieces.add_ticks(0, row.split);
+            const TimerUnit::TimerAdvance second =
+                pieces.add_ticks(0, row.total - row.split);
+            const std::string tag =
+                std::string("decomposition, ") + row.label;
+            check(whole.register_value(base + TimerUnit::count_offset)
+                          == pieces.register_value(base
+                                                   + TimerUnit::count_offset)
+                      && whole.register_value(base + TimerUnit::mode_offset)
+                             == pieces.register_value(base
+                                                      + TimerUnit::mode_offset)
+                      && (first.compare_edge || second.compare_edge)
+                             == whole_edges.compare_edge
+                      && (first.overflow_edge || second.overflow_edge)
+                             == whole_edges.overflow_edge,
+                  tag.c_str());
+        }
+    }
+
+    // Gate modes hold through any advance (decision 0030 explicit limit):
+    // GATE with each source/mode mix keeps COUNT and raises no edge, even
+    // with both interrupt enables set.
+    {
+        constexpr std::uint32_t base = TimerUnit::window_base;
+        const std::uint32_t gate_mixes[] = {0x004u, 0x00Cu, 0x014u, 0x024u,
+                                            0x034u};
+        for (std::size_t mix = 0; mix < 5; ++mix) {
+            TimerUnit timer;
+            timer.write_register(base + TimerUnit::count_offset, 4, 0x100u);
+            timer.write_register(base + TimerUnit::compare_offset, 4, 0x200u);
+            timer.write_register(base + TimerUnit::mode_offset, 4,
+                                 0x384u | gate_mixes[mix]);
+            const TimerUnit::TimerAdvance held = timer.add_ticks(0, 0x5000u);
+            const std::string tag =
+                std::string("gated mix ") + std::to_string(mix) + " holds";
+            check(timer.register_value(base + TimerUnit::count_offset)
+                          == 0x100u
+                      && !held.compare_edge && !held.overflow_edge,
+                  tag.c_str());
+        }
+    }
+
+    // A guest COMP rewrite between advances steers the next one: after
+    // crossing the first COMP and acknowledging, the abandoned point
+    // passed in one jump stays silent and the new COMP fires on arrival.
+    {
+        constexpr std::uint32_t base = TimerUnit::window_base;
+        constexpr std::uint32_t mode_address = base + TimerUnit::mode_offset;
+        TimerUnit timer;
+        timer.write_register(base + TimerUnit::count_offset, 4, 0);
+        timer.write_register(base + TimerUnit::compare_offset, 4, 0x100u);
+        timer.write_register(base + TimerUnit::mode_offset, 4, 0x180u);
+        check(timer.add_ticks(0, 0x100u).compare_edge, "the first COMP fires");
+        timer.write_register(mode_address, 4, 0x580u);  // ack EQUF, keep CUE|CMPE
+        timer.write_register(base + TimerUnit::compare_offset, 4, 0x180u);
+        const TimerUnit::TimerAdvance silent = timer.add_ticks(0, 0x50u);
+        check(timer.register_value(base + TimerUnit::count_offset) == 0x150u
+                  && !silent.compare_edge,
+              "the abandoned COMP point stays silent");
+        const TimerUnit::TimerAdvance refired = timer.add_ticks(0, 0x30u);
+        check(timer.register_value(base + TimerUnit::count_offset) == 0x180u
+                  && refired.compare_edge,
+              "the reprogrammed COMP fires on arrival");
     }
 
     if (failures != 0) {

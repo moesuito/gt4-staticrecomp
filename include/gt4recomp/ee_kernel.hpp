@@ -183,18 +183,32 @@ public:
     void set_dmac_unit(DmacStatusUnit* dmac) noexcept;
 
     // The idle-time interrupt source: when no thread can run, the model
-    // advances the enabled EE timers by one frame (queueing their compare
-    // interrupts) and delivers one VBlank interrupt (the periodic source of
-    // a real console) if the game registered a handler for it. The handlers
-    // may wake threads; their return re-dispatches. A bounded budget of
-    // consecutive idle interrupts without a runnable thread stops the model
-    // instead of spinning forever.
+    // advances time by one frame through the unified machine below
+    // (queueing the timers' compare interrupts and one VBlank when their
+    // handlers are registered). The handlers may wake threads; their
+    // return re-dispatches. A bounded budget of consecutive idle
+    // interrupts without a runnable thread stops the model instead of
+    // spinning forever.
     [[nodiscard]] bool deliver_idle_interrupt(GuestState& state);
+    // The unified advance machine both quanta share (decision 0030): the
+    // caller names a BUSCLK-tick delta, every counting timer takes its
+    // clock's share of it (the CLKS division with one fractional
+    // remainder per timer, shared by both paths), and VBlank accumulates
+    // toward one frame on the same shared accumulator. Splitting one
+    // delta into smaller advances with no guest writes between them
+    // reaches the identical state (decomposition, pinned by unit tests);
+    // guest writes between the pieces - a handler reprogramming COMP or
+    // acknowledging a flag - intentionally steer the next piece, which is
+    // the reprogramming opportunity the scheduler offers between events.
+    // Both engines call the two quanta below in the same order, so the
+    // differential stays exact.
+    void advance_busclk(GuestState& state, std::uint32_t busclk_ticks);
     // Advances the model's time base by one handled service: one millisecond
     // of BUSCLK ticks. Both engines call this exactly once per handled
     // service, so the time base stays a function of the guest's service
-    // sequence and the differential stays exact; the idle path keeps its
-    // frame-per-interrupt shortcut (decision 0016).
+    // sequence and the differential stays exact; a cycle-accurate clock is
+    // out of scope (decision 0016). The quantum is unchanged by P03: only
+    // the mechanism is now shared with the idle path (decision 0030).
     void advance_service_time(GuestState& state);
 
     // The disc image the file services read from. A null image means no
@@ -344,11 +358,12 @@ public:
     // The EE timers: four register blocks at 0x10000000 + index * 0x800,
     // COUNT at +0x00, MODE at +0x10, COMP at +0x20. COUNT and COMP are
     // 16-bit logical counters (see TimerUnit); the MODE bits below name the
-    // enables and the edge-triggered flags. The model advances an enabled
-    // timer's count in two ways: at each idle frame it adds one frame of
-    // the timer's clock source (the idle shortcut), and at each handled
-    // service it adds one service slice (decision 0016). Both report the
-    // timer's INTC cause (9/10/11/12 for T0/T1/T2/T3) on a flag edge.
+    // enables and the edge-triggered flags. Both quanta advance through
+    // the one advance_busclk machine: each handled service contributes
+    // one millisecond of BUSCLK ticks (decision 0016) and each idle call
+    // one frame, sharing remainders and the VBlank accumulator
+    // (decision 0030). A flag edge reports the timer's INTC cause
+    // (9/10/11/12 for T0/T1/T2/T3).
     static constexpr std::uint32_t timer_window_physical = 0x10000000;
     static constexpr std::uint32_t timer_stride = 0x800;
     static constexpr std::uint32_t timer_count_offset = 0x00;
@@ -468,9 +483,10 @@ private:
     // handler chain runs each registered handler for the cause in turn.
     bool inject_interrupt(GuestState& state, std::uint32_t cause,
                           std::vector<std::uint32_t> handlers);
-    // Advances the enabled EE timers by one idle frame and queues their
-    // compare interrupts (see the constants above).
-    void advance_timers(GuestState& state);    // Writes one SET_SREG pump packet and queues its DMAC completion the
+    // Advances the enabled EE timers by one idle frame through the unified
+    // machine above (one frame of BUSCLK ticks).
+    void advance_timers(GuestState& state);
+    // Writes one SET_SREG pump packet and queues its DMAC completion the
     // first time an idle tick finds the pump handler registered, the
     // queue empty, and the game's dispatch entry populated (decision
     // 0026). Pure function of kernel and guest state, so both engines
@@ -611,11 +627,14 @@ private:
     // interrupts are cheap, so it allows long waits (about an hour of
     // virtual frames) before the driver reports the boundary.
     std::uint32_t idle_interrupts_ = 0;
-    // BUSCLK ticks accumulated by handled services toward the next VBlank,
-    // and the per-timer fractional remainders of the service slice's clock
-    // division (decision 0016).
-    std::uint32_t service_ticks_ = 0;
-    std::uint32_t service_timer_remainders_[4] = {};
+    // The unified time base both quanta share (decision 0030): BUSCLK
+    // ticks accumulated toward the next VBlank, and the per-timer
+    // fractional remainders of the CLKS division. The snapshot keeps the
+    // model-2 wire order (one accumulator word, then four remainder
+    // words); only the meaning widened from service-only to both paths,
+    // which is why time_model is 3.
+    std::uint32_t busclk_accumulator_ = 0;
+    std::uint32_t timer_remainders_[4] = {};
     // The disc image (null without one) and the files the file server has
     // handed out: handle -> path. Handle 0 is the "not found" answer.
     const DiscFiles* disc_files_ = nullptr;

@@ -117,7 +117,7 @@ TimerUnit::TimerAdvance TimerUnit::add_ticks(std::uint32_t index,
         return advanced;  // not counting
     }
     if ((timer.mode & mode_gate_enable) != 0) {
-        return advanced;  // gate modes are P03 territory
+        return advanced;  // gated timers hold: explicit limit, decision 0030
     }
     std::uint32_t remaining = ticks;
     while (remaining > 0) {

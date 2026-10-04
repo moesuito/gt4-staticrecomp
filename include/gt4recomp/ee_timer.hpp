@@ -105,8 +105,9 @@ public:
     // (which resets only when the compare interrupt is enabled, per the
     // PCSX2 note tested on hardware). A compare behind the counter waits
     // for the next wrap: the advance lands exactly on each crossing, so no
-    // persistent future-target bit is needed. Gated timers do not advance
-    // (gate modes are P03 territory and stay an explicit limit here).
+    // persistent future-target bit is needed. Gated timers do not advance:
+    // without an HBLANK-signal model the hold is the explicit limit
+    // (decision 0030); ZeroReturn is fully treated and pinned by tests.
     TimerAdvance add_ticks(std::uint32_t index, std::uint32_t ticks);
 
     // A full ordered photo of the 16 typed registers for snapshots. The

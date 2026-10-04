@@ -1307,14 +1307,12 @@ bool Kernel::deliver_idle_interrupt(GuestState& state) {
         return false;
     }
     maybe_send_originating_packet(state);
+    // The timers and the frame's VBlank advance together through the
+    // unified machine: one frame-sized delta completes exactly one frame
+    // on the shared accumulator (it always rests below one frame), so the
+    // registered VBlank handler gets exactly the one opportunity per idle
+    // call the old explicit source offered.
     advance_timers(state);
-    // The frame's VBlank joins the queue when a handler is registered.
-    for (const KernelInterruptHandler& registration : interrupt_handlers_) {
-        if (registration.cause == vblank_cause) {
-            queue_interrupt(vblank_cause);
-            break;
-        }
-    }
     if (interrupt_queue_.empty()) {
         return false;
     }
@@ -1328,33 +1326,66 @@ bool Kernel::deliver_idle_interrupt(GuestState& state) {
 }
 
 void Kernel::advance_timers(GuestState& state) {
-    // One frame of the timer's clock source: BUSCLK, BUSCLK/16, BUSCLK/256
-    // and the horizontal blank rate (NTSC) for CLKS values 0-3. The quantum
-    // stays the P03-owned approximation; what changes here is the counting:
-    // the TimerUnit moves 16-bit COUNT/COMP with wrap, edge-triggered EQUF
-    // and OVFF, and combined compare-plus-overflow in one advance.
+    // One frame of the unified time base. The quantum stays the P03-owned
+    // approximation (one frame per idle call); what changed is the
+    // mechanism: the counting now runs through the same machine as the
+    // service clock, sharing the per-timer remainders and the VBlank
+    // accumulator (decision 0030).
+    advance_busclk(state, busclk_per_frame);
+}
+
+void Kernel::advance_busclk(GuestState& state, std::uint32_t busclk_ticks) {
+    // The single advance machine behind both quanta. Each enabled timer
+    // takes its clock's share of the BUSCLK delta: BUSCLK, BUSCLK/16,
+    // BUSCLK/256 and the horizontal-blank rate (NTSC) for CLKS values
+    // 0-3. The HBLANK selector divides by 9372, the integer nearest the
+    // true BUSCLK/HBLANK ratio (147456000/15734 = 9371.6...); the shared
+    // remainder absorbs the drift, and the long-run rate is a
+    // deterministic model policy, not a hardware claim. The remainder
+    // keeps the division exact across any split of the delta, whichever
+    // path contributed each piece. The TimerUnit moves the 16-bit counter
+    // with wrap and sets EQUF only on a real crossing of COMP (a compare
+    // behind the counter waits for the next wrap) and OVFF only on a real
+    // wrap; both edges in one advance are reported together and queue the
+    // timer's single INTC cause, coalesced like any other occurrence. A
+    // handler that reprograms COMP or acknowledges a flag between two
+    // advances steers the next one, because every advance reads the live
+    // registers.
     (void)state;
-    if (timer_unit_ == nullptr) {
-        return;
-    }
-    static constexpr std::uint32_t frame_clocks[4] = {
-        2457600u,  // 147456000 / 60
-        153600u,   // 147456000 / 16 / 60
-        9600u,     // 147456000 / 256 / 60
-        262u,      // 15734 / 60
-    };
-    for (std::uint32_t index = 0; index < 4; ++index) {
-        const std::uint32_t base = timer_window_physical + index * timer_stride;
-        const std::uint32_t mode =
-            timer_unit_->register_value(base + timer_mode_offset);
-        if ((mode & timer_count_enable) == 0) {
-            continue;  // not counting
+    if (timer_unit_ != nullptr) {
+        static constexpr std::uint32_t clock_divisors[4] = {1u, 16u, 256u, 9372u};
+        for (std::uint32_t index = 0; index < 4; ++index) {
+            const std::uint32_t base = timer_window_physical + index * timer_stride;
+            const std::uint32_t mode =
+                timer_unit_->register_value(base + timer_mode_offset);
+            if ((mode & timer_count_enable) == 0) {
+                continue;  // not counting
+            }
+            const std::uint32_t divisor = clock_divisors[mode & 3u];
+            timer_remainders_[index] += busclk_ticks;
+            const std::uint32_t step = timer_remainders_[index] / divisor;
+            timer_remainders_[index] %= divisor;
+            if (step == 0) {
+                continue;
+            }
+            const TimerUnit::TimerAdvance advanced =
+                timer_unit_->add_ticks(index, step);
+            if (advanced.compare_edge || advanced.overflow_edge) {
+                queue_interrupt(9u + index);
+            }
         }
-        const std::uint32_t step = frame_clocks[mode & 3u];
-        const TimerUnit::TimerAdvance advanced =
-            timer_unit_->add_ticks(index, step);
-        if (advanced.compare_edge || advanced.overflow_edge) {
-            queue_interrupt(9u + index);
+    }
+    // One VBlank per frame of accumulated time, with the same registration
+    // rule as the old idle source: the accumulator is shared, so service
+    // slices and idle frames complete each other's frames.
+    busclk_accumulator_ += busclk_ticks;
+    while (busclk_accumulator_ >= busclk_per_frame) {
+        busclk_accumulator_ -= busclk_per_frame;
+        for (const KernelInterruptHandler& registration : interrupt_handlers_) {
+            if (registration.cause == vblank_cause) {
+                queue_interrupt(vblank_cause);
+                break;
+            }
         }
     }
 }
@@ -1366,48 +1397,9 @@ void Kernel::advance_service_time(GuestState& state) {
     // advance is tied to services because both engines handle the same
     // service sequence in the same order, which keeps the differential
     // exact; a cycle-accurate clock is out of scope (decision 0016). The
-    // four clock selectors divide the slice like the idle path's frame
-    // steps: BUSCLK, BUSCLK/16, BUSCLK/256 and the horizontal-blank rate.
-    static constexpr std::uint32_t clock_divisors[4] = {1u, 16u, 256u, 9372u};
-    for (std::uint32_t index = 0; index < 4; ++index) {
-        const std::uint32_t base = timer_window_physical + index * timer_stride;
-        if (timer_unit_ == nullptr) {
-            continue;
-        }
-        const std::uint32_t mode =
-            timer_unit_->register_value(base + timer_mode_offset);
-        if ((mode & timer_count_enable) == 0) {
-            continue;  // not counting
-        }
-        const std::uint32_t divisor = clock_divisors[mode & 3u];
-        service_timer_remainders_[index] += service_time_slice;
-        const std::uint32_t step = service_timer_remainders_[index] / divisor;
-        service_timer_remainders_[index] %= divisor;
-        if (step == 0) {
-            continue;
-        }
-        // The TimerUnit moves the 16-bit counter with wrap and sets EQUF
-        // only on a real crossing of COMP (a compare already behind the
-        // counter waits for the next wrap) and OVFF only on a real wrap;
-        // both edges in one advance are reported together.
-        const TimerUnit::TimerAdvance advanced =
-            timer_unit_->add_ticks(index, step);
-        if (advanced.compare_edge || advanced.overflow_edge) {
-            queue_interrupt(9u + index);
-        }
-    }
-    // One VBlank per frame of accumulated service slices, with the same
-    // registration rule as the idle source.
-    service_ticks_ += service_time_slice;
-    while (service_ticks_ >= busclk_per_frame) {
-        service_ticks_ -= busclk_per_frame;
-        for (const KernelInterruptHandler& registration : interrupt_handlers_) {
-            if (registration.cause == vblank_cause) {
-                queue_interrupt(vblank_cause);
-                break;
-            }
-        }
-    }
+    // quantum is unchanged by P03: only the mechanism is now shared with
+    // the idle path (decision 0030).
+    advance_busclk(state, service_time_slice);
 }
 
 bool Kernel::inject_interrupt(GuestState& state, std::uint32_t cause,
@@ -1863,8 +1855,11 @@ std::vector<std::uint8_t> Kernel::save_kernel_state() const {
     out.insert(out.end(), sif_iop_image_.begin(), sif_iop_image_.end());
     put_u32(out, sif_reboot_pending_ ? 1u : 0u);
     put_u32(out, idle_interrupts_);
-    put_u32(out, service_ticks_);
-    for (const std::uint32_t remainder : service_timer_remainders_) {
+    // Wire order frozen since model 2: the accumulator word, then the four
+    // per-timer remainders. P03 only widened their meaning from
+    // service-only to both paths (decision 0030).
+    put_u32(out, busclk_accumulator_);
+    for (const std::uint32_t remainder : timer_remainders_) {
         put_u32(out, remainder);
     }
     put_u32(out, disc_volume_lba_);
@@ -2041,9 +2036,9 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     const bool sif_reboot_pending =
         take_bool("The kernel snapshot has a bad reboot flag");
     const std::uint32_t idle_interrupts = reader.take_u32();
-    const std::uint32_t service_ticks = reader.take_u32();
-    std::uint32_t service_timer_remainders[4] = {};
-    for (std::uint32_t& remainder : service_timer_remainders) {
+    const std::uint32_t busclk_accumulator = reader.take_u32();
+    std::uint32_t timer_remainders[4] = {};
+    for (std::uint32_t& remainder : timer_remainders) {
         remainder = reader.take_u32();
     }
     const std::uint32_t disc_volume_lba = reader.take_u32();
@@ -2115,9 +2110,9 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     sif_iop_image_ = std::move(sif_iop_image_);
     sif_reboot_pending_ = sif_reboot_pending;
     idle_interrupts_ = idle_interrupts;
-    service_ticks_ = service_ticks;
+    busclk_accumulator_ = busclk_accumulator;
     for (std::size_t index = 0; index < 4; ++index) {
-        service_timer_remainders_[index] = service_timer_remainders[index];
+        timer_remainders_[index] = timer_remainders[index];
     }
     disc_volume_lba_ = disc_volume_lba;
     disc_files_by_handle_ = std::move(disc_files_by_handle);

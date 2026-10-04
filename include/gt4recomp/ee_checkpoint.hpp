@@ -88,7 +88,7 @@ using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 //                while a merely editorial change (a new commit, a comment)
 //                keeps the same versions and stays loadable.
 struct ModelCompatibility {
-    std::uint32_t time_model = 2;         // the service clock and timer advance
+    std::uint32_t time_model = 3;         // the service clock and timer advance
     std::uint32_t interrupt_model = 2;    // occurrence, pending, mask, dispatch
     std::uint32_t rpc_model = 1;          // SIF/RPC replies and backing stores
     std::uint32_t translation_model = 1;  // decoder and AOT emitter semantics
@@ -100,6 +100,8 @@ struct ModelCompatibility {
 // (P01+P02, decision 0029) bumped time to 2 (16-bit COUNT/COMP with wrap
 // and edge-triggered flags) and interrupt to 2 (pending independent of
 // handlers, owned masks, CP0 gating, in-place coalescing, DMAC routing).
+// Slice 66 (P03, decision 0030) bumped time to 3 (one advance machine for
+// both quanta: shared per-timer remainders and one VBlank accumulator).
 [[nodiscard]] constexpr ModelCompatibility current_model_compatibility() noexcept {
     return ModelCompatibility{};
 }

@@ -1119,6 +1119,339 @@ int main() {
               "0xFFF0 + 576 wraps to 0x0230 with OVFF and no EQUF");
     }
 
+    // The P03 unified machine (decision 0030): one frame of BUSCLK ticks
+    // split across the service and idle quanta reaches the identical
+    // timer state, kernel time words and pending queue as any other
+    // split of the same total. Three wirings of one frame over identical
+    // timers on every clock - a single frame advance, sixteen services
+    // plus the tail, and two halves - must match in the whole kernel
+    // snapshot blob and the full timer register photo.
+    {
+        constexpr std::uint32_t frame = Kernel::busclk_per_frame;
+        constexpr std::uint32_t slice = Kernel::service_time_slice;
+        const auto program_clocks = [](GuestState& state, TimerUnit& timer,
+                                       Kernel& kernel, IntcUnit& intc) {
+            timer.map_into(state.memory());
+            kernel.set_timer_unit(&timer);
+            intc.map_into(state.memory());
+            kernel.set_intc_unit(&intc);
+            constexpr std::uint32_t timer0 = TimerUnit::window_base;
+            constexpr std::uint32_t timer1 =
+                TimerUnit::window_base + TimerUnit::timer_stride;
+            constexpr std::uint32_t timer2 =
+                TimerUnit::window_base + 2 * TimerUnit::timer_stride;
+            constexpr std::uint32_t timer3 =
+                TimerUnit::window_base + 3 * TimerUnit::timer_stride;
+            state.memory().write_word(timer0 + TimerUnit::count_offset, 0x1000u);
+            state.memory().write_word(timer0 + TimerUnit::compare_offset, 0x8000u);
+            state.memory().write_word(timer0 + TimerUnit::mode_offset, 0x380u);
+            state.memory().write_word(timer1 + TimerUnit::count_offset, 0x2000u);
+            state.memory().write_word(timer1 + TimerUnit::compare_offset, 0x4000u);
+            state.memory().write_word(timer1 + TimerUnit::mode_offset, 0x381u);
+            state.memory().write_word(timer2 + TimerUnit::count_offset, 0x1000u);
+            state.memory().write_word(timer2 + TimerUnit::compare_offset, 0x3000u);
+            state.memory().write_word(timer2 + TimerUnit::mode_offset, 0x382u);
+            state.memory().write_word(timer3 + TimerUnit::count_offset, 0);
+            state.memory().write_word(timer3 + TimerUnit::compare_offset, 0x100u);
+            state.memory().write_word(timer3 + TimerUnit::mode_offset, 0x383u);
+        };
+        struct ClockPhoto {
+            std::vector<std::uint8_t> kernel_blob;
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> timer_regs;
+            std::uint32_t pending = 0;
+        };
+        const auto run_wiring = [&](int wiring) {
+            Kernel kernel;
+            GuestState state = make_state();
+            TimerUnit timer;
+            IntcUnit intc;
+            program_clocks(state, timer, kernel, intc);
+            if (wiring == 0) {
+                kernel.advance_busclk(state, frame);
+            } else if (wiring == 1) {
+                for (int step = 0; step < 16; ++step) {
+                    kernel.advance_service_time(state);
+                }
+                kernel.advance_busclk(state, frame - 16 * slice);
+            } else {
+                kernel.advance_busclk(state, frame / 2);
+                kernel.advance_busclk(state, frame / 2);
+            }
+            ClockPhoto photo;
+            photo.kernel_blob = kernel.save_kernel_state();
+            photo.timer_regs = timer.registers_snapshot();
+            photo.pending = kernel.pending_interrupts();
+            return photo;
+        };
+        const ClockPhoto whole = run_wiring(0);
+        const ClockPhoto serviced = run_wiring(1);
+        const ClockPhoto halved = run_wiring(2);
+        const auto same_photo = [](const ClockPhoto& left,
+                                   const ClockPhoto& right) {
+            return left.kernel_blob == right.kernel_blob
+                && left.timer_regs == right.timer_regs
+                && left.pending == right.pending;
+        };
+        check(same_photo(whole, serviced) && same_photo(whole, halved),
+              "service/idle splits of one frame reach the identical time state");
+        // Non-vacuous: every timer fired exactly once, and the exact
+        // divisions show their counts (T2 0x1000 + 9600 = 0x3580, T3 262).
+        const auto reg_in = [](const ClockPhoto& photo, std::uint32_t address) {
+            for (const auto& [at, value] : photo.timer_regs) {
+                if (at == address) {
+                    return value;
+                }
+            }
+            return 0xFFFFFFFFu;
+        };
+        constexpr std::uint32_t timer2 =
+            TimerUnit::window_base + 2 * TimerUnit::timer_stride;
+        constexpr std::uint32_t timer3 =
+            TimerUnit::window_base + 3 * TimerUnit::timer_stride;
+        check(whole.pending == 4
+                  && reg_in(whole, timer2 + TimerUnit::count_offset) == 0x3580u
+                  && reg_in(whole, timer3 + TimerUnit::count_offset) == 262u,
+              "one frame moves every clock and queues each timer once");
+    }
+
+    // Combined compare-plus-overflow through the unified machine: one
+    // service-sized advance sets both flags and queues the timer's
+    // single cause once (occurrence before eligibility: no handler, no
+    // mask); the next advance coalesces onto it.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        TimerUnit timer;
+        timer.map_into(state.memory());
+        kernel.set_timer_unit(&timer);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        constexpr std::uint32_t timer2 =
+            TimerUnit::window_base + 2 * TimerUnit::timer_stride;
+        state.memory().write_word(timer2 + TimerUnit::count_offset, 0xFFF0u);
+        state.memory().write_word(timer2 + TimerUnit::compare_offset, 0x0005u);
+        state.memory().write_word(timer2 + TimerUnit::mode_offset, 0x00000382u);
+        kernel.advance_service_time(state);
+        check(state.memory().read_word(timer2 + TimerUnit::count_offset)
+                      == 0x0230u
+                  && (state.memory().read_word(timer2 + TimerUnit::mode_offset)
+                          & 0xC00u)
+                         == 0xC00u
+                  && kernel.pending_interrupts() == 1 && intc.is_pending(11),
+              "one service reports a combined compare and overflow once");
+        kernel.advance_service_time(state);
+        check(state.memory().read_word(timer2 + TimerUnit::count_offset)
+                      == 0x0470u
+                  && kernel.pending_interrupts() == 1,
+              "the next advance coalesces onto the pending cause");
+    }
+
+    // The scheduler offers an opportunity between timer events: the first
+    // compare dispatches the registered handler, its return restores the
+    // interrupted context, and the guest's COMP reprogram steers the next
+    // advance to the new target (decision 0030).
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        TimerUnit timer;
+        timer.map_into(state.memory());
+        kernel.set_timer_unit(&timer);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        constexpr std::uint32_t timer2 =
+            TimerUnit::window_base + 2 * TimerUnit::timer_stride;
+        state.memory().write_word(timer2 + TimerUnit::count_offset, 0);
+        state.memory().write_word(timer2 + TimerUnit::compare_offset, 576);
+        state.memory().write_word(timer2 + TimerUnit::mode_offset, 0x00000182u);
+        state.write_gpr32(4, 11);
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled,
+              "the timer handler registers");
+        state.write_gpr32(4, 11);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled,
+              "the timer mask opens");
+        const ServiceHandler* return_handler =
+            services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr, "the return service is registered");
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        kernel.advance_service_time(state);
+        check(kernel.pending_interrupts() == 1, "the first compare pends");
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u
+                  && state.read_gpr32(4) == 11,
+              "the first compare dispatches its handler");
+        check((*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc
+                  && kernel.pending_interrupts() == 0,
+              "the handler return restores the context");
+        // The handler's work, as guest writes: acknowledge EQUF and move
+        // COMP out to 2000. Three more services cross it during the third.
+        state.memory().write_word(timer2 + TimerUnit::compare_offset, 2000);
+        state.memory().write_word(timer2 + TimerUnit::mode_offset, 0x582u);
+        kernel.advance_service_time(state);
+        kernel.advance_service_time(state);
+        check((state.memory().read_word(timer2 + TimerUnit::mode_offset)
+                   & 0x400u)
+                      == 0
+                  && kernel.pending_interrupts() == 0,
+              "the reprogrammed COMP stays silent before arrival");
+        kernel.advance_service_time(state);
+        check(state.memory().read_word(timer2 + TimerUnit::count_offset)
+                      == 2304u
+                  && (state.memory().read_word(timer2 + TimerUnit::mode_offset)
+                          & 0x400u)
+                         != 0
+                  && kernel.pending_interrupts() == 1,
+              "the reprogrammed COMP fires on arrival");
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u,
+              "the second compare offers its own dispatch");
+        check((*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc,
+              "the second return restores the context");
+    }
+
+    // The guest extended-time rhythm over the unified machine: an OVFE
+    // timer with COMP out of reach advances 3 wraps plus a tail of
+    // 12345. Acknowledging OVFF between small advances counts every wrap
+    // exactly; one giant advance sets the single sticky bit once, which
+    // is why the guest must acknowledge between advances.
+    {
+        constexpr std::uint32_t total = 3 * 65536 + 12345;
+        constexpr std::uint32_t mode0 =
+            TimerUnit::window_base + TimerUnit::mode_offset;
+        const auto program_overflow = [](GuestState& state, TimerUnit& timer,
+                                         Kernel& kernel) {
+            timer.map_into(state.memory());
+            kernel.set_timer_unit(&timer);
+            state.memory().write_word(
+                TimerUnit::window_base + TimerUnit::count_offset, 0);
+            state.memory().write_word(
+                TimerUnit::window_base + TimerUnit::compare_offset, 0xFFFFu);
+            state.memory().write_word(mode0, 0x280u);
+        };
+        Kernel kernel;
+        GuestState state = make_state();
+        TimerUnit timer;
+        program_overflow(state, timer, kernel);
+        std::uint32_t overflows = 0;
+        for (std::uint32_t done = 0; done < total;) {
+            const std::uint32_t rest = total - done;
+            const std::uint32_t chunk = rest > 1000 ? 1000 : rest;
+            kernel.advance_busclk(state, chunk);
+            done += chunk;
+            if ((state.memory().read_word(mode0) & 0x800u) != 0) {
+                ++overflows;
+                state.memory().write_word(mode0, 0xA80u);  // keep CUE|OVFE, ack OVFF
+            }
+        }
+        check(overflows == 3
+                  && state.memory().read_word(
+                         TimerUnit::window_base + TimerUnit::count_offset)
+                         == 12345u,
+              "acknowledged advances count every overflow");
+        Kernel single;
+        GuestState single_state = make_state();
+        TimerUnit single_timer;
+        program_overflow(single_state, single_timer, single);
+        single.advance_busclk(single_state, total);
+        check((single_state.memory().read_word(mode0) & 0x800u) != 0
+                  && single.pending_interrupts() == 1,
+              "one giant advance holds a single sticky overflow");
+    }
+
+    // The frame accumulator is shared between the quanta: sixteen
+    // services (2,359,296 ticks) leave the frame incomplete with nothing
+    // queued; registering VBlank and completing the frame with one small
+    // advance queues exactly one VBlank, and each further full frame
+    // offers exactly one more (decision 0030).
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        for (int step = 0; step < 16; ++step) {
+            kernel.advance_service_time(state);
+        }
+        check(kernel.pending_interrupts() == 0,
+              "sixteen services leave the frame incomplete");
+        state.write_gpr32(4, 2);
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled,
+              "the VBlank handler registers late");
+        state.write_gpr32(4, 2);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled,
+              "the VBlank mask opens late");
+        kernel.advance_busclk(state, Kernel::busclk_per_frame
+                                         - 16 * Kernel::service_time_slice);
+        check(kernel.pending_interrupts() == 1,
+              "completing the frame queues VBlank");
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        const ServiceHandler* return_handler =
+            services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr && kernel.start_interrupt(state)
+                  && state.pc() == 0x00100400u,
+              "the frame's VBlank dispatches");
+        check((*return_handler)(state) == ServiceOutcome::Jumped
+                  && kernel.pending_interrupts() == 0,
+              "the VBlank return drains the queue");
+        kernel.advance_busclk(state, Kernel::busclk_per_frame);
+        check(kernel.pending_interrupts() == 1,
+              "the next full frame offers exactly one more VBlank");
+    }
+
+    // Gate and ZeroReturn through the unified machine: a gated timer
+    // holds its count across service and frame advances with nothing
+    // queued, while a ZeroReturn timer restarts every service-sized
+    // period with an edge the guest acknowledges between services.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        TimerUnit timer;
+        timer.map_into(state.memory());
+        kernel.set_timer_unit(&timer);
+        constexpr std::uint32_t timer0 = TimerUnit::window_base;
+        state.memory().write_word(timer0 + TimerUnit::count_offset, 0x100u);
+        state.memory().write_word(timer0 + TimerUnit::compare_offset, 0x200u);
+        state.memory().write_word(timer0 + TimerUnit::mode_offset, 0x394u);
+        for (int step = 0; step < 3; ++step) {
+            kernel.advance_service_time(state);
+        }
+        kernel.advance_busclk(state, Kernel::busclk_per_frame);
+        check(state.memory().read_word(timer0 + TimerUnit::count_offset)
+                      == 0x100u
+                  && kernel.pending_interrupts() == 0,
+              "a gated timer holds across both quanta");
+        constexpr std::uint32_t timer1 =
+            TimerUnit::window_base + TimerUnit::timer_stride;
+        state.memory().write_word(timer1 + TimerUnit::count_offset, 0);
+        state.memory().write_word(timer1 + TimerUnit::compare_offset, 576);
+        state.memory().write_word(timer1 + TimerUnit::mode_offset, 0x1C2u);
+        std::uint32_t edges = 0;
+        for (int round = 0; round < 3; ++round) {
+            kernel.advance_service_time(state);
+            if ((state.memory().read_word(timer1 + TimerUnit::mode_offset)
+                     & 0x400u)
+                != 0) {
+                ++edges;
+            }
+            state.memory().write_word(timer1 + TimerUnit::mode_offset, 0x5C2u);
+        }
+        check(edges == 3
+                  && state.memory().read_word(timer1 + TimerUnit::count_offset)
+                         == 0,
+              "ZeroReturn restarts every service-sized period");
+    }
+
     // Coalescing (decision 0025): a cause that is already pending stays
     // a single entry, like the hardware status bit the handler reads and
     // clears — queue entries carry no payload, so a repeat adds nothing

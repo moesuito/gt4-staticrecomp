@@ -1,12 +1,10 @@
 # Project status
 
-Updated 2026-10-04 after slice 65 (P01+P02, PLAN.md order) — timers are
-typed 16-bit units (W1C, edge-triggered, exact-landing advance); INTC
-and DMAC are separate pending domains (peek dispatch, CP0 gate,
-in-place coalescing); VIF0/VIF1/GIF complete via DMAC 0/1/2, TIE never
-gates completion; time/interrupt models bumped to 2 (old checkpoints
-forensic by the 0028 gate). 50/50 + Python 73 owner-gated. **Next: P03
-(slice 66, unified advance machine).** This is the
+Updated 2026-10-04 after slice 66 (P03, PLAN.md order) — one advance
+machine for both quanta (shared remainders + VBlank accumulator,
+quanta unchanged, CLKS=3 drift absorbed); time_model at 3, old files
+forensic. 50/50 + Python 73 owner-gated. **Next: P04 (slice 67,
+handler args + explicit idle).** This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1033,6 +1031,9 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 66 (P03, 2026-10-04): **one advance machine**.
+  Shared remainders + accumulator, quanta unchanged, time_model 3.
+  Owner-checked (`docs/decisions/0030-p03-advance-machine.md`).
 - Slice 65 (P01+P02, 2026-10-04): **timers + interrupts rebuilt**.
   16-bit units, W1C, separate INTC/DMAC domains, DMAC 0/1/2 routing,
   models at v2. Owner-checked
