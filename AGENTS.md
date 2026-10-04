@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50, M32 slices 1–22 + slices 29–33 (0026 live, tripwire armed, producer proven-unknown), M33 slices 23–28 (closed) BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50, M32 slices 1–22 + slices 29–34 (0026 live, tripwire armed, poster a confirmed fossil), M33 slices 23–28 (closed) BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,10 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **catch the poster live (slice 34)**:
-  producer proven-unknown but era-bounded (loop owner-verified);
-  fresh boot replays the era — write-watch the ring slots and let
-  the poster name itself. The
+- Next: **M35 pad groundwork (slice 35)**:
+  poster a confirmed fossil (owner forensics: names don't fix units,
+  resume posts nothing); pad is polled — the milestone road not
+  gated on waiters. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

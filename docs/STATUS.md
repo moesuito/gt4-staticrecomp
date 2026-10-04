@@ -1,12 +1,14 @@
 # Project status
 
-Updated 2026-10-03 after slice 33 (ring-producer hunt) —
-proven unknown with a recorded sweep (zero writer immediates,
-creator posts nothing, delay dispatcher exonerated, era bounded to
-(800, 60000] over 12 checkpoints). Owner verified the loop decode
-and adds the replay insight: every fresh boot replays the posting
-era, so slice 34 catches the poster live — fresh boot with the
-write-watch on the ring slots, bounded ~60k services. This is the
+Updated 2026-10-03 after slice 34 (poster never posted) — a
+falsified era becomes a confirmed fossil: fresh 0→200k posts
+nothing (verified-live watch), yet ckpt-180k+ reads 181/181.
+Owner forensics: ckpt names don't fix units (180k file = 60,000
+in-file services), and resume-400+2000 posts nothing live — so the
+181 is march-era dynamics frozen in old files (consumer==producer
+ever since), not a late era, not resume artifact. Next is slice
+35: M35 pad groundwork — polled input is the one milestone road
+not gated on waiters. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1031,6 +1033,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 34 (poster surprise, 2026-10-03): **era falsified,
+  fossil confirmed**. Fresh 0→200k zero posts (live watch);
+  181/181 frozen in old files; resume posts nothing (owner leg);
+  names don't fix units (180k file = 60k services). No heroic leg
+  (`docs/reverse-engineering/m32-slice34-poster-caught.md`).
 - Slice 33 (ring producer, 2026-10-03): **proven unknown,
   era (800, 60000]**. Zero writer immediates, creator/init
   exonerated, delay dispatcher exonerated, 12-file census. Owner
@@ -1352,15 +1359,14 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **catch the poster live
-  (slice 34)**. Proven-unknown with bounds (owner-verified loop):
-  fresh boot replays the posting era, so run it with the
-  write-watch on the ring slots — the poster names itself by
-  writer pc (~60k services, pure observation). Then milestone
-  traffic per decision 0023. M35 pad stays queued (no PADMAN bound
-  at this phase); and the curriculum's remaining units (a counting
-  timer with interrupt delivery and the jump-table dispatch) stay
-  listed in `docs/requirements.md`.
+- Next technical milestone work: **M35 pad groundwork
+  (slice 35)**. Poster resolved as fossil (owner forensics);
+  tripwire armed: pad is polled input — the one milestone road not
+  gated on waiters — so survey pad vocabulary/protocol and spec
+  the neutral-present model. M35 pad moves from queued to active;
+  and the curriculum's remaining units (a counting timer with
+  interrupt delivery and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
