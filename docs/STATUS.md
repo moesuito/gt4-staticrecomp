@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 76 (march + inventory to 5M) — fresh
-legs at 1.2/1.5/2/3/4M repeat the known set exactly (22 pairs, same
-census, T2 0x0382); at 5M the first in-cycle stop (iSignalSema,
-thread 3 on sema 768103) and the first NATURAL wake on resume+2000
-(blocked→live, back to idle); the 9-service mix is identical at
-3k/3M/5M, so the stationary phase is a limit cycle from 3k, not a
-new regime at 5M. 53/53 + Python 73 owner-gated. Next: slice 77,
-identify the 5M wake's signaler (sema-768103 writer hunt). This is the
+Updated 2026-10-04 after slice 77 (sema-768103 signaler identified) — the
+5M wake's writer is the delay dispatcher firing a delay expiry inside the
+TIM2 handler (iSignalSema at 0x005adcd4 from wrapper 0x005AEF58, cause 11,
+handler 0x005b8158, a1=a2 = 1 service slice): a private one-shot delay of
+pool worker thread 3, one of 77 identical expiries per 2000 services — the
+standing limit cycle, not P10's main-thread producer (sema 63 untouched).
+Wrapper shape owner-verified in disassembly. 53/53 + Python 73
+owner-gated, binaries freshness-checked. Next: hunt who can release
+sema 63 (the main thread's wait). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1047,6 +1048,10 @@ proceeds. Details live in the linked evidence documents.
   translation_model 2, WILL_FAIL removed, decision 0034 accepted
   (`docs/reverse-engineering/slice72-optiona-prototype.md`,
   `docs/decisions/0034-delivery-granularity-contract.md`).
+- Slice 77 (signal hunt, 2026-10-04): **sema-768103 writer found**.
+  Delay expiry via TIM2, private one-shot, not the main's producer.
+  Wrapper owner-verified. Owner-checked
+  (`docs/reverse-engineering/slice77-sema-signaler.md`).
 - Slice 76 (march, 2026-10-04): **stationary to 5M, first natural
   wake**. Limit cycle since 3k; 5M in-cycle stop + wake on resume.
   Owner-checked (`docs/reverse-engineering/slice76-march-inventory.md`).
