@@ -343,6 +343,74 @@ if(BUILD_TESTING)
             FIXTURES_REQUIRED "gt4boot;gt4boot_checkpoint"
             FIXTURES_SETUP gt4boot_checkpoint_chain
             PASS_REGULAR_EXPRESSION "checkpoint saved at 400 services")
+        # Autosave (decision 0027): photo every K services into a
+        # directory, keep the newest M, verify an auto photo like a
+        # manual one, and prove quiet mode drops only the trace line.
+        # Photo files hold guest RAM, so all directories live in the
+        # (ignored) build directory.
+        set(GT4_AUTOSAVE_DIR "${CMAKE_CURRENT_BINARY_DIR}/autosave-test")
+        add_test(NAME gt4boot_autosave
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 800
+                    --checkpoint-every 400 "${GT4_AUTOSAVE_DIR}" --keep 3)
+        set_tests_properties(gt4boot_autosave PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            FIXTURES_SETUP gt4boot_autosave
+            PASS_REGULAR_EXPRESSION "checkpoint saved at 400 services;checkpoint saved at 800 services")
+        set(GT4_AUTOSAVE_ROT_DIR "${CMAKE_CURRENT_BINARY_DIR}/autosave-rot-test")
+        # A foreign file in the rotation directory: refs the managed-name
+        # rule end to end (setup drops it, rotation must ignore it, the
+        # intact check proves it survived).
+        add_test(NAME gt4boot_autosave_foreign_setup
+            COMMAND "${CMAKE_COMMAND}" -E copy
+                    "${CMAKE_CURRENT_SOURCE_DIR}/docs/inputs/usa-v2.00-live-ram.json"
+                    "${GT4_AUTOSAVE_ROT_DIR}/operator-notes.txt")
+        set_tests_properties(gt4boot_autosave_foreign_setup PROPERTIES
+            FIXTURES_SETUP gt4boot_autosave_foreign)
+        add_test(NAME gt4boot_autosave_rotation
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 800
+                    --checkpoint-every 200 "${GT4_AUTOSAVE_ROT_DIR}" --keep 2)
+        set_tests_properties(gt4boot_autosave_rotation PROPERTIES
+            FIXTURES_REQUIRED "gt4boot;gt4boot_autosave_foreign"
+            FIXTURES_SETUP gt4boot_autosave_rotation
+            PASS_REGULAR_EXPRESSION "checkpoint evicted ckpt-200\\.bin;checkpoint evicted ckpt-400\\.bin;checkpoint saved at 800 services")
+        add_test(NAME gt4boot_autosave_foreign_intact
+            COMMAND "${CMAKE_COMMAND}" -E md5sum
+                    "${GT4_AUTOSAVE_ROT_DIR}/operator-notes.txt")
+        set_tests_properties(gt4boot_autosave_foreign_intact PROPERTIES
+            FIXTURES_REQUIRED gt4boot_autosave_rotation
+            PASS_REGULAR_EXPRESSION "operator-notes\\.txt")
+        add_test(NAME gt4boot_autosave_verify
+            COMMAND gt4boot "${GT4_LOCAL_CORE}"
+                    --verify-resume "${GT4_AUTOSAVE_DIR}/ckpt-400.bin"
+                    --services 400)
+        set_tests_properties(gt4boot_autosave_verify PROPERTIES
+            FIXTURES_REQUIRED "gt4boot;gt4boot_autosave"
+            PASS_REGULAR_EXPRESSION "resume states identical \\(800 services")
+        set(GT4_AUTOSAVE_QUIET_DIR "${CMAKE_CURRENT_BINARY_DIR}/autosave-quiet-test")
+        add_test(NAME gt4boot_autosave_quiet
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 400
+                    --checkpoint-every 200 "${GT4_AUTOSAVE_QUIET_DIR}"
+                    --keep 3 --quiet)
+        set_tests_properties(gt4boot_autosave_quiet PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            PASS_REGULAR_EXPRESSION "boundary:;checkpoint saved at 400 services"
+            FAIL_REGULAR_EXPRESSION " at 0x")
+        # Determinism: an identical autosave run elsewhere names
+        # identical photos with identical bytes.
+        set(GT4_AUTOSAVE_DIR2 "${CMAKE_CURRENT_BINARY_DIR}/autosave-test-2")
+        add_test(NAME gt4boot_autosave_repeat
+            COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 800
+                    --checkpoint-every 400 "${GT4_AUTOSAVE_DIR2}" --keep 3)
+        set_tests_properties(gt4boot_autosave_repeat PROPERTIES
+            FIXTURES_REQUIRED gt4boot
+            FIXTURES_SETUP gt4boot_autosave_repeat
+            PASS_REGULAR_EXPRESSION "checkpoint saved at 800 services")
+        add_test(NAME gt4boot_autosave_identical
+            COMMAND "${CMAKE_COMMAND}" -E compare_files
+                    "${GT4_AUTOSAVE_DIR}/ckpt-800.bin"
+                    "${GT4_AUTOSAVE_DIR2}/ckpt-800.bin")
+        set_tests_properties(gt4boot_autosave_identical PROPERTIES
+            FIXTURES_REQUIRED "gt4boot_autosave;gt4boot_autosave_repeat")
 
         set(GT4_TRANSLATED_572438_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00572438.hpp")
         add_custom_command(

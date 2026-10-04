@@ -166,5 +166,78 @@ int main() {
               "trailing file bytes throw");
     }
 
+    // Autosave photo names round-trip; foreign names are refused so
+    // rotation never touches files it did not write (decision 0027).
+    {
+        check(format_autosave_name(400) == "ckpt-400.bin",
+              "the photo name formats");
+        std::uint64_t parsed = 0;
+        check(parse_autosave_name("ckpt-400.bin", parsed) && parsed == 400,
+              "the photo name parses back");
+        check(parse_autosave_name("ckpt-0.bin", parsed) && parsed == 0,
+              "service zero parses");
+        check(!parse_autosave_name("ckpt-test.bin", parsed),
+              "a non-numeric photo name is refused");
+        check(!parse_autosave_name("ckpt-.bin", parsed),
+              "an empty photo count is refused");
+        check(!parse_autosave_name("ckpt-400.txt", parsed),
+              "a wrong photo suffix is refused");
+        check(!parse_autosave_name("ckpt-400.bin.bak", parsed),
+              "a suffixed photo name is refused");
+        check(!parse_autosave_name("manual.bin", parsed),
+              "a foreign name is refused");
+        check(!parse_autosave_name("ckpt-12x.bin", parsed),
+              "a mixed photo count is refused");
+        check(!parse_autosave_name("ckpt-99999999999999999999999.bin",
+                                   parsed),
+              "an overflowing photo count is refused");
+    }
+
+    // Rotation selects oldest-first: beyond keep, then over the byte
+    // cap with the fresh photo protected.
+    {
+        const auto is_beyond_keep = [](AutosaveEvictReason reason) {
+            return reason == AutosaveEvictReason::BeyondKeep;
+        };
+        const auto is_over_cap = [](AutosaveEvictReason reason) {
+            return reason == AutosaveEvictReason::OverByteCap;
+        };
+        const std::vector<AutosavePhoto> four =
+            {{200, 10}, {400, 10}, {600, 10}, {800, 10}};
+        const std::vector<AutosaveEviction> keep_two =
+            select_autosave_evictions(four, 2, false, 0, 800);
+        check(keep_two.size() == 2 && keep_two[0].services == 200
+                  && keep_two[1].services == 400
+                  && is_beyond_keep(keep_two[0].reason)
+                  && is_beyond_keep(keep_two[1].reason),
+              "rotation evicts the oldest beyond keep");
+        check(select_autosave_evictions(four, 4, false, 0, 800).empty(),
+              "a fitting keep evicts nothing");
+        check(select_autosave_evictions({}, 2, true, 100, 800).empty(),
+              "an empty directory evicts nothing");
+        // 40 bytes kept against a 25-byte cap: 200 goes (30 left, still
+        // over), then 400 (20 left, under) — both for the cap.
+        const std::vector<AutosaveEviction> capped =
+            select_autosave_evictions(four, 4, true, 25, 800);
+        check(capped.size() == 2 && capped[0].services == 200
+                  && capped[1].services == 400
+                  && is_over_cap(capped[0].reason)
+                  && is_over_cap(capped[1].reason),
+              "the byte cap evicts oldest-first");
+        // One photo alone over the cap stays: the run never deletes the
+        // photo it just wrote.
+        const std::vector<AutosaveEviction> lone =
+            select_autosave_evictions({{800, 50}}, 1, true, 25, 800);
+        check(lone.empty(), "an over-cap fresh photo stays");
+        // Rotation is strictly by service number: when higher-numbered
+        // files already fill the keep window, even the fresh photo goes.
+        const std::vector<AutosaveEviction> stale_higher =
+            select_autosave_evictions({{400, 10}, {1000, 10}}, 1, false, 0,
+                                      400);
+        check(stale_higher.size() == 1
+                  && stale_higher[0].services == 400,
+              "rotation counts entries, not freshness");
+    }
+
     return failures == 0 ? 0 : 1;
 }

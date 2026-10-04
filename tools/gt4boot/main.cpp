@@ -21,6 +21,7 @@
 #include "gt4recomp/executable_image.hpp"
 #include "verified_core.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -213,6 +214,230 @@ void write_file_bytes(const std::filesystem::path& path,
     }
 }
 
+// Writes the whole stop state to a checkpoint file: the service count,
+// the context+memory section, the kernel section and the device banks,
+// framed as GT4CPT1. Shared by --checkpoint-at and autosave (decision
+// 0027) so both paths write byte-identical files for the same stop
+// state. Returns the framed size for the log line.
+std::uint64_t write_stop_checkpoint(const GuestState& state,
+                                    const Kernel& kernel,
+                                    const BootDevices& devices,
+                                    std::uint64_t services_handled,
+                                    const std::filesystem::path& path) {
+    CheckpointFile file;
+    file.services_handled = services_handled;
+    file.context_memory = save_snapshot(
+        state.save_registers(), state.memory().segment_alias_enabled(),
+        state.memory().regions_snapshot());
+    file.kernel = kernel.save_kernel_state();
+    file.banks = save_bank_section(snapshot_banks(devices));
+    const std::vector<std::uint8_t> framed = save_checkpoint_file(file);
+    write_file_bytes(path, framed);
+    return framed.size();
+}
+
+// The first photo moment strictly above a service count: multiples of
+// the interval, so photo names stay a pure function of the count (no
+// host timing enters). The max value is the "no moment reachable"
+// sentinel, never a photo name.
+std::uint64_t next_autosave_photo(std::uint64_t base, std::uint64_t every) {
+    const std::uint64_t aligned = base / every * every;
+    if (aligned > std::numeric_limits<std::uint64_t>::max() - every) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return aligned + every;
+}
+
+// Names why a photo moment produced no file, for the end-of-run note.
+std::string skip_reason_text(const Boundary& boundary,
+                             bool transfer_in_flight) {
+    if (boundary.kind == BoundaryKind::StepLimit) {
+        return "step limit";
+    }
+    if (boundary.kind == BoundaryKind::NoRunnableThread) {
+        return "idle (no runnable thread)";
+    }
+    if (transfer_in_flight) {
+        return "transfer in flight";
+    }
+    return std::string("fault (")
+        + gt4recomp::tools::boundary_kind_name(boundary.kind) + ")";
+}
+
+// The managed photos already sitting in the directory: names matching
+// ckpt-<n>.bin with their byte sizes. Foreign files are ignored, never
+// deleted. Unreadable sizes skip the entry instead of killing the run.
+std::vector<AutosavePhoto> inventory_autosave_dir(
+    const std::filesystem::path& dir) {
+    std::vector<AutosavePhoto> photos;
+    std::error_code list_error;
+    if (!std::filesystem::exists(dir, list_error) || list_error) {
+        return photos;
+    }
+    std::filesystem::directory_iterator end;
+    std::filesystem::directory_iterator cursor(dir, list_error);
+    if (list_error) {
+        return photos;
+    }
+    for (; cursor != end; cursor.increment(list_error)) {
+        if (list_error) {
+            break;
+        }
+        if (!cursor->is_regular_file()) {
+            continue;
+        }
+        std::uint64_t services = 0;
+        if (!parse_autosave_name(cursor->path().filename().string(),
+                                 services)) {
+            continue;
+        }
+        std::error_code size_error;
+        const std::uint64_t bytes = cursor->file_size(size_error);
+        if (size_error) {
+            continue;
+        }
+        photos.push_back({services, bytes});
+    }
+    return photos;
+}
+
+const char* eviction_reason_text(AutosaveEvictReason reason) {
+    return reason == AutosaveEvictReason::BeyondKeep ? "beyond keep"
+                                                    : "over byte cap";
+}
+
+// Deletes the rotation's picks and reports each one, keeping the
+// in-memory inventory in step for the next photo.
+void apply_autosave_rotation(const std::filesystem::path& dir,
+                             std::vector<AutosavePhoto>& inventory,
+                             std::uint64_t keep, bool has_byte_cap,
+                             std::uint64_t max_bytes,
+                             std::uint64_t just_written) {
+    const std::vector<AutosaveEviction> doomed = select_autosave_evictions(
+        inventory, keep, has_byte_cap, max_bytes, just_written);
+    for (const AutosaveEviction& eviction : doomed) {
+        const std::filesystem::path victim =
+            dir / format_autosave_name(eviction.services);
+        std::error_code remove_error;
+        std::filesystem::remove(victim, remove_error);
+        if (remove_error) {
+            throw std::runtime_error("Cannot evict " + victim.string());
+        }
+        std::cout << "checkpoint evicted " << victim.filename().string()
+                  << " (" << eviction_reason_text(eviction.reason) << ")\n";
+        inventory.erase(
+            std::remove_if(inventory.begin(), inventory.end(),
+                           [&](const AutosavePhoto& photo) {
+                               return photo.services == eviction.services;
+                           }),
+            inventory.end());
+    }
+}
+
+struct AutosaveOutcome {
+    RunResult result;
+    std::vector<std::string> skipped_moments;
+};
+
+// Runs the boot leg by leg for autosave (decision 0027): each leg
+// handles up to the next photo multiple, and a clean leg end writes
+// ckpt-<cumulative>.bin through the shared save path. A leg that
+// falls short ends the run — the machine stopped on its own (fault,
+// step limit, idle), so there is nothing further to photo. The
+// returned stats accumulate across legs, with services counted from
+// the run start (resume base excluded), matching the recount rule.
+AutosaveOutcome run_with_autosave(
+    Driver& driver, ServiceTable& services, RunOptions leg_options,
+    const GuestState& state, const Kernel& kernel,
+    const BootDevices& devices, std::uint64_t resume_base,
+    std::uint64_t service_limit, std::uint64_t step_limit,
+    std::uint64_t every, const std::filesystem::path& dir,
+    std::uint64_t keep, bool has_byte_cap, std::uint64_t max_bytes,
+    std::vector<AutosavePhoto>& inventory) {
+    AutosaveOutcome outcome;
+    const std::uint64_t unlimited = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t cumulative = resume_base;
+    std::uint64_t remaining_services = service_limit;
+    std::uint64_t used_steps = 0;
+    std::uint64_t total_module_calls = 0;
+    std::uint64_t total_interpreted_steps = 0;
+    std::uint64_t next_photo = next_autosave_photo(cumulative, every);
+    while (true) {
+        std::uint64_t leg_target = remaining_services;
+        bool photo_due = false;
+        if (next_photo != unlimited && next_photo > cumulative
+            && (remaining_services == unlimited
+                || next_photo - cumulative <= remaining_services)) {
+            leg_target = next_photo - cumulative;
+            photo_due = true;
+        }
+        leg_options.service_limit = leg_target;
+        // The step budget spans legs like the service budget does, so
+        // --steps means the same total with or without autosave.
+        leg_options.step_limit =
+            (step_limit == unlimited) ? unlimited : step_limit - used_steps;
+        const RunResult leg = driver.run(services, leg_options);
+        const std::uint64_t leg_handled = leg.stats.services_handled;
+        cumulative += leg_handled;
+        used_steps += leg.stats.module_calls + leg.stats.interpreted_steps;
+        total_module_calls += leg.stats.module_calls;
+        total_interpreted_steps += leg.stats.interpreted_steps;
+        if (remaining_services != unlimited) {
+            remaining_services -= leg_handled;
+        }
+        outcome.result = leg;
+        // The 0022 clean-stop predicate: exactly the photo count, at a
+        // syscall boundary, with no transfer in flight.
+        const bool clean = leg_handled == leg_target
+            && leg.boundary.kind == BoundaryKind::Syscall
+            && !driver.pending_transfer();
+        if (photo_due && clean) {
+            const std::filesystem::path photo_path =
+                dir / format_autosave_name(cumulative);
+            std::error_code make_error;
+            std::filesystem::create_directories(dir, make_error);
+            if (make_error) {
+                throw std::runtime_error("Cannot create " + dir.string());
+            }
+            const std::uint64_t framed_size = write_stop_checkpoint(
+                state, kernel, devices, cumulative, photo_path);
+            std::cout << "checkpoint saved at " << cumulative
+                      << " services: " << photo_path.string() << " ("
+                      << framed_size << " bytes)\n";
+            // Upsert: a re-run into a non-empty directory overwrites the
+            // photo file, so the inventory must replace the stale entry
+            // for the same count instead of counting it twice (which
+            // would evict the file just written).
+            inventory.erase(
+                std::remove_if(inventory.begin(), inventory.end(),
+                               [&](const AutosavePhoto& photo) {
+                                   return photo.services == cumulative;
+                               }),
+                inventory.end());
+            inventory.push_back({cumulative, framed_size});
+            apply_autosave_rotation(dir, inventory, keep, has_byte_cap,
+                                    max_bytes, cumulative);
+        } else if (photo_due) {
+            outcome.skipped_moments.push_back(
+                "checkpoint skipped at " + std::to_string(next_photo)
+                + " (" + skip_reason_text(leg.boundary,
+                                          driver.pending_transfer())
+                + ")");
+            break;
+        } else {
+            break;
+        }
+        if (service_limit != unlimited && remaining_services == 0) {
+            break;
+        }
+        next_photo = next_autosave_photo(cumulative, every);
+    }
+    outcome.result.stats.module_calls = total_module_calls;
+    outcome.result.stats.interpreted_steps = total_interpreted_steps;
+    outcome.result.stats.services_handled = cumulative - resume_base;
+    return outcome;
+}
+
 Module make_boot_module() {
     return Module{
         [](std::uint32_t address) { return translated::has_entry(address); },
@@ -355,6 +580,7 @@ void usage() {
     std::cerr << "Usage: gt4boot CORE.GT4 [--services N] [--steps N] [--disc IMAGE] "
                  "[--compare-interpreter] [--threads] [--dump ADDRESS LENGTH]\n"
                  "       [--checkpoint-at N PATH] [--resume PATH] [--verify-resume PATH]\n"
+                 "       [--checkpoint-every K DIR --keep M [--max-bytes B]] [--quiet]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
                  "  --steps N             stop after N translated calls plus interpreted\n"
@@ -375,7 +601,17 @@ void usage() {
                  "                        file (counters recount from zero)\n"
                  "  --verify-resume PATH  resume from a checkpoint, run --services more,\n"
                  "                        run the same total fresh, and require identical\n"
-                 "                        states (uses --services for the resumed leg)\n";
+                 "                        states (uses --services for the resumed leg)\n"
+                 "  --checkpoint-every K DIR\n"
+                 "                        photo the run every K services into DIR as\n"
+                 "                        ckpt-<total>.bin (clean stops only; dirty\n"
+                 "                        moments skip quietly, never abort)\n"
+                 "  --keep M              with --checkpoint-every, retain the newest M\n"
+                 "                        photos, deleting the oldest first\n"
+                 "  --max-bytes B         with --checkpoint-every, also evict oldest\n"
+                 "                        photos past this total-bytes cap (the fresh\n"
+                 "                        photo is never evicted by its own run)\n"
+                 "  --quiet               suppress the per-service trace line\n";
 }
 
 } // namespace
@@ -394,11 +630,22 @@ int wmain(int argc, wchar_t* argv[]) {
     // Checkpointing: --checkpoint-at saves after exactly N services (pair
     // with --services N); --resume restarts from a file (counters recount
     // from zero); --verify-resume replays both ways and requires identical
-    // states, using --services for the resumed leg.
+    // states, using --services for the resumed leg. Autosave
+    // (--checkpoint-every K DIR --keep M [--max-bytes B], decision 0027)
+    // photos the run every K services instead of once; --quiet suppresses
+    // only the per-service trace line. Unset autosave counts use the max
+    // sentinel, like checkpoint_at.
     std::uint64_t checkpoint_at = std::numeric_limits<std::uint64_t>::max();
     std::filesystem::path checkpoint_path;
     std::filesystem::path resume_path;
-    std::filesystem::path verify_resume_path;    // The stop-time memory views the caller asked for, as address and byte
+    std::filesystem::path verify_resume_path;
+    std::uint64_t autosave_every = std::numeric_limits<std::uint64_t>::max();
+    std::filesystem::path autosave_dir;
+    std::uint64_t autosave_keep = 0;
+    bool autosave_has_byte_cap = false;
+    std::uint64_t autosave_max_bytes = 0;
+    bool quiet = false;
+    // The stop-time memory views the caller asked for, as address and byte
     // count. They are read after the run, so they show the state the run
     // stopped in.
     std::vector<std::pair<std::uint32_t, std::uint32_t>> dumps;
@@ -428,6 +675,16 @@ int wmain(int argc, wchar_t* argv[]) {
             resume_path = argv[++index];
         } else if (argument == L"--verify-resume" && index + 1 < argc) {
             verify_resume_path = argv[++index];
+        } else if (argument == L"--checkpoint-every" && index + 2 < argc) {
+            autosave_every = std::stoull(argv[++index]);
+            autosave_dir = argv[++index];
+        } else if (argument == L"--keep" && index + 1 < argc) {
+            autosave_keep = std::stoull(argv[++index]);
+        } else if (argument == L"--max-bytes" && index + 1 < argc) {
+            autosave_has_byte_cap = true;
+            autosave_max_bytes = std::stoull(argv[++index]);
+        } else if (argument == L"--quiet") {
+            quiet = true;
         } else if (core_path.empty()) {
             core_path = argument;
         } else {
@@ -443,6 +700,31 @@ int wmain(int argc, wchar_t* argv[]) {
         != std::numeric_limits<std::uint64_t>::max();
     const bool want_resume = !resume_path.empty();
     const bool want_verify = !verify_resume_path.empty();
+    // Autosave (decision 0027): unset counts use the max sentinel. A zero
+    // interval or keep is a usage error, not "off"; --keep/--max-bytes
+    // without --checkpoint-every are usage errors too.
+    const bool want_autosave = autosave_every
+        != std::numeric_limits<std::uint64_t>::max();
+    if (want_autosave && autosave_every == 0) {
+        std::cerr << "--checkpoint-every needs a positive service count\n";
+        usage();
+        return 2;
+    }
+    if (want_autosave && autosave_keep == 0) {
+        std::cerr << "--checkpoint-every needs --keep with a positive count\n";
+        usage();
+        return 2;
+    }
+    if (!want_autosave && (autosave_keep != 0 || autosave_has_byte_cap)) {
+        std::cerr << "--keep/--max-bytes need --checkpoint-every\n";
+        usage();
+        return 2;
+    }
+    if (autosave_has_byte_cap && autosave_max_bytes == 0) {
+        std::cerr << "--max-bytes needs a positive byte count\n";
+        usage();
+        return 2;
+    }
     // Chained checkpoints: --checkpoint-at saves from a resumed leg too
     // (decision 0024). The save still requires a clean service stop at
     // exactly the requested count, so every link is exact; counts stay
@@ -457,6 +739,28 @@ int wmain(int argc, wchar_t* argv[]) {
     if (want_verify && compare_interpreter) {
         std::cerr << "verify-resume states its own verdict; it does not combine "
                      "with compare-interpreter\n";
+        usage();
+        return 2;
+    }
+    // Autosave stands alone from --verify-resume and --compare-interpreter
+    // (decision 0027): a verify leg replays from the boot, which an
+    // autosave leg is not, and the reference comparison covers one total.
+    if (want_autosave && want_verify) {
+        std::cerr << "checkpoint-every does not combine with verify-resume\n";
+        usage();
+        return 2;
+    }
+    if (want_autosave && compare_interpreter) {
+        std::cerr << "checkpoint-every does not combine with compare-interpreter\n";
+        usage();
+        return 2;
+    }
+    // Rotation owns every ckpt-<n>.bin in the autosave directory, so a
+    // hand-placed manual path inside it would be eaten: refuse loudly.
+    if (want_autosave && want_checkpoint && !checkpoint_path.empty()
+        && std::filesystem::absolute(checkpoint_path).parent_path()
+            == std::filesystem::absolute(autosave_dir)) {
+        std::cerr << "checkpoint-at path must not sit inside the autosave directory\n";
         usage();
         return 2;
     }
@@ -630,7 +934,10 @@ int wmain(int argc, wchar_t* argv[]) {
         RunOptions options;
         options.step_limit = step_limit;
         options.service_limit = service_limit;
-        options.on_service = [](std::uint32_t service, std::uint32_t pc) {
+        options.on_service = [quiet](std::uint32_t service, std::uint32_t pc) {
+            if (quiet) {
+                return;
+            }
             std::cout << "service 0x" << std::hex << service << std::dec
                       << " at 0x" << std::hex << std::setfill('0') << std::setw(8)
                       << pc << std::dec << std::setfill(' ') << '\n';
@@ -673,11 +980,29 @@ int wmain(int argc, wchar_t* argv[]) {
 
         Driver driver(driver_state, make_boot_module());
         RunResult result;
+        std::vector<std::string> skipped_moments;
         try {
-            result = driver.run(services, options);
+            if (!want_autosave) {
+                result = driver.run(services, options);
+            } else {
+                // Autosave photos the run leg by leg; the returned stats
+                // accumulate across legs so the report below reads totals.
+                std::vector<AutosavePhoto> inventory =
+                    inventory_autosave_dir(autosave_dir);
+                AutosaveOutcome autosave = run_with_autosave(
+                    driver, services, options, driver_state, driver_kernel,
+                    driver_devices, resume_services, service_limit,
+                    step_limit, autosave_every, autosave_dir, autosave_keep,
+                    autosave_has_byte_cap, autosave_max_bytes, inventory);
+                result = autosave.result;
+                skipped_moments = std::move(autosave.skipped_moments);
+            }
         } catch (...) {
             print_dumps();
             throw;
+        }
+        for (const std::string& note : skipped_moments) {
+            std::cout << note << '\n';
         }
         const Boundary& boundary = result.boundary;
 
@@ -702,19 +1027,12 @@ int wmain(int argc, wchar_t* argv[]) {
                 throw std::runtime_error(
                     "Checkpoint requested, but the run stopped elsewhere");
             }
-            CheckpointFile file;
-            file.services_handled = checkpoint_at;
-            file.context_memory = save_snapshot(
-                driver_state.save_registers(),
-                driver_state.memory().segment_alias_enabled(),
-                driver_state.memory().regions_snapshot());
-            file.kernel = driver_kernel.save_kernel_state();
-            file.banks = save_bank_section(snapshot_banks(driver_devices));
-            const std::vector<std::uint8_t> framed = save_checkpoint_file(file);
-            write_file_bytes(checkpoint_path, framed);
+            const std::uint64_t framed_size = write_stop_checkpoint(
+                driver_state, driver_kernel, driver_devices, checkpoint_at,
+                checkpoint_path);
             std::cout << "checkpoint saved at " << checkpoint_at
                       << " services: " << checkpoint_path.string() << " ("
-                      << framed.size() << " bytes)\n";
+                      << framed_size << " bytes)\n";
         }
         if (print_threads) {
             // The kernel's thread table at the stop: id, status bits, the

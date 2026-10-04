@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 54 (nineteenth item) — the
-checkpoint system is now a worked explanation (map-first design,
-C1/C2/C3 snapshots, clean-stop hooks, chained replay proof,
-tolerant flag, unimplemented autosave labeled). Owner checked
-plan + voice. The lessons backlog is exhausted; next
-designation goes to the owner (options in the summary). This is
-the first document to read in a new session; it is kept current
-as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after slice 56 (autosave implemented) — exact
+0027 bar met: leg-sliced photos, clean-only predicate, rotation
+with upsert fix, 8 new CTests (rotation/foreign/verify/quiet/
+repeat/identical), 50/50 green + Python 73, all owner-reviewed
+line by line. Next is slice 57: close the lessons backlog with
+an index + closure audit. This is the
+first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1030,10 @@ as work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 56 (autosave live, 2026-10-04): **exact 0027 bar
+  met**. Leg-sliced photos, upsert fix, 8 new CTests, 50/50 +
+  Python 73, all owner-reviewed
+  (`docs/reverse-engineering/autosave-slice56-implemented.md`).
 - Slice 55 (decision 0027, 2026-10-04): **autosave
   specified, not built**. Rotating photos + quiet, 5-item bar,
   `main.cpp`-bounded. Owner adopted (DIR rule = builder's own)
@@ -1444,13 +1448,13 @@ as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **implement autosave
-  (slice 56)**. Decision 0027 adopted (owner-reviewed, active
-  development resumed by owner order): exact CLI/rotation/
-  determinism bar in `main.cpp` + existing fixtures only.
-  Tripwires armed; M35's promoter watched; and the curriculum's
-  remaining units (a counting timer with interrupt delivery and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **close the lessons
+  backlog (slice 57)**. Autosave live and owner-gated (50/50):
+  write the lessons index + audit every lesson file and cited
+  link. Tripwires armed; M35's promoter watched; and the
+  curriculum's remaining units (a counting timer with interrupt
+  delivery and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
