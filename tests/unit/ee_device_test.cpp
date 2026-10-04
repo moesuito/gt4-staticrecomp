@@ -61,6 +61,44 @@ int main() {
               "a channel restore is side-effect free");
     }
 
+    // The restore bypasses the live start-bit behavior: a live write of
+    // STR|TIE fires once and clears STR, while restoring the same value
+    // fires nothing and keeps the bits verbatim.
+    {
+        int live_fires = 0;
+        DmaChannel live(0x1000C000u, 0x100u, 5,
+                        [&](std::uint32_t) { ++live_fires; });
+        GuestMemory memory(0x1000C000u, 0x100u);
+        live.map_into(memory);
+        memory.write_word(0x1000C000u, DmaChannel::start_bit
+                                           | DmaChannel::interrupt_enable);
+        check(live_fires == 1
+                  && live.register_value(0x1000C000u)
+                    == DmaChannel::interrupt_enable,
+              "a live start fires once and clears the start bit");
+        const BankRegisters completed = live.registers_snapshot();
+        int replay_fires = 0;
+        DmaChannel replay(0x1000C000u, 0x100u, 5,
+                          [&](std::uint32_t) { ++replay_fires; });
+        replay.restore_registers(completed);
+        check(replay_fires == 0
+                  && replay.register_value(0x1000C000u)
+                    == DmaChannel::interrupt_enable,
+              "restoring a completed transfer fires nothing");
+        const BankRegisters armed = {
+            {0x1000C000u, DmaChannel::start_bit
+                              | DmaChannel::interrupt_enable}};
+        int armed_fires = 0;
+        DmaChannel armed_channel(0x1000C000u, 0x100u, 5,
+                                 [&](std::uint32_t) { ++armed_fires; });
+        armed_channel.restore_registers(armed);
+        check(armed_fires == 0
+                  && armed_channel.register_value(0x1000C000u)
+                    == (DmaChannel::start_bit
+                        | DmaChannel::interrupt_enable),
+              "a restore keeps an armed start bit verbatim without firing");
+    }
+
     // The timer unit forwards its bank.
     {
         TimerUnit timer;

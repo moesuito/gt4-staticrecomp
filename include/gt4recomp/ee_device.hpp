@@ -37,8 +37,10 @@ public:
     [[nodiscard]] std::uint32_t register_value(std::uint32_t address) const;
 
     // A copy of every stored register (address/value, ordered) for
-    // snapshots. Restoring replaces the stored registers wholesale through
-    // plain width-4 writes; MMIO routing is untouched.
+    // snapshots. Restoring replaces the stored registers wholesale,
+    // writing storage directly and bypassing the guest write path: no
+    // flag acknowledge, mask or completion effect ever runs on restore.
+    // MMIO routing is untouched.
     [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
     registers_snapshot() const;
     void restore_registers(

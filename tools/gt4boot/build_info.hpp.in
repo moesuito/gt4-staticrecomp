@@ -1,0 +1,7 @@
+#pragma once
+
+// Build provenance for gt4boot checkpoints (decision 0028). Both values are
+// best-effort writer identity for diagnosis: only the semantic model
+// versions in ee_checkpoint.hpp gate a restore, never these strings.
+#define GT4RECOMP_GIT_COMMIT "@GT4_GIT_COMMIT@"
+#define GT4RECOMP_BUILD_TYPE "@GT4_BUILD_TYPE@"

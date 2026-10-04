@@ -71,9 +71,13 @@ RegisterBank::registers_snapshot() const {
 
 void RegisterBank::restore_registers(
     std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
+    // Straight into storage, never through write_register: a restore is a
+    // verbatim photo, so future guest-write effects (flag acknowledge,
+    // masks, completions) must not run here. The device contract keeps its
+    // write path; only this restore path bypasses it (decision 0028).
     registers_.clear();
     for (const auto& [address, value] : entries) {
-        write_register(address, 4, value);
+        registers_[address] = value;
     }
 }
 

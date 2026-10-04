@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -71,11 +72,98 @@ using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 [[nodiscard]] std::vector<BankRegisters> load_bank_section(
     std::span<const std::uint8_t> bytes);
 
-// The checkpoint file: the services count at the save point, then three
+// The checkpoint file: the model-compatibility identity, the write-time
+// provenance, the services count at the save point, then three
 // length-prefixed sections (context+memory, kernel, banks). Each section
 // keeps its own magic, so a section decodes standalone; the file only
 // frames them.
+//
+// Three things stay deliberately separate (decision 0028):
+//   format:      the GT4CPT2 magic (a bytes-on-wire version);
+//   provenance:  who wrote the file (commit, binary, inputs, config) for
+//                diagnosis — never a reason to refuse a restore;
+//   compatibility: the semantic model versions below (time, interrupt,
+//                RPC, translation). Only these gate a restore: a file from
+//                other semantics is refused before anything is applied,
+//                while a merely editorial change (a new commit, a comment)
+//                keeps the same versions and stays loadable.
+struct ModelCompatibility {
+    std::uint32_t time_model = 1;         // the service clock and timer advance
+    std::uint32_t interrupt_model = 1;    // occurrence, pending, mask, dispatch
+    std::uint32_t rpc_model = 1;          // SIF/RPC replies and backing stores
+    std::uint32_t translation_model = 1;  // decoder and AOT emitter semantics
+};
+
+// The semantics this binary implements. Every domain starts at 1 (the P00
+// baseline); a slice that changes a domain's state-affecting behavior bumps
+// exactly that domain and documents it in the slice's evidence.
+[[nodiscard]] constexpr ModelCompatibility current_model_compatibility() noexcept {
+    return ModelCompatibility{};
+}
+
+// Names the domains where a file's semantics differ from this binary's, for
+// the refusal message. Empty when the file is loadable.
+[[nodiscard]] inline std::string describe_compatibility_mismatch(
+    const ModelCompatibility& file) {
+    const ModelCompatibility current = current_model_compatibility();
+    std::string mismatch;
+    const auto note = [&mismatch](bool differs, const char* domain,
+                                   std::uint32_t file_version,
+                                   std::uint32_t current_version) {
+        if (!differs) {
+            return;
+        }
+        if (!mismatch.empty()) {
+            mismatch += ", ";
+        }
+        mismatch += std::string(domain) + " (file " + std::to_string(file_version)
+            + ", this binary " + std::to_string(current_version) + ")";
+    };
+    note(file.time_model != current.time_model, "time", file.time_model,
+         current.time_model);
+    note(file.interrupt_model != current.interrupt_model, "interrupt",
+         file.interrupt_model, current.interrupt_model);
+    note(file.rpc_model != current.rpc_model, "rpc", file.rpc_model,
+         current.rpc_model);
+    note(file.translation_model != current.translation_model, "translation",
+         file.translation_model, current.translation_model);
+    return mismatch;
+}
+
+// Refuses a file from incompatible semantics before any restore applies it.
+// Provenance differences never reach here: only the versions above gate.
+inline void require_compatible(const ModelCompatibility& file) {
+    const std::string mismatch = describe_compatibility_mismatch(file);
+    if (!mismatch.empty()) {
+        throw std::runtime_error(
+            "The checkpoint needs other model semantics: " + mismatch
+            + ". It is forensic evidence for the old model, not a resume "
+              "source for this one; run a fresh prefix instead");
+    }
+}
+
+// Who wrote a checkpoint file: commit, binary, inputs and configuration.
+// Everything here is diagnosis, never an acceptance gate — two files with
+// the same compatibility but different provenance load identically.
+struct CheckpointProvenance {
+    std::string git_commit;   // the building commit, or "unknown"
+    std::string binary;       // tool name, build type and compiler
+    std::string core_sha256;  // the pinned CORE hash the writer verified
+    std::string disc;         // "absent", or the attached image's file name
+    std::string time_policy;  // the service-clock and idle policy in words
+};
+
+// One section holding the provenance: magic "GT4PROV1", then the five
+// fields above as {u32 length, bytes} in declaration order. Anything
+// malformed (magic, truncation, trailing bytes) throws std::runtime_error.
+[[nodiscard]] std::vector<std::uint8_t> save_provenance_section(
+    const CheckpointProvenance& provenance);
+[[nodiscard]] CheckpointProvenance load_provenance_section(
+    std::span<const std::uint8_t> bytes);
+
 struct CheckpointFile {
+    ModelCompatibility compatibility = current_model_compatibility();
+    CheckpointProvenance provenance;
     std::uint64_t services_handled = 0;
     std::vector<std::uint8_t> context_memory;
     std::vector<std::uint8_t> kernel;

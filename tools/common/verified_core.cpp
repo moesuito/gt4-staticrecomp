@@ -13,6 +13,10 @@ namespace gt4recomp::tools {
 constexpr std::size_t usa_core_size = 2020861;
 constexpr auto usa_core_sha256 = "85d26aa8430154967b2633eede929286694ac39e99762527edcec365fd642ff9";
 
+const char* pinned_core_sha256() noexcept {
+    return usa_core_sha256;
+}
+
 std::vector<std::uint8_t> read_verified_core(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input || input.tellg() != static_cast<std::streamoff>(usa_core_size)) {

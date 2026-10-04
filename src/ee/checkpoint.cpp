@@ -231,11 +231,76 @@ std::vector<BankRegisters> load_bank_section(
     return banks;
 }
 
-std::vector<std::uint8_t> save_checkpoint_file(const CheckpointFile& file) {
+std::vector<std::uint8_t> save_provenance_section(
+    const CheckpointProvenance& provenance) {
     std::vector<std::uint8_t> out;
-    for (const char letter : {'G', 'T', '4', 'C', 'P', 'T', '1'}) {
+    for (const char letter : {'G', 'T', '4', 'P', 'R', 'O', 'V', '1'}) {
         out.push_back(static_cast<std::uint8_t>(letter));
     }
+    const auto put_text = [&out](const std::string& text) {
+        if (text.size() > 0xFFFFFFFFu) {
+            throw std::runtime_error("The provenance field is too large");
+        }
+        put_u32(out, static_cast<std::uint32_t>(text.size()));
+        out.insert(out.end(), text.begin(), text.end());
+    };
+    put_text(provenance.git_commit);
+    put_text(provenance.binary);
+    put_text(provenance.core_sha256);
+    put_text(provenance.disc);
+    put_text(provenance.time_policy);
+    return out;
+}
+
+CheckpointProvenance load_provenance_section(
+    std::span<const std::uint8_t> bytes) {
+    Reader reader{bytes, 0};
+    constexpr char magic[8] = {'G', 'T', '4', 'P', 'R', 'O', 'V', '1'};
+    for (const char letter : magic) {
+        if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
+            throw std::runtime_error("The provenance section has a bad magic");
+        }
+    }
+    const auto take_text = [&reader]() {
+        const std::uint32_t size = reader.take_u32();
+        if (size > reader.bytes.size() - reader.offset) {
+            throw std::runtime_error("The provenance field overruns the blob");
+        }
+        std::string text(reader.bytes.begin() + reader.offset,
+                         reader.bytes.begin() + reader.offset + size);
+        reader.offset += size;
+        return text;
+    };
+    CheckpointProvenance provenance;
+    provenance.git_commit = take_text();
+    provenance.binary = take_text();
+    provenance.core_sha256 = take_text();
+    provenance.disc = take_text();
+    provenance.time_policy = take_text();
+    if (reader.offset != reader.bytes.size()) {
+        throw std::runtime_error("The provenance section has trailing bytes");
+    }
+    return provenance;
+}
+
+std::vector<std::uint8_t> save_checkpoint_file(const CheckpointFile& file) {
+    std::vector<std::uint8_t> out;
+    for (const char letter : {'G', 'T', '4', 'C', 'P', 'T', '2'}) {
+        out.push_back(static_cast<std::uint8_t>(letter));
+    }
+    // The semantic identity first, so a reader can name the mismatch
+    // before touching any state section.
+    put_u32(out, file.compatibility.time_model);
+    put_u32(out, file.compatibility.interrupt_model);
+    put_u32(out, file.compatibility.rpc_model);
+    put_u32(out, file.compatibility.translation_model);
+    const std::vector<std::uint8_t> provenance =
+        save_provenance_section(file.provenance);
+    if (provenance.size() > 0xFFFFFFFFu) {
+        throw std::runtime_error("The checkpoint section is too large");
+    }
+    put_u32(out, static_cast<std::uint32_t>(provenance.size()));
+    out.insert(out.end(), provenance.begin(), provenance.end());
     put_u64(out, file.services_handled);
     const auto put_section = [&out](const std::vector<std::uint8_t>& section) {
         if (section.size() > 0xFFFFFFFFu) {
@@ -252,14 +317,38 @@ std::vector<std::uint8_t> save_checkpoint_file(const CheckpointFile& file) {
 
 CheckpointFile load_checkpoint_file(std::span<const std::uint8_t> bytes) {
     Reader reader{bytes, 0};
-    constexpr char magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '1'};
+    // Pre-P00 files (GT4CPT1) carry no semantic identity: they are forensic
+    // evidence for the old model, never a resume source. Name that plainly
+    // instead of reporting a generic bad magic.
+    constexpr char old_magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '1'};
+    bool matches_old = true;
+    if (bytes.size() >= sizeof old_magic) {
+        for (std::size_t index = 0; index < sizeof old_magic; ++index) {
+            if (bytes[index] != static_cast<std::uint8_t>(old_magic[index])) {
+                matches_old = false;
+                break;
+            }
+        }
+    } else {
+        matches_old = false;
+    }
+    if (matches_old) {
+        throw std::runtime_error(
+            "The checkpoint predates the model-compatibility identity "
+            "(GT4CPT1): it is forensic evidence for the old model, not a "
+            "resume source; run a fresh prefix instead");
+    }
+    constexpr char magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '2'};
     for (const char letter : magic) {
         if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
             throw std::runtime_error("The checkpoint file has a bad magic");
         }
     }
     CheckpointFile file;
-    file.services_handled = reader.take_u64();
+    file.compatibility.time_model = reader.take_u32();
+    file.compatibility.interrupt_model = reader.take_u32();
+    file.compatibility.rpc_model = reader.take_u32();
+    file.compatibility.translation_model = reader.take_u32();
     const auto take_section = [&reader]() {
         const std::uint32_t size = reader.take_u32();
         if (size > reader.bytes.size() - reader.offset) {
@@ -271,12 +360,17 @@ CheckpointFile load_checkpoint_file(std::span<const std::uint8_t> bytes) {
         reader.offset += size;
         return section;
     };
+    file.provenance = load_provenance_section(take_section());
+    file.services_handled = reader.take_u64();
     file.context_memory = take_section();
     file.kernel = take_section();
     file.banks = take_section();
     if (reader.offset != reader.bytes.size()) {
         throw std::runtime_error("The checkpoint file has trailing bytes");
     }
+    // The integrity of the whole file parses first; only then does the
+    // semantic gate run, still before any caller restores state from it.
+    require_compatible(file.compatibility);
     return file;
 }
 

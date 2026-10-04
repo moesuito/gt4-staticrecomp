@@ -10,6 +10,7 @@
 #include "translated-whole-program.hpp"
 
 #include "boundary_text.hpp"
+#include "gt4build_info.hpp"
 #include "gt4recomp/disc_image.hpp"
 #include "gt4recomp/ee_checkpoint.hpp"
 #include "gt4recomp/ee_device.hpp"
@@ -214,17 +215,83 @@ void write_file_bytes(const std::filesystem::path& path,
     }
 }
 
-// Writes the whole stop state to a checkpoint file: the service count,
-// the context+memory section, the kernel section and the device banks,
-// framed as GT4CPT1. Shared by --checkpoint-at and autosave (decision
-// 0027) so both paths write byte-identical files for the same stop
-// state. Returns the framed size for the log line.
+// The write-time provenance every checkpoint photo carries (decision
+// 0028): commit, binary, verified input, disc attachment and time policy.
+// Deterministic by construction — no timestamps, no host paths — so two
+// identical runs write byte-identical photos (the autosave determinism
+// CTest). The disc hash is not verified at open (its check lives in the
+// pre-run fingerprint step), so the field says exactly that.
+CheckpointProvenance make_provenance(bool disc_attached,
+                                     const std::filesystem::path& disc_path) {
+    CheckpointProvenance provenance;
+    provenance.git_commit = GT4RECOMP_GIT_COMMIT;
+#if defined(_MSC_VER)
+    provenance.binary = std::string("gt4boot ") + GT4RECOMP_BUILD_TYPE
+        + " MSVC " + std::to_string(_MSC_VER);
+#elif defined(__clang__)
+    provenance.binary = std::string("gt4boot ") + GT4RECOMP_BUILD_TYPE
+        + " clang " + __clang_version__;
+#elif defined(__GNUC__)
+    provenance.binary = std::string("gt4boot ") + GT4RECOMP_BUILD_TYPE + " GCC "
+        + __VERSION__;
+#else
+    provenance.binary = std::string("gt4boot ") + GT4RECOMP_BUILD_TYPE
+        + " unknown-compiler";
+#endif
+    provenance.core_sha256 = gt4recomp::tools::pinned_core_sha256();
+    provenance.disc = disc_attached
+        ? "attached:" + disc_path.filename().string()
+            + " (hash unverified at open)"
+        : "absent";
+    provenance.time_policy =
+        "service-clock 1ms/service; idle 1 frame/interrupt; budget 2000000";
+    return provenance;
+}
+
+// One line naming the run's identity for the §22.3 run record: commit,
+// binary, verified input, model semantics and time policy. The disc line
+// below adds the attachment; provenance lines never carry guest addresses,
+// so --quiet keeps them.
+void print_run_identity(const CheckpointProvenance& provenance) {
+    const ModelCompatibility model = current_model_compatibility();
+    std::cout << "run provenance: commit " << provenance.git_commit
+              << "; binary " << provenance.binary << "; core "
+              << provenance.core_sha256 << "; model time=" << model.time_model
+              << " interrupt=" << model.interrupt_model << " rpc="
+              << model.rpc_model << " translation=" << model.translation_model
+              << "; time " << provenance.time_policy << '\n';
+}
+
+// One line naming a checkpoint file's stored identity at resume time: its
+// semantic versions plus who wrote it. Provenance never gates acceptance —
+// this is diagnosis for the run record.
+void print_checkpoint_identity(const CheckpointFile& file) {
+    std::cout << "checkpoint model: time=" << file.compatibility.time_model
+              << " interrupt=" << file.compatibility.interrupt_model
+              << " rpc=" << file.compatibility.rpc_model << " translation="
+              << file.compatibility.translation_model
+              << "; written by commit " << file.provenance.git_commit
+              << "; binary " << file.provenance.binary << "; core "
+              << file.provenance.core_sha256 << "; disc "
+              << file.provenance.disc << "; time "
+              << file.provenance.time_policy << '\n';
+}
+
+// Writes the whole stop state to a checkpoint file: the model-compatibility
+// identity, the write-time provenance, the service count, the
+// context+memory section, the kernel section and the device banks, framed
+// as GT4CPT2. Shared by --checkpoint-at and autosave (decision 0027) so
+// both paths write byte-identical files for the same stop state. Returns
+// the framed size for the log line.
 std::uint64_t write_stop_checkpoint(const GuestState& state,
                                     const Kernel& kernel,
                                     const BootDevices& devices,
+                                    const CheckpointProvenance& provenance,
                                     std::uint64_t services_handled,
                                     const std::filesystem::path& path) {
     CheckpointFile file;
+    file.compatibility = current_model_compatibility();
+    file.provenance = provenance;
     file.services_handled = services_handled;
     file.context_memory = save_snapshot(
         state.save_registers(), state.memory().segment_alias_enabled(),
@@ -349,7 +416,8 @@ struct AutosaveOutcome {
 AutosaveOutcome run_with_autosave(
     Driver& driver, ServiceTable& services, RunOptions leg_options,
     const GuestState& state, const Kernel& kernel,
-    const BootDevices& devices, std::uint64_t resume_base,
+    const BootDevices& devices, const CheckpointProvenance& provenance,
+    std::uint64_t resume_base,
     std::uint64_t service_limit, std::uint64_t step_limit,
     std::uint64_t every, const std::filesystem::path& dir,
     std::uint64_t keep, bool has_byte_cap, std::uint64_t max_bytes,
@@ -400,10 +468,11 @@ AutosaveOutcome run_with_autosave(
                 throw std::runtime_error("Cannot create " + dir.string());
             }
             const std::uint64_t framed_size = write_stop_checkpoint(
-                state, kernel, devices, cumulative, photo_path);
+                state, kernel, devices, provenance, cumulative, photo_path);
             std::cout << "checkpoint saved at " << cumulative
-                      << " services: " << photo_path.string() << " ("
-                      << framed_size << " bytes)\n";
+                      << " services (cumulative since boot): "
+                      << photo_path.string() << " (" << framed_size
+                      << " bytes)\n";
             // Upsert: a re-run into a non-empty directory overwrites the
             // photo file, so the inventory must replace the stale entry
             // for the same count instead of counting it twice (which
@@ -595,10 +664,11 @@ void usage() {
                  "                        eight words per line (both values hexadecimal;\n"
                  "                        may be repeated)\n"
                  "  --checkpoint-at N PATH\n"
-                 "                        when a run stops at exactly N services, save a\n"
-                 "                        checkpoint file (pair with --services N)\n"
+                 "                        when a run stops at exactly N leg services, save\n"
+                 "                        a checkpoint file (pair with --services N)\n"
                  "  --resume PATH         rebuild the boot and resume it from a checkpoint\n"
-                 "                        file (counters recount from zero)\n"
+                 "                        file (leg counters recount from zero;\n"
+                 "                        pre-P00 and foreign-semantics files refuse)\n"
                  "  --verify-resume PATH  resume from a checkpoint, run --services more,\n"
                  "                        run the same total fresh, and require identical\n"
                  "                        states (uses --services for the resumed leg)\n"
@@ -628,7 +698,7 @@ int wmain(int argc, wchar_t* argv[]) {
     std::filesystem::path core_path;
     bool print_threads = false;
     // Checkpointing: --checkpoint-at saves after exactly N services (pair
-    // with --services N); --resume restarts from a file (counters recount
+    // with --services N); --resume restarts from a file (leg counters recount
     // from zero); --verify-resume replays both ways and requires identical
     // states, using --services for the resumed leg. Autosave
     // (--checkpoint-every K DIR --keep M [--max-bytes B], decision 0027)
@@ -798,6 +868,12 @@ int wmain(int argc, wchar_t* argv[]) {
             std::cout << ")\n";
         }
 
+        // The write-time provenance every photo of this run carries, and
+        // the run's own identity line for the §22.3 run record.
+        const CheckpointProvenance run_provenance =
+            make_provenance(disc_image != nullptr, disc_path);
+        print_run_identity(run_provenance);
+
         // Verify-resume runs the checkpoint file's leg and the same total
         // fresh, then requires identical stops and states. --services sets
         // the resumed leg; the direct leg runs the file's count plus that.
@@ -805,6 +881,12 @@ int wmain(int argc, wchar_t* argv[]) {
         if (want_verify) {
             const CheckpointFile verify_file =
                 load_checkpoint_file(read_file_bytes(verify_resume_path));
+            // load_checkpoint_file already refused pre-P00 files and foreign
+            // semantics; what remains is diagnosis for the run record.
+            std::cout << "verify-resume from " << verify_resume_path.string()
+                      << " (checkpoint cumulative " << verify_file.services_handled
+                      << " services; this leg recounts from zero)\n";
+            print_checkpoint_identity(verify_file);
             const std::uint64_t base_services = verify_file.services_handled;
             if (service_limit
                 > std::numeric_limits<std::uint64_t>::max() - base_services) {
@@ -898,7 +980,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 throw std::runtime_error("Resumed and direct states differ");
             }
             std::cout << "resume states identical (" << total_services
-                      << " services, digest 0x" << std::hex
+                      << " services cumulative since boot, digest 0x" << std::hex
                       << memory_digest(resumed_state) << std::dec << ")\n";
             return 0;
         }
@@ -918,18 +1000,22 @@ int wmain(int argc, wchar_t* argv[]) {
         // Resuming rebuilds everything identically, then applies the
         // snapshot over it: registers, RAM bytes, kernel state and device
         // registers in map order. Counters recount from zero, so --services
-        // on a resumed run means that many more services.
+        // on a resumed run means that many more services; the stats line
+        // below reports both the leg count and the cumulative total.
         std::uint64_t resume_services = 0;
         if (want_resume) {
             const CheckpointFile file =
                 load_checkpoint_file(read_file_bytes(resume_path));
+            std::cout << "resumed from " << resume_path.string()
+                      << " (checkpoint cumulative " << file.services_handled
+                      << " services; this leg recounts from zero)\n";
+            print_checkpoint_identity(file);
             const Snapshot snapshot = load_snapshot(file.context_memory);
             driver_state.restore_registers(snapshot.context);
             restore_memory(driver_state.memory(), snapshot);
             driver_kernel.load_kernel_state(file.kernel);
             restore_banks(driver_devices, load_bank_section(file.banks));
             resume_services = file.services_handled;
-            std::cout << "resumed at " << resume_services << " services\n";
         }
         RunOptions options;
         options.step_limit = step_limit;
@@ -991,7 +1077,7 @@ int wmain(int argc, wchar_t* argv[]) {
                     inventory_autosave_dir(autosave_dir);
                 AutosaveOutcome autosave = run_with_autosave(
                     driver, services, options, driver_state, driver_kernel,
-                    driver_devices, resume_services, service_limit,
+                    driver_devices, run_provenance, resume_services, service_limit,
                     step_limit, autosave_every, autosave_dir, autosave_keep,
                     autosave_has_byte_cap, autosave_max_bytes, inventory);
                 result = autosave.result;
@@ -1015,7 +1101,18 @@ int wmain(int argc, wchar_t* argv[]) {
         std::cout << '\n'
                   << "stats: module calls " << result.stats.module_calls
                   << ", interpreted steps " << result.stats.interpreted_steps
-                  << ", services handled " << result.stats.services_handled << '\n';
+                  << ", services handled " << result.stats.services_handled;
+        // Leg-relative vs cumulative (decision 0028): a resumed run
+        // recounts from zero, so its leg count plus the checkpoint base is
+        // the cumulative total since boot; a fresh run's leg is its total.
+        if (want_resume || want_autosave) {
+            std::cout << " (leg-relative; cumulative "
+                      << (resume_services + result.stats.services_handled)
+                      << " since boot)";
+        } else {
+            std::cout << " (fresh run: leg == cumulative)";
+        }
+        std::cout << '\n';
         // Checkpointing saves the whole stop state, but only from a clean
         // service stop at exactly the requested count: a fault, a step
         // limit, or a transfer in flight refuses loudly instead of writing
@@ -1028,11 +1125,22 @@ int wmain(int argc, wchar_t* argv[]) {
                     "Checkpoint requested, but the run stopped elsewhere");
             }
             const std::uint64_t framed_size = write_stop_checkpoint(
-                driver_state, driver_kernel, driver_devices, checkpoint_at,
-                checkpoint_path);
+                driver_state, driver_kernel, driver_devices, run_provenance,
+                checkpoint_at, checkpoint_path);
             std::cout << "checkpoint saved at " << checkpoint_at
                       << " services: " << checkpoint_path.string() << " ("
-                      << framed_size << " bytes)\n";
+                      << framed_size << " bytes)";
+            // The file holds the leg count (decision 0024's recount rule);
+            // name the scope so a chained photo is never mistaken for a
+            // cumulative total.
+            if (want_resume || want_autosave) {
+                std::cout << " [leg-relative; cumulative "
+                          << (resume_services + checkpoint_at)
+                          << " since boot]";
+            } else {
+                std::cout << " [cumulative]";
+            }
+            std::cout << '\n';
         }
         if (print_threads) {
             // The kernel's thread table at the stop: id, status bits, the

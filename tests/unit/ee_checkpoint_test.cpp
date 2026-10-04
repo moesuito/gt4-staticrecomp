@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace gt4recomp::ee;
@@ -140,20 +141,35 @@ int main() {
     check(throws([&] { restore_memory(other_geometry, snapshot); }),
           "a geometry mismatch throws");
 
-    // The checkpoint file frames the three sections with the service count.
+    // The checkpoint file frames the compatibility identity, the
+    // provenance, the service count and the three sections.
     {
         CheckpointFile file;
         file.services_handled = 90000;
         file.context_memory = blob;
         file.kernel = {1, 2, 3};
         file.banks = {4, 5};
+        file.provenance.git_commit = "abc123";
+        file.provenance.binary = "gt4boot Debug MSVC 1944";
+        file.provenance.core_sha256 = "core-hash";
+        file.provenance.disc = "absent";
+        file.provenance.time_policy = "service-clock 1ms/service";
         const std::vector<std::uint8_t> framed = save_checkpoint_file(file);
+        check(framed.size() >= 7
+                  && framed[0] == 'G' && framed[1] == 'T' && framed[2] == '4'
+                  && framed[3] == 'C' && framed[4] == 'P' && framed[5] == 'T'
+                  && framed[6] == '2',
+              "the checkpoint file carries the GT4CPT2 format magic");
         const CheckpointFile parsed = load_checkpoint_file(framed);
         check(parsed.services_handled == 90000
                   && parsed.context_memory == blob
                   && parsed.kernel == std::vector<std::uint8_t>{1, 2, 3}
-                  && parsed.banks == std::vector<std::uint8_t>{4, 5},
-              "the checkpoint file parses back");
+                  && parsed.banks == std::vector<std::uint8_t>{4, 5}
+                  && parsed.compatibility.time_model
+                    == current_model_compatibility().time_model
+                  && parsed.provenance.git_commit == "abc123"
+                  && parsed.provenance.disc == "absent",
+              "the checkpoint file parses back with identity and provenance");
         std::vector<std::uint8_t> bad_file_magic = framed;
         bad_file_magic[0] = 'X';
         check(throws([&] { (void)load_checkpoint_file(bad_file_magic); }),
@@ -164,6 +180,102 @@ int main() {
         trailing.push_back(0);
         check(throws([&] { (void)load_checkpoint_file(trailing); }),
               "trailing file bytes throw");
+    }
+
+    // Model compatibility gates the restore; provenance never does.
+    {
+        CheckpointFile file;
+        file.services_handled = 400;
+        file.context_memory = blob;
+        file.kernel = {1};
+        file.banks = {2};
+        file.provenance.git_commit = "writer-commit";
+        const std::vector<std::uint8_t> framed = save_checkpoint_file(file);
+        check(describe_compatibility_mismatch(current_model_compatibility())
+                  .empty(),
+              "the current model matches itself");
+        // An editorial change (a new commit, another binary) with the same
+        // semantics stays loadable.
+        CheckpointFile editorial = file;
+        editorial.provenance.git_commit = "another-commit";
+        editorial.provenance.binary = "another-binary";
+        const CheckpointFile reparsed =
+            load_checkpoint_file(save_checkpoint_file(editorial));
+        check(reparsed.services_handled == 400
+                  && reparsed.provenance.git_commit == "another-commit",
+              "provenance alone never invalidates a checkpoint");
+        // Each semantic domain refused on its own, naming the domain.
+        const auto refuses_naming = [&](ModelCompatibility bumped,
+                                        const char* domain) {
+            CheckpointFile other = file;
+            other.compatibility = bumped;
+            bool named = false;
+            try {
+                (void)load_checkpoint_file(save_checkpoint_file(other));
+            } catch (const std::runtime_error& error) {
+                named = std::string(error.what()).find(domain)
+                    != std::string::npos;
+            }
+            return named;
+        };
+        ModelCompatibility time_bump = current_model_compatibility();
+        time_bump.time_model += 1;
+        ModelCompatibility interrupt_bump = current_model_compatibility();
+        interrupt_bump.interrupt_model += 1;
+        ModelCompatibility rpc_bump = current_model_compatibility();
+        rpc_bump.rpc_model += 1;
+        ModelCompatibility translation_bump = current_model_compatibility();
+        translation_bump.translation_model += 1;
+        check(refuses_naming(time_bump, "time"),
+              "a foreign time model is refused naming time");
+        check(refuses_naming(interrupt_bump, "interrupt"),
+              "a foreign interrupt model is refused naming interrupt");
+        check(refuses_naming(rpc_bump, "rpc"),
+              "a foreign rpc model is refused naming rpc");
+        check(refuses_naming(translation_bump, "translation"),
+              "a foreign translation model is refused naming translation");
+        // Pre-P00 files carry no semantic identity: forensic, never a
+        // resume source, and the message says so.
+        std::vector<std::uint8_t> old_magic = framed;
+        old_magic[6] = '1';
+        bool forensic = false;
+        try {
+            (void)load_checkpoint_file(old_magic);
+        } catch (const std::runtime_error& error) {
+            forensic = std::string(error.what()).find("forensic")
+                != std::string::npos;
+        }
+        check(forensic, "a pre-P00 checkpoint is refused as forensic");
+    }
+
+    // The provenance section round-trips its five fields standalone.
+    {
+        CheckpointProvenance provenance;
+        provenance.git_commit = "deadbeef";
+        provenance.binary = "gt4boot Debug MSVC 1944";
+        provenance.core_sha256 = "core-hash";
+        provenance.disc = "absent";
+        provenance.time_policy = "service-clock 1ms/service";
+        const std::vector<std::uint8_t> section =
+            save_provenance_section(provenance);
+        const CheckpointProvenance parsed = load_provenance_section(section);
+        check(parsed.git_commit == "deadbeef"
+                  && parsed.binary == "gt4boot Debug MSVC 1944"
+                  && parsed.core_sha256 == "core-hash"
+                  && parsed.disc == "absent"
+                  && parsed.time_policy == "service-clock 1ms/service",
+              "the provenance section parses back");
+        std::vector<std::uint8_t> bad_magic = section;
+        bad_magic[0] = 'X';
+        check(throws([&] { (void)load_provenance_section(bad_magic); }),
+              "a bad provenance magic throws");
+        check(throws(
+                  [&] { (void)load_provenance_section({section.data(), 9}); }),
+              "a truncated provenance section throws");
+        std::vector<std::uint8_t> trailing = section;
+        trailing.push_back(0);
+        check(throws([&] { (void)load_provenance_section(trailing); }),
+              "trailing provenance bytes throw");
     }
 
     // Autosave photo names round-trip; foreign names are refused so

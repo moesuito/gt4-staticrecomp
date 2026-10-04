@@ -153,6 +153,29 @@ if(BUILD_TESTING)
     # without the CORE the test simply does not exist.
     set(GT4_LOCAL_CORE "${CMAKE_CURRENT_SOURCE_DIR}/private/fingerprint-check/CORE.GT4")
     if(WIN32 AND EXISTS "${GT4_LOCAL_CORE}")
+        # Build provenance for checkpoint files (decision 0028): the building
+        # commit and build type land in a generated header gt4boot reads at
+        # save time. "unknown" when git is unavailable; a commit without a
+        # re-configure keeps the previously recorded SHA, so provenance is
+        # best-effort identity, never an acceptance gate.
+        execute_process(
+            COMMAND git rev-parse HEAD
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE GT4_GIT_COMMIT
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(NOT GT4_GIT_COMMIT)
+            set(GT4_GIT_COMMIT "unknown")
+        endif()
+        if(NOT CMAKE_BUILD_TYPE)
+            set(GT4_BUILD_TYPE "unknown")
+        else()
+            set(GT4_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+        endif()
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/gt4boot/build_info.hpp.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/gt4build_info.hpp"
+            @ONLY)
         set(GT4_TRANSLATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-00577878.hpp")
         add_custom_command(
             OUTPUT "${GT4_TRANSLATED_HEADER}"
