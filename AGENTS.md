@@ -302,10 +302,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **the lessons backlog (slice 36)**:
-  pad deferred with promoter named (vocab owner-verified); event
-  work parked behind tripwires — write the open M9–M30 lessons,
-  delay-library arc first. The
+- Next: **the lessons backlog (slice 37)**:
+  delay-library lesson committed and owner-checked; next the SIF/RPC
+  arc (slices 7–8 + decisions 0009/0010). The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

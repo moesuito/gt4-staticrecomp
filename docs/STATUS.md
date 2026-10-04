@@ -1,13 +1,11 @@
 # Project status
 
-Updated 2026-10-03 after slice 35 (M35 pad groundwork) —
-vocabulary mapped (IRX list, libpad2/vib, 8 controller names,
-identify-by-strcmp at `0x0043CE08` — all owner-verified), consumer
-side unreached (no pad sid, no RPC numbers; absence calibrated, not
-fudged): spec deferred with the exact promoter (first padman bind
-in `--threads`). Next is slice 36: the open lessons backlog —
-first the M30 delay-library arc — committed writing while the
-tripwire watches. This is the
+Updated 2026-10-04 after slice 36 (first lesson) — the M30
+delay-library arc is now a worked explanation (callback trace,
+handle bits 0012, timer nodes, handler-execution fix 0013, 1M
+services; M32 reframe handled as evolution). Owner checked
+fidelity + voice. Next is slice 37: the SIF/RPC arc lesson
+(slices 7–8 + decisions 0009/0010). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1030,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 36 (lesson, 2026-10-04): **M30 delay-library arc
+  written**. Callback trace, handle bits, timer nodes,
+  handler-execution fix; M32 reframe as evolution; checkpoint
+  questions. Owner-checked fidelity
+  (`docs/lessons/m30-delay-library.md`).
 - Slice 35 (M35 pad, 2026-10-03): **vocabulary mapped, spec
   deferred (justified)**. IRX list, libpad2/vib, controller names,
   identify loop — owner re-counted/re-read. No sid/RPC/bind:
@@ -1364,13 +1367,12 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 36)**. Event work parked behind tripwires (0026 live,
-  pad phase-gated): write the open M9–M30 lessons, first the M30
-  delay-library arc (slices 10–12 + decisions 0012/0013) from the
-  evidence docs. Then the next lesson. M35's promoter (first
-  padman bind) stays watched; and the curriculum's remaining units
-  (a counting timer with interrupt delivery and the jump-table
-  dispatch) stay listed in `docs/requirements.md`.
+  (slice 37)**. First lesson committed and owner-checked; next the
+  SIF/RPC arc (slices 7–8 + decisions 0009/0010), then the rest of
+  M9–M30. Tripwires armed; M35's promoter watched; and the
+  curriculum's remaining units (a counting timer with interrupt
+  delivery and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
