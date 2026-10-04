@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 79 (PCSX2 observation) — live blocked
-(4 exact items, nothing installed), but offline savestates give the
-first reference fact: at menu phase the subsystem recreated semaphores
-with fresh ids and re-stamped slots, and a job passed the gate
-(+0x34=1); the A=B=0x13F knot is dead history there. No causality
-claimed; raw BIOS/HLE ids declared non-comparable. 53/53 + Python 73
-owner-gated. Next: slice 80, the sema-recreation path in our binary
-(who recreates, what triggers it). This is the
+Updated 2026-10-04 after slice 80 (recreation path, static) — the
+BUILD/TEARDOWN dispatcher 0x00548950 (a1==0xFFFF, a0 selects) owns
+recreation via boot-step table entry #27; TEARDOWN unreachable;
+gate worker waits on [B+0x3C]≠0 (observed 0); our boot hits 3
+independent latches (no re-create, no invoker, teardown would jam on
+delete-with-waiters). P10 needs M32 originating traffic; the
+desempate (H1 vs H2) stays armed. 53/53 + Python 73 owner-gated,
+dispatcher shape owner-verified. Next: slice 81, M32 traffic design
+(what the first originating event must carry). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1052,6 +1053,10 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
+- Slice 80 (static, 2026-10-04): **recreation path mapped**.
+  Dispatcher + BUILD entry #27, TEARDOWN unreachable, 3 latches;
+  P10 needs originating traffic. Dispatcher owner-verified.
+  Owner-checked (`docs/reverse-engineering/slice80-recreation-path.md`).
 - Slice 79 (reference, 2026-10-04): **menu phase recreates semas**.
   Fresh ids, re-stamped slots, job through the gate; live blocked x4.
   Owner-checked (`docs/reverse-engineering/slice79-pcsx2-observation.md`).
