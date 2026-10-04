@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 60 (numbers-refresh lesson) —
-re-verification method taught; owner caught the unindexed
-autosave lesson and completed the index to 21 (entries 1–21,
-70 targets re-audited, zero broken). Lessons backlog TRULY
-CLOSED at 21. Next is slice 61: M0/M1 scaffolding notes, the
-last curriculum gap. This is the
+Updated 2026-10-04 after slice 61 (M0/M1 notes) — scaffolding
+taught from listings (3 libs, identity + smoke tests, suite
+wiring, conventions; M1 absence declared). Curriculum FULLY
+LESSONED at 22 entries. Next is slice 62: tripwire re-check
+(frontier census live + full gates), the first recurring
+verification. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1032,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 61 (notes, 2026-10-04): **M0/M1 scaffolding
+  written**. Libs, identity + smoke, suite wiring, conventions;
+  M1 absence declared. Owner-checked
+  (`docs/lessons/m0-m1-scaffolding.md`). Curriculum CLOSED at 22.
 - Slice 60 (lesson, 2026-10-04): **numbers-refresh
   written + index completed to 21**. Method lesson; owner caught
   unindexed autosave, re-audited zero broken
@@ -1464,13 +1468,13 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M0/M1 scaffolding
-  notes (slice 61)**. Index complete at 21 (owner-closed):
-  write the last curriculum gap — project setup, CLI, CMake,
-  identity tests. Tripwires armed; M35's promoter watched; and
-  the curriculum's remaining units (a counting timer with
-  interrupt delivery and the jump-table dispatch) stay listed
-  in `docs/requirements.md`.
+- Next technical milestone work: **tripwire re-check
+  (slice 62)**. Curriculum closed at 22 (owner-verified counts):
+  re-read the frontier census live plus full gates — first
+  recurring verification. Tripwires armed; M35's promoter
+  watched; and the curriculum's remaining units (a counting
+  timer with interrupt delivery and the jump-table dispatch)
+  stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

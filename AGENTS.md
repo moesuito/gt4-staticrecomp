@@ -304,9 +304,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **M0/M1 scaffolding notes (slice 61)**:
-  index complete at 21 (owner-closed the gap); last curriculum
-  gap — setup, CLI, CMake, identity. The
+- Next: **tripwire re-check (slice 62)**:
+  curriculum closed at 22 (counts owner-verified); re-read the
+  frontier census live + full gates. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
