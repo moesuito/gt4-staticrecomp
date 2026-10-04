@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 48 (thirteenth item) — the
-M7–M12 tooling arc is now a worked explanation (flow/map/state/
-interpreter/generated suites with independent oracle; later dual
-roles explicit; m7 cross-ref deliberate). Owner checked tools +
-voice. Next is slice 49: the M13–M16 first-real-execution arc
-lesson. This is the
+Updated 2026-10-04 after slice 49 (fourteenth item) — the
+M13–M16 first-execution arc is now a worked explanation (best
+candidate, 6 states, observed-use slices, SLT-64bit catch,
+COP1/MMI/startup, unaligned/multiply, M17 bridge; M22–M29 as
+continuation). Owner checked sources + voice. Next is slice 50:
+the M17–M21 advanced-control arc lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1030,6 +1030,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 49 (lesson, 2026-10-04): **M13–M16 first
+  execution written**. Best candidate, 6 states, SLT catch,
+  startup 942,695, M17 bridge. Owner-checked
+  (`docs/lessons/m13-m16-first-execution.md`).
 - Slice 48 (lesson, 2026-10-04): **M7–M12 tooling arc
   written**. Flow/map/state/interpreter/suites; dual roles
   explicit. Owner-checked
@@ -1416,10 +1420,10 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 49)**. Thirteen items committed and owner-checked;
-  next the M13–M16 first-real-execution arc. Tripwires armed;
-  M35's promoter watched; and the curriculum's remaining units
-  (a counting timer with interrupt delivery and the jump-table
+  (slice 50)**. Fourteen items committed and owner-checked;
+  next the M17–M21 advanced-control arc. Tripwires armed; M35's
+  promoter watched; and the curriculum's remaining units (a
+  counting timer with interrupt delivery and the jump-table
   dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
