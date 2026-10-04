@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 43 (eighth lesson) — the
-long-boot arc is now a worked explanation (raw sectors, two
-volumes, PRTS cursors, font path, 243M idle proven starvation;
-tooling co-evolution and 0026-parentage explicit). Owner checked
-refs + voice. Next is slice 44: the M32 delay-march + tripwire
-arc lesson. This is the
-first document to read in a new session; it is kept current as work
-proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after slice 44 (ninth lesson, first M32)
+  — the delay march + tripwire arc is now a worked explanation
+  (honest maturation, lottery verdict, coalescing, audit, chain
+  of negatives to the specified 0026 packet with census tripwire;
+  fossil kept as forward pointer). Owner checked numbers + voice.
+  Next is slice 45: the M33 recon + asset-dumps lesson. This is
+  the first document to read in a new session; it is kept current
+  as work proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1030,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 44 (lesson, 2026-10-04): **M32 march + tripwire
+  written**. Maturation, lottery, coalescing, audit, negatives
+  chain to specified packet + tripwire. Owner-checked
+  (`docs/lessons/m32-march-tripwire.md`).
 - Slice 43 (lesson, 2026-10-04): **long-boot arc
   written**. Sectors, volumes, cursors, font, 243M starvation;
   0026-parentage explicit. Owner-checked
@@ -1396,8 +1400,8 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 44)**. Eight lessons committed and owner-checked; next
-  the M32 delay-march + tripwire arc. Tripwires armed; M35's
+  (slice 45)**. Nine lessons committed and owner-checked; next
+  the M33 recon + asset-dumps arc. Tripwires armed; M35's
   promoter watched; and the curriculum's remaining units (a
   counting timer with interrupt delivery and the jump-table
   dispatch) stay listed in `docs/requirements.md`.
