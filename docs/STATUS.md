@@ -1,11 +1,12 @@
 # Project status
 
-Updated 2026-10-04 after slice 64 (P00 baseline, PLAN.md order) —
-checkpoint files carry model-compatibility identity (GT4CPT2) plus
-write-time provenance; pre-P00 and foreign-semantics files refuse
-before any restore; old `.bin` marches are forensic; restore bypasses
-guest-write effects. 50/50 + Python 73 owner-gated. **Next: P01+P02
-(slice 65, timer + interrupt).** This is the
+Updated 2026-10-04 after slice 65 (P01+P02, PLAN.md order) — timers are
+typed 16-bit units (W1C, edge-triggered, exact-landing advance); INTC
+and DMAC are separate pending domains (peek dispatch, CP0 gate,
+in-place coalescing); VIF0/VIF1/GIF complete via DMAC 0/1/2, TIE never
+gates completion; time/interrupt models bumped to 2 (old checkpoints
+forensic by the 0028 gate). 50/50 + Python 73 owner-gated. **Next: P03
+(slice 66, unified advance machine).** This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1033,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 65 (P01+P02, 2026-10-04): **timers + interrupts rebuilt**.
+  16-bit units, W1C, separate INTC/DMAC domains, DMAC 0/1/2 routing,
+  models at v2. Owner-checked
+  (`docs/decisions/0029-p01-p02-timers-interrupts.md`).
 - Slice 64 (P00, 2026-10-04): **checkpoint baseline done**.
   GT4CPT2 + provenance + per-domain refusal; old files forensic;
   restore bypasses guest-write path. Owner-checked

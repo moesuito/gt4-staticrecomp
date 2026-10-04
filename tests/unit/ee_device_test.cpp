@@ -99,13 +99,15 @@ int main() {
               "a restore keeps an armed start bit verbatim without firing");
     }
 
-    // The timer unit forwards its bank.
+    // The timer unit forwards its bank, masked to the logical widths: a
+    // guest MODE write carries control plus W1C acknowledge, so 0x782
+    // (with the EQUF bit set) stores control 0x382 and clears no flag.
     {
         TimerUnit timer;
         timer.write_register(TimerUnit::window_base + TimerUnit::count_offset,
                              4, 0x11111111);
         timer.write_register(TimerUnit::window_base + TimerUnit::mode_offset,
-                             4, 0x782);
+                             4, 0x382);
         timer.write_register(TimerUnit::window_base + TimerUnit::compare_offset,
                              4, 0x7D573500);
         const BankRegisters saved = timer.registers_snapshot();
@@ -113,14 +115,98 @@ int main() {
         restored.restore_registers(saved);
         check(restored.register_value(TimerUnit::window_base
                                           + TimerUnit::count_offset)
-                      == 0x11111111u
+                      == 0x1111u
                   && restored.register_value(TimerUnit::window_base
                                                  + TimerUnit::mode_offset)
-                         == 0x782u
+                         == 0x382u
                   && restored.register_value(TimerUnit::window_base
                                                  + TimerUnit::compare_offset)
-                         == 0x7D573500u,
-              "the timer registers restore");
+                         == 0x3500u,
+              "the timer registers restore masked to 16 bits");
+    }
+
+    // The INTC unit: W1C status, toggling mask, internal occurrence and
+    // enable paths, and a side-effect-free restore.
+    {
+        IntcUnit intc;
+        GuestMemory memory(0x1000F000u, 0x100u);
+        intc.map_into(memory);
+        check(memory.read_word(0x1000F000u) == 0
+                  && memory.read_word(0x1000F010u) == 0,
+              "untouched INTC status and mask read as zero");
+        intc.set_pending_internal(2);
+        intc.set_pending_internal(5);
+        intc.enable_internal(2);
+        check(memory.read_word(0x1000F000u) == 0x24u
+                  && intc.is_pending(2) && intc.is_pending(5)
+                  && !intc.is_pending(3) && intc.mask_allows(2)
+                  && !intc.mask_allows(5),
+              "internal occurrence and enable set status and mask bits");
+        memory.write_word(0x1000F000u, 1u << 2);  // acknowledge cause 2
+        check(memory.read_word(0x1000F000u) == 0x20u
+                  && !intc.is_pending(2) && intc.is_pending(5),
+              "acknowledging one cause leaves the other pending");
+        memory.write_word(0x1000F000u, 0);  // a zero write preserves
+        check(memory.read_word(0x1000F000u) == 0x20u,
+              "a zero status write preserves pending causes");
+        memory.write_word(0x1000F010u, 1u << 5);  // toggle mask bit 5 on
+        check(intc.mask_allows(5), "a mask write toggles the bit on");
+        memory.write_word(0x1000F010u, 1u << 5);  // toggle it back off
+        check(!intc.mask_allows(5), "a mask write toggles the bit off");
+        memory.write_word(0x1000F010u, 1u << 2);  // toggle bit 2 off
+        check(!intc.mask_allows(2) && intc.is_pending(5),
+              "toggling the mask never touches pending status");
+        const BankRegisters saved = intc.registers_snapshot();
+        IntcUnit restored;
+        restored.restore_registers(saved);
+        check(restored.register_value(0x1000F000u) == 0x20u
+                  && restored.register_value(0x1000F010u) == 0,
+              "the INTC state restores verbatim");
+        // Restoring an armed status/mask pair runs no guest path: the bits
+        // land as stored, with no acknowledge and no toggle.
+        const BankRegisters armed = {{0x1000F000u, 0xFFFFFFFFu},
+                                     {0x1000F010u, 0x0000FFFFu}};
+        IntcUnit armed_unit;
+        armed_unit.restore_registers(armed);
+        check(armed_unit.register_value(0x1000F000u) == 0xFFFFFFFFu
+                  && armed_unit.register_value(0x1000F010u) == 0xFFFFu,
+              "an INTC restore keeps armed bits without guest effects");
+    }
+
+    // The DMAC status unit: W1C completion status, toggling mask, internal
+    // completion and enable paths, and a side-effect-free restore.
+    {
+        DmacStatusUnit dmac;
+        GuestMemory memory(0x1000E000u, 0x100u);
+        dmac.map_into(memory);
+        check(memory.read_word(0x1000E010u) == 0,
+              "untouched DMAC status reads as zero");
+        dmac.set_completion_internal(2);
+        dmac.set_completion_internal(5);
+        dmac.enable_internal(5);
+        check(memory.read_word(0x1000E010u) == 0x00200024u
+                  && dmac.completion_pending(2) && dmac.completion_pending(5)
+                  && dmac.mask_allows(5) && !dmac.mask_allows(2),
+              "internal completions and enables set CIS and CIM bits");
+        memory.write_word(0x1000E010u, 1u << 2);  // acknowledge channel 2
+        check(memory.read_word(0x1000E010u) == 0x00200020u
+                  && !dmac.completion_pending(2)
+                  && dmac.completion_pending(5),
+              "acknowledging one channel leaves the other pending");
+        memory.write_word(0x1000E010u, 0);  // a zero write preserves
+        check(memory.read_word(0x1000E010u) == 0x00200020u,
+              "a zero status write preserves pending completions");
+        memory.write_word(0x1000E010u, 2u << 16);  // toggle CIM bit 1 on
+        check(dmac.mask_allows(1), "a mask write toggles the CIM bit on");
+        memory.write_word(0x1000E010u, 2u << 16);  // toggle it back off
+        check(!dmac.mask_allows(1)
+                  && dmac.completion_pending(5),
+              "toggling the mask never touches completion status");
+        const BankRegisters saved = dmac.registers_snapshot();
+        DmacStatusUnit restored;
+        restored.restore_registers(saved);
+        check(restored.register_value(0x1000E010u) == 0x00200020u,
+              "the DMAC state restores verbatim");
     }
 
     // The bank section codec round-trips an ordered bank list and rejects

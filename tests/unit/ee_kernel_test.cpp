@@ -419,28 +419,101 @@ int main() {
     }
 
     // The idle source advances an enabled timer by one frame of its clock
-    // and raises its compare interrupt.
+    // and raises its compare interrupt through the INTC contract: the
+    // occurrence sets INTC_STAT even before dispatch, and the mask (set by
+    // EnableIntc, the privileged path to the same bit the guest toggles)
+    // allows the delivery.
     {
         Kernel kernel;
         GuestState state = make_state();
         ServiceTable services;
         kernel.register_services(services);
-        RegisterBank timers(0x10000000u, 0x2000u);
-        timers.map_into(state.memory());
+        TimerUnit timer;
+        timer.map_into(state.memory());
+        kernel.set_timer_unit(&timer);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        state.memory().write_word(0x10001000u, 0);       // COUNT
+        state.memory().write_word(0x10001020u, 0x2000u);  // COMP inside one frame
         state.memory().write_word(0x10001010u, 0x00000182u);  // CLKS=2, CUE, CMPE
         state.write_gpr32(4, 11);  // INTC_TIM2
         state.write_gpr32(5, 0x00100400u);
         state.write_gpr32(6, 0xFFFFFFFFu);
         state.write_gpr32(7, 0);
         kernel.add_intc_handler(state);
+        state.write_gpr32(4, 11);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled
+                  && intc.mask_allows(11),
+              "EnableIntc sets the cause's mask bit");
         const std::uint32_t interrupted_pc = 0x00100020u;
         state.set_pc(interrupted_pc);
         check(kernel.deliver_idle_interrupt(state),
               "the timer interrupt starts");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 11
-                  && state.memory().read_word(0x10001000u) == 9600u
-                  && (state.memory().read_word(0x10001010u) & 0x400u) != 0,
-              "the timer advanced one frame and set the compare flag");
+                  && state.memory().read_word(0x10001000u) == 0x2580u
+                  && (state.memory().read_word(0x10001010u) & 0x400u) != 0
+                  && (intc.register_value(0x1000F000u) & (1u << 11)) != 0,
+              "the timer advanced one frame with EQUF and INTC_STAT set");
+    }
+
+    // A masked cause stays pending without dispatch: enabling later
+    // delivers what is still pending.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        kernel.raise_interrupt(7);
+        check(kernel.pending_interrupts() == 1 && intc.is_pending(7),
+              "an occurrence without a handler stays in the status");
+        check(!kernel.start_interrupt(state)
+                  && kernel.pending_interrupts() == 1 && intc.is_pending(7),
+              "no handler means no dispatch, and the pending survives");
+        state.write_gpr32(4, 7);
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0);
+        kernel.add_intc_handler(state);
+        check(!kernel.start_interrupt(state)
+                  && kernel.pending_interrupts() == 1,
+              "a registered handler behind a closed mask still waits");
+        state.write_gpr32(4, 7);
+        kernel.enable_intc(state);
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u
+                  && state.read_gpr32(4) == 7,
+              "enabling later delivers the still-pending occurrence");
+    }
+
+    // The CP0 gate: with EIE cleared the CPU cannot take the interrupt, so
+    // the eligible occurrence waits; reopening the gate delivers it.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        state.write_gpr32(4, 7);
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0);
+        kernel.add_intc_handler(state);
+        state.write_gpr32(4, 7);
+        kernel.enable_intc(state);
+        kernel.raise_interrupt(7);
+        state.set_pc(0x00100020u);
+        state.write_cp0(12, state.read_cp0(12) & ~Kernel::cp0_status_eie);
+        check(!kernel.start_interrupt(state)
+                  && kernel.pending_interrupts() == 1,
+              "a closed CP0 gate holds the pending occurrence");
+        state.write_cp0(12, state.read_cp0(12) | Kernel::cp0_status_eie);
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u,
+              "reopening the gate delivers the held occurrence");
     }
 
     // The idle interrupt source: when no thread can run, the model raises a
@@ -452,19 +525,23 @@ int main() {
         GuestState state = make_state();
         ServiceTable services;
         kernel.register_services(services);
-        RegisterBank intc(0x1000F000u, 0x100u);
+        IntcUnit intc;
         intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
         state.write_gpr32(4, 2);  // the VBlank cause
         state.write_gpr32(5, 0x00100400u);
         state.write_gpr32(6, 0xFFFFFFFFu);
         state.write_gpr32(7, 0);
         kernel.add_intc_handler(state);
+        state.write_gpr32(4, 2);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled,
+              "the VBlank mask opens through EnableIntc");
         const std::uint32_t interrupted_pc = 0x00100020u;
         state.set_pc(interrupted_pc);
         check(kernel.deliver_idle_interrupt(state),
               "the idle source starts the VBlank handler");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 2
-                  && (state.memory().read_word(0x1000F000u) & 4u) != 0,
+                  && (intc.register_value(0x1000F000u) & 4u) != 0,
               "the VBlank frame carries the cause and the status bit");
         const ServiceHandler* return_handler =
             services.find(Kernel::patch_return_service);
@@ -644,6 +721,114 @@ int main() {
               "RemoveDmacHandler removes the registration");
     }
 
+    // Enable/disable are the privileged setters of the same mask bits the
+    // guest toggles by writing INTC_MASK/D_STAT: enabling sets, disabling
+    // clears, and out-of-range causes fail instead of touching state.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        DmacStatusUnit dmac;
+        dmac.map_into(state.memory());
+        kernel.set_dmac_unit(&dmac);
+        state.write_gpr32(4, 11);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled
+                  && intc.mask_allows(11),
+              "EnableIntc sets the cause's mask bit");
+        // The guest toggle contract is separate: toggling the enabled bit
+        // clears it again without involving the syscall.
+        state.memory().write_word(0x1000F010u, 1u << 11);
+        check(!intc.mask_allows(11),
+              "a guest mask write toggles the enabled bit off");
+        state.write_gpr32(4, 11);
+        check(kernel.disable_intc(state) == ServiceOutcome::Handled
+                  && !intc.mask_allows(11),
+              "DisableIntc clears the cause's mask bit");
+        state.write_gpr32(4, 40);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu,
+              "enabling an out-of-range cause fails");
+        state.write_gpr32(4, 5);
+        check(kernel.enable_dmac(state) == ServiceOutcome::Handled
+                  && dmac.mask_allows(5),
+              "EnableDmac sets the channel's mask bit");
+        state.memory().write_word(0x1000E010u, 0x20u << 16);
+        check(!dmac.mask_allows(5),
+              "a guest D_STAT write toggles the channel mask off");
+        state.write_gpr32(4, 5);
+        check(kernel.disable_dmac(state) == ServiceOutcome::Handled
+                  && !dmac.mask_allows(5),
+              "DisableDmac clears the channel's mask bit");
+        state.write_gpr32(4, 40);
+        check(kernel.enable_dmac(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu,
+              "enabling an out-of-range channel fails");
+    }
+
+    // A DMAC completion lives in its own domain: channel 2 sets CIS bit 2
+    // and dispatches the channel's handlers, while INTC cause 9 (Timer0)
+    // stays untouched.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        DmacStatusUnit dmac;
+        dmac.map_into(state.memory());
+        kernel.set_dmac_unit(&dmac);
+        state.write_gpr32(4, 2);  // DMAC channel 2 (GIF)
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0);
+        kernel.add_dmac_handler(state);
+        state.write_gpr32(4, 2);
+        kernel.enable_dmac(state);
+        kernel.raise_dmac_completion(2);
+        check(kernel.pending_interrupts() == 1
+                  && dmac.completion_pending(2)
+                  && !intc.is_pending(9),
+              "a GIF completion pends CIS 2 without touching Timer0");
+        kernel.raise_dmac_completion(2);
+        check(kernel.pending_interrupts() == 1,
+              "a repeated completion coalesces onto the pending one");
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u
+                  && state.read_gpr32(4) == 2
+                  && dmac.completion_pending(2),
+              "the channel completion dispatches its handlers");
+    }
+
+    // Dispatch order: repeats coalesce in place, so distinct causes keep
+    // their relative order instead of the repeat moving to the back.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        for (const std::uint32_t cause : {2u, 4u}) {
+            state.write_gpr32(4, cause);
+            state.write_gpr32(5, 0x00100400u + cause * 0x10u);
+            state.write_gpr32(7, 0);
+            kernel.add_intc_handler(state);
+            state.write_gpr32(4, cause);
+            kernel.enable_intc(state);
+        }
+        kernel.raise_interrupt(2);
+        kernel.raise_interrupt(4);
+        kernel.raise_interrupt(2);  // repeat: must not move behind 4
+        state.set_pc(0x00100020u);
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100420u,
+              "a repeated cause keeps its queue position");
+    }
+
     // The SIF layer: the register round trip, the model IOP's SIFCMD init
     // handshake and the injected DMA interrupt that delivers its reply.
     {
@@ -655,8 +840,9 @@ int main() {
         sif_registers.map_into(state.memory());
         RegisterBank sif0(0x1000C000u, 0x100u);
         sif0.map_into(state.memory());
-        RegisterBank dmac(0x1000E000u, 0x100u);
+        DmacStatusUnit dmac;
         dmac.map_into(state.memory());
+        kernel.set_dmac_unit(&dmac);
 
         check(kernel.sif_set_d_chain(state) == ServiceOutcome::Handled
                   && sif0.register_value(0x1000C000u) == 0x184u,
@@ -718,13 +904,18 @@ int main() {
         state.write_gpr32(6, 0xFFFFFFFFu);
         state.write_gpr32(7, 0);
         kernel.add_dmac_handler(state);
+        // The SIF0 completion needs its mask open before it can dispatch.
+        state.write_gpr32(4, 5);
+        check(kernel.enable_dmac(state) == ServiceOutcome::Handled
+                  && dmac.mask_allows(5),
+              "the SIF0 mask opens through EnableDmac");
         const std::uint32_t interrupted_pc = 0x00100020u;
         state.set_pc(interrupted_pc);
         check(kernel.start_interrupt(state), "the pending interrupt starts");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 5
                   && state.read_gpr32(31) == Kernel::patch_return_stub_physical
                   && (state.read_cp0(12) & 0x10000u) == 0
-                  && (dmac.register_value(0x1000E010u) & (1u << 5)) != 0,
+                  && dmac.completion_pending(5),
               "the first handler frame has the channel, the stub, EIE clear "
               "and the DMAC status bit");
         const ServiceHandler* return_handler =
@@ -833,8 +1024,8 @@ int main() {
                   && state.memory().read_word(ee_buffer + 16) == 1
                   && state.memory().read_word(ee_buffer + 20) == 1,
               "the model IOP mirrored SET_SREG(1, 1) back");
-        check(kernel.pending_interrupts() == pending_before + 1,
-              "the SET_SREG reply queued its SIF0 interrupt");
+        check(kernel.pending_interrupts() == pending_before,
+              "a repeat SIF0 completion coalesces onto the pending one");
 
         // The liblgdev device sync answers the completed status word
         // 0x010B2400, the value the game's check at 0x005608BC accepts.
@@ -854,15 +1045,23 @@ int main() {
         GuestState state = make_state();
         TimerUnit timer;
         timer.map_into(state.memory());
+        kernel.set_timer_unit(&timer);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
         constexpr std::uint32_t timer2 =
             TimerUnit::window_base + 2 * TimerUnit::timer_stride;
         state.memory().write_word(timer2 + TimerUnit::count_offset, 0);
         state.memory().write_word(timer2 + TimerUnit::compare_offset, 576);  // one millisecond
         state.memory().write_word(timer2 + TimerUnit::mode_offset,
                                   0x00000180u | 2u);  // CUE | CMPE, CLKS = BUSCLK/256
+        state.write_gpr32(4, 11);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled,
+              "the timer mask opens through EnableIntc");
         kernel.advance_service_time(state);
         check(state.memory().read_word(timer2 + TimerUnit::count_offset) == 576
-                  && kernel.pending_interrupts() == 1,
+                  && kernel.pending_interrupts() == 1
+                  && intc.is_pending(11),
               "one handled service advances a millisecond and fires the compare");
         kernel.advance_service_time(state);
         check(kernel.pending_interrupts() == 1,
@@ -873,6 +1072,9 @@ int main() {
         state.write_gpr32(5, 0x005B1234);
         check(kernel.add_intc_handler(state) == ServiceOutcome::Handled,
               "the VBlank handler registers");
+        state.write_gpr32(4, 2);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled,
+              "the VBlank mask opens through EnableIntc");
         for (int index = 0; index < 14; ++index) {
             kernel.advance_service_time(state);
         }
@@ -881,6 +1083,40 @@ int main() {
         kernel.advance_service_time(state);
         check(kernel.pending_interrupts() == 2,
               "the frame's VBlank joins the queue");
+    }
+
+    // The 16-bit wrap through the service clock: 0xFFF0 plus one
+    // millisecond at CLKS = BUSCLK/256 (576 ticks) lands on 0x0230 with the
+    // overflow edge, while a compare behind the start never fires.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        TimerUnit timer;
+        timer.map_into(state.memory());
+        kernel.set_timer_unit(&timer);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        constexpr std::uint32_t timer2 =
+            TimerUnit::window_base + 2 * TimerUnit::timer_stride;
+        state.memory().write_word(timer2 + TimerUnit::count_offset, 0xFFF0u);
+        state.memory().write_word(timer2 + TimerUnit::compare_offset, 0x5000u);
+        state.memory().write_word(timer2 + TimerUnit::mode_offset,
+                                  0x00000382u);  // CUE | CMPE | OVFE, CLKS = 2
+        state.write_gpr32(4, 11);
+        check(kernel.enable_intc(state) == ServiceOutcome::Handled,
+              "the wrap test mask opens through EnableIntc");
+        kernel.advance_service_time(state);
+        check(state.memory().read_word(timer2 + TimerUnit::count_offset)
+                      == 0x0230u
+                  && (state.memory().read_word(timer2 + TimerUnit::mode_offset)
+                          & 0x800u)
+                         != 0
+                  && (state.memory().read_word(timer2 + TimerUnit::mode_offset)
+                          & 0x400u)
+                         == 0
+                  && kernel.pending_interrupts() == 1 && intc.is_pending(11),
+              "0xFFF0 + 576 wraps to 0x0230 with OVFF and no EQUF");
     }
 
     // Coalescing (decision 0025): a cause that is already pending stays

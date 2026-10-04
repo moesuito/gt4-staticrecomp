@@ -135,15 +135,230 @@ void DmaChannel::write_register(std::uint32_t address, std::size_t width,
     if (address == base_ + chcr_offset && width == 4
         && (value & start_bit) != 0) {
         // The model has no transfer engine: a started transfer completes at
-        // once. The start bit clears so polling code sees it finish; the
-        // transfer interrupt, when enabled, reports the channel's cause.
+        // once. The start bit clears so polling code sees it finish, and the
+        // completion is always reported as the channel's DMAC cause. TIE is
+        // stored but never gates the report (see the header): it shapes tag
+        // termination, which the P06 chain engine will own.
         bank_.write_register(address, width, value & ~start_bit);
-        if ((value & interrupt_enable) != 0) {
-            raise_(cause_);
-        }
+        raise_(cause_);
         return;
     }
     bank_.write_register(address, width, value);
+}
+
+void IntcUnit::map_into(GuestMemory& memory) {
+    memory.map_mmio(
+        window_base, window_size,
+        [this](std::uint32_t address, std::size_t width) {
+            return read_register(address, width);
+        },
+        [this](std::uint32_t address, std::size_t width, std::uint32_t value) {
+            write_register(address, width, value);
+        });
+}
+
+std::uint32_t IntcUnit::register_value(std::uint32_t address) const {
+    if (address == window_base + stat_offset) {
+        return stat_;
+    }
+    if (address == window_base + mask_offset) {
+        return mask_;
+    }
+    const auto found = rest_.find(address);
+    return found == rest_.end() ? 0 : found->second;
+}
+
+std::uint32_t IntcUnit::read_register(std::uint32_t address,
+                                      std::size_t width) const {
+    if (width != 4) {
+        throw std::runtime_error(access_text("read", address, width));
+    }
+    return register_value(address);
+}
+
+void IntcUnit::write_register(std::uint32_t address, std::size_t width,
+                              std::uint32_t value) {
+    if (width != 4) {
+        throw std::runtime_error(access_text("write", address, width));
+    }
+    if (address == window_base + stat_offset) {
+        // Write-1-to-clear: acknowledging one cause leaves the others.
+        stat_ &= ~value;
+        return;
+    }
+    if (address == window_base + mask_offset) {
+        // The mask register toggles the named low 16 bits.
+        mask_ ^= (value & mask_write_bits);
+        return;
+    }
+    rest_[address] = value;
+}
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>>
+IntcUnit::registers_snapshot() const {
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> out;
+    out.emplace_back(window_base + stat_offset, stat_);
+    out.emplace_back(window_base + mask_offset, mask_);
+    for (const auto& entry : rest_) {
+        out.emplace_back(entry);
+    }
+    return out;
+}
+
+void IntcUnit::restore_registers(
+    std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
+    // Straight into storage, never through write_register: a restore must
+    // not acknowledge flags nor toggle masks.
+    stat_ = 0;
+    mask_ = 0;
+    rest_.clear();
+    for (const auto& [address, value] : entries) {
+        if (address == window_base + stat_offset) {
+            stat_ = value;
+        } else if (address == window_base + mask_offset) {
+            mask_ = value;
+        } else {
+            rest_[address] = value;
+        }
+    }
+}
+
+void IntcUnit::set_pending_internal(std::uint32_t cause) {
+    if (cause < 32) {
+        stat_ |= (1u << cause);
+    }
+}
+
+void IntcUnit::enable_internal(std::uint32_t cause) {
+    if (cause < 32) {
+        mask_ |= (1u << cause);
+    }
+}
+
+void IntcUnit::disable_internal(std::uint32_t cause) {
+    if (cause < 32) {
+        mask_ &= ~(1u << cause);
+    }
+}
+
+bool IntcUnit::is_pending(std::uint32_t cause) const noexcept {
+    return cause < 32 && (stat_ & (1u << cause)) != 0;
+}
+
+bool IntcUnit::mask_allows(std::uint32_t cause) const noexcept {
+    return cause < 32 && (mask_ & (1u << cause)) != 0;
+}
+
+std::uint32_t IntcUnit::base() const noexcept {
+    return window_base;
+}
+
+std::uint32_t IntcUnit::size() const noexcept {
+    return window_size;
+}
+
+void DmacStatusUnit::map_into(GuestMemory& memory) {
+    memory.map_mmio(
+        window_base, window_size,
+        [this](std::uint32_t address, std::size_t width) {
+            return read_register(address, width);
+        },
+        [this](std::uint32_t address, std::size_t width, std::uint32_t value) {
+            write_register(address, width, value);
+        });
+}
+
+std::uint32_t DmacStatusUnit::register_value(std::uint32_t address) const {
+    if (address == window_base + stat_offset) {
+        return (completion_mask_ << 16) | completion_status_;
+    }
+    const auto found = rest_.find(address);
+    return found == rest_.end() ? 0 : found->second;
+}
+
+std::uint32_t DmacStatusUnit::read_register(std::uint32_t address,
+                                            std::size_t width) const {
+    if (width != 4) {
+        throw std::runtime_error(access_text("read", address, width));
+    }
+    return register_value(address);
+}
+
+void DmacStatusUnit::write_register(std::uint32_t address, std::size_t width,
+                                    std::uint32_t value) {
+    if (width != 4) {
+        throw std::runtime_error(access_text("write", address, width));
+    }
+    if (address == window_base + stat_offset) {
+        // Low half W1C (acknowledge completions one by one), high half
+        // toggle (mask bits flip where the value names 1).
+        completion_status_ &= ~(value & status_bits);
+        completion_mask_ ^= (value >> 16) & status_bits;
+        return;
+    }
+    rest_[address] = value;
+}
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>>
+DmacStatusUnit::registers_snapshot() const {
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> out;
+    out.emplace_back(window_base + stat_offset,
+                     (completion_mask_ << 16) | completion_status_);
+    for (const auto& entry : rest_) {
+        out.emplace_back(entry);
+    }
+    return out;
+}
+
+void DmacStatusUnit::restore_registers(
+    std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
+    // Straight into storage, never through write_register: a restore must
+    // not acknowledge completions nor toggle masks.
+    completion_status_ = 0;
+    completion_mask_ = 0;
+    rest_.clear();
+    for (const auto& [address, value] : entries) {
+        if (address == window_base + stat_offset) {
+            completion_status_ = value & status_bits;
+            completion_mask_ = (value >> 16) & status_bits;
+        } else {
+            rest_[address] = value;
+        }
+    }
+}
+
+void DmacStatusUnit::set_completion_internal(std::uint32_t channel) {
+    if (channel < 16) {
+        completion_status_ |= (1u << channel);
+    }
+}
+
+void DmacStatusUnit::enable_internal(std::uint32_t channel) {
+    if (channel < 16) {
+        completion_mask_ |= (1u << channel);
+    }
+}
+
+void DmacStatusUnit::disable_internal(std::uint32_t channel) {
+    if (channel < 16) {
+        completion_mask_ &= ~(1u << channel);
+    }
+}
+
+bool DmacStatusUnit::completion_pending(std::uint32_t channel) const noexcept {
+    return channel < 16 && (completion_status_ & (1u << channel)) != 0;
+}
+
+bool DmacStatusUnit::mask_allows(std::uint32_t channel) const noexcept {
+    return channel < 16 && (completion_mask_ & (1u << channel)) != 0;
+}
+
+std::uint32_t DmacStatusUnit::base() const noexcept {
+    return window_base;
+}
+
+std::uint32_t DmacStatusUnit::size() const noexcept {
+    return window_size;
 }
 
 } // namespace gt4recomp::ee

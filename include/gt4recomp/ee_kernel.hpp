@@ -8,8 +8,10 @@
 // preemption: a thread runs until it blocks, or until a service makes a
 // strictly higher-priority thread ready.
 
+#include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_services.hpp"
 #include "gt4recomp/ee_state.hpp"
+#include "gt4recomp/ee_timer.hpp"
 
 #include <array>
 #include <cstdint>
@@ -43,8 +45,8 @@ enum ThreadWaitType : std::uint32_t {
 };
 
 // One registered interrupt or DMA handler. The model records the
-// registration so removal and re-registration behave; no interrupt is ever
-// delivered (documented in docs/decisions/0007-timer-registers.md).
+// registration so removal and re-registration behave; delivery follows the
+// pending/mask/CP0-gate contract of the dispatch path.
 struct KernelInterruptHandler {
     std::uint32_t id = 0;
     std::uint32_t cause = 0;
@@ -161,10 +163,24 @@ public:
     // true while the handler context is live. False when none is pending.
     [[nodiscard]] bool start_interrupt(GuestState& state);
 
-    // A device (a DMA channel, a timer) reports a completion: the INTC
-    // cause joins the pending queue and the driver delivers it at the next
-    // unit boundary.
+    // A device reports an occurrence: an INTC cause joins the pending state
+    // and the dispatch queue. Pending exists whether or not a handler is
+    // registered and whether or not the mask allows delivery; the dispatch
+    // step decides about handlers later.
     void raise_interrupt(std::uint32_t cause);
+
+    // A DMA channel reports a completion: the channel's CIS bit is set and
+    // the completion joins the dispatch queue. Like raise_interrupt, this
+    // records the occurrence even with no handler registered.
+    void raise_dmac_completion(std::uint32_t channel);
+
+    // The device units behind the MMIO windows. The boot wires them after
+    // construction; until then the kernel keeps the P00-era degraded
+    // behavior (queue without status bits, dispatch without mask checks),
+    // which unit tests must not rely on for contract coverage.
+    void set_timer_unit(TimerUnit* timer) noexcept;
+    void set_intc_unit(IntcUnit* intc) noexcept;
+    void set_dmac_unit(DmacStatusUnit* dmac) noexcept;
 
     // The idle-time interrupt source: when no thread can run, the model
     // advances the enabled EE timers by one frame (queueing their compare
@@ -271,8 +287,10 @@ public:
     // The IOP image path named by the last reset command, empty when none.
     [[nodiscard]] const std::string& sif_iop_image() const noexcept;
     // Interrupt and DMA handler registrations (0x10-0x17 and the negative
-    // i* aliases). The model stores them; enable/disable are accepted with
-    // no effect because no interrupt is delivered.
+    // i* aliases). Add/Remove store the registration. Enable/Disable set or
+    // clear the cause's mask bit in the wired unit (the privileged path to
+    // the same mask the guest toggles by writing INTC_MASK/D_STAT); without
+    // a wired unit they are accepted with no effect.
     ServiceOutcome add_intc_handler(GuestState& state);     // 0x10
     ServiceOutcome remove_intc_handler(GuestState& state);  // 0x11
     ServiceOutcome add_dmac_handler(GuestState& state);     // 0x12
@@ -324,12 +342,13 @@ public:
     // poke showed the boot's delays maturing just past the old 200,000.
     static constexpr std::uint32_t idle_interrupt_budget = 2000000;
     // The EE timers: four register blocks at 0x10000000 + index * 0x800,
-    // COUNT at +0x00, MODE at +0x10, COMP at +0x20. The model stores what
-    // the guest writes (TimerUnit) and advances an enabled timer's count in
-    // two ways: at each idle frame it jumps one frame of the timer's clock
-    // source (the idle shortcut), and at each handled service it adds one
-    // service slice (decision 0016). Both raise the compare interrupt
-    // (INTC causes 9/10/11/12 for T0/T1/T2/T3) per the timer's mode.
+    // COUNT at +0x00, MODE at +0x10, COMP at +0x20. COUNT and COMP are
+    // 16-bit logical counters (see TimerUnit); the MODE bits below name the
+    // enables and the edge-triggered flags. The model advances an enabled
+    // timer's count in two ways: at each idle frame it adds one frame of
+    // the timer's clock source (the idle shortcut), and at each handled
+    // service it adds one service slice (decision 0016). Both report the
+    // timer's INTC cause (9/10/11/12 for T0/T1/T2/T3) on a flag edge.
     static constexpr std::uint32_t timer_window_physical = 0x10000000;
     static constexpr std::uint32_t timer_stride = 0x800;
     static constexpr std::uint32_t timer_count_offset = 0x00;
@@ -340,6 +359,15 @@ public:
     static constexpr std::uint32_t timer_overflow_enable = 0x00000200;  // OVFE
     static constexpr std::uint32_t timer_compare_flag = 0x00000400;  // EQUF
     static constexpr std::uint32_t timer_overflow_flag = 0x00000800;  // OVFF
+    // The CP0 Status bits gating interrupt delivery (PS2tek EE COP0
+    // Exception Handling): IE, EIE, EXL, ERL for the master gate, INT0 for
+    // the INTC path and INT1 for the DMAC path.
+    static constexpr std::uint32_t cp0_status_ie = 0x00000001;
+    static constexpr std::uint32_t cp0_status_exl = 0x00000002;
+    static constexpr std::uint32_t cp0_status_erl = 0x00000004;
+    static constexpr std::uint32_t cp0_status_int0 = 0x00000400;
+    static constexpr std::uint32_t cp0_status_int1 = 0x00000800;
+    static constexpr std::uint32_t cp0_status_eie = 0x00010000;
     // BUSCLK ticks per frame and per service slice: the slice is one
     // millisecond, the unit the game's delay library schedules in (its timer
     // nodes' base values are BUSCLK ticks of elapsed time; slice 14's
@@ -423,10 +451,17 @@ private:
     // service runs.
     void ensure_sif_ready(GuestState& state);
     // Appends a pending interrupt cause; the driver delivers it through
-    // start_interrupt at the next unit boundary.
+    // start_interrupt at the next unit boundary. Repeats coalesce in place
+    // (a queued cause stays where it is, like the hardware status bit the
+    // handler reads and clears), so distinct causes keep their relative
+    // order. The occurrence also sets the cause's status bit in the wired
+    // INTC unit, whether or not a handler is registered.
     void queue_interrupt(std::uint32_t cause);
     // Appends a pending DMAC channel completion; the channel's registered
-    // handlers run with the channel's status bit set.
+    // handlers run when the completion is dispatched. Repeats coalesce in
+    // place like INTC causes (one status bit per channel), and the
+    // occurrence sets the channel's CIS bit in the wired DMAC unit whether
+    // or not a handler is registered.
     void queue_dmac_completion(std::uint32_t channel);
     // Saves the live context on the deferred stack and installs the first
     // handler's frame; shared by the queued and idle interrupt sources. The
@@ -435,8 +470,7 @@ private:
                           std::vector<std::uint32_t> handlers);
     // Advances the enabled EE timers by one idle frame and queues their
     // compare interrupts (see the constants above).
-    void advance_timers(GuestState& state);
-    // Writes one SET_SREG pump packet and queues its DMAC completion the
+    void advance_timers(GuestState& state);    // Writes one SET_SREG pump packet and queues its DMAC completion the
     // first time an idle tick finds the pump handler registered, the
     // queue empty, and the game's dispatch entry populated (decision
     // 0026). Pure function of kernel and guest state, so both engines
@@ -543,6 +577,22 @@ private:
     std::vector<InterruptRequest> interrupt_queue_;
     std::vector<KernelInterruptHandler> interrupt_handlers_;  // INTC causes
     std::vector<KernelInterruptHandler> dmac_handlers_;       // DMA channels
+    // The device units behind the MMIO windows, wired by the boot after
+    // construction (null until then). The timer owns counting and flags;
+    // the INTC unit owns STAT/MASK; the DMAC unit owns CIS/CIM. The kernel
+    // never writes their guest paths to change pending state: occurrences
+    // use the internal setters, acknowledges belong to the guest.
+    TimerUnit* timer_unit_ = nullptr;
+    IntcUnit* intc_unit_ = nullptr;
+    DmacStatusUnit* dmac_unit_ = nullptr;
+    // True when the CP0 master gate and the path's interrupt line allow
+    // the CPU to take an interrupt now (PS2tek Status contract).
+    [[nodiscard]] static bool cpu_gate_allows(const GuestState& state,
+                                              bool is_dmac) noexcept;
+    // True when the cause's mask bit allows dispatch. Without a wired
+    // unit the check passes (the P00-era degraded behavior).
+    [[nodiscard]] bool intc_mask_allows(std::uint32_t cause) const noexcept;
+    [[nodiscard]] bool dmac_mask_allows(std::uint32_t channel) const noexcept;
     std::uint32_t next_dma_id_ = 1;
     bool sif_ready_ = false;
     // The EE's SIFCMD receive buffer, learned from the init handshake; the

@@ -304,10 +304,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **execute PLAN.md P01+P02 (slice 65)**:
-  timer registers + interrupt pending/mask/dispatch. Order adapts only
-  on new evidence, with cause recorded. Tripwires armed; M35's promoter
-  watched. The
+- Next: **execute PLAN.md P03 (slice 66)**:
+  unified timer advance machine (remainders, big jumps, reprogram).
+  Order adapts only on new evidence, with cause recorded. Tripwires
+  armed; M35's promoter watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

@@ -55,17 +55,20 @@ constexpr std::uint64_t default_step_limit = 200'000'000;
 // DMAC and SIF0 channel control, the SIF register block, the GS register
 // block (a memory region), and the GIF/VIF0/VIF1 register and FIFO windows.
 // The VIF0/VIF1/GIF DMA channels complete a started transfer at once (the
-// model has no transfer engine) and report the channel's interrupt cause;
-// the other windows are plain storage (decisions 0007/0008 and 0010/0011).
+// model has no transfer engine) and report the channel's DMAC completion
+// (channels 0/1/2); the other windows are plain storage (decisions 0007/0008
+// and 0010/0029). INTC causes 4/5 are VIF command events and INTC 9 is
+// Timer0: none of them is a DMA completion, so a GIF completion never
+// touches Timer0.
 struct BootDevices {
-    explicit BootDevices(std::function<void(std::uint32_t)> raise)
-        : vif0_dma(0x10008000u, 0x1000u, 4, raise),
-          vif1_dma(0x10009000u, 0x1000u, 5, raise),
-          gif_dma(0x1000A000u, 0x1000u, 9, raise) {
+    explicit BootDevices(std::function<void(std::uint32_t)> raise_dmac)
+        : vif0_dma(0x10008000u, 0x1000u, 0, raise_dmac),
+          vif1_dma(0x10009000u, 0x1000u, 1, raise_dmac),
+          gif_dma(0x1000A000u, 0x1000u, 2, raise_dmac) {
     }
 
     TimerUnit timer;
-    RegisterBank dmac{0x1000E000u, 0x100u};
+    DmacStatusUnit dmac;
     RegisterBank sif0{0x1000C000u, 0x100u};
     RegisterBank sif_registers{0x1000F200u, 0x100u};
     RegisterBank gif{0x10003000u, 0x800u};
@@ -81,8 +84,18 @@ struct BootDevices {
     DmaChannel gif_dma;
     RegisterBank ipu_port{0x1000B000u, 0x1000u};
     RegisterBank spr_dma{0x1000D000u, 0x1000u};
-    RegisterBank intc{0x1000F000u, 0x100u};
+    IntcUnit intc;
     RegisterBank sio{0x1000F100u, 0x100u};
+
+    // Hands the kernel the units behind the MMIO windows so occurrences
+    // set status bits, enables reach the masks, and the tick advances move
+    // the typed counters. Both engines wire identically, so the
+    // differential stays exact.
+    void wire_kernel(Kernel& kernel) {
+        kernel.set_timer_unit(&timer);
+        kernel.set_intc_unit(&intc);
+        kernel.set_dmac_unit(&dmac);
+    }
 
     void map_into(GuestMemory& memory) {
         timer.map_into(memory);
@@ -923,9 +936,10 @@ int wmain(int argc, wchar_t* argv[]) {
             relink_disc(resumed_kernel);
             ServiceTable resumed_services = make_boot_services(resumed_kernel);
             BootDevices resumed_devices(
-                [&resumed_kernel](std::uint32_t cause) {
-                    resumed_kernel.raise_interrupt(cause);
+                [&resumed_kernel](std::uint32_t channel) {
+                    resumed_kernel.raise_dmac_completion(channel);
                 });
+            resumed_devices.wire_kernel(resumed_kernel);
             GuestState resumed_state = make_boot_state(image, resumed_devices);
             {
                 const Snapshot snapshot =
@@ -947,9 +961,10 @@ int wmain(int argc, wchar_t* argv[]) {
             relink_disc(direct_kernel);
             ServiceTable direct_services = make_boot_services(direct_kernel);
             BootDevices direct_devices(
-                [&direct_kernel](std::uint32_t cause) {
-                    direct_kernel.raise_interrupt(cause);
+                [&direct_kernel](std::uint32_t channel) {
+                    direct_kernel.raise_dmac_completion(channel);
                 });
+            direct_devices.wire_kernel(direct_kernel);
             GuestState direct_state = make_boot_state(image, direct_devices);
             RunOptions direct_options;
             wire_options(direct_kernel, direct_options, total_services,
@@ -993,9 +1008,10 @@ int wmain(int argc, wchar_t* argv[]) {
             driver_kernel.set_disc_sectors(disc_sectors.get());
         }
         ServiceTable services = make_boot_services(driver_kernel);
-        BootDevices driver_devices([&driver_kernel](std::uint32_t cause) {
-            driver_kernel.raise_interrupt(cause);
+        BootDevices driver_devices([&driver_kernel](std::uint32_t channel) {
+            driver_kernel.raise_dmac_completion(channel);
         });
+        driver_devices.wire_kernel(driver_kernel);
         auto driver_state = make_boot_state(image, driver_devices);
         // Resuming rebuilds everything identically, then applies the
         // snapshot over it: registers, RAM bytes, kernel state and device
@@ -1221,9 +1237,10 @@ int wmain(int argc, wchar_t* argv[]) {
                 reference_kernel.set_disc_sectors(disc_sectors.get());
             }
             ServiceTable reference_services = make_boot_services(reference_kernel);
-            BootDevices reference_devices([&reference_kernel](std::uint32_t cause) {
-                reference_kernel.raise_interrupt(cause);
+            BootDevices reference_devices([&reference_kernel](std::uint32_t channel) {
+                reference_kernel.raise_dmac_completion(channel);
             });
+            reference_devices.wire_kernel(reference_kernel);
             auto reference_state = make_boot_state(image, reference_devices);
             // A resumed run sits N services in: the reference must run the
             // same total from the entry.

@@ -1016,25 +1016,95 @@ ServiceOutcome Kernel::remove_dmac_handler(GuestState& state) {
 }
 
 ServiceOutcome Kernel::enable_intc(GuestState& state) {
-    // The registration is the observable part; no interrupt is delivered,
-    // so enabling and disabling are accepted with no effect.
+    // EnableIntc(cause): the privileged path to the cause's INTC mask bit.
+    // The guest can also toggle the same bit by writing INTC_MASK; both
+    // writers share the unit's mask, each with its own contract.
+    const std::uint32_t cause = state.read_gpr32(4);
+    if (cause >= 32) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    if (intc_unit_ != nullptr) {
+        intc_unit_->enable_internal(cause);
+    }
     state.write_gpr64(2, 0);
     return ServiceOutcome::Handled;
 }
 
 ServiceOutcome Kernel::disable_intc(GuestState& state) {
+    const std::uint32_t cause = state.read_gpr32(4);
+    if (cause >= 32) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    if (intc_unit_ != nullptr) {
+        intc_unit_->disable_internal(cause);
+    }
     state.write_gpr64(2, 0);
     return ServiceOutcome::Handled;
 }
 
 ServiceOutcome Kernel::enable_dmac(GuestState& state) {
+    // EnableDmac(channel): the privileged path to the channel's CIM bit.
+    const std::uint32_t channel = state.read_gpr32(4);
+    if (channel >= 16) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    if (dmac_unit_ != nullptr) {
+        dmac_unit_->enable_internal(channel);
+    }
     state.write_gpr64(2, 0);
     return ServiceOutcome::Handled;
 }
 
 ServiceOutcome Kernel::disable_dmac(GuestState& state) {
+    const std::uint32_t channel = state.read_gpr32(4);
+    if (channel >= 16) {
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    if (dmac_unit_ != nullptr) {
+        dmac_unit_->disable_internal(channel);
+    }
     state.write_gpr64(2, 0);
     return ServiceOutcome::Handled;
+}
+
+void Kernel::set_timer_unit(TimerUnit* timer) noexcept {
+    timer_unit_ = timer;
+}
+
+void Kernel::set_intc_unit(IntcUnit* intc) noexcept {
+    intc_unit_ = intc;
+}
+
+void Kernel::set_dmac_unit(DmacStatusUnit* dmac) noexcept {
+    dmac_unit_ = dmac;
+}
+
+bool Kernel::cpu_gate_allows(const GuestState& state,
+                             bool is_dmac) noexcept {
+    const std::uint32_t status = state.read_cp0(12);
+    if ((status & cp0_status_ie) == 0 || (status & cp0_status_eie) == 0
+        || (status & cp0_status_exl) != 0 || (status & cp0_status_erl) != 0) {
+        return false;
+    }
+    return (status & (is_dmac ? cp0_status_int1 : cp0_status_int0)) != 0;
+}
+
+bool Kernel::intc_mask_allows(std::uint32_t cause) const noexcept {
+    if (intc_unit_ == nullptr) {
+        return true;
+    }
+    return intc_unit_->mask_allows(cause);
+}
+
+bool Kernel::dmac_mask_allows(std::uint32_t channel) const noexcept {
+    if (dmac_unit_ == nullptr) {
+        return true;
+    }
+    return dmac_unit_->mask_allows(channel);
 }
 
 std::uint32_t Kernel::pending_interrupts() const noexcept {
@@ -1071,20 +1141,25 @@ void Kernel::ensure_sif_ready(GuestState& state) {
 }
 
 void Kernel::queue_interrupt(std::uint32_t cause) {
-    // Coalescing (decision 0025): a cause that is already pending stays a
-    // single entry, like the hardware status bit the handler reads and
-    // clears. Queue entries carry no payload (handlers read live state),
-    // so a second instance adds nothing but backlog: without this, one
-    // VBlank per idle call grows the queue without bound (463k observed)
-    // and buries every other cause behind stale frames.
-    for (auto entry = interrupt_queue_.begin();
-         entry != interrupt_queue_.end();) {
-        if (entry->kind == InterruptRequest::Kind::Intc
-            && entry->number == cause) {
-            entry = interrupt_queue_.erase(entry);
-        } else {
-            ++entry;
+    // Coalescing in place (decisions 0025/0029): a cause that is already
+    // pending keeps its queue position, like the hardware status bit the
+    // handler reads and clears. Queue entries carry no payload (handlers
+    // read live state), so a second instance adds nothing but backlog:
+    // without this, one VBlank per idle call grows the queue without bound
+    // (463k observed) and buries every other cause behind stale frames.
+    // Keeping the position (instead of erase-and-push) preserves the
+    // relative order of distinct causes.
+    for (const InterruptRequest& entry : interrupt_queue_) {
+        if (entry.kind == InterruptRequest::Kind::Intc
+            && entry.number == cause) {
+            if (intc_unit_ != nullptr) {
+                intc_unit_->set_pending_internal(cause);
+            }
+            return;
         }
+    }
+    if (intc_unit_ != nullptr) {
+        intc_unit_->set_pending_internal(cause);
     }
     InterruptRequest request;
     request.kind = InterruptRequest::Kind::Intc;
@@ -1093,6 +1168,20 @@ void Kernel::queue_interrupt(std::uint32_t cause) {
 }
 
 void Kernel::queue_dmac_completion(std::uint32_t channel) {
+    // One status bit per channel (D_STAT CIS): a completion that is
+    // already pending stays a single entry in place, like the INTC path.
+    for (const InterruptRequest& entry : interrupt_queue_) {
+        if (entry.kind == InterruptRequest::Kind::Dmac
+            && entry.number == channel) {
+            if (dmac_unit_ != nullptr) {
+                dmac_unit_->set_completion_internal(channel);
+            }
+            return;
+        }
+    }
+    if (dmac_unit_ != nullptr) {
+        dmac_unit_->set_completion_internal(channel);
+    }
     InterruptRequest request;
     request.kind = InterruptRequest::Kind::Dmac;
     request.number = channel;
@@ -1157,6 +1246,10 @@ void Kernel::raise_interrupt(std::uint32_t cause) {
     queue_interrupt(cause);
 }
 
+void Kernel::raise_dmac_completion(std::uint32_t channel) {
+    queue_dmac_completion(channel);
+}
+
 bool Kernel::start_interrupt(GuestState& state) {
     if (handler_active()) {
         // A handler is still running. The model does not nest injections:
@@ -1167,47 +1260,43 @@ bool Kernel::start_interrupt(GuestState& state) {
     if (interrupt_queue_.empty()) {
         return false;
     }
+    // Peek, never pop, until the cause proves eligible. An occurrence
+    // without a registered handler, with a closed mask, or behind a closed
+    // CP0 gate stays queued with its status bit set: pending exists before
+    // delivery, and enabling later delivers what is still pending.
     const InterruptRequest request = interrupt_queue_.front();
-    interrupt_queue_.erase(interrupt_queue_.begin());
+    const bool is_dmac = request.kind == InterruptRequest::Kind::Dmac;
     std::vector<std::uint32_t> handlers;
-    if (request.kind == InterruptRequest::Kind::Dmac) {
+    if (is_dmac) {
         for (const KernelInterruptHandler& registration : dmac_handlers_) {
             if (registration.cause == request.number) {
                 handlers.push_back(registration.handler);
             }
         }
-        if (handlers.empty()) {
-            // No handler registered for the channel: like the hardware, the
-            // completion happens and nothing is called.
-            return false;
-        }
-        // The DMAC status register carries one bit per channel; the handler
-        // reads it to tell the sources apart and clears it by writing back.
-        if (request.number < 32
-            && state.memory().contains(dmac_stat_physical, 4)) {
-            state.memory().write_word(
-                dmac_stat_physical,
-                state.memory().read_word(dmac_stat_physical)
-                    | (1u << request.number));
-        }
-        return inject_interrupt(state, request.number, std::move(handlers));
-    }
-    for (const KernelInterruptHandler& registration : interrupt_handlers_) {
-        if (registration.cause == request.number) {
-            handlers.push_back(registration.handler);
+    } else {
+        for (const KernelInterruptHandler& registration : interrupt_handlers_) {
+            if (registration.cause == request.number) {
+                handlers.push_back(registration.handler);
+            }
         }
     }
     if (handlers.empty()) {
-        // No handler registered for the cause: like the hardware, nothing
-        // happens; the interrupt is dropped and the model records nothing.
+        // No handler registered for the cause: the occurrence stays
+        // represented in the status bit and the queue; nothing is called.
         return false;
     }
-    // The INTC status register holds the pending cause bits.
-    if (request.number < 32 && state.memory().contains(intc_stat_physical, 4)) {
-        state.memory().write_word(
-            intc_stat_physical,
-            state.memory().read_word(intc_stat_physical) | (1u << request.number));
+    if (is_dmac ? !dmac_mask_allows(request.number)
+                : !intc_mask_allows(request.number)) {
+        // Masked out: pending is conserved, dispatch is refused.
+        return false;
     }
+    if (!cpu_gate_allows(state, is_dmac)) {
+        // The CPU cannot take interrupts now: pending is conserved.
+        return false;
+    }
+    // Eligible: the status bits were set when the occurrence was queued
+    // (never here through a guest path), so pop and inject.
+    interrupt_queue_.erase(interrupt_queue_.begin());
     return inject_interrupt(state, request.number, std::move(handlers));
 }
 
@@ -1240,7 +1329,14 @@ bool Kernel::deliver_idle_interrupt(GuestState& state) {
 
 void Kernel::advance_timers(GuestState& state) {
     // One frame of the timer's clock source: BUSCLK, BUSCLK/16, BUSCLK/256
-    // and the horizontal blank rate (NTSC) for CLKS values 0-3.
+    // and the horizontal blank rate (NTSC) for CLKS values 0-3. The quantum
+    // stays the P03-owned approximation; what changes here is the counting:
+    // the TimerUnit moves 16-bit COUNT/COMP with wrap, edge-triggered EQUF
+    // and OVFF, and combined compare-plus-overflow in one advance.
+    (void)state;
+    if (timer_unit_ == nullptr) {
+        return;
+    }
     static constexpr std::uint32_t frame_clocks[4] = {
         2457600u,  // 147456000 / 60
         153600u,   // 147456000 / 16 / 60
@@ -1249,28 +1345,15 @@ void Kernel::advance_timers(GuestState& state) {
     };
     for (std::uint32_t index = 0; index < 4; ++index) {
         const std::uint32_t base = timer_window_physical + index * timer_stride;
-        if (!state.memory().contains(base + timer_mode_offset, 4)) {
-            continue;  // the timer window is not mapped
-        }
-        std::uint32_t mode = state.memory().read_word(base + timer_mode_offset);
+        const std::uint32_t mode =
+            timer_unit_->register_value(base + timer_mode_offset);
         if ((mode & timer_count_enable) == 0) {
             continue;  // not counting
         }
-        const std::uint32_t count = state.memory().read_word(base + timer_count_offset);
         const std::uint32_t step = frame_clocks[mode & 3u];
-        const std::uint64_t next = static_cast<std::uint64_t>(count) + step;
-        state.memory().write_word(base + timer_count_offset,
-                                  static_cast<std::uint32_t>(next));
-        // The model fires one compare per idle frame (no cycle-accurate
-        // clock); the compare flag tells the handler a period elapsed.
-        mode |= timer_compare_flag;
-        bool fires = (mode & timer_compare_enable) != 0;
-        if (next > 0xFFFFFFFFull) {
-            mode |= timer_overflow_flag;
-            fires = fires || (mode & timer_overflow_enable) != 0;
-        }
-        state.memory().write_word(base + timer_mode_offset, mode);
-        if (fires) {
+        const TimerUnit::TimerAdvance advanced =
+            timer_unit_->add_ticks(index, step);
+        if (advanced.compare_edge || advanced.overflow_edge) {
             queue_interrupt(9u + index);
         }
     }
@@ -1288,12 +1371,11 @@ void Kernel::advance_service_time(GuestState& state) {
     static constexpr std::uint32_t clock_divisors[4] = {1u, 16u, 256u, 9372u};
     for (std::uint32_t index = 0; index < 4; ++index) {
         const std::uint32_t base = timer_window_physical + index * timer_stride;
-        if (!state.memory().contains(base + timer_count_offset, 4)
-            || !state.memory().contains(base + timer_mode_offset, 4)
-            || !state.memory().contains(base + timer_compare_offset, 4)) {
-            continue;  // the timer window is not mapped
+        if (timer_unit_ == nullptr) {
+            continue;
         }
-        std::uint32_t mode = state.memory().read_word(base + timer_mode_offset);
+        const std::uint32_t mode =
+            timer_unit_->register_value(base + timer_mode_offset);
         if ((mode & timer_count_enable) == 0) {
             continue;  // not counting
         }
@@ -1304,25 +1386,13 @@ void Kernel::advance_service_time(GuestState& state) {
         if (step == 0) {
             continue;
         }
-        const std::uint32_t count = state.memory().read_word(base + timer_count_offset);
-        const std::uint64_t next = static_cast<std::uint64_t>(count) + step;
-        state.memory().write_word(base + timer_count_offset,
-                                  static_cast<std::uint32_t>(next));
-        // The compare flag is set when the counter crosses the compare
-        // value, like the hardware, so a handler that reprograms COMP keeps
-        // its period; a compare value already behind the counter does not
-        // fire again.
-        const std::uint32_t compare = state.memory().read_word(base + timer_compare_offset);
-        bool fires = false;
-        if (next > 0xFFFFFFFFull) {
-            mode |= timer_overflow_flag;
-            fires = (mode & timer_overflow_enable) != 0;
-        } else if (next >= compare && count < compare) {
-            mode |= timer_compare_flag;
-            fires = (mode & timer_compare_enable) != 0;
-        }
-        state.memory().write_word(base + timer_mode_offset, mode);
-        if (fires) {
+        // The TimerUnit moves the 16-bit counter with wrap and sets EQUF
+        // only on a real crossing of COMP (a compare already behind the
+        // counter waits for the next wrap) and OVFF only on a real wrap;
+        // both edges in one advance are reported together.
+        const TimerUnit::TimerAdvance advanced =
+            timer_unit_->add_ticks(index, step);
+        if (advanced.compare_edge || advanced.overflow_edge) {
             queue_interrupt(9u + index);
         }
     }

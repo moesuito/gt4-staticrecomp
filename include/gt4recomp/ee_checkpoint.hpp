@@ -88,15 +88,18 @@ using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 //                while a merely editorial change (a new commit, a comment)
 //                keeps the same versions and stays loadable.
 struct ModelCompatibility {
-    std::uint32_t time_model = 1;         // the service clock and timer advance
-    std::uint32_t interrupt_model = 1;    // occurrence, pending, mask, dispatch
+    std::uint32_t time_model = 2;         // the service clock and timer advance
+    std::uint32_t interrupt_model = 2;    // occurrence, pending, mask, dispatch
     std::uint32_t rpc_model = 1;          // SIF/RPC replies and backing stores
     std::uint32_t translation_model = 1;  // decoder and AOT emitter semantics
 };
 
 // The semantics this binary implements. Every domain starts at 1 (the P00
 // baseline); a slice that changes a domain's state-affecting behavior bumps
-// exactly that domain and documents it in the slice's evidence.
+// exactly that domain and documents it in the slice's evidence. Slice 65
+// (P01+P02, decision 0029) bumped time to 2 (16-bit COUNT/COMP with wrap
+// and edge-triggered flags) and interrupt to 2 (pending independent of
+// handlers, owned masks, CP0 gating, in-place coalescing, DMAC routing).
 [[nodiscard]] constexpr ModelCompatibility current_model_compatibility() noexcept {
     return ModelCompatibility{};
 }
