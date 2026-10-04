@@ -304,11 +304,11 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **slice 87, 41h re-read + live shopping list**:
-  adjudicate E2 (wake value) from the ROM worker, finalize the exact
-  live experiment (breaks/reads per stage). Order adapts only on new
-  evidence, with cause recorded. Tripwires armed; M35's promoter
-  watched. The
+- Next: **await owner direction on the live session**:
+  E2 closed, live list final (S0 calibration first). Without live,
+  H1/H2′ and F stay as documented; parallel tracks (M33 assets,
+  lessons, STATUS compaction) available. Tripwires armed; M35's
+  promoter watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

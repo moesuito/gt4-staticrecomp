@@ -1,15 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 86 (P10 with F banked on paper —
-DRAFT kept, nothing shipped): the retry-re-resolve step is contradicted
-game-side (both wrappers retry to the queue-op with the cached handle,
-never re-resolve — owner-verified shape at 0x00578500), the -1 error
-clause is contested inside our own record, and the invoker is still
-missing after wider scans. Decision 0038 stays DRAFT; delete_sema
-refusal intact. 53/53 + Python 73 owner-gated. Next: slice 87 (41h
-re-read for E2 + live shopping list). Open question for owner:
-interactive PCSX2 session yes/no/later. This is the
-This is the
+Updated 2026-10-04 after slice 87 (E2 adjudicated on the ROM worker —
+delete-wake delivers NO -1, waiter resumes with park v0=-2 intact; final
+minimal live shopping list specified, no live run): DRAFT 0038 stays DRAFT
+(E1 contradicted game-side, E3 unmet and load-bearing — no invoker; E2 now
+adjudicated against the -1 clause, acceptance needs the no-error reword).
+Delete_sema refusal intact. 53/53 + Python 73 owner-gated. Next: an
+interactive PCSX2 session per the slice-87 list (S0 calibration first),
+or owner direction. Open question for owner: interactive PCSX2 session
+yes/no/later. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1062,6 +1061,9 @@ proceeds. Details live in the linked evidence documents.
   + corrections + missing pieces). 53/53 + Python 73
   (`docs/reverse-engineering/slice86-p10-traffic.md`,
   `docs/decisions/0038-f-first-event-mechanism-draft.md`).
+- Slice 87 (E2/live-list, 2026-10-04): **wake is -2, no -1**.
+  ROM worker re-read; live list final, no live run. Owner-checked
+  (`docs/reverse-engineering/slice87-e2-livelist.md`).
 - Slice 86 (paper, 2026-10-04): **F blocked x3, DRAFT kept**.
   Retry never re-resolves (owner-verified); -1 contested; invoker
   missing. Nothing shipped. Owner-checked
