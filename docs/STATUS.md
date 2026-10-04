@@ -1,11 +1,10 @@
 # Project status
 
-Updated 2026-10-04 after slice 61 (M0/M1 notes) — scaffolding
-taught from listings (3 libs, identity + smoke tests, suite
-wiring, conventions; M1 absence declared). Curriculum FULLY
-LESSONED at 22 entries. Next is slice 62: tripwire re-check
-(frontier census live + full gates), the first recurring
-verification. This is the
+Updated 2026-10-04 after slice 62 (tripwire re-check 01) — SAME:
+17 threads thread-for-thread, packet fired once to no effect,
+50/50 + Python 73 owner-gated. **Work STOPPED here by owner
+order for external review: no further slices dispatched.**
+Tree green and clean at the commit below. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1031,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 62 (re-check 01, 2026-10-04): **SAME, STOP**.
+  Census identical, packet once to no effect, 50/50 + 73
+  owner-gated. No further slices per owner order
+  (`docs/reverse-engineering/tripwire-recheck-01.md`).
 - Slice 61 (notes, 2026-10-04): **M0/M1 scaffolding
   written**. Libs, identity + smoke, suite wiring, conventions;
   M1 absence declared. Owner-checked
