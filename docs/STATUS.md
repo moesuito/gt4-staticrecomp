@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 41 (sixth lesson) — the
-handshakes + service-clock arc is now a worked explanation (own
-constants, register mirror + liblgdev sync, 1ms BUSCLK clock both
-engines share, 1M services at a clean boundary; 0026 reuse
-explicit). Owner checked refs + voice. Next is slice 42: the
-disc/file arc lesson (slices 16–18 + decisions 0017/0018). This
-is the first document to read in a new session; it is kept current
-as work proceeds. Details live in the linked evidence documents.
+Updated 2026-10-04 after slice 42 (seventh lesson) — the
+disc/file arc is now a worked explanation (real sizes from the
+pinned image, two file layers + movie phase, lazy validated
+GT4.VOL reader with the record limit stated; later
+PCDV/dual-layer/PRTS resolutions explicit). Owner checked refs +
+voice. Next is slice 43: the long-boot arc lesson (slices 43–47
++ decisions 0019/0020/0021). This is the
+first document to read in a new session; it is kept current as work
+proceeds. Details live in the linked evidence documents.
 
 ## Where we are
 
@@ -1030,6 +1031,10 @@ as work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 42 (lesson, 2026-10-04): **disc/file arc
+  written**. Real sizes, two layers + movie phase, lazy GT4.VOL
+  reader with stated limit. Owner-checked
+  (`docs/lessons/m30-disc-file.md`).
 - Slice 41 (lesson, 2026-10-04): **handshakes + service
   clock written**. Own constants, mirror + sync, shared 1ms clock,
   1M clean boundary; 0026 reuse explicit. Owner-checked
@@ -1388,8 +1393,8 @@ as work proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 42)**. Six lessons committed and owner-checked; next
-  the disc/file arc (slices 16–18 + decisions 0017/0018).
+  (slice 43)**. Seven lessons committed and owner-checked; next
+  the long-boot arc (slices 43–47 + decisions 0019/0020/0021).
   Tripwires armed; M35's promoter watched; and the curriculum's
   remaining units (a counting timer with interrupt delivery and
   the jump-table dispatch) stay listed in `docs/requirements.md`.
