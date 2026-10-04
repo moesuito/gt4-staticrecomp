@@ -304,10 +304,11 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **slice 83, draft-0037 discriminants (D2/D4/D6)**:
-  publisher caller, delete-with-waiters semantics, live-boot legs.
-  Order adapts only on new evidence, with cause recorded. Tripwires
-  armed; M35's promoter watched. The
+- Next: **slice 84, H1/H2 tiebreak attempt**:
+  waiter fate in the reference (delete-wakes-with-error vs
+  never-parked), discriminants armed in slice 80. Order adapts only
+  on new evidence, with cause recorded. Tripwires armed; M35's promoter
+  watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

@@ -1,14 +1,12 @@
 # Project status
 
-Updated 2026-10-04 after slice 82 (walker hunt, D5 closed) — the
-walker is 0x005BC4C8 (arg-less, self-fed from immediates, not
-BSS/arg/stack): one early-boot pass walks 370 BUILD wrappers
-descending (table2[59..0] incl. BUILD #27, then table1[309..0]) behind
-a one-shot guard with a single startup caller; the 5M census shows
-every target exactly once, TEARDOWN zero, flag spent — the BUILD
-trigger already fired and cannot re-fire here. 53/53 + Python 73.
-Next: slice 83 per owner order (D2/D4 live-boot or reference legs).
-This is the
+Updated 2026-10-04 after slice 83 (D2/D4/D6) — publisher never called
+(zero referrers, live leg confirms), delete-with-waiters gap named
+(real BIOS deletes+frees, model refuses; no behavior change), live
+reference legs shopped but not bought. Publisher body shape
+owner-verified. 53/53 + Python 73 owner-gated. Open: H1/H2, D2 list,
+F-candidate revival condition. Next: slice 84, H1/H2 tiebreak attempt
+(waiter fate in reference). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1053,16 +1051,9 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
-- Slice 82 (walker hunt, 2026-10-04): **D5 closed, BUILD trigger
-  named**. One 370-word run (-1 gate + 310 table1 + 60 table2, all
-  a0=1 BUILD wrappers); walker self-fed from immediates (BSS/arg/stack
-  corrected); one-shot guard + single startup caller; 5M census once
-  each, TEARDOWN zero, flag spent — re-fire impossible on this horizon
-  (`docs/reverse-engineering/slice82-walker-hunt.md`).
-- Slice 82 (walker, 2026-10-04): **D5 closed, BUILD spent**.
-  Walker 0x005BC4C8 + one-shot guard, 370 BUILDs once, TEARDOWN zero.
-  Shapes owner-verified. Owner-checked
-  (`docs/reverse-engineering/slice82-walker-hunt.md`).
+- Slice 83 (D2/D4/D6, 2026-10-04): **publisher silent, gap named**.
+  Zero callers live+static; delete-gap without behavior change.
+  Owner-checked (`docs/reverse-engineering/slice83-discriminants.md`).
 - Slice 82 (walker, 2026-10-04): **D5 closed, BUILD spent**.
   Walker 0x005BC4C8 + one-shot guard, 370 BUILDs once, TEARDOWN zero.
   Shapes owner-verified. Owner-checked
