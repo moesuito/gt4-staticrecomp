@@ -304,8 +304,8 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **execute PLAN.md P04 (slice 67)**:
-  handler arguments (a1/a2) + explicit idle + dispatch on return.
+- Next: **execute PLAN.md P05 (slice 68)**:
+  JR target capture + explicit AOT exit reasons end to end.
   Order adapts only on new evidence, with cause recorded. Tripwires
   armed; M35's promoter watched. The
   curriculum's remaining units (the OSD configuration services, a

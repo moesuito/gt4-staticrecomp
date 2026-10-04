@@ -54,6 +54,15 @@ struct KernelInterruptHandler {
     std::uint32_t argument = 0;
 };
 
+// One handler call in flight: the entry point plus the argument its
+// registration carried. The pair travels as a unit from registration
+// through injection to the call frame, so two handlers for one cause
+// keep their own arguments (decision 0031).
+struct InterruptHandlerCall {
+    std::uint32_t handler = 0;
+    std::uint32_t argument = 0;
+};
+
 // One semaphore. The kernel is the only writer of count and wait_threads,
 // matching the public ee_sema_t contract.
 struct KernelSemaphore {
@@ -159,8 +168,10 @@ public:
 
     // Interrupt injection: the driver calls this at unit boundaries. It
     // saves the running context, sets up the registered handler's call
-    // frame (a0 = cause, returning through the model's stub), and returns
+    // frame (a0 = cause, a1 = the registration's argument, a2 = the
+    // interrupted pc, returning through the model's stub), and returns
     // true while the handler context is live. False when none is pending.
+    // Over idle the saved context belongs to the idle thread below.
     [[nodiscard]] bool start_interrupt(GuestState& state);
 
     // A device reports an occurrence: an INTC cause joins the pending state
@@ -188,7 +199,9 @@ public:
     // handlers are registered). The handlers may wake threads; their
     // return re-dispatches. A bounded budget of consecutive idle
     // interrupts without a runnable thread stops the model instead of
-    // spinning forever.
+    // spinning forever. The interrupted context of an idle injection is
+    // the idle thread (idle_thread_id below), never the id of whichever
+    // thread blocked last.
     [[nodiscard]] bool deliver_idle_interrupt(GuestState& state);
     // The unified advance machine both quanta share (decision 0030): the
     // caller names a BUSCLK-tick delta, every counting timer takes its
@@ -345,6 +358,15 @@ public:
     // returns through EPC; the stub is this model's equivalent.
     static constexpr std::uint32_t patch_return_stub_physical = 0x1600;
     static constexpr std::uint32_t patch_return_service = 0x100;
+    // The thread id observed when no thread runs. The EE kernel's thread
+    // 0 is always its idle thread (ps2sdk ee/kernel/include/kernel.h,
+    // MAX_THREADS comment), and the game's own ids start at 1, so 0 is
+    // unambiguous. The kernel reports it from GetThreadId while an
+    // interrupt runs over idle and records it on the in-flight call; the
+    // game's safe-wakeup wrapper compares iGetThreadId against its live
+    // target, so idle must never look like a blocked thread (decision
+    // 0031).
+    static constexpr std::uint32_t idle_thread_id = 0;
     // VBlank delivery: the cause the idle source raises (INTC status bit 2,
     // the public INTC_VBLANK_S), its status register, and the budget of
     // consecutive idle interrupts without a runnable thread.
@@ -445,7 +467,9 @@ private:
                        std::uint32_t wait_id, std::uint32_t return_value);
     // Switches to the best ready thread; false when none. Every kernel
     // switch happens inside a syscall, so the running thread is saved with
-    // pc + 4.
+    // pc + 4. A failed switch names the idle thread explicitly, so the
+    // machine never keeps a blocked thread's id as current (decision
+    // 0031); the return path and GetThreadId read the same sentinel.
     bool dispatch(GuestState& state);
     // Dispatches when a ready thread strictly outranks the running one.
     bool preempt_if_outranked(GuestState& state);
@@ -480,9 +504,10 @@ private:
     void queue_dmac_completion(std::uint32_t channel);
     // Saves the live context on the deferred stack and installs the first
     // handler's frame; shared by the queued and idle interrupt sources. The
-    // handler chain runs each registered handler for the cause in turn.
+    // handler chain runs each registered handler for the cause in turn,
+    // each with the argument its own registration carried.
     bool inject_interrupt(GuestState& state, std::uint32_t cause,
-                          std::vector<std::uint32_t> handlers);
+                          std::vector<InterruptHandlerCall> calls);
     // Advances the enabled EE timers by one idle frame through the unified
     // machine above (one frame of BUSCLK ticks).
     void advance_timers(GuestState& state);
@@ -492,9 +517,10 @@ private:
     // 0026). Pure function of kernel and guest state, so both engines
     // inject at the same boundary.
     void maybe_send_originating_packet(GuestState& state);
-    // Installs one handler call frame over the saved interrupted context.
+    // Installs one handler call frame over the saved interrupted context:
+    // (a0, a1, a2) = (cause, registration argument, interrupted pc).
     void install_handler_frame(GuestState& state, std::uint32_t cause,
-                               std::uint32_t handler,
+                               const InterruptHandlerCall& call,
                                const RegisterContext& interrupted);
     // Byte copy inside the guest memory, used by the synchronous SIF DMA.
     void copy_guest_bytes(GuestState& state, std::uint32_t source,
@@ -571,11 +597,15 @@ private:
         Kind kind = Kind::Patch;
         std::uint32_t resume_pc = 0;
         std::uint32_t caller_ra = 0;
-        std::uint32_t thread_id = 0;  // the interrupted thread (interrupts)
+        // The interrupted thread (interrupts), or idle_thread_id when the
+        // injection found no running thread. The return path dispatches
+        // from the idle sentinel instead of restoring a waiter as RUN.
+        std::uint32_t thread_id = 0;
         std::uint32_t cause = 0;      // the interrupt cause (interrupts)
-        // The registered handlers for the cause, in registration order; the
-        // kernel calls them all, one after the next.
-        std::vector<std::uint32_t> handlers;
+        // The registered handler calls for the cause, in registration
+        // order; the kernel calls them all, one after the next, each
+        // framed with its own argument.
+        std::vector<InterruptHandlerCall> handlers;
         std::size_t next_handler = 0;
         RegisterContext context;
     };

@@ -1,10 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 66 (P03, PLAN.md order) — one advance
-machine for both quanta (shared remainders + VBlank accumulator,
-quanta unchanged, CLKS=3 drift absorbed); time_model at 3, old files
-forensic. 50/50 + Python 73 owner-gated. **Next: P04 (slice 67,
-handler args + explicit idle).** This is the
+Updated 2026-10-04 after slice 67 (P04, PLAN.md order) — handler and
+argument travel as one pair with (cause, argument, pc) frames,
+interrupted-idle is explicit with GetThreadId 0, and the interrupt
+return dispatches over idle without restoring waiters as RUN
+(non-nesting/non-preemption kept); interrupt_model at 3, old files
+forensic. a2 verified by owner against pinned ps2sdk (BIOS handler
+takes (cause, arg, addr) and forwards addr). 50/50 + Python 73
+owner-gated, binaries freshness-checked. **Next: P05 (slice 68, JR
+and explicit AOT exit reasons).** This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1031,6 +1035,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 67 (P04, 2026-10-04): **handler args + explicit idle**.
+  Pairs, (cause, argument, pc) frames, idle sentinel, dispatch on
+  return; interrupt_model 3. Owner-checked, a2 independently verified
+  against pinned ps2sdk (`docs/decisions/0031-p04-handler-arguments-and-idle.md`).
 - Slice 66 (P03, 2026-10-04): **one advance machine**.
   Shared remainders + accumulator, quanta unchanged, time_model 3.
   Owner-checked (`docs/decisions/0030-p03-advance-machine.md`).

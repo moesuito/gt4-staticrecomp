@@ -451,6 +451,8 @@ int main() {
         check(kernel.deliver_idle_interrupt(state),
               "the timer interrupt starts");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 11
+                  && state.read_gpr32(5) == 0
+                  && state.read_gpr32(6) == interrupted_pc
                   && state.memory().read_word(0x10001000u) == 0x2580u
                   && (state.memory().read_word(0x10001010u) & 0x400u) != 0
                   && (intc.register_value(0x1000F000u) & (1u << 11)) != 0,
@@ -541,14 +543,20 @@ int main() {
         check(kernel.deliver_idle_interrupt(state),
               "the idle source starts the VBlank handler");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 2
+                  && state.read_gpr32(5) == 0
+                  && state.read_gpr32(6) == interrupted_pc
                   && (intc.register_value(0x1000F000u) & 4u) != 0,
               "the VBlank frame carries the cause and the status bit");
         const ServiceHandler* return_handler =
             services.find(Kernel::patch_return_service);
+        // Interrupted-idle (decision 0031): with no thread underneath,
+        // the return stays idle instead of jumping back into an idle pc
+        // the driver would re-execute; the context is still restored.
         check(return_handler != nullptr
-                  && (*return_handler)(state) == ServiceOutcome::Jumped
-                  && state.pc() == interrupted_pc,
-              "the VBlank return restores the context without a thread");
+                  && (*return_handler)(state) == ServiceOutcome::NoRunnableThread
+                  && state.pc() == interrupted_pc
+                  && kernel.current_thread_id() == 0,
+              "the VBlank return stays idle with the context restored");
         bool delivered = true;
         std::uint32_t deliveries = 1;  // the one delivered above
         while (deliveries <= Kernel::idle_interrupt_budget) {
@@ -913,6 +921,8 @@ int main() {
         state.set_pc(interrupted_pc);
         check(kernel.start_interrupt(state), "the pending interrupt starts");
         check(state.pc() == 0x00100400u && state.read_gpr32(4) == 5
+                  && state.read_gpr32(5) == 0
+                  && state.read_gpr32(6) == interrupted_pc
                   && state.read_gpr32(31) == Kernel::patch_return_stub_physical
                   && (state.read_cp0(12) & 0x10000u) == 0
                   && dmac.completion_pending(5),
@@ -924,9 +934,9 @@ int main() {
                   && (*return_handler)(state) == ServiceOutcome::Jumped
                   && state.pc() == 0x00100480u,
               "the first handler return chains to the second handler");
-        check((*return_handler)(state) == ServiceOutcome::Jumped
+        check((*return_handler)(state) == ServiceOutcome::NoRunnableThread
                   && state.pc() == interrupted_pc,
-              "the last handler return restores the interrupted context");
+              "the last handler return stays idle with the context restored");
 
         // An RPC bind gets the SIFRPC end reply that unblocks the client.
         state.memory().write_word(packet + 0, 64);           // psize
@@ -1285,10 +1295,10 @@ int main() {
         check(kernel.start_interrupt(state) && state.pc() == 0x00100400u
                   && state.read_gpr32(4) == 11,
               "the first compare dispatches its handler");
-        check((*return_handler)(state) == ServiceOutcome::Jumped
+        check((*return_handler)(state) == ServiceOutcome::NoRunnableThread
                   && state.pc() == interrupted_pc
                   && kernel.pending_interrupts() == 0,
-              "the handler return restores the context");
+              "the handler return stays idle with the context restored");
         // The handler's work, as guest writes: acknowledge EQUF and move
         // COMP out to 2000. Three more services cross it during the third.
         state.memory().write_word(timer2 + TimerUnit::compare_offset, 2000);
@@ -1310,9 +1320,9 @@ int main() {
               "the reprogrammed COMP fires on arrival");
         check(kernel.start_interrupt(state) && state.pc() == 0x00100400u,
               "the second compare offers its own dispatch");
-        check((*return_handler)(state) == ServiceOutcome::Jumped
+        check((*return_handler)(state) == ServiceOutcome::NoRunnableThread
                   && state.pc() == interrupted_pc,
-              "the second return restores the context");
+              "the second return stays idle with the context restored");
     }
 
     // The guest extended-time rhythm over the unified machine: an OVFE
@@ -1401,9 +1411,9 @@ int main() {
         check(return_handler != nullptr && kernel.start_interrupt(state)
                   && state.pc() == 0x00100400u,
               "the frame's VBlank dispatches");
-        check((*return_handler)(state) == ServiceOutcome::Jumped
+        check((*return_handler)(state) == ServiceOutcome::NoRunnableThread
                   && kernel.pending_interrupts() == 0,
-              "the VBlank return drains the queue");
+              "the VBlank return stays idle and drains the queue");
         kernel.advance_busclk(state, Kernel::busclk_per_frame);
         check(kernel.pending_interrupts() == 1,
               "the next full frame offers exactly one more VBlank");
@@ -1883,7 +1893,8 @@ int main() {
               "a machine without a disc answers no volume");
     }
 
-    // A run with no runnable thread is the NoRunnableThread outcome.
+    // A run with no runnable thread is the NoRunnableThread outcome, and
+    // the machine is explicitly idle afterwards (decision 0031).
     {
         Kernel kernel;
         GuestState state = make_state();
@@ -1892,6 +1903,265 @@ int main() {
               "exiting the last thread leaves nothing to run");
         check(kernel.threads()[0].status == ThreadDormant,
               "the exited thread is dormant");
+        check(kernel.current_thread_id() == 0,
+              "the machine names the idle thread once nothing runs");
+        check(kernel.get_thread_id(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0,
+              "GetThreadId at idle names the idle thread");
+    }
+
+    // P04 (decision 0031): two handlers for one cause keep their own
+    // arguments through the chain, framed as (cause, argument, pc), and
+    // the last return restores the interrupted frame over a running
+    // thread.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        check(setup_root(kernel, state), "chained root ready");
+        state.write_gpr32(4, 7);
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0x00AAA000u);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 1,
+              "the first chained handler registers");
+        state.write_gpr32(4, 7);
+        state.write_gpr32(5, 0x00100480u);
+        state.write_gpr32(7, 0x00BBB000u);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 2,
+              "the second chained handler registers");
+        state.write_gpr32(4, 7);
+        kernel.enable_intc(state);
+        kernel.raise_interrupt(7);
+        // Distinctive live registers prove the frame sets every slot.
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        state.write_gpr32(5, 0xDEADu);
+        state.write_gpr32(6, 0xBEEFu);
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u
+                  && state.read_gpr32(4) == 7
+                  && state.read_gpr32(5) == 0x00AAA000u
+                  && state.read_gpr32(6) == interrupted_pc,
+              "the first handler keeps its own argument with the pc in a2");
+        const ServiceHandler* return_handler =
+            services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr
+                  && (*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == 0x00100480u
+                  && state.read_gpr32(4) == 7
+                  && state.read_gpr32(5) == 0x00BBB000u
+                  && state.read_gpr32(6) == interrupted_pc,
+              "the chained handler keeps its own argument too");
+        check((*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc
+                  && state.read_gpr32(5) == 0xDEADu
+                  && state.read_gpr32(6) == 0xBEEFu
+                  && kernel.current_thread_id() == 1
+                  && kernel.threads()[0].status == ThreadRun,
+              "the last return restores the frame over the running thread");
+    }
+
+    // P04 (decision 0031): the DMAC registrations carry their argument
+    // the same way, framed with the channel and the interrupted pc.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        DmacStatusUnit dmac;
+        dmac.map_into(state.memory());
+        kernel.set_dmac_unit(&dmac);
+        check(setup_root(kernel, state), "dmac-arg root ready");
+        state.write_gpr32(4, 2);  // DMAC channel 2 (GIF)
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0x00CCC000u);
+        check(kernel.add_dmac_handler(state) == ServiceOutcome::Handled,
+              "the DMAC handler registers with its argument");
+        state.write_gpr32(4, 2);
+        kernel.enable_dmac(state);
+        kernel.raise_dmac_completion(2);
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.start_interrupt(state) && state.pc() == 0x00100400u
+                  && state.read_gpr32(4) == 2
+                  && state.read_gpr32(5) == 0x00CCC000u
+                  && state.read_gpr32(6) == interrupted_pc,
+              "the DMAC frame carries channel, argument and pc");
+        const ServiceHandler* return_handler =
+            services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr
+                  && (*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc,
+              "the DMAC return restores the interrupted context");
+    }
+
+    // P04 (decision 0031): interrupted-idle. Blocking the last thread
+    // names the idle thread; GetThreadId reports it even inside the
+    // handler; a thread the handler wakes is dispatched on return, while
+    // a return that woke nothing stays idle with the frame preserved
+    // and no waiter restored as RUN.
+    {
+        const auto reach_idle = [](Kernel& kernel, GuestState& state) {
+            if (!setup_root(kernel, state)) {
+                return false;
+            }
+            if (!start_second_thread(kernel, state, 0, 0)) {
+                return false;
+            }
+            if (kernel.get_thread_id(state) != ServiceOutcome::Handled
+                || state.read_gpr32(2) != 1) {
+                return false;
+            }
+            write_sema_struct(state, 1, 0);
+            state.write_gpr32(4, sema_struct);
+            kernel.create_sema(state);  // id 3, count 0
+            state.set_pc(0x00100040u);
+            state.write_gpr32(4, 3);
+            if (kernel.wait_sema(state) != ServiceOutcome::Switched
+                || kernel.current_thread_id() != 2) {
+                return false;
+            }
+            state.set_pc(0x00100050u);
+            return kernel.sleep_thread(state)
+                == ServiceOutcome::NoRunnableThread;
+        };
+        const auto arm_cause = [](Kernel& kernel, GuestState& state) {
+            state.write_gpr32(4, 7);
+            state.write_gpr32(5, 0x00100400u);
+            state.write_gpr32(7, 0x00AAA000u);
+            if (kernel.add_intc_handler(state) != ServiceOutcome::Handled) {
+                return false;
+            }
+            state.write_gpr32(4, 7);
+            if (kernel.enable_intc(state) != ServiceOutcome::Handled) {
+                return false;
+            }
+            kernel.raise_interrupt(7);
+            return true;
+        };
+
+        // The handler wakes the worker: the return dispatches it.
+        {
+            Kernel kernel;
+            GuestState state = make_state();
+            ServiceTable services;
+            kernel.register_services(services);
+            IntcUnit intc;
+            intc.map_into(state.memory());
+            kernel.set_intc_unit(&intc);
+            check(reach_idle(kernel, state)
+                      && kernel.current_thread_id() == 0,
+                  "blocking the last thread names the idle thread");
+            check(kernel.get_thread_id(state) == ServiceOutcome::Handled
+                      && state.read_gpr32(2) == 0,
+                  "GetThreadId at idle names the idle thread");
+            check(arm_cause(kernel, state), "the idle cause is armed");
+            const std::uint32_t interrupted_pc = 0x00100060u;
+            state.set_pc(interrupted_pc);
+            check(kernel.start_interrupt(state)
+                      && state.pc() == 0x00100400u
+                      && state.read_gpr32(4) == 7
+                      && state.read_gpr32(5) == 0x00AAA000u
+                      && state.read_gpr32(6) == interrupted_pc,
+                  "the idle injection frames cause, argument and pc");
+            check(kernel.get_thread_id(state) == ServiceOutcome::Handled
+                      && state.read_gpr32(2) == 0,
+                  "GetThreadId inside the idle handler still names idle");
+            state.write_gpr32(4, 2);
+            check(kernel.wakeup_thread(state) == ServiceOutcome::Handled,
+                  "the handler wakes the worker");
+            const ServiceHandler* return_handler =
+                services.find(Kernel::patch_return_service);
+            check(return_handler != nullptr
+                      && (*return_handler)(state) == ServiceOutcome::Jumped
+                      && kernel.current_thread_id() == 2
+                      && kernel.threads()[1].status == ThreadRun
+                      && kernel.threads()[0].status == ThreadWait
+                      && state.pc() == 0x00100054u
+                      && state.read_gpr32(2) == 0,
+                  "the idle return dispatches the woken worker, not the waiter");
+        }
+
+        // Nothing woken: the return stays idle, frame preserved.
+        {
+            Kernel kernel;
+            GuestState state = make_state();
+            ServiceTable services;
+            kernel.register_services(services);
+            IntcUnit intc;
+            intc.map_into(state.memory());
+            kernel.set_intc_unit(&intc);
+            check(reach_idle(kernel, state), "the quiet machine reaches idle");
+            check(arm_cause(kernel, state), "the quiet cause is armed");
+            const std::uint32_t interrupted_pc = 0x00100060u;
+            state.set_pc(interrupted_pc);
+            check(kernel.start_interrupt(state), "the quiet handler starts");
+            const ServiceHandler* return_handler =
+                services.find(Kernel::patch_return_service);
+            check(return_handler != nullptr
+                      && (*return_handler)(state)
+                             == ServiceOutcome::NoRunnableThread
+                      && state.pc() == interrupted_pc
+                      && kernel.current_thread_id() == 0
+                      && kernel.threads()[0].status == ThreadWait
+                      && kernel.threads()[1].status == ThreadWait,
+                  "with nothing woken the machine stays idle, no WAIT as RUN");
+        }
+    }
+
+    // P04 (decision 0031): a live handler chain round-trips the snapshot
+    // with each argument, and the chain continues after the restore.
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        ServiceTable services;
+        kernel.register_services(services);
+        IntcUnit intc;
+        intc.map_into(state.memory());
+        kernel.set_intc_unit(&intc);
+        check(setup_root(kernel, state), "snapshot-chain root ready");
+        state.write_gpr32(4, 7);
+        state.write_gpr32(5, 0x00100400u);
+        state.write_gpr32(7, 0x00AAA000u);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled,
+              "the snapshot chain registers first");
+        state.write_gpr32(4, 7);
+        state.write_gpr32(5, 0x00100480u);
+        state.write_gpr32(7, 0x00BBB000u);
+        check(kernel.add_intc_handler(state) == ServiceOutcome::Handled,
+              "the snapshot chain registers second");
+        state.write_gpr32(4, 7);
+        kernel.enable_intc(state);
+        kernel.raise_interrupt(7);
+        const std::uint32_t interrupted_pc = 0x00100020u;
+        state.set_pc(interrupted_pc);
+        check(kernel.start_interrupt(state)
+                  && kernel.deferred_call_count() == 1,
+              "the chain is live before the snapshot");
+        const std::vector<std::uint8_t> blob = kernel.save_kernel_state();
+        Kernel restored;
+        restored.load_kernel_state(blob);
+        check(restored.deferred_call_count() == 1
+                  && restored.save_kernel_state() == blob,
+              "the live chain restores and re-saves identically");
+        ServiceTable restored_services;
+        restored.register_services(restored_services);
+        const ServiceHandler* return_handler =
+            restored_services.find(Kernel::patch_return_service);
+        check(return_handler != nullptr
+                  && (*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == 0x00100480u
+                  && state.read_gpr32(5) == 0x00BBB000u
+                  && state.read_gpr32(6) == interrupted_pc,
+              "the restored chain frames the second argument");
+        check((*return_handler)(state) == ServiceOutcome::Jumped
+                  && state.pc() == interrupted_pc,
+              "the restored chain ends by restoring the frame");
     }
 
     if (failures != 0) {

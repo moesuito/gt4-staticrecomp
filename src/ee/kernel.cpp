@@ -80,6 +80,12 @@ KernelThread* Kernel::pick_next_ready() noexcept {
 bool Kernel::dispatch(GuestState& state) {
     KernelThread* next = pick_next_ready();
     if (next == nullptr) {
+        // No thread can run: the machine is explicitly idle. The idle
+        // sentinel is recorded here, at the single choke point every
+        // block/exit path funnels through -- never as an isolated zeroing,
+        // because the interrupt return and GetThreadId read the same
+        // sentinel to tell idle from a blocked thread (decision 0031).
+        current_thread_id_ = idle_thread_id;
         return false;
     }
     if (KernelThread* current = current_thread();
@@ -489,7 +495,17 @@ ServiceOutcome Kernel::release_wait_thread(GuestState& state) {
 }
 
 ServiceOutcome Kernel::get_thread_id(GuestState& state) {
-    state.write_gpr64(2, current_thread_id_);
+    // Inside a handler over a running thread this names the interrupted
+    // thread, which is still current. Over idle no thread runs, so it
+    // names the idle thread: thread 0 is always the kernel's idle thread
+    // (ps2sdk ee/kernel/include/kernel.h, MAX_THREADS comment), and the
+    // game's own ids start at 1. The game's safe-wakeup wrapper compares
+    // iGetThreadId against its live target, so idle must never look like
+    // a blocked thread (decision 0031).
+    const KernelThread* current = current_thread();
+    const std::uint32_t id = (current != nullptr && current->status == ThreadRun)
+        ? current->id : idle_thread_id;
+    state.write_gpr64(2, id);
     return ServiceOutcome::Handled;
 }
 
@@ -812,7 +828,8 @@ ServiceOutcome Kernel::deferred_return(GuestState& state) {
         state.set_pc(call.resume_pc);
         return ServiceOutcome::Jumped;
     }
-    // Interrupt: every handler registered for the cause runs in turn.
+    // Interrupt: every handler registered for the cause runs in turn,
+    // each framed with its own argument (the pair travels in handlers).
     if (pending.next_handler + 1 < pending.handlers.size()) {
         ++pending.next_handler;
         install_handler_frame(state, pending.cause,
@@ -822,21 +839,37 @@ ServiceOutcome Kernel::deferred_return(GuestState& state) {
     }
     const DeferredCall call = pending;
     deferred_calls_.pop_back();
+    if (call.thread_id == idle_thread_id) {
+        // Interrupted-idle: no thread ran underneath. The handlers may
+        // have woken threads, so the scheduler chooses among the ready;
+        // when they woke nothing the machine stays idle with the
+        // interrupted frame preserved (decision 0031). This branch is
+        // only reachable because injection records idle explicitly:
+        // zeroing the current id alone would still land in the
+        // find_thread failure below by accident, with no dispatch.
+        if (dispatch(state)) {
+            return ServiceOutcome::Jumped;
+        }
+        state.restore_registers(call.context);
+        return ServiceOutcome::NoRunnableThread;
+    }
     KernelThread* interrupted = find_thread(call.thread_id);
     if (interrupted == nullptr) {
-        // No thread context to account for (tests inject without a running
-        // thread): restore the interrupted context.
+        // Its thread was deleted while the handler ran, so there is no
+        // thread context to account for: restore the interrupted context.
         state.restore_registers(call.context);
         return ServiceOutcome::Jumped;
     }
     if (interrupted->status != ThreadRun) {
-        // The interrupted thread is not running (the interrupt was injected
-        // while it waited): the handlers may have woken a thread, so the
-        // scheduler picks the best ready one. When they woke nothing, the
-        // model is still stuck and says so.
+        // The interrupted thread stopped running while the handler ran
+        // (it blocked or left): the handlers may have woken a thread, so
+        // the scheduler picks the best ready one instead of restoring a
+        // WAIT thread as RUN. When they woke nothing, the machine stays
+        // idle with the interrupted frame preserved.
         if (dispatch(state)) {
             return ServiceOutcome::Jumped;
         }
+        state.restore_registers(call.context);
         return ServiceOutcome::NoRunnableThread;
     }
     state.restore_registers(call.context);
@@ -947,9 +980,13 @@ ServiceOutcome Kernel::set_osd_config2(GuestState& state) {
 ServiceOutcome Kernel::add_intc_handler(GuestState& state) {
     const std::uint32_t cause = state.read_gpr32(4);
     const std::uint32_t handler = state.read_gpr32(5);
-    // AddIntcHandler2 passes a fourth argument; the three-argument form
-    // leaves a3 as the caller had it, which the registration copies anyway
-    // because nothing consults it without an interrupt.
+    // Both the plain and the 2-suffixed forms share this syscall number
+    // (ps2sdk syscallnr.h: __NR_AddIntcHandler2 is __NR_AddIntcHandler),
+    // so the kernel keeps the fourth register either way, exactly like
+    // the hardware register the dispatcher later reads for a1: the
+    // three-argument form simply stores whatever the caller left in a3,
+    // and only handlers prototyped with (cause, arg, addr) read it back
+    // (ps2sdk kernel.h, decision 0031).
     const std::uint32_t argument = state.read_gpr32(7);
     if (handler == 0) {
         write_error(state);
@@ -968,6 +1005,9 @@ ServiceOutcome Kernel::add_intc_handler(GuestState& state) {
 ServiceOutcome Kernel::add_dmac_handler(GuestState& state) {
     // AddDmacHandler(channel, handler, next): the channel's completions are
     // dispatched from the DMAC's own list, separate from the INTC causes.
+    // The fourth register is kept like the INTC path's: both the plain
+    // and the 2-suffixed forms share the syscall number (ps2sdk
+    // syscallnr.h), and only (channel, arg, addr) handlers read it back.
     const std::uint32_t channel = state.read_gpr32(4);
     const std::uint32_t handler = state.read_gpr32(5);
     const std::uint32_t argument = state.read_gpr32(7);
@@ -1266,21 +1306,30 @@ bool Kernel::start_interrupt(GuestState& state) {
     // delivery, and enabling later delivers what is still pending.
     const InterruptRequest request = interrupt_queue_.front();
     const bool is_dmac = request.kind == InterruptRequest::Kind::Dmac;
-    std::vector<std::uint32_t> handlers;
+    // Handler and argument travel as one unit from here on: two
+    // registrations for one cause keep their own arguments through the
+    // chain (decision 0031).
+    std::vector<InterruptHandlerCall> calls;
     if (is_dmac) {
         for (const KernelInterruptHandler& registration : dmac_handlers_) {
             if (registration.cause == request.number) {
-                handlers.push_back(registration.handler);
+                InterruptHandlerCall call;
+                call.handler = registration.handler;
+                call.argument = registration.argument;
+                calls.push_back(call);
             }
         }
     } else {
         for (const KernelInterruptHandler& registration : interrupt_handlers_) {
             if (registration.cause == request.number) {
-                handlers.push_back(registration.handler);
+                InterruptHandlerCall call;
+                call.handler = registration.handler;
+                call.argument = registration.argument;
+                calls.push_back(call);
             }
         }
     }
-    if (handlers.empty()) {
+    if (calls.empty()) {
         // No handler registered for the cause: the occurrence stays
         // represented in the status bit and the queue; nothing is called.
         return false;
@@ -1297,7 +1346,7 @@ bool Kernel::start_interrupt(GuestState& state) {
     // Eligible: the status bits were set when the occurrence was queued
     // (never here through a guest path), so pop and inject.
     interrupt_queue_.erase(interrupt_queue_.begin());
-    return inject_interrupt(state, request.number, std::move(handlers));
+    return inject_interrupt(state, request.number, std::move(calls));
 }
 
 bool Kernel::deliver_idle_interrupt(GuestState& state) {
@@ -1403,16 +1452,23 @@ void Kernel::advance_service_time(GuestState& state) {
 }
 
 bool Kernel::inject_interrupt(GuestState& state, std::uint32_t cause,
-                              std::vector<std::uint32_t> handlers) {
-    if (handlers.empty()) {
+                              std::vector<InterruptHandlerCall> calls) {
+    if (calls.empty()) {
         return false;
     }
     const RegisterContext interrupted = state.save_registers();
+    // An injection over anything but a running thread is an
+    // interrupted-idle context: record the idle thread, never the id of
+    // whichever thread blocked last (decision 0031). The same predicate
+    // answers GetThreadId, so the frame and the query agree by
+    // construction.
+    const KernelThread* current = current_thread();
     DeferredCall call;
     call.kind = DeferredCall::Kind::Interrupt;
-    call.thread_id = current_thread_id_;
+    call.thread_id = (current != nullptr && current->status == ThreadRun)
+        ? current->id : idle_thread_id;
     call.cause = cause;
-    call.handlers = std::move(handlers);
+    call.handlers = std::move(calls);
     call.next_handler = 0;
     call.context = interrupted;
     deferred_calls_.push_back(call);
@@ -1421,14 +1477,28 @@ bool Kernel::inject_interrupt(GuestState& state, std::uint32_t cause,
 }
 
 void Kernel::install_handler_frame(GuestState& state, std::uint32_t cause,
-                                   std::uint32_t handler,
+                                   const InterruptHandlerCall& call,
                                    const RegisterContext& interrupted) {
     // The handler returns through the model's stub, like a patched syscall.
     state.memory().write_word(patch_return_stub_physical, 0x24030100u);
     state.memory().write_word(patch_return_stub_physical + 4, 0x0000000Cu);
+    // The BIOS handler frame (a0, a1, a2) = (cause, argument, pc):
+    //   a0 is the INTC cause or DMAC channel;
+    //   a1 is the registration's fourth word, kept as a unit with the
+    //     handler: the 2-suffixed forms prototype their handlers as
+    //     (cause, arg, addr) with a void *arg parameter (ps2sdk
+    //     kernel.h), and both forms share the syscall number (ps2sdk
+    //     syscallnr.h), so every registration stores a3 and the
+    //     dispatcher always passes it on;
+    //   a2 is the interrupted pc: ps2sdk's own TIM2 handler forwards its
+    //     third argument into the alarm callback slot the timer header
+    //     names pc_value (timer.c TimerHandler_callback into timer.h
+    //     timer_alarm_handler_t), which only fits a pc.
     RegisterContext frame;
-    frame.pc = handler;
+    frame.pc = call.handler;
     frame.gpr[4] = cause;                          // a0 = cause
+    frame.gpr[5] = call.argument;                  // a1 = registration argument
+    frame.gpr[6] = interrupted.pc;                 // a2 = interrupted pc
     frame.gpr[28] = interrupted.gpr[28];           // gp as interrupted
     frame.gpr[29] = interrupted.gpr[29];           // sp as interrupted
     frame.gpr[31] = patch_return_stub_physical;
@@ -1808,9 +1878,12 @@ std::vector<std::uint8_t> Kernel::save_kernel_state() const {
         put_u32(out, call.caller_ra);
         put_u32(out, call.thread_id);
         put_u32(out, call.cause);
+        // Handler and argument ride as pairs (decision 0031); the
+        // interrupt_model version gates pre-change blobs before parsing.
         put_size(call.handlers.size());
-        for (const std::uint32_t handler : call.handlers) {
-            put_u32(out, handler);
+        for (const InterruptHandlerCall& handler_call : call.handlers) {
+            put_u32(out, handler_call.handler);
+            put_u32(out, handler_call.argument);
         }
         put_u64(out, static_cast<std::uint64_t>(call.next_handler));
         put_context(out, call.context);
@@ -1970,7 +2043,10 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
         call.cause = reader.take_u32();
         const std::uint32_t handler_count = reader.take_u32();
         for (std::uint32_t handler = 0; handler < handler_count; ++handler) {
-            call.handlers.push_back(reader.take_u32());
+            InterruptHandlerCall handler_call;
+            handler_call.handler = reader.take_u32();
+            handler_call.argument = reader.take_u32();
+            call.handlers.push_back(handler_call);
         }
         call.next_handler = static_cast<std::size_t>(reader.take_u64());
         call.context = reader.take_context();
