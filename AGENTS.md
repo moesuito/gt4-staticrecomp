@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50, M32 slices 1–22 + slices 29–34 (0026 live, tripwire armed, poster a confirmed fossil), M33 slices 23–28 (closed) BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50, M32 slices 1–22 + slices 29–34 (0026 live, tripwire armed, poster a confirmed fossil), M33 slices 23–28 (closed), M35 slice 35 (pad surveyed, spec deferred) BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,10 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **M35 pad groundwork (slice 35)**:
-  poster a confirmed fossil (owner forensics: names don't fix units,
-  resume posts nothing); pad is polled — the milestone road not
-  gated on waiters. The
+- Next: **the lessons backlog (slice 36)**:
+  pad deferred with promoter named (vocab owner-verified); event
+  work parked behind tripwires — write the open M9–M30 lessons,
+  delay-library arc first. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

@@ -1,14 +1,13 @@
 # Project status
 
-Updated 2026-10-03 after slice 34 (poster never posted) — a
-falsified era becomes a confirmed fossil: fresh 0→200k posts
-nothing (verified-live watch), yet ckpt-180k+ reads 181/181.
-Owner forensics: ckpt names don't fix units (180k file = 60,000
-in-file services), and resume-400+2000 posts nothing live — so the
-181 is march-era dynamics frozen in old files (consumer==producer
-ever since), not a late era, not resume artifact. Next is slice
-35: M35 pad groundwork — polled input is the one milestone road
-not gated on waiters. This is the
+Updated 2026-10-03 after slice 35 (M35 pad groundwork) —
+vocabulary mapped (IRX list, libpad2/vib, 8 controller names,
+identify-by-strcmp at `0x0043CE08` — all owner-verified), consumer
+side unreached (no pad sid, no RPC numbers; absence calibrated, not
+fudged): spec deferred with the exact promoter (first padman bind
+in `--threads`). Next is slice 36: the open lessons backlog —
+first the M30 delay-library arc — committed writing while the
+tripwire watches. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1033,6 +1032,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 35 (M35 pad, 2026-10-03): **vocabulary mapped, spec
+  deferred (justified)**. IRX list, libpad2/vib, controller names,
+  identify loop — owner re-counted/re-read. No sid/RPC/bind:
+  phase-gated, promoter = first padman bind
+  (`docs/reverse-engineering/m35-slice35-pad-groundwork.md`).
 - Slice 34 (poster surprise, 2026-10-03): **era falsified,
   fossil confirmed**. Fresh 0→200k zero posts (live watch);
   181/181 frozen in old files; resume posts nothing (owner leg);
@@ -1359,14 +1363,14 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **M35 pad groundwork
-  (slice 35)**. Poster resolved as fossil (owner forensics);
-  tripwire armed: pad is polled input — the one milestone road not
-  gated on waiters — so survey pad vocabulary/protocol and spec
-  the neutral-present model. M35 pad moves from queued to active;
-  and the curriculum's remaining units (a counting timer with
-  interrupt delivery and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **the lessons backlog
+  (slice 36)**. Event work parked behind tripwires (0026 live,
+  pad phase-gated): write the open M9–M30 lessons, first the M30
+  delay-library arc (slices 10–12 + decisions 0012/0013) from the
+  evidence docs. Then the next lesson. M35's promoter (first
+  padman bind) stays watched; and the curriculum's remaining units
+  (a counting timer with interrupt delivery and the jump-table
+  dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
