@@ -302,9 +302,10 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **curriculum units past the stall (slice 32)**:
-  tripwire armed (replay owner-proven); inventory the remaining
-  service surface, then implement the first unit. The
+- Next: **hunt the ring producer (slice 33)**:
+  surface covered (69 re-counted, stale OSD/BIOS remainder retired);
+  tripwire armed; identify thread 2's producer statically — if found,
+  it specs the next event slice. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

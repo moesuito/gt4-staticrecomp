@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-03 after slice 31 (tripwire watch) — the
-one-shot is proven across chained replay (flag 0 pre-fire / 1
-post-fire, owner-reproduced with code-exact parses; resume
-bit-identical) and the next-waiter map justifies stand-watch (no
-consumer for any pump traffic; specifying a second event now would
-be fabrication). Tripwire armed (CTest + censuses). Next is slice
-32: the curriculum units the stall doesn't block — service-surface
-inventory first, then the first unit. This is the
+Updated 2026-10-03 after slice 32 (service-surface inventory) —
+fully covered, nothing to implement: 144 distinct syscall numbers
+(all statically named, zero computed), 69 kernel-registered + 3
+tool-side + 13 guest-patched, rest stub-only with no callers; all
+39 observed firings check out; the driver stops loudly on anything
+unanswered and never has. Owner re-counted 69 + OSD present, and
+retired the stale OSD/BIOS remainder. Next is slice 33: hunt the
+ring producer statically (tripwire promoter #2). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1032,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 32 (service surface, 2026-10-03): **fully covered,
+  nothing to implement**. 144 named numbers, 69 + 3 + 13 covered,
+  39/39 firings check out, loud-stop property holds. Stale OSD/BIOS
+  remainder retired (owner re-counted)
+  (`docs/reverse-engineering/m32-slice32-service-surface.md`).
 - Slice 31 (tripwire watch, 2026-10-03): **one-shot proven,
   stand-watch justified**. Flag 0→1 across the firing boundary
   (owner-reproduced); resume bit-identical; no consumer for pump
@@ -1343,13 +1348,15 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **curriculum units the stall
-  doesn't block (slice 32)**. Tripwire armed (replay owner-proven):
-  inventory the remaining service surface (unanswered BIOS
-  services, OSD units, jump-table dispatch state) and implement the
-  first unit. Then the next. M35 pad stays queued (no PADMAN bound
-  at this phase); and the curriculum's remaining units stay listed
-  in `docs/requirements.md`.
+- Next technical milestone work: **hunt the ring producer
+  (slice 33)**. Surface covered (owner re-counted), tripwire armed:
+  identify thread 2's job producer statically (who writes the ring
+  slots / signals sema 11) — bounded hunt; if found, it specs the
+  next event slice. Then milestone traffic per decision 0023. M35
+  pad stays queued (no PADMAN bound at this phase); and the
+  curriculum's remaining units (a counting timer with interrupt
+  delivery and the jump-table dispatch) stay listed in
+  `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
