@@ -1939,9 +1939,39 @@ int main() {
                   && state.memory().read_byte(first_chunk) == 3,
               "snapshot block partly consumed");
 
+        // The SIF reset records the IOP image to boot; the snapshot must
+        // carry it (slice 75: load_kernel_state self-moved the member and
+        // dropped the parsed image, so resume disagreed with fresh state).
+        constexpr std::uint32_t reset_packet = 0x00100200;
+        constexpr std::uint32_t reset_descriptors = 0x00100300;
+        const std::string reset_image = "rom0:UDNL cdrom0:\\IOPRP300.IMG;1";
+        RegisterBank sif_window(0x1000F200u, 0x100u);
+        sif_window.map_into(state.memory());
+        state.memory().write_word(0x1000F230u, 0x00020000u);
+        state.memory().write_word(reset_packet + 0, 104);
+        state.memory().write_word(reset_packet + 8, 0x80000003u);
+        state.memory().write_word(reset_packet + 16,
+                                  static_cast<std::uint32_t>(reset_image.size()));
+        state.memory().write_word(reset_packet + 20, 0);
+        for (std::uint32_t index = 0; index < reset_image.size(); ++index) {
+            state.memory().write_byte(
+                reset_packet + 24 + index,
+                static_cast<std::uint8_t>(reset_image[index]));
+        }
+        state.memory().write_word(reset_descriptors + 8, 104);
+        state.memory().write_word(reset_descriptors + 0, reset_packet);
+        state.memory().write_word(reset_descriptors + 4, 0x00080000u);
+        state.write_gpr32(4, reset_descriptors);
+        state.write_gpr32(5, 1);
+        check(kernel.sif_set_dma(state) == ServiceOutcome::Handled
+                  && kernel.sif_iop_image() == reset_image,
+               "snapshot IOP image ready");
         const std::vector<std::uint8_t> blob = kernel.save_kernel_state();
         Kernel restored;
         restored.load_kernel_state(blob);
+        check(restored.sif_iop_image() == kernel.sif_iop_image()
+                  && !restored.sif_iop_image().empty(),
+               "the IOP image restores instead of dropping");
         check(threads_equal(kernel, restored), "the threads restore");
         check(kernel.semaphores().size() == restored.semaphores().size()
                   && kernel.semaphores()[0].count

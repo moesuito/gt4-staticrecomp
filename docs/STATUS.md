@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 74 (P08 widened comparator, decision
-0036 accepted): the differential compares canonical snapshots field
-by field (registers, all RAM regions incl. scratchpad, kernel
-tables, 19 device banks) and names the first divergence; blind-spot
-fixtures green in the new ee_compare suite; 90k differential still
-green under the wider lens. 53/53 + Python 73 owner-gated, binaries
-freshness-checked, new files ASCII-clean. Next: P09 fresh prefix +
-independent observation (slice 75). This is the
+Updated 2026-10-04 after slice 75 (P09 fresh prefix + IOP-image fix)
+— differential green to 800k under the P08 lens; the one red find
+(resume disagreed on the SIF IOP image) was a one-word self-move bug
+in load_kernel_state, fixed with a falsified regression test and a
+green 3000+400 verify-resume; stationary phase to 1M (no new pairs,
+no natural wakeups). 53/53 + Python 73 owner-gated, binaries
+freshness-checked. Next: slice 76, march the fresh prefix further
+with new checkpoints + inventory per stop. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1047,6 +1047,10 @@ proceeds. Details live in the linked evidence documents.
   translation_model 2, WILL_FAIL removed, decision 0034 accepted
   (`docs/reverse-engineering/slice72-optiona-prototype.md`,
   `docs/decisions/0034-delivery-granularity-contract.md`).
+- Slice 75 (P09, 2026-10-04): **fresh prefix + IOP-image fix**.
+  Green to 800k; one-word self-move fixed, falsified regression,
+  3000+400 verify green. Owner-checked
+  (`docs/reverse-engineering/slice75-p09-fresh-prefix.md`).
 - Slice 74 (P08, 2026-10-04): **widened comparator**.
   Canonical snapshots, first-divergence diagnosis, ee_compare suite.
   Owner-checked (`docs/decisions/0036-p08-widened-state-comparison.md`).

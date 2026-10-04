@@ -2457,7 +2457,7 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     sif_ready_ = sif_ready;
     ee_command_buffer_ = ee_command_buffer;
     sif_rpc_servers_ = std::move(sif_rpc_servers);
-    sif_iop_image_ = std::move(sif_iop_image_);
+    sif_iop_image_ = sif_iop_image;
     sif_reboot_pending_ = sif_reboot_pending;
     idle_interrupts_ = idle_interrupts;
     busclk_accumulator_ = busclk_accumulator;
