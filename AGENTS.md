@@ -304,11 +304,11 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **slice 85, staged-anchor or live-watchpoint attempt**:
-  H1/H2′ needs temporal evidence (staged anchors or live delete
-  watchpoint); else P10 traffic with the F mechanism banked. Order
-  adapts only on new evidence, with cause recorded. Tripwires armed;
-  M35's promoter watched. The
+- Next: **slice 86, P10 traffic with the F mechanism banked**:
+  paper-accept the wake-all + retry-re-resolve chain per draft 0037,
+  static remainder of the invoker, falsifiable acceptances armed.
+  Order adapts only on new evidence, with cause recorded. Tripwires
+  armed; M35's promoter watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

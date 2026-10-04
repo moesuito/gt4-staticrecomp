@@ -1,14 +1,12 @@
 # Project status
 
-Updated 2026-10-04 after slice 84 (H1/H2 tiebreak attempted, D4
-closed on the ROM) — H2-bypass falsified (four live args prove the gate
-ran in the reference), H1 viable with a ROM-confirmed mechanism
-(delete wakes all waiters; no model change), H2′ viable (pulse-first
-interleave), endpoint-equivalence proven (no offline discriminant;
-exact experiment named). 53/53 + Python 73 owner-gated. Open: H1/H2′,
-D2 list, F-candidate trigger (mechanism satisfied, invoker still
-missing). Next: slice 85 (staged-anchor or live-watchpoint attempt,
-or P10 traffic with F's mechanism banked). This is the
+Updated 2026-10-04 after slice 85 (staged/live attempt, honest
+negative) — no intermediate anchors exist (backup = 3rd copy of the
+same menu endpoint); live blocked at the GUI gate (Qt-only, no CLI
+smoke), stopped per slice rules with nothing installed. H1/H2′ still
+tied; H1 mechanism banked. 53/53 + Python 73 owner-gated. Next:
+slice 86, P10 traffic with the F mechanism banked (paper-accept the
+wake-all chain, static remainder of the invoker). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1053,9 +1051,9 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
-- Slice 84 (tiebreak, 2026-10-04): **H2-bypass falsified, D4
-  closed**. Gate ran (four args, owner re-read); delete wakes all.
-  Owner-checked (`docs/reverse-engineering/slice84-h1h2-tiebreak.md`).
+- Slice 85 (attempt, 2026-10-04): **offline exhausted, live
+  blocked**. Backup = same endpoint; GUI-only gate stops live work.
+  Owner-checked (`docs/reverse-engineering/slice85-staged-live-attempt.md`).
 - Slice 84 (tiebreak, 2026-10-04): **H2-bypass falsified, D4
   closed**. Gate ran (four args, owner re-read); delete wakes all.
   Owner-checked (`docs/reverse-engineering/slice84-h1h2-tiebreak.md`).
