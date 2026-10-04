@@ -1,11 +1,10 @@
 # Project status
 
-Updated 2026-10-04 after slice 58 (numbers refresh) — totals
-hold (lifted 99.5%, 497 decode words, 15,068 functions);
-corrected the split to 467 table + 30 real (owner-verified at
-both ends) and adopted the default-survey evolution (14,943 /
-864,814; M27 record kept as dated). Next is slice 59: the
-autosave lesson. This is the
+Updated 2026-10-04 after slice 59 (autosave lesson) — spec →
+implement → upsert bug → 50/50 as one worked explanation, all
+helper names owner-verified in code. Next is slice 60: the
+numbers-refresh lesson (explicit designation; index 19→20 moves
+with it). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1032,6 +1031,9 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 59 (lesson, 2026-10-04): **autosave arc
+  written**. Spec → implement → upsert bug → 50/50. Owner-checked
+  (`docs/lessons/autosave-tooling.md`).
 - Slice 58 (refresh, 2026-10-04): **totals hold, split
   corrected**. 467+30 by address (owner-verified both ends);
   default survey evolved 14,943/864,814 (+5 M29 trees; M27 kept
@@ -1457,12 +1459,13 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **the autosave lesson
-  (slice 59)**. Numbers refreshed (split owner-corrected):
-  teach spec → implement → upsert bug → 50/50 as one arc.
-  Tripwires armed; M35's promoter watched; and the curriculum's
-  remaining units (a counting timer with interrupt delivery and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **the numbers-refresh
+  lesson (slice 60)**. Autosave lesson owner-checked: teach the
+  re-verification method + corrected split (explicit designation;
+  index moves 19→20 with it). Tripwires armed; M35's promoter
+  watched; and the curriculum's remaining units (a counting timer
+  with interrupt delivery and the jump-table dispatch) stay listed
+  in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

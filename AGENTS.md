@@ -304,9 +304,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **the autosave lesson (slice 59)**:
-  numbers refreshed (split owner-corrected, survey evolution
-  adopted); teach spec → implement → upsert bug → 50/50. The
+- Next: **the numbers-refresh lesson (slice 60)**:
+  autosave lesson owner-checked (helpers verified); teach the
+  re-verification method + split fix (index 19→20 moves). The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
