@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 56 (autosave implemented) — exact
-0027 bar met: leg-sliced photos, clean-only predicate, rotation
-with upsert fix, 8 new CTests (rotation/foreign/verify/quiet/
-repeat/identical), 50/50 green + Python 73, all owner-reviewed
-line by line. Next is slice 57: close the lessons backlog with
-an index + closure audit. This is the
+Updated 2026-10-04 after slice 57 (lessons index + audit) — all
+19 lessons indexed with convention + closure audit (files, links,
+counts); owner re-ran the audit (19 files, 67–69 targets, zero
+broken both ways). Backlog CLOSED. Next is slice 58: refresh
+the pinned whole-text numbers (survey + decode scan vs rot).
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1030,6 +1030,9 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 57 (index + audit, 2026-10-04): **backlog
+  CLOSED**. 19 lessons indexed, 22 + README present, links
+  resolve (owner re-ran: zero broken).
 - Slice 56 (autosave live, 2026-10-04): **exact 0027 bar
   met**. Leg-sliced photos, upsert fix, 8 new CTests, 50/50 +
   Python 73, all owner-reviewed
@@ -1448,13 +1451,13 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **close the lessons
-  backlog (slice 57)**. Autosave live and owner-gated (50/50):
-  write the lessons index + audit every lesson file and cited
-  link. Tripwires armed; M35's promoter watched; and the
-  curriculum's remaining units (a counting timer with interrupt
-  delivery and the jump-table dispatch) stay listed in
-  `docs/requirements.md`.
+- Next technical milestone work: **refresh pinned numbers
+  (slice 58)**. Backlog closed (owner-confirmed audit): re-run
+  the whole-text survey + decode scan with current code and
+  confirm (or update) the pinned figures against rot. Tripwires
+  armed; M35's promoter watched; and the curriculum's remaining
+  units (a counting timer with interrupt delivery and the
+  jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
