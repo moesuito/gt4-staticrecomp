@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 57 (lessons index + audit) — all
-19 lessons indexed with convention + closure audit (files, links,
-counts); owner re-ran the audit (19 files, 67–69 targets, zero
-broken both ways). Backlog CLOSED. Next is slice 58: refresh
-the pinned whole-text numbers (survey + decode scan vs rot).
-This is the
+Updated 2026-10-04 after slice 58 (numbers refresh) — totals
+hold (lifted 99.5%, 497 decode words, 15,068 functions);
+corrected the split to 467 table + 30 real (owner-verified at
+both ends) and adopted the default-survey evolution (14,943 /
+864,814; M27 record kept as dated). Next is slice 59: the
+autosave lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -20,9 +20,11 @@ proceeds. Details live in the linked evidence documents.
     M5 decoder; M6 disassembler.
   - The decoder covers 349 operations (line-filtered count; earlier documents
     cited 175, which counted comment fragments). Whole-text scan, corrected
-    after M24: 497 unsupported of 1,334,917 words — 493 of them inside the
+    after M24: 497 unsupported of 1,334,917 words — 467 of them inside the
     700-word **data table** that occupies the text section's last bytes
-    (0x616F28..0x617A14) and only **4 real code words**: two BC0F whose
+    (0x616F28..0x617A14) and **30 real code words**: 26 COP2 macro
+    function-0x38 words in real code (VU-memory forms, slice-58
+    address audit) plus the known four — two BC0F whose
     condition needs a DMA model and two words at unassigned function 0x28
     inside the exception handler; the first 350,000 words — every sampled
     region — decode cleanly. (An
@@ -1030,6 +1032,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 58 (refresh, 2026-10-04): **totals hold, split
+  corrected**. 467+30 by address (owner-verified both ends);
+  default survey evolved 14,943/864,814 (+5 M29 trees; M27 kept
+  dated) (`docs/reverse-engineering/numbers-refresh-slice58.md`).
 - Slice 57 (index + audit, 2026-10-04): **backlog
   CLOSED**. 19 lessons indexed, 22 + README present, links
   resolve (owner re-ran: zero broken).
@@ -1451,13 +1457,12 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **refresh pinned numbers
-  (slice 58)**. Backlog closed (owner-confirmed audit): re-run
-  the whole-text survey + decode scan with current code and
-  confirm (or update) the pinned figures against rot. Tripwires
-  armed; M35's promoter watched; and the curriculum's remaining
-  units (a counting timer with interrupt delivery and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **the autosave lesson
+  (slice 59)**. Numbers refreshed (split owner-corrected):
+  teach spec → implement → upsert bug → 50/50 as one arc.
+  Tripwires armed; M35's promoter watched; and the curriculum's
+  remaining units (a counting timer with interrupt delivery and
+  the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 

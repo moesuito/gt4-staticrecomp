@@ -106,8 +106,10 @@ Additional standards:
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
 - M0-M30 slice 50, M32 slices 1–22 + slices 29–34 (0026 live, tripwire armed, poster a confirmed fossil), M33 slices 23–28 (closed), M35 slice 35 (pad surveyed, spec deferred) BUILD/VERIFY complete; decoder covers 349 operations; the
-  only unsupported words left in the real code region are two DMA-dependent
-  BC0F and two unassigned encodings inside the exception handler (the text's
+  real code region holds 30 unsupported words (26 COP2 macro
+  function-0x38 words plus two DMA-dependent BC0F and two unassigned
+  encodings inside the exception handler — slice-58 address audit
+  correcting the old 493+4 split; the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
   direct-call targets, and `--all` generates the whole game as one module
   (15,068 functions, 924,991 instructions, 146 MB, MSVC syntax-checked). The
@@ -302,9 +304,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **refresh pinned numbers (slice 58)**:
-  backlog closed (audit owner-confirmed); re-run survey + decode
-  scan vs rot. The
+- Next: **the autosave lesson (slice 59)**:
+  numbers refreshed (split owner-corrected, survey evolution
+  adopted); teach spec → implement → upsert bug → 50/50. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
