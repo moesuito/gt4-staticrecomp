@@ -1,13 +1,18 @@
 # Project status
 
-Updated 2026-10-04 after slice 68 (P05, PLAN.md order) — jr-ra targets
-are captured before the delay slot and every generated function
-reports an explicit BoundaryKind exit (no pc == ra inference, calls
-propagate without overwrite, pending transfers reach the bridge
-first); the real-emitter 11-leg fixture matches the interpreter on
-effect and stop reason. 51/51 + Python 73 owner-gated, binaries
-freshness-checked. **Next: P06 (slice 69, DMA with real payload, tags
-and completion).** This is the
+Updated 2026-10-04 after slice 69 (P06, PLAN.md order) — DMA runs real
+payloads: normal QWC from MADR plus the source-chain walker
+(CNT/NEXT/REF/REFS/CALL/RET/END, TTE order, IRQ+TIE cut, TAG/ASP
+evolution), completion only on conclusion through the DMAC cause, loud
+stops instead of invented END; the 90k boot moves VIF0 1x [ref..end]
+(2,712 B), VIF1 1334x (582,104 B, mostly [cnt..end]) and GIF 1333x
+empty [next..end], SIF0 quiet (service path only). 51/51 + Python 73
+owner-gated, binaries freshness-checked. **Incident (owner-verified):
+the driver/interpreter differential is red at service 1606 on the
+clean tree too (pre-existing, not P06); both gt4boot_services legs
+were blind-green on exit 1 — now FAIL-loud with WILL_FAIL markers
+until the hunt closes it. Next: slice 70, the 1606 hunt (P09 brought
+forward: no post-1606 measurement can be trusted first).** This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1034,6 +1039,12 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 69 (P06, 2026-10-04): **real DMA payload + chains**.
+  Walker, tap, rebind fix; owner added 1 MiB tap cap, loud gate
+  (FAIL regex + WILL_FAIL on both services legs) and the 1606
+  incident record. Owner-checked
+  (`docs/decisions/0033-p06-dma-payload-and-chains.md`,
+  `docs/reverse-engineering/incident-1606-differential-and-blind-gate.md`).
 - Slice 68 (P05, 2026-10-04): **JR capture + explicit module exits**.
   Pre-slot ra capture, BoundaryKind returns with propagation,
   bridge-first pending transfers, gt4translate --synth with an

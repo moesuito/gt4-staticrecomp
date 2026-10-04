@@ -304,10 +304,11 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **execute PLAN.md P06 (slice 69)**:
-  DMA with real payload, tags and completion (no forced TAG END).
-  Order adapts only on new evidence, with cause recorded. Tripwires
-  armed; M35's promoter watched. The
+- Next: **slice 70, the 1606 divergence hunt (P09 forward)**:
+  first differing write between driver and interpreter, attributed.
+  P07 telemetry waits for a green differential. Order adapts only on
+  new evidence, with cause recorded. Tripwires armed; M35's promoter
+  watched. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

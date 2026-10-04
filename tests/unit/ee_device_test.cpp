@@ -61,30 +61,63 @@ int main() {
               "a channel restore is side-effect free");
     }
 
-    // The restore bypasses the live start-bit behavior: a live write of
-    // STR|TIE fires once and clears STR, while restoring the same value
-    // fires nothing and keeps the bits verbatim.
+    // A live normal-mode start moves MADR/QWC from RAM into the device sink
+    // and only then completes: STR clears, QWC drains, MADR walks past the
+    // moved bytes, and the channel's DMAC cause fires once. Restoring the
+    // same value fires nothing and keeps the bits verbatim.
     {
         int live_fires = 0;
+        std::uint32_t live_cause = 0xFFFFFFFFu;
         DmaChannel live(0x1000C000u, 0x100u, 5,
-                        [&](std::uint32_t) { ++live_fires; });
-        GuestMemory memory(0x1000C000u, 0x100u);
+                        [&](std::uint32_t cause) {
+                            ++live_fires;
+                            live_cause = cause;
+                        });
+        GuestMemory memory(0, 0x2000);
         live.map_into(memory);
-        memory.write_word(0x1000C000u, DmaChannel::start_bit
+        std::uint8_t source[32];
+        for (std::uint32_t index = 0; index < 32; ++index) {
+            source[index] = static_cast<std::uint8_t>(index * 3 + 1);
+        }
+        memory.write_bytes(0x1000u, source);
+        memory.write_word(0x1000C010u, 0x1000u);  // MADR
+        memory.write_word(0x1000C020u, 2u);       // QWC: two quadwords
+        memory.write_word(0x1000C000u, DmaChannel::direction_bit
+                                           | DmaChannel::start_bit
                                            | DmaChannel::interrupt_enable);
-        check(live_fires == 1
-                  && live.register_value(0x1000C000u)
-                    == DmaChannel::interrupt_enable,
-              "a live start fires once and clears the start bit");
+        check(live_fires == 1 && live_cause == 5,
+              "a live start fires once with the channel cause");
+        check(live.payload_bytes().size() == 32
+                   && live.payload_byte_count() == 32,
+              "a live start moves QWC quadwords into the sink");
+        bool payload_matches = live.payload_bytes().size() == 32;
+        for (std::uint32_t index = 0; payload_matches && index < 32; ++index) {
+            payload_matches = live.payload_bytes()[index] == source[index];
+        }
+        check(payload_matches, "the moved payload matches the source bytes");
+        check(live.register_value(0x1000C000u)
+                      == (DmaChannel::direction_bit
+                          | DmaChannel::interrupt_enable)
+                   && live.register_value(0x1000C010u) == 0x1020u
+                   && live.register_value(0x1000C020u) == 0,
+              "STR clears, MADR walks past the payload and QWC drains");
+        check(live.starts().size() == 1 && live.starts()[0].completed
+                   && live.starts()[0].bytes_moved == 32
+                   && live.starts()[0].tags_walked == 0,
+              "the start log records the completed normal transfer");
         const BankRegisters completed = live.registers_snapshot();
         int replay_fires = 0;
         DmaChannel replay(0x1000C000u, 0x100u, 5,
                           [&](std::uint32_t) { ++replay_fires; });
         replay.restore_registers(completed);
         check(replay_fires == 0
-                  && replay.register_value(0x1000C000u)
-                    == DmaChannel::interrupt_enable,
-              "restoring a completed transfer fires nothing");
+                   && replay.register_value(0x1000C000u)
+                    == (DmaChannel::direction_bit
+                        | DmaChannel::interrupt_enable)
+                   && replay.starts().empty()
+                   && replay.payload_bytes().empty()
+                   && replay.payload_byte_count() == 0,
+              "restoring a completed transfer fires nothing and restarts diagnostics");
         const BankRegisters armed = {
             {0x1000C000u, DmaChannel::start_bit
                               | DmaChannel::interrupt_enable}};
@@ -207,6 +240,281 @@ int main() {
         restored.restore_registers(saved);
         check(restored.register_value(0x1000E010u) == 0x00200020u,
               "the DMAC state restores verbatim");
+    }
+
+    // A CNT to END chain without TIE still walks and completes: the first
+    // tag's data follows the tag, the second tag follows the first payload,
+    // and TADR stays on the END tag while the CHCR TAG field names it.
+    {
+        int fires = 0;
+        DmaChannel channel(0x10009000u, 0x1000u, 1,
+                           [&](std::uint32_t) { ++fires; });
+        GuestMemory memory(0, 0x2000);
+        channel.map_into(memory);
+        const auto tag_word = [](std::uint32_t qwc, std::uint32_t id,
+                                 std::uint32_t irq, std::uint32_t address) {
+            return (static_cast<std::uint64_t>(address & 0x7FFFFFFFu) << 32)
+                | (static_cast<std::uint64_t>(irq & 1u) << 31)
+                | (static_cast<std::uint64_t>(id & 7u) << 28)
+                | (qwc & 0xFFFFu);
+        };
+        memory.write_doubleword(0x1000u,
+                                tag_word(1, DmaChannel::tag_cnt, 0, 0));
+        std::uint8_t first[16];
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            first[index] = static_cast<std::uint8_t>(0xA0 + index);
+        }
+        memory.write_bytes(0x1010u, first);
+        memory.write_doubleword(0x1020u,
+                                tag_word(1, DmaChannel::tag_end, 0, 0));
+        std::uint8_t second[16];
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            second[index] = static_cast<std::uint8_t>(0xB0 + index);
+        }
+        memory.write_bytes(0x1030u, second);
+        memory.write_word(0x10009030u, 0x1000u);  // TADR
+        memory.write_word(0x10009000u, DmaChannel::direction_bit
+                                           | (DmaChannel::mode_chain << 2)
+                                           | DmaChannel::start_bit);
+        check(fires == 1, "a chain without TIE still completes");
+        check(channel.payload_bytes().size() == 32
+                   && channel.starts().size() == 1
+                   && channel.starts()[0].completed
+                   && channel.starts()[0].tags_walked == 2
+                   && channel.starts()[0].bytes_moved == 32,
+              "the chain walks both tags and moves both payloads");
+        bool chain_matches = channel.payload_bytes().size() == 32;
+        for (std::uint32_t index = 0; chain_matches && index < 16; ++index) {
+            chain_matches = channel.payload_bytes()[index] == first[index]
+                && channel.payload_bytes()[16 + index] == second[index];
+        }
+        check(chain_matches, "chained payloads land in transfer order");
+        check(channel.register_value(0x10009030u) == 0x1020u
+                   && channel.register_value(0x10009010u) == 0x1040u
+                   && channel.register_value(0x10009020u) == 0
+                   && channel.register_value(0x10009000u) == 0x70000005u,
+              "TADR stays on END, MADR walks on, QWC drains, TAG names END");
+        check(channel.starts()[0].first_tag_id == DmaChannel::tag_cnt
+                   && channel.starts()[0].last_tag_id == DmaChannel::tag_end,
+              "the start records the chain's end tag ids");
+    }
+
+    // The boot's VIF1 start value (DIR, chain, TTE, TIE, STR): a tag IRQ
+    // with TIE set ends the walk after that tag's payload, and the tag's
+    // upper bytes precede the payload in the sink.
+    {
+        int fires = 0;
+        DmaChannel channel(0x10009000u, 0x1000u, 1,
+                           [&](std::uint32_t) { ++fires; });
+        GuestMemory memory(0, 0x2000);
+        channel.map_into(memory);
+        memory.write_word(0x1100u, 0x90000001u);  // CNT, QWC 1, IRQ
+        memory.write_word(0x1104u, 0);
+        std::uint8_t tag_upper[8];
+        for (std::uint32_t index = 0; index < 8; ++index) {
+            tag_upper[index] = static_cast<std::uint8_t>(0x70 + index);
+        }
+        memory.write_bytes(0x1108u, tag_upper);
+        std::uint8_t payload[16];
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            payload[index] = static_cast<std::uint8_t>(0xC0 + index);
+        }
+        memory.write_bytes(0x1110u, payload);
+        memory.write_word(0x1120u, 0x70000009u);  // END, QWC 9, never reached
+        memory.write_word(0x10009030u, 0x1100u);
+        memory.write_word(0x10009000u, 0x1C5u);  // the boot's VIF1 CHCR
+        check(fires == 1, "an IRQ tag with TIE completes the walk");
+        check(channel.starts().size() == 1
+                   && channel.starts()[0].tags_walked == 1
+                   && channel.starts()[0].bytes_moved == 24,
+              "the walk ends after the IRQ tag");
+        bool irq_matches = channel.payload_bytes().size() == 24;
+        for (std::uint32_t index = 0; irq_matches && index < 8; ++index) {
+            irq_matches = channel.payload_bytes()[index] == tag_upper[index];
+        }
+        for (std::uint32_t index = 0; irq_matches && index < 16; ++index) {
+            irq_matches = channel.payload_bytes()[8 + index] == payload[index];
+        }
+        check(irq_matches, "TTE bytes precede the tag payload in the sink");
+        check(channel.register_value(0x10009030u) == 0x1120u
+                   && channel.register_value(0x10009000u) == 0x900000C5u,
+              "TADR advances past the IRQ tag and TAG names it");
+        check(channel.starts()[0].first_tag_id == DmaChannel::tag_cnt
+                   && channel.starts()[0].last_tag_id == DmaChannel::tag_cnt,
+              "the cut walk records its single tag on both ends");
+    }
+
+    // IRQ without TIE walks on: the same layout with TIE clear reaches the
+    // END tag and moves its payload too.
+    {
+        int fires = 0;
+        DmaChannel channel(0x10009000u, 0x1000u, 1,
+                           [&](std::uint32_t) { ++fires; });
+        GuestMemory memory(0, 0x3000);
+        channel.map_into(memory);
+        memory.write_word(0x1100u, 0x90000001u);  // CNT, QWC 1, IRQ
+        memory.write_word(0x1104u, 0);
+        std::uint8_t payload[16] = {0};
+        memory.write_bytes(0x1110u, payload);
+        memory.write_word(0x1120u, 0x70000001u);  // END, QWC 1
+        std::uint8_t tail[16];
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            tail[index] = static_cast<std::uint8_t>(0xD0 + index);
+        }
+        memory.write_bytes(0x1130u, tail);
+        memory.write_word(0x10009030u, 0x1100u);
+        memory.write_word(0x10009000u, DmaChannel::direction_bit
+                                           | (DmaChannel::mode_chain << 2)
+                                           | DmaChannel::start_bit);
+        check(fires == 1 && channel.starts().size() == 1
+                   && channel.starts()[0].tags_walked == 2
+                   && channel.starts()[0].bytes_moved == 32,
+              "IRQ without TIE walks past the tag to END");
+        bool tail_matches = channel.payload_bytes().size() == 32;
+        for (std::uint32_t index = 0; tail_matches && index < 16; ++index) {
+            tail_matches = channel.payload_bytes()[16 + index] == tail[index];
+        }
+        check(tail_matches, "the END payload follows the IRQ tag payload");
+    }
+
+    // CALL pushes the return onto the address stack and RET pops it: the
+    // sub-chain runs inline, ASP returns to zero, and the payloads stay in
+    // transfer order.
+    {
+        int fires = 0;
+        DmaChannel channel(0x1000A000u, 0x1000u, 2,
+                           [&](std::uint32_t) { ++fires; });
+        GuestMemory memory(0, 0x3000);
+        channel.map_into(memory);
+        const auto tag_word = [](std::uint32_t qwc, std::uint32_t id,
+                                 std::uint32_t address) {
+            return (static_cast<std::uint64_t>(address & 0x7FFFFFFFu) << 32)
+                | (static_cast<std::uint64_t>(id & 7u) << 28)
+                | (qwc & 0xFFFFu);
+        };
+        memory.write_doubleword(0x1200u,
+                                tag_word(0, DmaChannel::tag_call, 0x1260));
+        memory.write_doubleword(0x1210u,
+                                tag_word(1, DmaChannel::tag_ref, 0x1290));
+        memory.write_doubleword(0x1220u,
+                                tag_word(0, DmaChannel::tag_end, 0));
+        memory.write_doubleword(0x1260u,
+                                tag_word(1, DmaChannel::tag_cnt, 0));
+        std::uint8_t inner[16];
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            inner[index] = static_cast<std::uint8_t>(0xE0 + index);
+        }
+        memory.write_bytes(0x1270u, inner);
+        memory.write_doubleword(0x1280u,
+                                tag_word(0, DmaChannel::tag_ret, 0));
+        std::uint8_t outer[16];
+        for (std::uint32_t index = 0; index < 16; ++index) {
+            outer[index] = static_cast<std::uint8_t>(0xF0 + index);
+        }
+        memory.write_bytes(0x1290u, outer);
+        memory.write_word(0x1000A030u, 0x1200u);
+        memory.write_word(0x1000A000u, DmaChannel::direction_bit
+                                           | (DmaChannel::mode_chain << 2)
+                                           | DmaChannel::start_bit);
+        check(fires == 1 && channel.starts().size() == 1
+                   && channel.starts()[0].completed
+                   && channel.starts()[0].tags_walked == 5
+                   && channel.starts()[0].bytes_moved == 32,
+              "CALL, CNT, RET, REF and END walk as one transfer");
+        bool call_matches = channel.payload_bytes().size() == 32;
+        for (std::uint32_t index = 0; call_matches && index < 16; ++index) {
+            call_matches = channel.payload_bytes()[index] == inner[index]
+                && channel.payload_bytes()[16 + index] == outer[index];
+        }
+        check(call_matches, "the sub-chain payload precedes the REF payload");
+        check(channel.register_value(0x1000A030u) == 0x1220u
+                   && channel.register_value(0x1000A040u) == 0
+                   && channel.register_value(0x1000A000u) == 0x70000005u,
+              "TADR ends on END, the stack pops clean, TAG names END");
+    }
+
+    // A normal start with QWC 0 moves 0x10000 quadwords (the
+    // hardware-tested PCSX2 DmaExec rule), not zero bytes.
+    {
+        int fires = 0;
+        DmaChannel channel(0x10008000u, 0x1000u, 0,
+                           [&](std::uint32_t) { ++fires; });
+        GuestMemory memory(0, 0x100000);
+        channel.map_into(memory);
+        memory.write_word(0x10008010u, 0u);  // MADR at the zero page
+        memory.write_word(0x10008020u, 0u);  // QWC 0
+        memory.write_word(0x10008000u, DmaChannel::direction_bit
+                                           | DmaChannel::start_bit);
+        check(fires == 1 && channel.payload_byte_count() == 0x100000u
+                   && channel.register_value(0x10008010u) == 0x100000u
+                   && channel.register_value(0x10008020u) == 0,
+              "QWC 0 in normal mode moves 0x10000 quadwords");
+    }
+
+    // Outside the implemented subset the engine stops loudly with the
+    // channel context: no completion, STR still set, the failed start kept
+    // with completed false. Never an invented END.
+    {
+        int fires = 0;
+        DmaChannel channel(0x10008000u, 0x1000u, 0,
+                           [&](std::uint32_t) { ++fires; });
+        GuestMemory memory(0, 0x3000);
+        channel.map_into(memory);
+        check(throws([&] {
+                  memory.write_word(0x10008000u, DmaChannel::start_bit);
+              })
+                   && fires == 0
+                   && channel.register_value(0x10008000u)
+                        == DmaChannel::start_bit
+                   && channel.starts().size() == 1
+                   && !channel.starts()[0].completed,
+              "DIR clear stops without completing");
+        memory.write_word(0x10008010u, 0x1000u);
+        memory.write_word(0x10008020u, 1u);
+        memory.write_word(0x10008030u, 0x1000u);
+        check(throws([&] {
+                  memory.write_word(0x10008000u,
+                                    DmaChannel::direction_bit
+                                        | (DmaChannel::mode_chain << 2)
+                                        | DmaChannel::start_bit);
+              })
+                   && fires == 0,
+              "a chain start with QWC set stops (no resume rule)");
+        memory.write_word(0x10008020u, 0u);
+        memory.write_word(0x10008030u, 0x9000u);  // outside the RAM
+        check(throws([&] {
+                  memory.write_word(0x10008000u,
+                                    DmaChannel::direction_bit
+                                        | (DmaChannel::mode_chain << 2)
+                                        | DmaChannel::start_bit);
+              })
+                   && fires == 0,
+              "a tag outside mapped memory stops");
+        memory.write_word(0x10008030u, 0x1000u);
+        check(throws([&] {
+                  memory.write_word(0x10008000u,
+                                    DmaChannel::direction_bit
+                                        | (DmaChannel::mode_interleave << 2)
+                                        | DmaChannel::start_bit);
+              })
+                   && fires == 0,
+              "interleave mode stops");
+        // A NEXT loop back to itself walks into the tag budget and stops
+        // instead of hanging the test process.
+        memory.write_word(0x1000u, 0x20000000u);  // NEXT, QWC 0
+        memory.write_word(0x1004u, 0x00001000u);  // ADDR back to itself
+        memory.write_word(0x10008030u, 0x1000u);
+        check(throws([&] {
+                  memory.write_word(0x10008000u,
+                                    DmaChannel::direction_bit
+                                        | (DmaChannel::mode_chain << 2)
+                                        | DmaChannel::start_bit);
+              })
+                   && fires == 0
+                   && channel.starts().back().tags_walked
+                        == DmaChannel::max_chain_tags
+                   && !channel.starts().back().completed,
+              "a tag loop stops at the budget without completing");
     }
 
     // The bank section codec round-trips an ordered bank list and rejects

@@ -29,6 +29,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -54,12 +55,13 @@ constexpr std::uint64_t default_step_limit = 200'000'000;
 // The device register windows the boot touches so far: the timer block, the
 // DMAC and SIF0 channel control, the SIF register block, the GS register
 // block (a memory region), and the GIF/VIF0/VIF1 register and FIFO windows.
-// The VIF0/VIF1/GIF DMA channels complete a started transfer at once (the
-// model has no transfer engine) and report the channel's DMAC completion
-// (channels 0/1/2); the other windows are plain storage (decisions 0007/0008
-// and 0010/0029). INTC causes 4/5 are VIF command events and INTC 9 is
-// Timer0: none of them is a DMA completion, so a GIF completion never
-// touches Timer0.
+// The VIF0/VIF1/GIF DMA channels run the transfer their registers describe
+// (normal QWC from MADR, or the source chain at TADR) into a retained device
+// sink and report the channel's DMAC completion (channels 0/1/2) only after
+// the implemented transfer concludes; anything outside the subset stops
+// loudly instead of completing (decisions 0011/0029 and 0033). INTC causes
+// 4/5 are VIF command events and INTC 9 is Timer0: none of them is a DMA
+// completion, so a GIF completion never touches Timer0.
 struct BootDevices {
     explicit BootDevices(std::function<void(std::uint32_t)> raise_dmac)
         : vif0_dma(0x10008000u, 0x1000u, 0, raise_dmac),
@@ -118,6 +120,15 @@ struct BootDevices {
         intc.map_into(memory);
         sio.map_into(memory);
     }
+
+    // Follows a GuestMemory move: the DMA engines read tags and payloads
+    // through this pointer, so it must name the live memory, not the local
+    // the mapping was built on.
+    void rebind_dma(GuestMemory& memory) noexcept {
+        vif0_dma.rebind_memory(memory);
+        vif1_dma.rebind_memory(memory);
+        gif_dma.rebind_memory(memory);
+    }
 };
 
 // The full EE RAM as one flat zero-filled window with the image's own
@@ -142,6 +153,7 @@ GuestState make_boot_state(const ExecutableImage& image, BootDevices& devices) {
     memory.write_bytes(bss_start - junk_margin, junk);
     GuestState state(std::move(memory));
     state.set_pc(entry);
+    devices.rebind_dma(state.memory());
     return state;
 }
 
@@ -1194,17 +1206,90 @@ int wmain(int argc, wchar_t* argv[]) {
                           << std::setw(8) << sid << std::dec
                           << std::setfill(' ') << '\n';
             }
-            // The DMA channel control registers: a channel with the STR bit
-            // (0x100) still set was started and never completed.
+            // The DMA channel registers: a channel with the STR bit (0x100)
+            // still set was started and never completed. MADR/QWC/TADR show
+            // the post-transfer state, and the start line counts what the
+            // engine moved (decision 0033).
             const auto print_channel = [](const char* name, std::uint32_t chcr) {
                 std::cout << "dma " << name << " chcr 0x" << std::hex << std::setfill('0')
                           << std::setw(8) << chcr << std::dec
                           << std::setfill(' ') << '\n';
             };
-            print_channel("vif0", driver_devices.vif0_dma.register_value(0x10008000u));
-            print_channel("vif1", driver_devices.vif1_dma.register_value(0x10009000u));
-            print_channel("gif", driver_devices.gif_dma.register_value(0x1000A000u));
-            print_channel("sif0", driver_devices.sif0.register_value(0x1000C000u));
+            const auto print_dma_channel = [](const char* name,
+                                              const DmaChannel& channel,
+                                              std::uint32_t base) {
+                std::cout << "dma " << name << " chcr 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << channel.register_value(base)
+                          << " madr 0x" << std::setw(8)
+                          << channel.register_value(base + DmaChannel::madr_offset)
+                          << " qwc 0x" << std::setw(8)
+                          << channel.register_value(base + DmaChannel::qwc_offset)
+                          << " tadr 0x" << std::setw(8)
+                          << channel.register_value(base + DmaChannel::tadr_offset)
+                          << std::dec << std::setfill(' ');
+                std::uint64_t start_bytes = 0;
+                std::uint64_t start_tags = 0;
+                for (const DmaChannel::StartRecord& start : channel.starts()) {
+                    start_bytes += start.bytes_moved;
+                    start_tags += start.tags_walked;
+                }
+                std::cout << " starts " << channel.starts().size()
+                          << " tags " << start_tags << " bytes " << start_bytes
+                          << " sink " << channel.payload_byte_count()
+                          << " hash 0x" << std::hex << std::setfill('0')
+                          << std::setw(8) << channel.payload_hash() << std::dec
+                          << std::setfill(' ');
+                // The walked chains by (first, last) tag id: the captured
+                // shape of every start (decision 0033).
+                std::map<std::uint32_t, std::uint64_t> chain_shapes;
+                for (const DmaChannel::StartRecord& start : channel.starts()) {
+                    if (!start.completed) {
+                        continue;
+                    }
+                    chain_shapes[(start.first_tag_id << 3)
+                                 | start.last_tag_id] += 1;
+                }
+                const char* tag_name[8] = {"refe", "cnt",  "next", "ref",
+                                           "refs", "call", "ret",  "end"};
+                for (const auto& [shape, count] : chain_shapes) {
+                    const std::uint32_t first = (shape >> 3) & 0x1FFFu;
+                    const std::uint32_t last = shape & 7u;
+                    std::cout << " ["
+                              << (first <= DmaChannel::tag_end
+                                      ? tag_name[first]
+                                      : "normal")
+                              << ".."
+                              << (last <= DmaChannel::tag_end
+                                      ? tag_name[last]
+                                      : "normal")
+                              << " x" << count << "]";
+                }
+                std::cout << '\n';
+            };
+            print_dma_channel("vif0", driver_devices.vif0_dma, 0x10008000u);
+            print_dma_channel("vif1", driver_devices.vif1_dma, 0x10009000u);
+            print_dma_channel("gif", driver_devices.gif_dma, 0x1000A000u);
+            // SIF0 stays a plain bank: the game enables it through the
+            // SifSetDChain service (the model's own 0x184 write), and every
+            // SIF payload moves through the SifSetDma service path, never
+            // through a guest-programmed register start. MADR/QWC/TADR here
+            // show no such start exists to complete (decision 0033).
+            std::cout << "dma sif0 chcr 0x" << std::hex << std::setfill('0')
+                      << std::setw(8)
+                      << driver_devices.sif0.register_value(0x1000C000u)
+                      << " madr 0x" << std::setw(8)
+                      << driver_devices.sif0.register_value(0x1000C010u)
+                      << " qwc 0x" << std::setw(8)
+                      << driver_devices.sif0.register_value(0x1000C020u)
+                      << " tadr 0x" << std::setw(8)
+                      << driver_devices.sif0.register_value(0x1000C030u)
+                      << std::dec << std::setfill(' ') << '\n';
+            // The DMAC completion status the channels reported into: a set
+            // CIS bit with no handler run is pending, not lost (0029).
+            std::cout << "dmac stat 0x" << std::hex << std::setfill('0')
+                      << std::setw(8)
+                      << driver_devices.dmac.register_value(0x1000E010u)
+                      << std::dec << std::setfill(' ') << '\n';
             print_channel("spr0", driver_devices.spr_dma.register_value(0x1000D000u));
             print_channel("spr1", driver_devices.spr_dma.register_value(0x1000D400u));
             // The four timers: count, mode and compare as the guest left

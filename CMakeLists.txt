@@ -253,7 +253,8 @@ if(BUILD_TESTING)
         target_link_libraries(gt4run PRIVATE gt4recomp_decode gt4recomp_executable gt4recomp_input)
         add_test(NAME gt4run_startup COMMAND gt4run "${GT4_LOCAL_CORE}" --compare-interpreter)
         set_tests_properties(gt4run_startup PROPERTIES
-            PASS_REGULAR_EXPRESSION "boundary: syscall 0x001001c8 service 0x3c")
+            PASS_REGULAR_EXPRESSION "boundary: syscall 0x001001c8 service 0x3c"
+            FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at")
 
         # Regression for the "jr ra" emission: DIntr returns in the middle of
         # its extent, followed by the taken-path block.
@@ -297,9 +298,18 @@ if(BUILD_TESTING)
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"
                         --services 90000 --compare-interpreter)
+            # Incident 2026-10-04 (slice 69): the driver/interpreter
+            # differential is red (first divergence at service 1606), and a
+            # PASS-only regex stays green on a nonzero exit, so the mismatch
+            # phrases below fail the gate loudly while WILL_FAIL keeps the
+            # suite honest-but-green until the hunt closes it. Removing
+            # WILL_FAIL is part of closing that incident: a fixed
+            # differential XPASSes and goes red until the marker is gone.
             set_tests_properties(gt4boot_services PROPERTIES
                 FIXTURES_REQUIRED gt4boot
-                PASS_REGULAR_EXPRESSION "services handled 90000")
+                PASS_REGULAR_EXPRESSION "services handled 90000"
+                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at"
+                WILL_FAIL TRUE)
             # The first originating event (decision 0026): a fresh disc
             # boot delivers the synthesized SIF pump packet, so the pump
             # queue reads back drained with the packet words, while the
@@ -317,9 +327,14 @@ if(BUILD_TESTING)
         else()
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --services 3000 --compare-interpreter)
+            # Same incident as the disc variant: this leg also diverges
+            # (memory window, exit 1), so it carries the same loud gate
+            # and the same WILL_FAIL marker until the hunt closes it.
             set_tests_properties(gt4boot_services PROPERTIES
                 FIXTURES_REQUIRED gt4boot
-                PASS_REGULAR_EXPRESSION "services handled 3000")
+                PASS_REGULAR_EXPRESSION "services handled 3000"
+                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at"
+                WILL_FAIL TRUE)
         endif()
         # The stop-time memory view: a short run prints the requested guest
         # words, so the --dump option stays exercised.

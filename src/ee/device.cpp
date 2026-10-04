@@ -91,6 +91,7 @@ DmaChannel::DmaChannel(std::uint32_t base, std::uint32_t size,
 }
 
 void DmaChannel::map_into(GuestMemory& memory) {
+    memory_ = &memory;
     memory.map_mmio(
         base_, bank_.size(),
         [this](std::uint32_t address, std::size_t width) {
@@ -99,6 +100,10 @@ void DmaChannel::map_into(GuestMemory& memory) {
         [this](std::uint32_t address, std::size_t width, std::uint32_t value) {
             write_register(address, width, value);
         });
+}
+
+void DmaChannel::rebind_memory(GuestMemory& memory) noexcept {
+    memory_ = &memory;
 }
 
 std::uint32_t DmaChannel::register_value(std::uint32_t address) const {
@@ -120,9 +125,31 @@ DmaChannel::registers_snapshot() const {
 
 void DmaChannel::restore_registers(
     std::span<const std::pair<std::uint32_t, std::uint32_t>> entries) {
-    // Straight into the bank's storage: a live write would complete a
-    // transfer whose start bit is set, which a restore must never fire.
+    // Straight into the bank's storage: a live write would run a transfer
+    // whose start bit is set, which a restore must never fire. The transfer
+    // diagnostics restart empty: they describe this run's transfers, and a
+    // resumed run re-records from the resume point.
     bank_.restore_registers(entries);
+    starts_.clear();
+    payload_.clear();
+    payload_bytes_moved_ = 0;
+    payload_hash_ = 2166136261u;
+}
+
+const std::vector<DmaChannel::StartRecord>& DmaChannel::starts() const noexcept {
+    return starts_;
+}
+
+const std::vector<std::uint8_t>& DmaChannel::payload_bytes() const noexcept {
+    return payload_;
+}
+
+std::uint64_t DmaChannel::payload_byte_count() const noexcept {
+    return payload_bytes_moved_;
+}
+
+std::uint32_t DmaChannel::payload_hash() const noexcept {
+    return payload_hash_;
 }
 
 std::uint32_t DmaChannel::read_register(std::uint32_t address,
@@ -130,16 +157,278 @@ std::uint32_t DmaChannel::read_register(std::uint32_t address,
     return bank_.read_register(address, width);
 }
 
+std::uint32_t DmaChannel::load_register(std::uint32_t offset) const {
+    return bank_.register_value(base_ + offset);
+}
+
+void DmaChannel::store_register(std::uint32_t offset, std::uint32_t value) {
+    bank_.write_register(base_ + offset, 4, value);
+}
+
+void DmaChannel::stop_transfer(const std::string& reason) const {
+    std::ostringstream message;
+    message << "DMA channel at 0x" << std::hex << std::setfill('0')
+            << std::setw(8) << base_ << ": " << reason;
+    throw std::runtime_error(message.str());
+}
+
+void DmaChannel::move_bytes(std::uint32_t address, std::uint64_t byte_count,
+                            StartRecord& start) {
+    if (byte_count == 0) {
+        return;
+    }
+    if (memory_ == nullptr) {
+        stop_transfer("a transfer needs mapped guest memory");
+    }
+    if (memory_->is_mmio(address, static_cast<std::size_t>(byte_count))) {
+        stop_transfer("a device-window source is not a modeled transfer");
+    }
+    if (!memory_->contains(address, static_cast<std::size_t>(byte_count))) {
+        std::ostringstream reason;
+        reason << "source 0x" << std::hex << std::setfill('0') << std::setw(8)
+               << address << " plus 0x" << byte_count
+               << " bytes leaves the mapped guest memory";
+        stop_transfer(reason.str());
+    }
+    for (std::uint64_t offset = 0; offset < byte_count; ++offset) {
+        const std::uint8_t byte =
+            memory_->read_byte(address + static_cast<std::uint32_t>(offset));
+        // The retained tap is bounded: counting and hashing stream every
+        // byte, but only the first payload_retain_cap bytes stay resident,
+        // so a long march cannot grow host memory without bound.
+        if (payload_.size() < payload_retain_cap) {
+            payload_.push_back(byte);
+        }
+        payload_hash_ ^= byte;
+        payload_hash_ *= 16777619u;
+    }
+    payload_bytes_moved_ += byte_count;
+    start.bytes_moved += byte_count;
+}
+
+void DmaChannel::run_normal_transfer(StartRecord& start) {
+    if ((start.madr & scratchpad_select) != 0) {
+        stop_transfer("a scratchpad MADR source is not modeled");
+    }
+    // PCSX2's DmaExec carries a hardware-tested rule: a normal-mode start
+    // with QWC 0 transfers 1 quadword, underflows, and then moves another
+    // 0xFFFF quadwords, so the engine counts 0x10000.
+    const std::uint64_t quadwords =
+        start.qwc == 0 ? 0x10000u : start.qwc;
+    const std::uint32_t source = start.madr & address_mask;
+    move_bytes(source, quadwords * 16, start);
+    // No tag was read, so the CHCR TAG field is untouched: only STR clears.
+    // MADR walks past the moved bytes and QWC drains to zero.
+    store_register(madr_offset, source + static_cast<std::uint32_t>(quadwords * 16));
+    store_register(qwc_offset, 0);
+    store_register(chcr_offset, start.chcr & ~start_bit);
+}
+
+void DmaChannel::run_chain_transfer(StartRecord& start) {
+    // A chain start carries QWC 0 with the first tag at TADR (ps2sdk
+    // dma_channel_send_chain programs exactly that). A start with QWC set is
+    // the PS2Tek resume path (the movie library's trick), which needs the
+    // CHCR TAG field as evidence and stays unmodeled.
+    if (start.qwc != 0) {
+        stop_transfer("a chain start with QWC set needs the resume rule");
+    }
+    if ((start.tadr & scratchpad_select) != 0) {
+        stop_transfer("a scratchpad tag stream is not modeled");
+    }
+    if ((start.tadr & 0xFu) != 0) {
+        stop_transfer("a TADR outside a 16-byte boundary is not a tag");
+    }
+    if (((start.chcr & address_stack_mask) >> 4) != 0) {
+        stop_transfer("a chain start with a kept address stack is not modeled");
+    }
+    const bool tie = (start.chcr & interrupt_enable) != 0;
+    const bool tag_transfer = (start.chcr & tag_transfer_enable) != 0;
+    std::uint32_t chcr = start.chcr;
+    std::uint32_t tadr = start.tadr & address_mask;
+    std::uint32_t madr = 0;
+    std::uint32_t address_stack = 0;
+    while (true) {
+        if (start.tags_walked >= max_chain_tags) {
+            stop_transfer("a chain past the tag budget looks like a loop");
+        }
+        if (memory_ == nullptr) {
+            stop_transfer("a transfer needs mapped guest memory");
+        }
+        if (memory_->is_mmio(tadr, 16)) {
+            std::ostringstream reason;
+            reason << "tag at 0x" << std::hex << std::setfill('0')
+                   << std::setw(8) << tadr << " inside a device window"
+                   << " (chcr 0x" << std::setw(8) << start.chcr << " madr 0x"
+                   << std::setw(8) << start.madr << " qwc 0x" << std::setw(8)
+                   << start.qwc << ") is not a modeled transfer";
+            stop_transfer(reason.str());
+        }
+        if (!memory_->contains(tadr, 16)) {
+            std::ostringstream reason;
+            reason << "tag at 0x" << std::hex << std::setfill('0')
+                   << std::setw(8) << tadr << " leaves the mapped guest memory";
+            stop_transfer(reason.str());
+        }
+        const std::uint32_t tag_low = memory_->read_word(tadr);
+        const std::uint32_t tag_mid = memory_->read_word(tadr + 4);
+        // The tag's own address: TTE moves the upper 8 bytes from here, and
+        // the switch below advances tadr past them.
+        const std::uint32_t tag_location = tadr;
+        const std::uint64_t tag =
+            (static_cast<std::uint64_t>(tag_mid) << 32) | tag_low;
+        const std::uint32_t quadwords =
+            static_cast<std::uint32_t>(tag & 0xFFFFu);
+        const std::uint32_t id =
+            static_cast<std::uint32_t>((tag >> 28) & 0x7u);
+        const bool irq = ((tag >> 31) & 0x1u) != 0;
+        const std::uint32_t tag_address =
+            static_cast<std::uint32_t>((tag >> 32) & address_mask);
+        const bool tag_scratchpad = ((tag >> 63) & 0x1u) != 0;
+        // Bits 16-31 of the tag land in the CHCR TAG field (PS2Tek DMAC I/O),
+        // so a stop read names the last tag the engine saw.
+        chcr = (chcr & 0x0000FFFFu)
+            | static_cast<std::uint32_t>(tag & 0xFFFF0000u);
+        store_register(chcr_offset, chcr);
+        const auto use_address = [&](const char* what) {
+            if (tag_scratchpad) {
+                std::string reason(what);
+                reason += " from the scratchpad is not modeled";
+                stop_transfer(reason);
+            }
+            if ((tag_address & 0xFu) != 0) {
+                std::ostringstream reason;
+                reason << what << " 0x" << std::hex << std::setfill('0')
+                       << std::setw(8) << tag_address
+                       << " outside a 16-byte boundary is not a tag address";
+                stop_transfer(reason.str());
+            }
+        };
+        bool end_after = false;
+        if (start.tags_walked == 0) {
+            start.first_tag_id = id;
+        }
+        start.last_tag_id = id;
+        switch (id) {
+            case tag_refe:
+                use_address("REFE");
+                madr = tag_address;
+                tadr += 16;
+                end_after = true;
+                break;
+            case tag_cnt:
+                madr = tadr + 16;
+                tadr = madr + quadwords * 16;
+                break;
+            case tag_next:
+                use_address("NEXT");
+                madr = tadr + 16;
+                tadr = tag_address;
+                break;
+            case tag_ref:
+            case tag_refs:
+                // REFS moves its payload like REF; its stall-control
+                // handshake against D_CTRL stays a documented limit.
+                use_address(id == tag_ref ? "REF" : "REFS");
+                madr = tag_address;
+                tadr += 16;
+                break;
+            case tag_call:
+                use_address("CALL");
+                madr = tadr + 16;
+                if (address_stack == 0) {
+                    store_register(asr0_offset, madr + quadwords * 16);
+                    address_stack = 1;
+                } else if (address_stack == 1) {
+                    store_register(asr1_offset, madr + quadwords * 16);
+                    address_stack = 2;
+                } else {
+                    stop_transfer("CALL with a full address stack is not modeled");
+                }
+                tadr = tag_address;
+                break;
+            case tag_ret:
+                madr = tadr + 16;
+                if (address_stack == 2) {
+                    tadr = load_register(asr1_offset);
+                    store_register(asr1_offset, 0);
+                    address_stack = 1;
+                } else if (address_stack == 1) {
+                    tadr = load_register(asr0_offset);
+                    store_register(asr0_offset, 0);
+                    address_stack = 0;
+                } else {
+                    end_after = true;
+                }
+                break;
+            case tag_end:
+                madr = tadr + 16;
+                // TADR stays on the END tag: the reference keeps it so a
+                // resume names the last tag (Soul Calibur II and III).
+                end_after = true;
+                break;
+            default:
+                stop_transfer("a tag id outside 0-7 is not a DMA tag");
+                break;
+        }
+        chcr = (chcr & ~address_stack_mask) | (address_stack << 4);
+        store_register(chcr_offset, chcr);
+        // With TTE the tag's upper 8 bytes reach the device before the
+        // payload (PS2Tek chain mode); with plain tags only QWC moves.
+        if (tag_transfer) {
+            move_bytes(tag_location + 8, 8, start);
+        }
+        move_bytes(madr, static_cast<std::uint64_t>(quadwords) * 16, start);
+        store_register(madr_offset, madr + quadwords * 16);
+        ++start.tags_walked;
+        // A tag IRQ with TIE set ends the walk after the payload and the
+        // chain update (PCSX2 VIF1/GIF order); IRQ without TIE walks on.
+        if (end_after || (irq && tie)) {
+            break;
+        }
+    }
+    store_register(tadr_offset, tadr);
+    store_register(qwc_offset, 0);
+    store_register(chcr_offset, chcr & ~start_bit);
+}
+
+void DmaChannel::run_transfer(StartRecord& start) {
+    if ((start.chcr & direction_bit) == 0) {
+        stop_transfer("DIR clear is not a modeled transfer on this channel");
+    }
+    const std::uint32_t mode = (start.chcr & mode_mask) >> 2;
+    if (mode == mode_normal) {
+        run_normal_transfer(start);
+        return;
+    }
+    if (mode == mode_chain) {
+        run_chain_transfer(start);
+        return;
+    }
+    stop_transfer("a mode outside normal and chain is not modeled");
+}
+
 void DmaChannel::write_register(std::uint32_t address, std::size_t width,
                                 std::uint32_t value) {
+    if (address == base_ + qwc_offset && width == 4) {
+        // Only the low 16 bits count (PS2Tek QWC, PCSX2's masked QWC write).
+        value &= qwc_mask;
+    }
     if (address == base_ + chcr_offset && width == 4
         && (value & start_bit) != 0) {
-        // The model has no transfer engine: a started transfer completes at
-        // once. The start bit clears so polling code sees it finish, and the
-        // completion is always reported as the channel's DMAC cause. TIE is
-        // stored but never gates the report (see the header): it shapes tag
-        // termination, which the P06 chain engine will own.
-        bank_.write_register(address, width, value & ~start_bit);
+        if (memory_ == nullptr) {
+            stop_transfer("a start with no mapped memory is not a transfer");
+        }
+        // The programmed registers land first, so a loud stop leaves the
+        // channel exactly as the guest armed it (STR still set, like a hung
+        // channel). The start log keeps the failed start with completed
+        // false; only a concluded transfer reports its DMAC completion.
+        bank_.write_register(address, width, value);
+        starts_.push_back(StartRecord{value, load_register(madr_offset),
+                                      load_register(qwc_offset),
+                                      load_register(tadr_offset), 0, 0,
+                                      no_tag_walked, no_tag_walked, false});
+        run_transfer(starts_.back());
+        starts_.back().completed = true;
         raise_(cause_);
         return;
     }

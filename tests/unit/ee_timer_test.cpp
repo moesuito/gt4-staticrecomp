@@ -99,11 +99,13 @@ int main() {
               "the register bank rejects non-32-bit widths");
     }
 
-    // A DMA channel completes a started transfer at once and always
-    // reports the channel's DMAC cause: TIE is stored but never gates the
-    // completion (ps2autotests dmac/tagintr @97469ff).
+    // A DMA channel walks a programmed chain and always reports the
+    // channel's DMAC cause: TIE is stored but never gates the completion
+    // (ps2autotests dmac/tagintr @97469ff). The zeroed tag at TADR reads as
+    // REFE with QWC 0, so both starts below walk one tag and end.
     {
         GuestMemory memory(ram_base, ram_size);
+        memory.map_region(0x00100000u, 0x100u);  // the tag the test programs
         std::vector<std::uint32_t> causes;
         DmaChannel vif1(0x10009000u, 0x1000u, 1,
                         [&causes](std::uint32_t cause) { causes.push_back(cause); });
