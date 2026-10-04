@@ -1,17 +1,13 @@
 # Project status
 
-Updated 2026-10-04 after slice 70 (1606 hunt): root cause found, no fix.
-the service-1606 divergence is interrupt-DELIVERY timing (a VIF1 DMA
-chain completes synchronously mid-module and raises DMAC cause 1 on both
-engines; the interpreter injects at 0x004abae4 while the driver finishes
-translated function_004aba50 first and injects at 0x004a1274), NOT a
-translation bug. First differing write: the driver's epilogue sp +0x20
-(0x6de6b0 -> 0x6de6d0); stop matches at the stub (0x1604/0x100) with only
-r29 and 3 stack words differing. Aligning delivery needs a contract
-(candidate decision 0034), so both gt4boot_services legs keep their
-WILL_FAIL markers and P07/P09 stay gated. 51/51 + Python 73
-owner-gated, binaries freshness-checked. Next: slice 71, the raise
-census (inside-module vs loop-top) to size the contract work. This is the
+Updated 2026-10-04 after slice 71 (raise census): 21.8% of raises land
+inside translated code, all from one guest function (004aba50) doing
+VIF1/GIF DMA; 78.2% loop-top deliver identically; the divergent
+handler is pure (no syscalls). Draft decision 0034 recommends emitter
+poll points at DMA STR writes (option A), prototype behind the blind
+gate. WILL_FAIL markers stay; P07/P09 wait for green. 51/51 + Python
+73 owner-gated. Next: slice 72, prototype option A (1606 green, then
+90k green). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1038,6 +1034,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 71 (census, 2026-10-04): **raises sized, 0034 drafted**.
+  21.8% in-module from one function, handler pure; option A
+  recommended. Owner-checked
+  (`docs/reverse-engineering/slice71-raise-census.md`).
 - Slice 70 (hunt, 2026-10-04): **1606 cause found, no fix**.
   Delivery granularity (per-step vs per-module-call), traced instance,
   exonerations, contract-scale deferral. Owner-confirmed in code.
