@@ -302,9 +302,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **watch-standing (owner decision)**:
-  backlog exhausted, tripwires armed, scout parked — no new slices
-  until a tripwire trips or the owner calls. The
+- Next: **implement autosave (slice 56)**:
+  decision 0027 adopted; development resumed — exact bar in
+  `main.cpp` + existing fixtures. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.

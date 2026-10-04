@@ -1030,6 +1030,10 @@ as work proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 55 (decision 0027, 2026-10-04): **autosave
+  specified, not built**. Rotating photos + quiet, 5-item bar,
+  `main.cpp`-bounded. Owner adopted (DIR rule = builder's own)
+  (`docs/decisions/0027-autosave-checkpoints.md`).
 - Slice 54 (lesson, 2026-10-04): **checkpoint system
   written**. Map-first, C1/C2/C3, clean-stop hooks, chained
   proof, autosave labeled unbuilt. Owner-checked
@@ -1440,14 +1444,13 @@ as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **watch-standing (owner
-  decision, 2026-10-04)**. Lessons backlog exhausted (19 items);
-  event work parked behind tripwires; scout parked. No new slices
-  until a tripwire trips (census moves, ring producer found, RPC
-  waiter appears, padman binds) or the owner calls. Tripwires
-  armed; M35's promoter watched; and the curriculum's remaining
-  units (a counting timer with interrupt delivery and the
-  jump-table dispatch) stay listed in `docs/requirements.md`.
+- Next technical milestone work: **implement autosave
+  (slice 56)**. Decision 0027 adopted (owner-reviewed, active
+  development resumed by owner order): exact CLI/rotation/
+  determinism bar in `main.cpp` + existing fixtures only.
+  Tripwires armed; M35's promoter watched; and the curriculum's
+  remaining units (a counting timer with interrupt delivery and
+  the jump-table dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
