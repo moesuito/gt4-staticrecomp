@@ -105,7 +105,7 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-04:
 
-- M0-M30 slice 50, M32 slices 1–22 + slices 29–30 (decision 0026 live), M33 slices 23–28 (closed) BUILD/VERIFY complete; decoder covers 349 operations; the
+- M0-M30 slice 50, M32 slices 1–22 + slices 29–31 (decision 0026 live, tripwire armed), M33 slices 23–28 (closed) BUILD/VERIFY complete; decoder covers 349 operations; the
   only unsupported words left in the real code region are two DMA-dependent
   BC0F and two unassigned encodings inside the exception handler (the text's
   trailing 700 words are a data table). The translator handles 99.5% of the
@@ -302,10 +302,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **watch the tripwire (slice 31)**:
-  decision 0026 live (owner code-reviewed, 42/42); prove the
-  one-shot across chained replay and map the next waiter the live
-  pump path could consume. The
+- Next: **curriculum units past the stall (slice 32)**:
+  tripwire armed (replay owner-proven); inventory the remaining
+  service surface, then implement the first unit. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
