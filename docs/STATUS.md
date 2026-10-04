@@ -1,12 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 42 (seventh lesson) — the
-disc/file arc is now a worked explanation (real sizes from the
-pinned image, two file layers + movie phase, lazy validated
-GT4.VOL reader with the record limit stated; later
-PCDV/dual-layer/PRTS resolutions explicit). Owner checked refs +
-voice. Next is slice 43: the long-boot arc lesson (slices 43–47
-+ decisions 0019/0020/0021). This is the
+Updated 2026-10-04 after slice 43 (eighth lesson) — the
+long-boot arc is now a worked explanation (raw sectors, two
+volumes, PRTS cursors, font path, 243M idle proven starvation;
+tooling co-evolution and 0026-parentage explicit). Owner checked
+refs + voice. Next is slice 44: the M32 delay-march + tripwire
+arc lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1031,6 +1030,10 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 43 (lesson, 2026-10-04): **long-boot arc
+  written**. Sectors, volumes, cursors, font, 243M starvation;
+  0026-parentage explicit. Owner-checked
+  (`docs/lessons/m30-long-boot.md`).
 - Slice 42 (lesson, 2026-10-04): **disc/file arc
   written**. Real sizes, two layers + movie phase, lazy GT4.VOL
   reader with stated limit. Owner-checked
@@ -1393,11 +1396,11 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 43)**. Seven lessons committed and owner-checked; next
-  the long-boot arc (slices 43–47 + decisions 0019/0020/0021).
-  Tripwires armed; M35's promoter watched; and the curriculum's
-  remaining units (a counting timer with interrupt delivery and
-  the jump-table dispatch) stay listed in `docs/requirements.md`.
+  (slice 44)**. Eight lessons committed and owner-checked; next
+  the M32 delay-march + tripwire arc. Tripwires armed; M35's
+  promoter watched; and the curriculum's remaining units (a
+  counting timer with interrupt delivery and the jump-table
+  dispatch) stay listed in `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
