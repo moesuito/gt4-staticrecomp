@@ -26,9 +26,11 @@ therefore not a P06 regression.
   First divergence at service 1606. Confirmed.
 - Attribution (`git stash`, rebuild, same 1606 leg on the clean
   post-P05 tree): still exits 1. The first divergence pre-exists P06.
-  Confirmed. (Signature note: clean tree reports "register 29" first,
-  P06 tree reports the memory window first; the P06 rebind fix is the
-  suspected cause of the signature change — Hypothesis, for the hunt.)
+  Confirmed. (Slice 70 closed the follow-up question: the cause is
+  interrupt-delivery granularity — the interpreter injects before the
+  next instruction while the driver finishes the translated call, so
+  the same raise lands at different guest pcs. The rebind fix only
+  changed which difference reports first, not the fact of divergence.)
 - No-disc leg (`--services 3000 --compare-interpreter`): exits 1 with
   the same memory-window message. Both `gt4boot_services` variants
   were blind and red. Confirmed.
