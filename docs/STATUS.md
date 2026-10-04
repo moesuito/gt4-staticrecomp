@@ -1440,9 +1440,11 @@ as work proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/m14-live-observation.md`).
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **designation with the
-  owner**. Lessons backlog exhausted (19 items, all owner-checked);
-  event work parked behind tripwires; scout parked. Tripwires
+- Next technical milestone work: **watch-standing (owner
+  decision, 2026-10-04)**. Lessons backlog exhausted (19 items);
+  event work parked behind tripwires; scout parked. No new slices
+  until a tripwire trips (census moves, ring producer found, RPC
+  waiter appears, padman binds) or the owner calls. Tripwires
   armed; M35's promoter watched; and the curriculum's remaining
   units (a counting timer with interrupt delivery and the
   jump-table dispatch) stay listed in `docs/requirements.md`.

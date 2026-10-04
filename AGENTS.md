@@ -302,9 +302,9 @@ Live state: `docs/STATUS.md`. As of 2026-10-04:
   paired, binds exonerated): the stall is the never-firing delay
   dispatcher.
   dispatcher.
-- Next: **designation with the owner**:
-  lessons backlog exhausted (19 owner-checked items); event work
-  parked behind tripwires; scout parked. The
+- Next: **watch-standing (owner decision)**:
+  backlog exhausted, tripwires armed, scout parked — no new slices
+  until a tripwire trips or the owner calls. The
   curriculum's remaining units (the OSD configuration services, a
   counting timer with interrupt delivery, the remaining BIOS services
   and the jump-table dispatch) stay listed in `docs/requirements.md`.
