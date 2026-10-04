@@ -1,8 +1,9 @@
 # Lessons index — worked explanations for the GT4Recomp arcs
 
-Nineteen lessons cover the project's milestone arcs from pinned
+Twenty-one lessons cover the project's milestone arcs from pinned
 inputs (M2) through the asset recon (M33), plus the checkpoint
-system that underpins the long-boot work. Each lesson is a worked
+system that underpins the long-boot work, the autosave tooling,
+and the numbers-refresh method. Each lesson is a worked
 EXPLANATION in a shared voice, not a summary: objective and
 motivation, worked steps with real addresses and run outputs,
 honest dead ends, an implementation/representation table, and
@@ -24,7 +25,7 @@ explicitly as pointers, never smoothed over.
   able to answer, including at least one about a later
   reframing.
 
-## The nineteen lessons (curriculum order)
+## The twenty-one lessons (curriculum order)
 
 1. [M2–M5 foundation notes](m2-m5-foundation.md) — pinned disc
    manifest, two ELFs with identical scope, decoder plus Ghidra
@@ -50,44 +51,52 @@ explicitly as pointers, never smoothed over.
 7. [M25–M29 scale-up](m25-m29-scale-up.md) — shared-executor
    fallback, whole-text survey, indirect-flow boundaries,
    module dispatch, and the whole game as one module.
-8. [Checkpoint system](checkpoint-system.md) — snapshots at
+8. [Numbers refresh](numbers-refresh.md) — re-running the
+   big counts against rot: identical lifted survey, evolved
+   default survey, identical decode total with a corrected
+   split, and the method rules the next refresh inherits.
+9. [Checkpoint system](checkpoint-system.md) — snapshots at
    service boundaries (C1–C3), resume proven equal by
    differential, chained legs, and the idle budget: frontier
    work without full replays.
-9. [M30 BIOS services + bridge/driver](m30-bios-driver.md) —
+10. [Autosave tooling](autosave-tooling.md) — spec-first
+    rotating photos with quiet mode, leg-sliced implementation,
+    and the upsert defect the re-run suite caught: unattended
+    bounded checkpoints.
+11. [M30 BIOS services + bridge/driver](m30-bios-driver.md) —
    executing a translated module as a program, classifying its
    stops, and continuing through services or the interpreter.
-10. [M30 scheduler + kernel patches](m30-scheduler-patches.md) —
+12. [M30 scheduler + kernel patches](m30-scheduler-patches.md) —
     cooperative threads the game can block on, and the guest
     syscall patches its own helpers search.
-11. [M30 timer/OSD](m30-timer-osd.md) — hardware as storage
+13. [M30 timer/OSD](m30-timer-osd.md) — hardware as storage
     first (timer registers, OSD word, handler bookkeeping),
     thread creation end to end, and the translator bug the
     wider run caught.
-12. [M30 delay library](m30-delay-library.md) — traced wait
+14. [M30 delay library](m30-delay-library.md) — traced wait
     machinery, semaphore handle bits, and handler execution
     without nesting or mid-handler preemption: the first
     million-service run.
-13. [M30 SIF/RPC](m30-sif-rpc.md) — register/DMA layer, seeded
+15. [M30 SIF/RPC](m30-sif-rpc.md) — register/DMA layer, seeded
     model IOP, the first real injected interrupt, and the idle
     VBlank heartbeat: the boot comes alive.
-14. [M30 handshakes + service clock](m30-handshakes-clock.md) —
+16. [M30 handshakes + service clock](m30-handshakes-clock.md) —
     version/negotiation answers from the game's own constants,
     the SIF register mirror, and time as a function of the
     service sequence.
-15. [M30 disc/file](m30-disc-file.md) — the ISO behind file
+17. [M30 disc/file](m30-disc-file.md) — the ISO behind file
     opens, two file layers, and the lazy validated GT4.VOL
     reader with its explicit record limit.
-16. [M30 long boot](m30-long-boot.md) — raw sectors, two
+18. [M30 long boot](m30-long-boot.md) — raw sectors, two
     volumes, the per-handle cursor fix, and the 243M-service
     idle proven event-starved, not deadlocked.
-17. [M32 march + tripwire](m32-march-tripwire.md) — honest delay
+19. [M32 march + tripwire](m32-march-tripwire.md) — honest delay
     maturation leg by leg, sterile firings, and the specified
     first originating event with its tripwire.
-18. [M32 tripwire event](m32-tripwire-event.md) — one synthesized
+20. [M32 tripwire event](m32-tripwire-event.md) — one synthesized
     SIF pump packet with a four-item bar, and the load-bearing
     negative: the census unchanged.
-19. [M33 recon + assets](m33-recon-assets.md) — proving absence
+21. [M33 recon + assets](m33-recon-assets.md) — proving absence
     (dry pipe, unbuilt job system, silent watch) alongside the
     graded asset trailheads (cipher, pages, .gpb, binder).
 
@@ -95,7 +104,7 @@ explicitly as pointers, never smoothed over.
 
 Three single-milestone notes predate the backlog convention and
 are kept as-is: [M6](m6.md), [M7](m7.md), and [M8](m8.md). They
-are not audited below and are not part of the nineteen.
+are not audited below and are not part of the twenty-one.
 
 ## Closure audit (slice 57, 2026-10-04)
 
@@ -117,3 +126,13 @@ are not audited below and are not part of the nineteen.
   every `](../…)` target from the 19 lessons, check each file
   exists, and compare each header's restated counts against the
   cited sources.
+- **Addendum (slice 60, 2026-10-04, owner-designated):** index
+  extended 19→20 with the numbers-refresh lesson (placed after
+  scale-up, before checkpoint-system, the era it re-verifies);
+  entries renumbered; all 72 distinct relative targets across
+  all 21 lesson files re-checked, zero broken.
+- **Addendum 2 (slice 60 review, 2026-10-04, owner):** the
+  autosave lesson predates numbers-refresh but was never indexed
+  — added as entry 10 (after checkpoint-system, which it
+  extends), entries renumbered to 21 total; targets re-checked
+  by the owner, zero broken.
