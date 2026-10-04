@@ -1,12 +1,14 @@
 # Project status
 
-Updated 2026-10-04 after slice 83 (D2/D4/D6) — publisher never called
-(zero referrers, live leg confirms), delete-with-waiters gap named
-(real BIOS deletes+frees, model refuses; no behavior change), live
-reference legs shopped but not bought. Publisher body shape
-owner-verified. 53/53 + Python 73 owner-gated. Open: H1/H2, D2 list,
-F-candidate revival condition. Next: slice 84, H1/H2 tiebreak attempt
-(waiter fate in reference). This is the
+Updated 2026-10-04 after slice 84 (H1/H2 tiebreak attempted, D4
+closed on the ROM) — H2-bypass falsified (four live args prove the gate
+ran in the reference), H1 viable with a ROM-confirmed mechanism
+(delete wakes all waiters; no model change), H2′ viable (pulse-first
+interleave), endpoint-equivalence proven (no offline discriminant;
+exact experiment named). 53/53 + Python 73 owner-gated. Open: H1/H2′,
+D2 list, F-candidate trigger (mechanism satisfied, invoker still
+missing). Next: slice 85 (staged-anchor or live-watchpoint attempt,
+or P10 traffic with F's mechanism banked). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1051,6 +1053,12 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
+- Slice 84 (tiebreak, 2026-10-04): **H2-bypass falsified, D4
+  closed**. Gate ran (four args, owner re-read); delete wakes all.
+  Owner-checked (`docs/reverse-engineering/slice84-h1h2-tiebreak.md`).
+- Slice 84 (tiebreak, 2026-10-04): **H2-bypass falsified, D4
+  closed**. Gate ran (four args, owner re-read); delete wakes all.
+  Owner-checked (`docs/reverse-engineering/slice84-h1h2-tiebreak.md`).
 - Slice 83 (D2/D4/D6, 2026-10-04): **publisher silent, gap named**.
   Zero callers live+static; delete-gap without behavior change.
   Owner-checked (`docs/reverse-engineering/slice83-discriminants.md`).
