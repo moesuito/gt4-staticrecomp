@@ -1,12 +1,15 @@
 # Project status
 
-Updated 2026-10-04 after slice 85 (staged/live attempt, honest
-negative) — no intermediate anchors exist (backup = 3rd copy of the
-same menu endpoint); live blocked at the GUI gate (Qt-only, no CLI
-smoke), stopped per slice rules with nothing installed. H1/H2′ still
-tied; H1 mechanism banked. 53/53 + Python 73 owner-gated. Next:
-slice 86, P10 traffic with the F mechanism banked (paper-accept the
-wake-all chain, static remainder of the invoker). This is the
+Updated 2026-10-04 after slice 86 (P10 with F banked on paper —
+DRAFT kept, nothing shipped): the retry-re-resolve step is contradicted
+game-side (both wrappers retry to the queue-op with the cached handle,
+never re-resolve — owner-verified shape at 0x00578500), the -1 error
+clause is contested inside our own record, and the invoker is still
+missing after wider scans. Decision 0038 stays DRAFT; delete_sema
+refusal intact. 53/53 + Python 73 owner-gated. Next: slice 87 (41h
+re-read for E2 + live shopping list). Open question for owner:
+interactive PCSX2 session yes/no/later. This is the
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1051,6 +1054,18 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
+- Slice 86 (P10, 2026-10-04): **DRAFT kept, nothing shipped**.
+  Retry-re-resolve contradicted game-side (both wrappers retry to the
+  queue-op with the cached handle); -1 clause contested; invoker still
+  missing after wider scans (jal/pointer/lui-64/jalr + late-cluster
+  bodies mapped, D6 open). Decision 0038 stays DRAFT (banked mechanism
+  + corrections + missing pieces). 53/53 + Python 73
+  (`docs/reverse-engineering/slice86-p10-traffic.md`,
+  `docs/decisions/0038-f-first-event-mechanism-draft.md`).
+- Slice 86 (paper, 2026-10-04): **F blocked x3, DRAFT kept**.
+  Retry never re-resolves (owner-verified); -1 contested; invoker
+  missing. Nothing shipped. Owner-checked
+  (`docs/decisions/0038-f-first-event-mechanism-draft.md`).
 - Slice 85 (attempt, 2026-10-04): **offline exhausted, live
   blocked**. Backup = same endpoint; GUI-only gate stops live work.
   Owner-checked (`docs/reverse-engineering/slice85-staged-live-attempt.md`).
