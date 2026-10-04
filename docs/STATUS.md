@@ -1,14 +1,12 @@
 # Project status
 
-Updated 2026-10-04 after slice 80 (recreation path, static) — the
-BUILD/TEARDOWN dispatcher 0x00548950 (a1==0xFFFF, a0 selects) owns
-recreation via boot-step table entry #27; TEARDOWN unreachable;
-gate worker waits on [B+0x3C]≠0 (observed 0); our boot hits 3
-independent latches (no re-create, no invoker, teardown would jam on
-delete-with-waiters). P10 needs M32 originating traffic; the
-desempate (H1 vs H2) stays armed. 53/53 + Python 73 owner-gated,
-dispatcher shape owner-verified. Next: slice 81, M32 traffic design
-(what the first originating event must carry). This is the
+Updated 2026-10-04 after slice 81 (traffic design, DRAFT 0037) — no
+single deliverable event releases W_B: unlock ordered as sequence +
+ranked candidates (phase-step first, but both tables have zero static
+referrers — first deliverable is the walker hunt D5); 8 fabrications
+prohibited; falsifiable acceptances set. 53/53 + Python 73
+owner-gated. Next: slice 82, walker hunt (who reads the table
+pointer). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1053,6 +1051,10 @@ proceeds. Details live in the linked evidence documents.
   lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
   sibling object; 5M object dump byte-identical to 3M. P10 stays shut
   (`docs/reverse-engineering/slice78-sema63-hunt.md`).
+- Slice 81 (design, 2026-10-04): **no savior packet**.
+  Ordered unlock + ranked candidates + 8 prohibitions; first job is
+  the walker hunt. Owner-checked
+  (`docs/decisions/0037-first-unblocking-traffic-draft.md`).
 - Slice 80 (static, 2026-10-04): **recreation path mapped**.
   Dispatcher + BUILD entry #27, TEARDOWN unreachable, 3 latches;
   P10 needs originating traffic. Dispatcher owner-verified.
