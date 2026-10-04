@@ -1,11 +1,11 @@
 # Project status
 
-Updated 2026-10-04 after slice 36 (first lesson) — the M30
-delay-library arc is now a worked explanation (callback trace,
-handle bits 0012, timer nodes, handler-execution fix 0013, 1M
-services; M32 reframe handled as evolution). Owner checked
-fidelity + voice. Next is slice 37: the SIF/RPC arc lesson
-(slices 7–8 + decisions 0009/0010). This is the
+Updated 2026-10-04 after slice 37 (second lesson) — the M30
+SIF/RPC arc is now a worked explanation (register/DMA layer,
+seeded IOP, first injected interrupt, RPC replies, peripheral
+windows, idle VBlank to 3,000 identical services; 0026 correction
+explicit). Owner checked fidelity + voice. Next is slice 38: the
+thread-scheduler + kernel-patches lesson. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1030,6 +1030,11 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
+- Slice 37 (lesson, 2026-10-04): **M30 SIF/RPC arc
+  written**. Register/DMA layer, seeded IOP, first injected
+  interrupt, RPC replies, peripheral windows, idle VBlank to 3,000
+  identical services; 0026 correction explicit. Owner-checked
+  (`docs/lessons/m30-sif-rpc.md`).
 - Slice 36 (lesson, 2026-10-04): **M30 delay-library arc
   written**. Callback trace, handle bits, timer nodes,
   handler-execution fix; M32 reframe as evolution; checkpoint
@@ -1367,11 +1372,11 @@ proceeds. Details live in the linked evidence documents.
 - EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
   lessons and retroactive M2-M5 notes remain open.
 - Next technical milestone work: **the lessons backlog
-  (slice 37)**. First lesson committed and owner-checked; next the
-  SIF/RPC arc (slices 7–8 + decisions 0009/0010), then the rest of
-  M9–M30. Tripwires armed; M35's promoter watched; and the
-  curriculum's remaining units (a counting timer with interrupt
-  delivery and the jump-table dispatch) stay listed in
+  (slice 38)**. Two lessons committed and owner-checked; next the
+  thread-scheduler + kernel-patches foundation (slices 3–4 +
+  decisions 0005/0006). Tripwires armed; M35's promoter watched;
+  and the curriculum's remaining units (a counting timer with
+  interrupt delivery and the jump-table dispatch) stay listed in
   `docs/requirements.md`.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
