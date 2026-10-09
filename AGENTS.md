@@ -122,21 +122,21 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 do
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **the slice-89 fix holds and the frontier moved** — the boot
-  passes the gate (~3.3k services) and runs 18.5M services (1G-step
-  budget) with frames flowing, then settles into a steady render loop
-  frozen from ~10k (main thread sleeping, workers rendering, all RPC
-  traffic done; VIF1 341,054 chains / 144.6 MB). The reference proceeds
-  (notice → movie → menu); the divergence window is services ~3.5k–10k
-  (`docs/reverse-engineering/slice90-post-gate-steady-loop.md`).
+- Frontier: **the post-gate wait is thread-side** (slice 91) — from
+  ~3,700 services threads 1/9/13 sleep forever; the main thread waits in
+  the game's message-receive (ra 0x0057689C) for a **completion message
+  from a file/stream job** (job object on its stack 0x01FFFE00; callbacks
+  in the 0x004Axxxx stream region; start path via the 0x0044Dxxx
+  descriptor family). The producer never fires; all RPC traffic is done
+  before ~10k and the workers render frames forever
+  (`docs/reverse-engineering/slice91-post-gate-wait.md`).
 - Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89
   (code unchanged since). Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 91 — identify the post-gate wait** (compare the model's
-  ~10k state with the reference's t=14s state by meaning; trace services
-  ~3.5k–10k; the card-service completion path is a candidate); check the
-  thread-id space for the same class of bug. Draft decisions 0037/0038
-  are superseded (marked in their files).
+- Next: **slice 92 — find the message-post function and its expected
+  trigger** (0x00576xxx module callers; compare the job object with the
+  reference's t=14s state; inspect the 0x0044Dxxx stream chain at ~10k).
+  Draft decisions 0037/0038 are superseded (marked in their files).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

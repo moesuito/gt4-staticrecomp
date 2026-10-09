@@ -1,13 +1,14 @@
 # Project status
 
-Updated 2026-10-09 after slice 90 (post-gate exploration; `main` =
-`180e1b3`): the slice-89 fix holds — the boot passes the gate and runs
-18.5M services (1G-step budget) with frames flowing. It then settles into
-a steady render loop frozen from ~10k services (main thread sleeping,
-workers rendering, all RPC traffic done; VIF1 341,054 chains / 144.6 MB
-at the stop). The reference proceeds (notice → movie → menu); the
-divergence window is services ~3.5k–10k — the next hunt. Gates: 53/53
-CTest + Python 73 (slice 89; code unchanged since). This is the
+Updated 2026-10-09 after slice 91 (post-gate wait identified; `main` =
+`c8443ed`): the machine's freeze is thread-side — from ~3,700 services
+threads 1/9/13 sleep forever (the main thread inside the game's
+message-receive, ra 0x0057689C) waiting for a **completion message from a
+file/stream job** (job object on thread 1's stack 0x01FFFE00; callbacks in
+the 0x004Axxxx stream region; start path via the 0x0044Dxxx descriptor
+family). The producer never fires; all RPC traffic is done before ~10k.
+Next: find the message-post function and its expected trigger (slice 92).
+Gates: 53/53 CTest + Python 73 (slice 89; code unchanged). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1694,15 +1695,14 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 91: identify the post-gate wait — compare the model's ~10k
-   state with the reference's t=14s state by meaning and trace services
-   ~3.5k–10k (the main thread's sleep origin and its intended waker;
-   the card-service (MCSERV) completion path is a candidate).
-2. Check the thread-id space for the same class of bug the semaphores
-   had (open from slices 88/89).
-3. Performance: resume entries or inline syscall calls to shrink the
+1. Slice 92: find the message-**post** function in the 0x00576xxx module
+   and its callers; determine which producer should fire for the main
+   thread's stream job. Compare the job object's state with the
+   reference's t=14s state by meaning; inspect the stream descriptor
+   chain (0x0044Dxxx) at ~10k in the model.
+2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
-4. Keep the journal and this file current after every working session.
+3. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -1831,4 +1831,7 @@ proceeds. Details live in the linked evidence documents.
   services at the 200M-step budget; 53/53 + Python 73. Slice 90:
   1G-step march to 18.5M services; steady render loop frozen from ~10k
   (main sleeping, workers rendering, RPC done); divergence window
-  ~3.5k–10k named; provenance reconfigure.
+  ~3.5k–10k named; provenance reconfigure. Slice 91: the wait is a
+  file/stream job completion message (main thread in the message-receive
+  0x005767E0 via the job framework; producer never fires); thread-id
+  space closed.
