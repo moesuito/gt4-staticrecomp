@@ -273,3 +273,11 @@ bytes in tracked fixtures. Then capture matched real update 1000-us request,
 dispatch, runnable root interval and continuation. Keep software rendering,
 no cards/input, pin inputs/binary/config/captures, restore reference slots and
 clipboard. The menu and production root exclusion remain unchanged.
+
+Publication provenance: code/tests/docs committed as `2b46e98`, fast-forward
+merged into main. Post-merge build regenerated the synthetic header and
+rebuilt the two affected suites warning-free; gt4boot still no work. Re-ran
+ee_driver, ee_module_exit and the 90k boot differential plus build fixture:
+**4/4 green (14.24 s)**, differential 13.93 s. No production source changed.
+This closing note is documentation-only. Main is published to origin after
+this verification; no upstream mutation or history rewrite.

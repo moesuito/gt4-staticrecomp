@@ -46,6 +46,9 @@ work-mismatch tripwire. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
+Publication: slice-99 code `2b46e98` merged into main; post-merge affected
+suite/90k differential recheck 4/4 green (14.24 s), production target unchanged.
+
 ## Where we are
 
 - Target: Gran Turismo 4 (USA) v2.00, serial SCUS-97328, pinned in
