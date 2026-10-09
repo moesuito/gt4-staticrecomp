@@ -1,5 +1,10 @@
 # HANDOFF — continuing GT4Recomp on the secondary machine
 
+> ARCHIVAL (2026-10-08): this file describes a machine move at M29
+> (25/25 CTest). Do not use it for state — read `docs/STATUS.md`
+> (53/53 CTest at `main` = `b1ce75f`), `PLAN.md` and `AGENTS.md`
+> instead. Kept for its copy-folder inventory (§2) only.
+
 > **Resumo rápido (para o dono)**
 > - Esta pasta foi feita para ser **copiada inteira** (não clonada): ela já
 >   contém o jogo (ISO + CORE.GT4 + ELF reconstruído), o Ghidra + JDK 21, a

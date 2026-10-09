@@ -1,6 +1,6 @@
 # Decision 0036: widen the differential to the whole semantic machine (P08)
 
-Date: 2026-10-04. Slice 74. Status: accepted (implemented, green, uncommitted).
+Date: 2026-10-04. Slice 74. Status: accepted (implemented, green, committed).
 
 ## Context
 

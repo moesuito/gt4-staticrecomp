@@ -1,14 +1,18 @@
 # Project status
 
-Updated 2026-10-04 after slice 87 (E2 adjudicated on the ROM worker —
-delete-wake delivers NO -1, waiter resumes with park v0=-2 intact; final
-minimal live shopping list specified, no live run): DRAFT 0038 stays DRAFT
-(E1 contradicted game-side, E3 unmet and load-bearing — no invoker; E2 now
-adjudicated against the -1 clause, acceptance needs the no-error reword).
-Delete_sema refusal intact. 53/53 + Python 73 owner-gated. Next: an
-interactive PCSX2 session per the slice-87 list (S0 calibration first),
-or owner direction. Open question for owner: interactive PCSX2 session
-yes/no/later. This is the
+Updated 2026-10-08 (docs refresh for external validation, `main` =
+`b1ce75f`, green): this pass updates every stale header, count and
+next-action in the doc set without changing history or evidence. Live
+frontier unchanged since slice 87 (2026-10-04): E2 adjudicated on the
+ROM worker (delete-wake delivers NO -1, waiter resumes with park v0=-2
+intact; final minimal live shopping list specified, no live run):
+DRAFT 0038 stays DRAFT (E1 contradicted game-side, E3 unmet and
+load-bearing — no invoker; E2 now adjudicated against the -1 clause,
+acceptance needs the no-error reword). Delete_sema refusal intact.
+53/53 + Python 73 owner-gated. Next: an interactive PCSX2 session per
+the slice-87 list (S0 calibration first), or owner direction — plus the
+validator's findings from this refresh. Open question for owner:
+interactive PCSX2 session yes/no/later. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1035,35 +1039,14 @@ proceeds. Details live in the linked evidence documents.
   verification run passes the 15,010,045-service fault to its step limit
   with **41,919,339 services handled**, stopping cleanly
   (`docs/reverse-engineering/m30-slice46-the-copy-out-cursor.md`).
-- Slice 73 (P07, 2026-10-04): **RPC telemetry + strict mode, no
-  reply changed**. Per-pair observation (pc, thread, sizes, buffers,
-  request words), five honest classes, `--strict-rpc` stops the first
-  unknown (0x80000592/0) with full context; 90k leg 22 pairs / 32
-  unknown calls, differential green, rpc_model 1, decision 0035
-  accepted (`docs/reverse-engineering/slice73-p07-rpc-telemetry.md`,
-  `docs/decisions/0035-p07-rpc-telemetry.md`).
-- Slice 72 (option A, 2026-10-04): **contract landed, 1606 closed**.
-  Emitter poll after falling-through sw (STR in a completing CHCR);
-  1606 + 90k differentials green, recensus with zero divergent pairs;
-  translation_model 2, WILL_FAIL removed, decision 0034 accepted
-  (`docs/reverse-engineering/slice72-optiona-prototype.md`,
-  `docs/decisions/0034-delivery-granularity-contract.md`).
-- Slice 78 (sema-63 hunt, 2026-10-04): **guest-side knot, no producer
-  in reach**. Full [0,5M] census = exactly 5 init events (two fresh
-  lifecycles; resumes contribute zero); C-slot 0x147 exonerates the
-  sibling object; 5M object dump byte-identical to 3M. P10 stays shut
-  (`docs/reverse-engineering/slice78-sema63-hunt.md`).
-- Slice 86 (P10, 2026-10-04): **DRAFT kept, nothing shipped**.
-  Retry-re-resolve contradicted game-side (both wrappers retry to the
-  queue-op with the cached handle); -1 clause contested; invoker still
-  missing after wider scans (jal/pointer/lui-64/jalr + late-cluster
-  bodies mapped, D6 open). Decision 0038 stays DRAFT (banked mechanism
-  + corrections + missing pieces). 53/53 + Python 73
-  (`docs/reverse-engineering/slice86-p10-traffic.md`,
-  `docs/decisions/0038-f-first-event-mechanism-draft.md`).
 - Slice 87 (E2/live-list, 2026-10-04): **wake is -2, no -1**.
   ROM worker re-read; live list final, no live run. Owner-checked
   (`docs/reverse-engineering/slice87-e2-livelist.md`).
+- Joint live-session playbook (2026-10-04, owner-ordered): S0 calibration
+  first, then staged savestates, delete watchpoint and invoker hunt, with
+  stop rules (`docs/plans/live-pcsx2-session-playbook.md`). Stock-build
+  verdict recorded alongside: normal PCSX2 suffices, modified build only
+  on demand (`docs/plans/pcsx2-tooling-note.md`).
 - Slice 86 (paper, 2026-10-04): **F blocked x3, DRAFT kept**.
   Retry never re-resolves (owner-verified); -1 contested; invoker
   missing. Nothing shipped. Owner-checked
@@ -1084,7 +1067,8 @@ proceeds. Details live in the linked evidence documents.
 - Slice 81 (design, 2026-10-04): **no savior packet**.
   Ordered unlock + ranked candidates + 8 prohibitions; first job is
   the walker hunt. Owner-checked
-  (`docs/decisions/0037-first-unblocking-traffic-draft.md`).
+  (`docs/reverse-engineering/slice81-traffic-design.md`,
+  `docs/decisions/0037-first-unblocking-traffic-draft.md`).
 - Slice 80 (static, 2026-10-04): **recreation path mapped**.
   Dispatcher + BUILD entry #27, TEARDOWN unreachable, 3 latches;
   P10 needs originating traffic. Dispatcher owner-verified.
@@ -1108,7 +1092,8 @@ proceeds. Details live in the linked evidence documents.
   (`docs/reverse-engineering/slice75-p09-fresh-prefix.md`).
 - Slice 74 (P08, 2026-10-04): **widened comparator**.
   Canonical snapshots, first-divergence diagnosis, ee_compare suite.
-  Owner-checked (`docs/decisions/0036-p08-widened-state-comparison.md`).
+  Owner-checked (`docs/reverse-engineering/slice74-p08-comparator.md`,
+  `docs/decisions/0036-p08-widened-state-comparison.md`).
 - Slice 73 (P07, 2026-10-04): **RPC telemetry + strict mode**.
   Per-pair classes, all-4-kernels flag, inventory test; strict verified
   live by owner. No reply changed. Owner-checked
@@ -1129,7 +1114,8 @@ proceeds. Details live in the linked evidence documents.
   Walker, tap, rebind fix; owner added 1 MiB tap cap, loud gate
   (FAIL regex + WILL_FAIL on both services legs) and the 1606
   incident record. Owner-checked
-  (`docs/decisions/0033-p06-dma-payload-and-chains.md`,
+  (`docs/reverse-engineering/slice69-p06-dma-payload.md`,
+  `docs/decisions/0033-p06-dma-payload-and-chains.md`,
   `docs/reverse-engineering/incident-1606-differential-and-blind-gate.md`).
 - Slice 68 (P05, 2026-10-04): **JR capture + explicit module exits**.
   Pre-slot ra capture, BoundaryKind returns with propagation,
@@ -1141,18 +1127,24 @@ proceeds. Details live in the linked evidence documents.
 - Slice 67 (P04, 2026-10-04): **handler args + explicit idle**.
   Pairs, (cause, argument, pc) frames, idle sentinel, dispatch on
   return; interrupt_model 3. Owner-checked, a2 independently verified
-  against pinned ps2sdk (`docs/decisions/0031-p04-handler-arguments-and-idle.md`).
+  against pinned ps2sdk (`docs/reverse-engineering/slice67-p04-handler-idle.md`,
+  `docs/decisions/0031-p04-handler-arguments-and-idle.md`).
 - Slice 66 (P03, 2026-10-04): **one advance machine**.
   Shared remainders + accumulator, quanta unchanged, time_model 3.
-  Owner-checked (`docs/decisions/0030-p03-advance-machine.md`).
+  Owner-checked (`docs/reverse-engineering/slice66-p03-advance-machine.md`,
+  `docs/decisions/0030-p03-advance-machine.md`).
 - Slice 65 (P01+P02, 2026-10-04): **timers + interrupts rebuilt**.
   16-bit units, W1C, separate INTC/DMAC domains, DMAC 0/1/2 routing,
   models at v2. Owner-checked
-  (`docs/decisions/0029-p01-p02-timers-interrupts.md`).
+  (`docs/reverse-engineering/slice65-p01-p02-timers-interrupts.md`,
+  `docs/decisions/0029-p01-p02-timers-interrupts.md`).
 - Slice 64 (P00, 2026-10-04): **checkpoint baseline done**.
   GT4CPT2 + provenance + per-domain refusal; old files forensic;
   restore bypasses guest-write path. Owner-checked
-  (`docs/decisions/0028-p00-checkpoint-baseline-and-compatibility.md`).
+  (`docs/reverse-engineering/slice64-p00-baseline.md`,
+  `docs/decisions/0028-p00-checkpoint-baseline-and-compatibility.md`;
+  the earlier mapping plan `docs/plans/checkpoint-resume-mapping.md`
+  is superseded by the implementation).
 - Slice 63b (plan, 2026-10-04): **PLAN.md adopted as the roadmap**.
   Menu-first to G3, P00 first, OPUS overclaims corrected with
   prohibitions (`PLAN.md` at root).
@@ -1312,7 +1304,14 @@ proceeds. Details live in the linked evidence documents.
   hooks (95k fresh + validation legs; non-blindness owner-verified).
   No cheap stimulus left untried — stated, not re-run. Hook D
   parked behind the milestone precondition
-  (`docs/reverse-engineering/m33-slice28-asset-dumps.md`).
+  (`docs/reverse-engineering/m33-slice28-asset-dumps.md`). The
+  parallel asset trailheads live on as a viewer track
+  (`docs/plans/asset-viewer-roadmap.md`,
+  `docs/reverse-engineering/asset-page-cipher-static.md`,
+  `docs/reverse-engineering/asset-texture-gpb-recon.md`,
+  `docs/reverse-engineering/asset-tex0-data-origins.md`,
+  `docs/reverse-engineering/asset-gif-emitter-hunt.md`,
+  `docs/reverse-engineering/asset-gs-chute-indirect.md`).
 - Slice 27 (M33 watch, 2026-10-03): **total silence, probe
   verified**. Zero stores to `[0x006207F4]` / `[0x0087E190]` over
   2,000 services (selftest PASS on all five paths; 152 lines
@@ -1598,24 +1597,24 @@ proceeds. Details live in the linked evidence documents.
   registers (the savestate's own eeMemory re-verifies the text image with 0
   differences). Savestate anchors: PINE slot 9 and the owner's slot 1
   (`docs/reverse-engineering/m14-live-observation.md`).
-- EXPLAIN: lessons written for M6, M7 and M8 (`docs/lessons/`); the M9-M30
-  lessons and retroactive M2-M5 notes remain open.
-- Next technical milestone work: **tripwire re-check
-  (slice 62)**. Curriculum closed at 22 (owner-verified counts):
-  re-read the frontier census live plus full gates — first
-  recurring verification. Tripwires armed; M35's promoter
-  watched; and the curriculum's remaining units (a counting
-  timer with interrupt delivery and the jump-table dispatch)
-  stay listed in `docs/requirements.md`.
+- EXPLAIN: lessons written for M0–M8 and M9–M33 arcs — 22 lessons
+  indexed and link-audited (`docs/lessons/`, closure audit in its
+  README; curriculum closed at slice 61).
+- Next technical milestone work: **the validator's findings from
+  this refresh, then an interactive PCSX2 session or owner direction**.
+  The curriculum's remaining units (a counting timer with interrupt
+  delivery and the jump-table dispatch) stay listed in
+  `docs/requirements.md`, now read alongside `PLAN.md` gates G0–G7.
 
 ## Environment (this machine, `C:\Antigravity\gt4-staticrecomp`)
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 32/32 CTest (the translation tests, `gt4run` and `gt4boot` exist
-  only where the local CORE does; `gt4boot_build` builds the whole-program
-  module on demand, 140 s); Python suite 73 collected (67 run, 6 skip without
-  the M3 reference ELF; the savestate test finds the repository copy first).
+- Tests: 53/53 CTest + Python 73 (67 run, 6 skip) owner-gated at
+  `main` = `b1ce75f` (2026-10-04; docs-only refresh 2026-10-08 changes
+  no code, so the gates stand). The translation tests, `gt4run` and
+  `gt4boot` exist only where the local CORE does; `gt4boot_build`
+  builds the whole-program module on demand.
 - Local inputs (ignored): ISO at the repository root;
   `private/fingerprint-check/CORE.GT4` (2,020,861 bytes, hash matches the
   pinned manifest); `private/reconstructed/SCUS_973.28.elf` (6,123,004 bytes,
@@ -1641,84 +1640,66 @@ proceeds. Details live in the linked evidence documents.
 - The M3 reference ELF (PDTools GT4ElfBuilderTool, hash-pinned in
   `docs/inputs/usa-v2.00-reference.json`) is not regenerated here, so 6
   optional native CLI tests skip. Rebuilding it is an optional future task.
-- Retroactive lesson notes for M2-M5 are not written; the M9-M30 lessons are
-  pending.
-- Unmodeled words left in the real code region (4): two BC0F (their condition
-  is the DMA-derived COP0 line) and two words at unassigned function 0x28
-  inside the exception handler. The text section's trailing 700 words are a
-  data table and are excluded from instruction counting. VCALLMS/VU0-memory
-  forms stay out of scope by design (VU micro execution).
+- Retroactive lesson notes for M2-M5 are written (entries 1–2 of the
+  index); the 22-lesson curriculum closed at slice 61 and was re-audited
+  at slices 60–61 (zero broken links).
+- Unmodeled words left in the real code region (30 total: 26 COP2 macro
+  function-0x38 words plus the known four — two BC0F whose condition is
+  the DMA-derived COP0 line and two words at unassigned function 0x28
+  inside the exception handler; slice-58 address audit). The text
+  section's trailing 700 words are a data table and are excluded from
+  instruction counting. VCALLMS/VU0-memory forms stay out of scope by
+  design (VU micro execution).
 - Live single-stepping is unsolved (savestate parsing covers offline
   snapshots); the freeze layout is coupled to the emulator build.
-- The driver's classification is an inference from the stop pc: a jr-ra
-  return is recognized because pc equals ra (a trapping stop at that exact
-  address would be misreported; none observed). The interpreter path uses the
-  step outcome instead and is exact. Recorded in
-  `docs/decisions/0004-driver-boundary-classification.md`.
+- The driver's classification is explicit since P05: every generated
+  function returns its stop reason (BoundaryKind) instead of inferring
+  a return from pc == ra; `classify_boundary` keeps the word view for
+  tests and reports. The interpreter path uses the step outcome instead
+  and is exact. Recorded in
+  `docs/decisions/0004-driver-boundary-classification.md` and
+  `docs/decisions/0032-p05-jr-and-explicit-module-exit.md`.
 - The interpreter bridge resolves boundaries by interpreting the gaps between
   module entries (correctness first; 278,120 instructions in the boot run).
   The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now reaches the game's running state**: the model IOP answers
-  the RPC binds and calls (version query with the game's compatibility
-  constant; empty results otherwise), survives the IOP reset, and the
-  **idle VBlank source** (decision 0010) wakes the game's threads. The run
-  hits the 3,000-service limit inside the runtime with the state identical
-  to the interpreter at 7,508,945 instructions. The **timer tick and DMA
-  completion** sources of decision 0011 run the game's TIM2 handler every
-  idle frame (it reprograms COMP) and complete the VIF1/GIF chains, the
-  **semaphore handle shape** of decision 0012 (ids 3, 7, 11, ...) carries
-  the long run from 3,645 to **9,765 services**, and the **handler execution
-  fix** of decision 0013 (no nested injections, no preemption inside a
-  handler) unblocks the delay callbacks: the boot now runs **continuously
-  (1,000,000 services, 33,650,798 interpreted steps, about 29 seconds)**.
-  The **service handshakes** of decision 0014 then unblock the loading path:
-  the version queries answer the game's own compatibility constants, the
-  disc subsystem's status query and the fileio/CDVD negotiation pass, and
-  the boot binds the disc subsystem's server family and creates its
-  worker-thread pool — an **11-thread runtime with string-coded servers**
-  — reaching the **200,000,000-step limit inside the 0x0058F000 subsystem
-  init** (pc 0x00590A18). The **register mirror and the liblgdev sync** of
-  decision 0015 then clear that init: the command-layer spin at 0x00590A18
-  ends when the model mirrors the game's `SET_SREG` back, the device library
-  binds (server 0x046D046D) and its sync passes with the completed status
-  0x010B2400 — the boot then runs its **device polling round** (1,000,000
-  services, 1,710,779 module calls, 46,608,011 interpreted steps). The
-  **service clock** of decision 0016 gives the model a time base that
-  advances while code runs (one millisecond per handled service, the delay
-  library's unit, called identically by both engines), so the main thread's
-  delays expire and the long run ends at a service boundary with the worker
-  threads ready (1,193,971 module calls, 32,878,366 interpreted steps). The
-  remaining frontier: the polling round's calls' real replies.
+- **The boot now reaches the game's running state and parks
+  event-starved**: the arc above (decisions 0004–0021) carries it through
+  init, threads, SIF/RPC, disc, archive, sound and font phases; the
+  contract slices P00–P10 (decisions 0028–0036) then rebuilt the model's
+  time, interrupt, DMA, exit-reason, RPC-telemetry and comparison
+  machinery with the differential green; fresh legs march to a
+  stationary 5M limit-cycle (slices 75–76) and the sema-63 wait is a
+  guest-side knot (slices 77–78), with the reference showing recreated
+  semaphores at menu phase (slice 79). The remaining frontier: the
+  originating traffic or later phase of draft decisions 0037/0038.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs up to twelve threads under VBlank and timer
   wakeups, with thread switches deferred while a handler runs (decision
   0013). No timer preemption is modeled (decision 0005); equal-priority
   dispatch is creation order, not the kernel's rotation; pending causes are
-  delivered at driver unit boundaries (module calls and interpreted steps),
-  so busy code is interrupted like the hardware, and the idle source's
+  delivered at driver unit boundaries plus the emitter poll points after
+  DMA-starting stores (decision 0034), so busy code is interrupted like
+  the hardware, and the idle source's
   200,000-interrupt budget only bounds a machine where every thread waits.
-- The `jr ra` fall-through bug found in the fifth slice shows the limit of
-  hand-picked differential modules: widen the verified surface
-  (`gt4boot --compare-interpreter`) when new control-flow shapes appear.
+- The `jr ra` fall-through bug found in the fifth slice was fixed at the
+  emitter in P05 (capture before the slot, explicit exit reasons); keep
+  widening the verified surface (`gt4boot --compare-interpreter`) when new
+  control-flow shapes appear.
 - A module call runs to its own boundary and cannot be interrupted; the work
   budget counts interpreted instructions and module calls, so a loop inside a
   module is not bounded by it. No such loop has been hit before a boundary.
 
 ## Next actions
 
-1. M30 slice 22: **the library's parse of the root directory block** —
-   trace the game's own driver parse (the library's scan at 0x00548E20 and
-   the five-byte comparison at 0x00548E90) to see what it expects after
-   reading the ISO's volume descriptor and root directory, and answer it
-   from the disc; the acceptance evidence is
-   `gt4boot --compare-interpreter --disc <iso>` through the loads with the
-   state identical.
+1. Validator findings from this refresh, then an interactive PCSX2
+   session per the slice-87 list or owner direction (S0 calibration
+   first; without live observation H1/H2′ and the F traffic stay as
+   documented).
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
-3. The M9-M30 lessons and retroactive M2-M5 notes if useful.
-4. Keep the journal and this file current after every working session.
+3. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -1819,3 +1800,20 @@ proceeds. Details live in the linked evidence documents.
   2.2 variant the GT4FS packer also writes, with its page table at +0x20
   and pages that do not inflate — deflate and archive-offset reads were
   tried and rejected).
+- [2026-10-03](journal/2026-10-03.md) — M30 slices 22–50 (volume protocol,
+  fault diagnosis, sound-object stream, PRTS block cache, copy-out cursor,
+  font load, 243M-service idle, starvation proof, sema mapping, stimulus
+  exhaustion), M32 slices 1–4 (server inventory, job ring, delay dispatcher),
+  M33 recon (dry pipe through asset dumps), decision 0026 (first SIF event,
+  tripwire armed), decision 0027 (autosave spec).
+- [2026-10-04](journal/2026-10-04.md) — slices 55–87: autosave live, lessons
+  backlog closed at 22, PLAN.md adopted with gates G0–G7, contracts P00–P10
+  (decisions 0028–0036), incident 1606 found and closed, fresh prefix to
+  800k, 5M march with first natural wake, sema-63 guest-side knot, PCSX2
+  reference observation, walker/BUILD analysis, traffic design draft 0037,
+  F-mechanism draft 0038, E2 adjudicated; joint live-session playbook and
+  stock-build verdict recorded.
+- [2026-10-08](journal/2026-10-08.md) — docs-only refresh for external
+  validation: three read-only audits, stale headers/counts/next-actions
+  fixed across AGENTS/STATUS/requirements/lessons/plans/HANDOFF/
+  environment/PLAN/README, save-screen G3 note, zero missing links.

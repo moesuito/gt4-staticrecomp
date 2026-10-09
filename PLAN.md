@@ -1277,6 +1277,16 @@ Depois de G3, apresentar:
 
 O próximo foco pode ser áudio, primeira corrida, saves ou desempenho básico, conforme o resultado.
 
+### 14.5 Se o boot exigir save antes do menu
+
+"Menu inicial" acima é o que o jogo mostrar naturalmente — se um boot
+sem save abrir uma tela de criação de save antes do menu principal,
+ESSA tela é a forma válida de G3, não um desvio. Consequência de
+planejamento (nota do dono, 2026-10-08): nesse caso o memory card
+(MCSERV/libmc, §16) vira caminho crítico mais cedo do que a ordem
+atual sugere — a telemetria RPC dirá quais chamadas a fase faz, e a
+promoção se decide com essa evidência, não por antecipação.
+
 ---
 
 ## 15. Áudio, vídeo e streaming
@@ -1359,7 +1369,10 @@ Escolher por evidência:
 - ausência válida de cartão; ou
 - cartão virtual persistente.
 
-A ausência válida pode permitir um boot inicial. O produto utilizável precisa suportar os saves esperados pelo dono.
+A ausência válida pode permitir um boot inicial. O produto utilizável precisa suportar os saves esperados pelo dono. E se a
+tela de criação de save for o primeiro gate do boot (§14.5), este
+recorte inteiro sobe para o caminho crítico — decidir com a
+telemetria, não por antecipação.
 
 ### 16.3 Contratos
 

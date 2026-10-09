@@ -1,5 +1,9 @@
 # Checkpoint/retomada do `gt4boot` — mapeamento (planejamento, não implementado)
 
+> Nota de vigência (2026-10-08): SUPERSEDED — checkpoints/retomada
+> foram implementados (decisão 0028 GT4CPT2 + decisão 0027 autosave;
+> fatias 54–56, 64). O restante é histórico.
+
 Data: 2026-10-03. Origem: levantamento somente-leitura por subagente de
 exploração (nada implementado, nenhuma mudança no comportamento).
 Motivação: cada experimento hoje paga o prefixo inteiro (corridas de

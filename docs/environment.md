@@ -52,6 +52,23 @@ Enter-VsDevShell -VsInstallPath 'C:/Program Files (x86)/Microsoft Visual Studio/
 Then use the README build commands. If a failed configure already created a
 cache, add `--fresh` to the configure command once.
 
+## Toolchain addendum — 2026-10-08 (no code change)
+
+Current pins observed on this machine: CMake 4.3.3, Git 2.54.0,
+Python 3.14.5 (venv), MSVC 19.44 x64 via VS 2022 Build Tools 17.14,
+53/53 CTest + Python 73 (67 run, 6 skip) at `main` = `b1ce75f`.
+
+Two shell pitfalls, both bitten before:
+
+- A bare shell lacks the MSVC headers/SDK paths (the old
+  `kernel32.lib` failure above) AND defaults to an x86/host-x86 link
+  (`gt4boot_build` breaks with LNK4272). Always chain VsDevCmd with
+  `-arch=amd64` (the `-arch=x64` form in the old snippet is equivalent;
+  `-arch=amd64` is what the recent slices pin).
+- `cmake --build build` alone does not relink `gt4boot.exe` after
+  `src/ee/*.cpp` edits (order-only libs in Ninja): use
+  `--target gt4boot` explicitly before any direct `gt4boot` run.
+
 ## M2 tooling update — 2026-09-13
 
 Created ignored `private/tooling-venv/` using the existing Python 3.14.3 and

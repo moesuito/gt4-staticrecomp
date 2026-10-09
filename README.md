@@ -20,10 +20,12 @@ its vector state, moves, quad accesses and the full macro arithmetic, and the
 trapping arithmetic with the parallel multiply/divide family (349 operations
 in total, with PCSX2 used as the semantic reference; CACHE
 and PREF decode as the no-op hints they are). An honest whole-text scan puts
-the remaining unsupported words at 497 of 1,334,917 — 493 of them inside the
-text's trailing 700-word data table (a table, not code), leaving only 4
-unsupported words in the real code region (two DMA-dependent BC0F and two
-words at an unassigned encoding inside the exception handler); the first
+the remaining unsupported words at 497 of 1,334,917 — 467 of them inside the
+text's trailing 700-word data table (a table, not code), leaving 30
+unsupported words in the real code region (26 COP2 macro function-0x38
+words in real code plus the known four: two DMA-dependent BC0F and two
+words at an unassigned encoding inside the exception handler — slice-58
+address audit); the first
 350,000 words — every sampled region — decode
 cleanly. The game's startup executes in
 the interpreter from
@@ -37,12 +39,12 @@ VU0 macro and trapping operations through the verified runtime executor
 direct-call targets translate**, covering 65.3% of the text's instructions,
 and the `--all` mode generates the **whole game as one module (15,068
 functions, 924,991 instructions, 146 MB) that passes an MSVC syntax check**.
-The full CTest set
-and the Python suite pass locally; 6 optional native Python checks skip
-without the M3 reference ELF. Tutoring remains pending; see the
+The full CTest set (53/53) and the Python suite (73 collected, 67 run,
+6 skip without the M3 reference ELF) pass locally; the boot runs as a
+native module with the translator-vs-interpreter differential green. Tutoring remains pending; see the
 [M6 lesson](docs/lessons/m6.md).
 
-[M4 native reconstruction](docs/lessons/m4.md) now reads the pinned CORE into
+[M4 native reconstruction](docs/lessons/m2-m5-foundation.md) now reads the pinned CORE into
 our own C++ executable-image model and writes an analysis ELF. All three payloads,
 entry and declared memory ranges match the M3 reference policy; alignment is
 corrected. Ghidra verified imported payloads and the declared zero-fill range.
@@ -64,8 +66,8 @@ For an offline configure, append
 `-DGT4_ZLIB_ARCHIVE=C:/absolute/path/to/zlib-1.3.1.tar.gz` to the configure command.
 The archive is still hash-checked. This workspace has a copy under
 `private/dependencies/`. CTest now covers image reconstruction and ELF output as
-well as instruction decoding and the original build smoke checks; no tests
-establish CPU execution yet.
+well as instruction decoding and the original build smoke checks, plus the
+full boot, checkpoint and RPC suites; no pixel work is established yet.
 
 ## Disassemble a selected region
 
@@ -168,16 +170,16 @@ New-Item -ItemType Directory -Force private/reconstructed | Out-Null
 ```
 
 The output must not already exist. The explicit flag adopts the M3 builder's
-unproven BSS/reginfo choices for analysis only. See the [M4 lesson](docs/lessons/m4.md)
+unproven BSS/reginfo choices for analysis only. See the [M2-M5 foundation notes](docs/lessons/m2-m5-foundation.md)
 for the implementation walkthrough, comparison commands and limitations.
 
 ## Verify the selected disc
 
-The [M2 lesson](docs/lessons/m2.md) includes Python environment setup and the
+The [M2-M5 foundation notes](docs/lessons/m2-m5-foundation.md) include Python environment setup and the
 12 standalone synthetic tests. With that environment available:
 
 ```powershell
-& '.\private\tooling-venv\Scripts\python.exe' scripts/gt4disc.py verify 'iso/Gran Turismo 4 (USA) (v2.00).iso'
+& '.\private\tooling-venv\Scripts\python.exe' scripts/gt4disc.py verify 'Gran Turismo 4 (USA) (v2.00).iso'
 ```
 
 The [pinned manifest](docs/inputs/usa-v2.00.json) contains sizes, hashes and

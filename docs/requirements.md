@@ -94,6 +94,14 @@ Each milestone below unlocks the observation the next one needs (no IOP,
 no packets; no packets, nothing to draw), and each carries its own
 BUILD/VERIFY gate like the rows above. This is ordering, not a schedule.
 
+> Currency note (2026-10-08): the execution plan now lives in root
+> `PLAN.md` (gates G0–G7, current objective G3 menu; M31–M37 kept there
+> as references). Contracts P00–P10 are done (decisions 0028–0036
+> accepted; 0037/0038 drafts open), the differential is green to 5M+,
+> and the live frontier is the event-starved sema-63 knot — see
+> `docs/STATUS.md`. The table below is the charter's original proposal,
+> kept as history.
+
 | ID | Milestone | Observable result to verify |
 |---|---|---|
 | M31 | Finish the boot to a stable menu idle | Title-menu wait loop, fault-free and deterministic; pinned service frontier plus differential where affordable |

@@ -108,12 +108,12 @@ explicitly as pointers, never smoothed over.
 
 Three single-milestone notes predate the backlog convention and
 are kept as-is: [M6](m6.md), [M7](m7.md), and [M8](m8.md). They
-are not audited below and are not part of the twenty-one.
+are not audited below and are not part of the twenty-two.
 
 ## Closure audit (slice 57, 2026-10-04)
 
-- **Files:** all 19 lessons present, plus the 3 earlier notes
-  (22 files total in `docs/lessons/`).
+- **Files:** all 22 lessons present, plus the 3 earlier notes
+  (26 files total in `docs/lessons/`, README included).
 - **Links:** all 69 distinct relative targets cited across the
   19 lessons (`../reverse-engineering/*.md`,
   `../decisions/*.md`, `../inputs/*.json`, `../plans/*.md`)
