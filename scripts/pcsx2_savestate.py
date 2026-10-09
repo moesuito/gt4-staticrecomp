@@ -33,6 +33,13 @@ LO_OFFSET = HI_OFFSET + 16  # 528
 CP0_OFFSET = LO_OFFSET + 16  # 544
 PC_OFFSET = 680
 
+# PCSX2 v2.9.114 / aa7ab430: R5900.h and Counters.h. These raw host
+# structures are not a stable interchange format; reject unaudited versions.
+TIMING_SAVE_VERSION = 0x9A590000
+TIMING_BUILD_VERSION = "v2.9.114"
+EE_CYCLE_OFFSET = 1088
+COUNTER_SIZE = 32
+
 REGISTER_NAMES = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
     "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
@@ -82,6 +89,52 @@ def read_cpu_state(structures):
 def read_entry(path, name):
     with zipfile.ZipFile(path) as archive:
         return archive.read(name)
+
+
+def read_timing_state(structures, save_version, build_version):
+    """Read raw timing fields for the audited layout, without inferring gates.
+
+    Counter counts are lazy: MMIO reads may include work since start_cycle.
+    Emulator cycles do not establish physical-console instruction costs.
+    """
+    if save_version != TIMING_SAVE_VERSION:
+        raise ValueError(f"Timing layout not verified for save version 0x{save_version:08x}")
+    # Multiple releases share the save version despite changing raw layouts.
+    # The embedded build label is a compatibility check, not binary attestation.
+    if build_version != TIMING_BUILD_VERSION:
+        raise ValueError(f"Timing layout not verified for build {build_version!r}")
+    cpu_tag = find_tag(structures, "cpuRegs")
+    subsystem_tag = find_tag(structures, "EE-Subsystems")
+    if cpu_tag is None or subsystem_tag is None:
+        raise ValueError("Timing requires cpuRegs and EE-Subsystems freeze tags")
+    cycle_position = cpu_tag + 32 + EE_CYCLE_OFFSET
+    counter_position = subsystem_tag + 32
+    if cycle_position + 8 > len(structures) or counter_position + 4 * COUNTER_SIZE > len(structures):
+        raise ValueError("Truncated timing structures")
+    cycle = struct.unpack_from("<Q", structures, cycle_position)[0]
+    counters = []
+    for index in range(4):
+        count, mode, target, hold, rate, interrupt, start_cycle = struct.unpack_from(
+            "<6IQ", structures, counter_position + index * COUNTER_SIZE)
+        counters.append({
+            "count": count, "mode": mode, "target": target, "hold": hold,
+            "rate": rate, "interrupt": interrupt, "start_cycle": start_cycle,
+        })
+    return {"ee_cycle": cycle, "counters": counters}
+
+
+def command_timing(arguments):
+    version, version_text = savestate_version(arguments.savestate)
+    timing = read_timing_state(
+        read_entry(arguments.savestate, STRUCTURES_ENTRY), version, version_text)
+    print(f"save version: 0x{version:08x} ({version_text})")
+    print(f"EE cycle:     {timing['ee_cycle']}")
+    print("Counters are raw/lazy, not instantaneous MMIO reads.")
+    for index, counter in enumerate(timing["counters"]):
+        print(f"timer {index}: count={counter['count']} mode=0x{counter['mode']:08x} "
+              f"target={counter['target']} hold={counter['hold']} rate={counter['rate']} "
+              f"interrupt={counter['interrupt']} start_cycle={counter['start_cycle']}")
+    return 0
 
 
 def savestate_version(path):
@@ -153,11 +206,16 @@ def main(argv=None):
     extract_parser.add_argument("entry")
     extract_parser.add_argument("output")
 
+    timing_parser = subparsers.add_parser(
+        "timing", help="Read raw timing fields from the verified v2.9.114 layout")
+    timing_parser.add_argument("savestate", type=Path)
+
     arguments = parser.parse_args(argv)
     handlers = {
         "info": command_info,
         "registers": command_registers,
         "extract": command_extract,
+        "timing": command_timing,
     }
     try:
         return handlers[arguments.command](arguments)

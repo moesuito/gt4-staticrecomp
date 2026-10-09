@@ -91,3 +91,17 @@ engineering limitation of the current emitter, not evidence that service
 counting models physical time. Investigate a shared work-accounted clock
 and independent relative timing; no guessed quantum or replacement policy
 is adopted in this evidence-only slice.
+
+## Slice 97 reference measurement amendment (2026-10-09; policy unchanged)
+
+Pinned stock PCSX2 v2.9.114 measured a root retry **2000-us** WaitSema:
+1111 EE cycles from syscall arrival to blocking dispatch pre-ERET, about
+3.77 us nominal emulator time. Armed timer remaining 294912 -> 294400
+BUSCLK ticks; nearly all 2 ms remains. Selected context is idle, not root.
+Actual update/frame SleepThread dispatch measured 1630 cycles, again idle.
+Neither sample captures the matched update 1000-us wait/root execution.
+No universal service cost, instruction cost or physical-console timing
+is inferred. Evidence and a shared dynamic-work accounting proposal:
+`docs/reverse-engineering/slice97-reference-delay-timing.md`.
+Production continues using this decision until independently verified
+replacement semantics and accounting/delivery tests justify changing it.

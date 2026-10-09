@@ -1,23 +1,30 @@
 # Project status
 
-Updated 2026-10-09 after slice 96 (baseline `804b0a3`): **root exclusion
-measured, not fixed**. The priority-0 thread is the update/frame-sync loop,
-not a dedicated delay thread. All 270 measured 1000-us waits block with a
-full 1 ms left; WaitSema's own 1 ms charge expires them, and TIM2 interrupts
-the selected root before it executes any instruction. Excluding handlers/
-returns reproduces this in 273/273 waits. No new clock policy adopted.
-The same loop in the no-card/software reference has a VBlank waiter;
-phase alignment and relative timing still need independent measurement.
+Updated 2026-10-09 after slice 97 (baseline `25b0269`): **reference timing
+measured; production root exclusion not fixed**. Pinned stock PCSX2
+v2.9.114: root retry 2000-us WaitSema -> blocking dispatch pre-ERET takes
+1111 EE cycles (~3.77 us nominal emulator time), leaving 294400/294912
+BUSCLK ticks. Actual update/frame SleepThread dispatch takes 1630 cycles;
+both select idle EPC 0x00081FC0, not root. Two earlier update-stack waits
+were GPU semaphore synchronization, not VBlank. No matched reference
+update 1000-us delay/root-work interval captured; no new clock policy.
+Slice 96's 270 model waits still explain starvation: WaitSema's own 1 ms
+charge expires the full delay and interrupts root before any instruction.
 Frontier unchanged: threads 1–3, main READY/prio64, update RUN/prio0,
 2 RPC pairs, zero GIF payload. Correct interrupt preemption retained;
 time=3, interrupt=4, kernel=2, RPC=1, translation=2; old interrupt-model-3
-checkpoints refused. All temporary experiments removed and gt4boot rebuilt.
-Next slice 97: reference-relative timing and a shared work-accounted clock
-contract, without guessing quantum or forcing scheduling. Evidence:
-`docs/reverse-engineering/slice96-update-loop-and-delay-balance.md`.
-Gates: unchanged CTest 53/53 (including 90k differential) + Python 73
-(67 run, 6 skip), re-run at slice 96; no acceptance expression weakened. This is the
-first document to read in a new session; it is kept current as work
+checkpoints refused. Offline savestate `timing` reader now gates both save
+version and audited build label; raw cycles/counts only. Diagnostic reference
+closed, all breakpoints removed, original slot 9/.backup hashes restored,
+clipboard restored. No experiment running; production code unchanged.
+Next slice 98: shared observation-only completed-work accounting with
+hand-counted tests, no timer/scheduler changes; then branch/slot delivery
+audit and matched reference interval before any work->time conversion.
+Evidence: `docs/reverse-engineering/slice97-reference-delay-timing.md`.
+Gates: unchanged CTest 53/53 (54.90 s, including 90k differential) + Python
+81 (75 run, 6 skip; 69.193 s), re-run at slice 97; build no work/warnings;
+no acceptance expression weakened. This is the first document to read in
+a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
 ## Where we are

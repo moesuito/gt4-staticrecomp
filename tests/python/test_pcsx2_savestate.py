@@ -1,5 +1,7 @@
 """Offline checks for the PCSX2 savestate reader, plus a local-file smoke test."""
 
+import contextlib
+import io
 import struct
 import sys
 import tempfile
@@ -63,6 +65,74 @@ class ParserTests(unittest.TestCase):
     def test_missing_tag_is_an_error(self):
         with self.assertRaises(ValueError):
             savestate.read_cpu_state(bytes(100))
+
+    def test_pinned_timing_layout_preserves_64_bit_values(self):
+        structures = bytearray(build_structures(0x005ADCE4))
+        cpu_start = savestate.find_tag(structures, "cpuRegs") + 32
+        # Hand-computed fixture offsets, independent of the reader constants.
+        struct.pack_into("<Q", structures, cpu_start + 1088, 0x123456789ABCDEF0)
+        structures += b"EE-Subsystems" + bytes(19)
+        for index in range(4):
+            structures += struct.pack("<6IQ", 100 + index, 0x382, 2669,
+                                      0, 512, 9 + index, 0x1234567800000000 + index)
+        timing = savestate.read_timing_state(structures, 0x9A590000, "v2.9.114")
+        self.assertEqual(timing["ee_cycle"], 0x123456789ABCDEF0)
+        self.assertEqual(timing["counters"][2], {
+            "count": 102, "mode": 0x382, "target": 2669, "hold": 0,
+            "rate": 512, "interrupt": 11, "start_cycle": 0x1234567800000002,
+        })
+
+    def test_timing_rejects_unverified_version(self):
+        with self.assertRaisesRegex(ValueError, "not verified"):
+            savestate.read_timing_state(build_structures(0), 0x9A580000, "v2.9.114")
+
+    def test_timing_rejects_other_build_with_same_save_version(self):
+        for build in ["v2.9.93", "v2.9.115", "v2.9.114-modified", ""]:
+            with self.subTest(build=build), self.assertRaisesRegex(ValueError, "not verified for build"):
+                savestate.read_timing_state(build_structures(0), 0x9A590000, build)
+
+    def test_timing_rejects_missing_tag(self):
+        with self.assertRaisesRegex(ValueError, "freeze tags"):
+            savestate.read_timing_state(build_structures(0), 0x9A590000, "v2.9.114")
+
+    def test_timing_rejects_truncated_counter_array(self):
+        structures = build_structures(0) + b"EE-Subsystems" + bytes(19) + bytes(127)
+        with self.assertRaisesRegex(ValueError, "Truncated"):
+            savestate.read_timing_state(structures, 0x9A590000, "v2.9.114")
+
+    def test_timing_rejects_truncated_cpu_cycle(self):
+        structures = b"EE-Subsystems" + bytes(19) + bytes(128) + b"cpuRegs" + bytes(25) + bytes(1095)
+        with self.assertRaisesRegex(ValueError, "Truncated"):
+            savestate.read_timing_state(structures, 0x9A590000, "v2.9.114")
+
+    def test_cli_timing_output(self):
+        structures = bytearray(build_structures(0))
+        struct.pack_into("<Q", structures, savestate.find_tag(structures, "cpuRegs") + 32 + 1088,
+                         1646380287)
+        structures += b"EE-Subsystems" + bytes(19)
+        for index in range(4):
+            structures += struct.pack("<6IQ", 1517, 0x382, 2669, 0, 512,
+                                      index + 9, 1646380032)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "timing.p2s"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(savestate.VERSION_ENTRY, struct.pack("<I", 0x9A590000) + b"v2.9.114\0")
+                archive.writestr(savestate.STRUCTURES_ENTRY, structures)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(savestate.main(["timing", str(path)]), 0)
+            self.assertIn("EE cycle:     1646380287", output.getvalue())
+            self.assertIn("timer 2: count=1517 mode=0x00000382", output.getvalue())
+            self.assertIn("start_cycle=1646380032", output.getvalue())
+            self.assertIn("raw/lazy", output.getvalue())
+
+    def test_cli_timing_rejects_unverified_layout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = make_savestate(folder)
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                self.assertEqual(savestate.main(["timing", str(path)]), 1)
+            self.assertIn("not verified", error.getvalue())
 
     def test_reads_a_synthetic_savestate_end_to_end(self):
         with tempfile.TemporaryDirectory() as folder:

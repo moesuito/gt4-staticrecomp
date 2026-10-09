@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 96, baseline `804b0a3`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 97, baseline `25b0269`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -135,15 +135,22 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 96, baseline `804b0a3`, gr
   at its exact restored PC, before any guest instruction. Handler/return
   exclusion reproduces 273/273. Reference same loop has VBlank waiter;
   elapsed timing/phase alignment still unknown. No replacement adopted.
-  All temporary experiments removed; no experiment running. Evidence:
-  `docs/reverse-engineering/slice96-update-loop-and-delay-balance.md`.
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 96;
+  Slice 97 reference: root retry 2000-us WaitSema dispatch 1111 EE cycles
+  (~3.77 us nominal), 294400/294912 BUSCLK ticks remain; actual frame
+  SleepThread dispatch 1630 cycles. Both select idle EPC 0x81FC0, not root.
+  No matched reference update 1000-us/root-work interval. Offline timing
+  reader pinned to audited save/build; no new clock policy. Reference closed,
+  breakpoints removed and original slot9/backup restored with hashes.
+  No experiment running. Evidence:
+  `docs/reverse-engineering/slice97-reference-delay-timing.md`.
+- Gates: 53/53 CTest + Python 81 (75 run, 6 skip), re-run at slice 97;
   no existing acceptance expression weakened.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 97 — reference-relative timing and shared work-accounted clock**.
-  Seek independent elapsed-time/work evidence around delay/root execution.
-  Account identically in both engines, including non-service computation;
+- Next: **slice 98 — shared observation-only completed guest work**.
+  Hand-count dynamic paths in both engines, no timer/scheduler coupling yet.
+  Then audit precise event delivery and matched reference root interval.
+  Account identically, including non-service computation;
   do not guess an instruction/cycle conversion or special-case WaitSema.
   Slice-94 attribution/exclusion rates concern the old interrupt_model 3,
   not the corrected trace. Do not undo correct preemption to recover older
