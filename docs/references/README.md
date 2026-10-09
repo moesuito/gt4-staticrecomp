@@ -16,3 +16,6 @@ this session and are not assumptions behind the initial build.
 Before implementing R5900 semantics, locate an appropriate architecture manual
 and record edition/page references alongside independent instruction experiments.
 Keep architectural requirements distinct from emulator implementation choices.
+
+Tool usage (as opposed to references) is recorded per tool — version, purpose,
+concrete result and evidence — in [used-tools.md](used-tools.md).

@@ -1622,6 +1622,8 @@ proceeds. Details live in the linked evidence documents.
 - Tooling venv: `private/tooling-venv` (pycdlib 1.20.0).
 - Ghidra 12.1.3 + Temurin JDK 21.0.12.1+1 under `private/tooling/`; hashes and
   provenance in `docs/environment.md`.
+- Tool usage register (versions, purposes, results, refused alternatives):
+  `docs/references/used-tools.md`.
 - Disposable Ghidra project directory: `%TEMP%\GT4Recomp-M7`.
 - PCSX2 nightly 2.9.93 at `F:\Games\PS2` on the original machine; the owner
   added a pre-configured **PCSX2 v2.9.94 under `private/pcsx2/`** (with its
