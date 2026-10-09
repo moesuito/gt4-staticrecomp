@@ -295,9 +295,10 @@ if(BUILD_TESTING)
         add_test(NAME gt4boot_build
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target gt4boot)
         set_tests_properties(gt4boot_build PROPERTIES FIXTURES_SETUP gt4boot)
-        # The pinned boot frontier. With the disc image present it advances
-        # past the sound phase (the block cache fix of slice 42); without
-        # one the boot cannot pass the disc phase, so the old frontier stays.
+        # The pinned driver/interpreter differential horizon. This checks
+        # shared-model consistency, not a boot phase or visible output:
+        # slice 95's corrected interrupt-return preemption exposes an
+        # earlier timing frontier even though this differential is green.
         if(EXISTS "${GT4_LOCAL_ISO}")
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"

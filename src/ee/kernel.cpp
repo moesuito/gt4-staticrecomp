@@ -1170,7 +1170,19 @@ ServiceOutcome Kernel::deferred_return(GuestState& state) {
         state.restore_registers(call.context);
         return ServiceOutcome::NoRunnableThread;
     }
-    state.restore_registers(call.context);
+    KernelThread* next = pick_next_ready();
+    if (next != nullptr && next->current_priority < interrupted->current_priority) {
+        // The handler's wake deferred preemption until this final return
+        // (decision 0013). Save the exact interrupted instruction, not a
+        // syscall continuation: dispatch adds four only when saving RUN.
+        interrupted->context = call.context;
+        interrupted->status = (interrupted->status & ~ThreadRun) | ThreadReady;
+        if (!dispatch(state)) {
+            throw std::logic_error("Interrupt return lost its higher-priority ready thread");
+        }
+    } else {
+        state.restore_registers(call.context);
+    }
     return ServiceOutcome::Jumped;
 }
 

@@ -232,6 +232,10 @@ int main() {
               "a foreign time model is refused naming time");
         check(refuses_naming(interrupt_bump, "interrupt"),
               "a foreign interrupt model is refused naming interrupt");
+        ModelCompatibility before_return_preemption = current_model_compatibility();
+        before_return_preemption.interrupt_model = 3;
+        check(refuses_naming(before_return_preemption, "interrupt"),
+              "a pre-slice-95 return-preemption model is refused naming interrupt");
         check(refuses_naming(kernel_bump, "kernel"),
               "a foreign kernel model is refused naming kernel");
         check(refuses_naming(rpc_bump, "rpc"),

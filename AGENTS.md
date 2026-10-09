@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 94, baseline `992e255`):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 95, baseline `29d3585`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -112,34 +112,35 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 94, baseline `992e255`):
   function-0x28 encodings — slice-58 address audit). The translator
   handles 99.5% of direct-call targets, and `--all` generates the whole
   game as one module (15,068 functions, 924,991 instructions, 146 MB).
-- Boot + model: `gt4boot` runs the game as one module from the ELF entry
-  through init, threads, SIF/RPC, disc, archive, sound and font phases;
-  the translator-vs-interpreter differential is green (90,000 services
-  pinned, prefix verified to 800k, fresh legs marched to a stationary
-  5M limit-cycle). Contracts P00–P10 are done (decisions 0028–0036
+- Boot + model: historical slices reached disc/archive/sound/font, but the
+  slice-95 corrected interrupt return exposes an earlier timing frontier
+  (details below). The translator-vs-interpreter 90,000-service gate is
+  green; old 800k/5M horizons used different semantics and are historical.
+  Contracts P00–P10 are done (decisions 0028–0036
   accepted; 0034/0037/0038 drafts open): checkpoints with semantic
   identity, 16-bit timers with W1C, separate INTC/DMAC domains, one
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **device-loop starvation is timing-sensitive** (slice 93).
-  Sema 143 gets 300 signals vs 92 waits over services 5k–10k and saturates;
-  thread 4 never blocks. Ten READY workers never dispatched in the 10,200
-  audit; threads 9/13 DID run then sleep (supersedes "all twelve never ran").
-  Diagnostic ~100 us/service lets all twelve run and passes the old wait,
-  but does NOT establish correct timing or visible output. Production still
-  uses 1 ms/service; temporary edits removed, no experiments running.
-  Evidence: `docs/reverse-engineering/slice93-scheduler-and-device-semaphore.md`.
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 94.
+- Frontier: **delay thread excludes READY main earlier** (slice 95).
+  Corrected final interrupt-return preemption (decision 0013), exact PC
+  preserved; fresh 10k/100k census now only threads 1–3, main READY/prio64,
+  delay RUN/prio0, 2 RPC pairs, zero GIF payload. Less boot progression is
+  recorded honestly; old later phases depended on omitted preemption.
+  Production still uses 1 ms/service; reference-backed time policy remains
+  open. Semantic interrupt_model 4, time 3, kernel 2, RPC 1, translation 2;
+  GT4CPT3/GT4KERN2 layout unchanged, old interrupt-model-3 checkpoints refused.
+  All temporary experiments removed; no experiment running. Evidence:
+  `docs/reverse-engineering/slice95-interrupt-return-preemption.md`.
+- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 95;
+  no existing acceptance expression weakened.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 95 — regression and fix for interrupt-return preemption**.
-  Slice 94 found that removing return/handler clock charges is insufficient
-  (steady signals/waits 233/97 vs baseline 300/92); no timing change adopted.
-  Separately confirmed final RUN interrupt return lacks the preemption
-  required by decision 0013. Preserve the exact interrupted PC when fixing.
-  A reference-backed replacement clock contract remains open. Do not adopt
-  a guessed quantum or resume
+- Next: **slice 96 — delay-thread time/self-wakeup balance on model 4**.
+  Seek independent timing evidence and a defensible shared clock contract.
+  Slice-94 attribution/exclusion rates concern the old interrupt_model 3,
+  not the corrected trace. Do not undo correct preemption to recover older
+  boot counters, adopt a guessed quantum, or resume
   diagnostic timing with production checkpoint identity. Service 0x100 at
   0x1604 is deferred return (Patch/Interrupt), NOT idle. Draft decisions
   0037/0038 are superseded. Serialize builds and tests using their binaries

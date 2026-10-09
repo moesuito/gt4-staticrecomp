@@ -89,7 +89,7 @@ using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 //                comment) keeps the same versions and stays loadable.
 struct ModelCompatibility {
     std::uint32_t time_model = 3;         // the service clock and timer advance
-    std::uint32_t interrupt_model = 3;    // occurrence, pending, mask, dispatch, handler frames
+    std::uint32_t interrupt_model = 4;    // occurrence, pending, mask, dispatch, handler frames
     std::uint32_t kernel_model = 2;       // kernel service tables, ids and returns
     std::uint32_t rpc_model = 1;          // SIF/RPC replies and backing stores
     std::uint32_t translation_model = 2;  // decoder and AOT emitter semantics
@@ -111,6 +111,8 @@ struct ModelCompatibility {
 // completing DMA transfer delivers at the next guest instruction).
 // Slice 89 (decision 0039) bumped kernel to 2 (semaphore ids stay within
 // the game's 8-bit handle space, freed ids reusable).
+// Slice 95 completes decision 0013: interrupt to 4 (final handler return
+// preempts for a higher-priority READY thread, exact interrupted PC saved).
 [[nodiscard]] constexpr ModelCompatibility current_model_compatibility() noexcept {
     return ModelCompatibility{};
 }

@@ -3,6 +3,17 @@
 Status: implemented 2026-10-02 for the M30 twelfth slice
 (`docs/reverse-engineering/m30-slice12-handler-execution.md`).
 
+Implementation correction, 2026-10-09 (slice 95): the previous final-return
+RUN branch restored the interrupted thread without checking a newly READY
+higher-priority rival, contrary to the deferred-switch requirement below.
+The corrected branch saves the exact interrupted context, marks it READY
+and dispatches only for a strictly higher eligible priority after the full
+handler chain finishes. It must not apply a syscall's PC +4 to an interrupt
+resumption. Equal/lower/suspended controls and INTC/DMAC chains are covered
+by unit regressions. Semantic `interrupt_model` is now 4; formats unchanged.
+See `docs/reverse-engineering/slice95-interrupt-return-preemption.md` for
+the red/green proof, boot effects and remaining clock limitations.
+
 Context: the eleventh slice's wall was that the TIM2 handler never treated
 any timer node as due. A watch at the due comparison (0x005B822C) showed the
 instruction never executed, and the deferred-call state at a stop showed a

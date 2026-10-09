@@ -1,18 +1,20 @@
 # Project status
 
-Updated 2026-10-09 after slice 94 (baseline `992e255`; no production timing
-change): removing handler/synthetic-return clock charges is NOT sufficient.
-At services 5k–10k the original device signals/waits are 300/92; excluding
-only returns gives 251/96, excluding handlers too gives 233/97. Ten workers
-still never dispatch, main stays asleep, GIF payload remains zero. The
-ordinary 1 ms/service shortcut therefore remains an open timing problem;
-the slice-93 ~100 us diagnostic is not an adopted fix or visible-output
-proof. All diagnostic edits removed. Separately confirmed a contract
-defect: final interrupt return over RUN lacks higher-priority preemption.
-Next: regression-test and correct that defect independently (slice 95).
-Evidence: `docs/reverse-engineering/slice94-clock-charge-attribution.md`.
-Restored production gates re-run slice 94: 53/53 CTest + Python 73
-(6 skips). This is the
+Updated 2026-10-09 after slice 95 (baseline `29d3585`): corrected final
+interrupt-return preemption required by decision 0013, with six test cases
+and exact interrupted-PC preservation. Semantic interrupt_model is now 4;
+old interrupt_model-3 checkpoints cannot resume. No clock quantum change.
+**Earlier frontier exposed:** fresh 10k/100k runs have only threads 1–3;
+main READY/prio64, delay thread RUN/prio0, 2 RPC pairs and zero GIF payload.
+This is less boot progression, not menu success; old later phases depended
+on missing preemption. The 1 ms/service time shortcut remains suspect.
+Slice 94's handler/return exclusions were insufficient under the OLD model;
+all such experiments removed. Next slice 96: measure the delay thread's
+time/self-wakeup balance under the corrected scheduling, seek independent
+timing evidence, and design a defensible clock contract. Evidence:
+`docs/reverse-engineering/slice95-interrupt-return-preemption.md`.
+Gates: 53/53 CTest (including 90k differential) + Python 73 (6 skips),
+without weakening any existing gate. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1699,13 +1701,13 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 95: regression-test and fix missing higher-priority preemption on
-   final interrupt return, preserving the interrupted PC exactly. Accepted
-   decision 0013 already requires this; it is separate from the clock issue.
-   Slice 94 rejected overhead exclusion as a sufficient timing correction.
-   Establish a reference-backed replacement clock contract later, not a
-   guessed smaller quantum. Any semantic change needs model identity/
-   compatibility review and automated tests.
+1. Slice 96: measure the delay thread's service-time burden and self-wakeup
+   interval under interrupt_model 4. It now excludes the READY main thread
+   before later workers are created; do not undo a verified priority rule
+   merely to recover old boot counters. Seek independent timing evidence
+   and a defensible replacement clock contract, not a guessed quantum.
+   Slice-94 rates/exclusions apply to the old interrupt_model 3. Any new
+   semantic change needs model identity/compatibility review and tests.
    Reference's device flag/callback head match the model, but BIOS semaphore
    counts and phase alignment remain unverified. No experiments are running;
    all temporary instrumentation/quantum edits were removed and rebuilt.

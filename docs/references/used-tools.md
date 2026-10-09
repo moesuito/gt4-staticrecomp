@@ -1,7 +1,7 @@
 # Used tools register — what was used, for what, with what result
 
 Checked 2026-10-08 against the tree at `main` = `702fbc1` (docs refresh);
-boot/reference/gate rows updated 2026-10-09 through slice 93.
+boot/reference/gate rows updated 2026-10-09 through slice 95.
 Companion to `README.md` in this directory (which registers documentation
 references): this file records *tool usage* — own, external, and
 evaluated-but-refused — each with version, purpose, concrete result and
@@ -26,12 +26,12 @@ Tool versions are pins for repetition, not endorsements.
 | `gt4funcs` | Evidence-backed function map, `elf-entry`/`seed`/`direct-call` closures (M8) | `gt4funcs CORE.GT4 start max-fns max-blocks` → call-target lists | Real closures over several seeds (`docs/reverse-engineering/m8-function-map.md`) |
 | `gt4translate` | Function + call-tree → C++ header with explicit `BoundaryKind` exits; `--survey`, `--all`, `--synth` modes | `gt4translate CORE.GT4 …` → `.hpp` module | First real function 0x00577878 (6 states identical); `--all`: 15,068 functions, 924,991 instructions (`docs/reverse-engineering/m13-first-function.md`, `m26-translation-survey.md`, `m29-whole-program-build.md`, `slice68-p05-jr-exits.md`) |
 | `gt4run` | Boundary driver as a program for the startup module (M30 slice 1) | `gt4run CORE.GT4 [--compare-interpreter]` → boundary + state report | ELF entry → first BIOS syscall 0x001001C8, state identical after 942,695 instructions (`docs/reverse-engineering/m30-driver-first-slice.md`) |
-| `gt4boot` | Whole game as one translated module: init, threads, SIF/RPC, disc, archive, sound, font; checkpoints, `--dump`, `--threads`, `--strict-rpc`, autosave | `gt4boot CORE.GT4 [--services N] [--steps N] [--disc ISO] [--compare-interpreter] …` | Old sema-63 knot fixed by decision 0039; slice 93 measures saturated device semaphore (300 signals/92 waits). Diagnostic smaller service quantum allows workers to run, but is not adopted (`docs/reverse-engineering/slice93-scheduler-and-device-semaphore.md`) |
+| `gt4boot` | Whole game as one translated module; service model, checkpoints, `--dump`, `--threads`, `--strict-rpc`, autosave | `gt4boot CORE.GT4 [--services N] [--steps N] [--disc ISO] [--compare-interpreter] …` | Slice 94 rejects handler/return clock exclusion as sufficient; slice 95 fixes interrupt-return preemption and exposes earlier delay-thread starvation (only 3 threads at 100k), not menu output. 10k differential green; old checkpoints refused (`slice94-clock-charge-attribution.md`, `slice95-interrupt-return-preemption.md`) |
 | `scripts/gt4disc.py` | Read-only ISO inspect/verify (never writes data or baselines) | `verify ISO [--manifest]` → PASS/FAIL vs `docs/inputs/usa-v2.00.json` | Local ISO matches manifest, SCUS-97328 / VER 2.00 (`docs/reverse-engineering/input-identity.md`) |
 | `scripts/pcsx2_pine.py` | Read-only PINE client (needs `EnablePINE=true`; never writes emulator memory) | `info/read/save-state/load-state/verify-elf` | Live text image == our image, 5,339,668 bytes, equal hashes; reginfo 24/24 (`docs/reverse-engineering/m14-live-observation.md`) |
 | `scripts/pcsx2_savestate.py` | Offline savestate ZIP reader (`info`/`registers`/`extract`) | savestate path → CPU summary or entry bytes | Menu-savestate decode; eeMemory re-verified with 0 differences (same M14 doc; `slice79-pcsx2-observation.md`) |
 | `scripts/synth_programs.py` + `sample_disassembly.py` + `inspect_reference.py` + `verify_native_image.py` | Seeded synthetic fixtures (committed, never game bytes); region capture; M3/M4 comparison helpers | → `tests/data/*.txt`, `private/disassembly/`, comparison reports | 40 straight-line + branching suites (M11/M12); 417/0 Ghidra run; native image byte-identical to pinned hash |
-| CTest suite | 57 `add_test` lines → 53 unique names (if/else disc branches register once) | `ctest --test-dir build` | **53/53 green**, rerun slice 93 on restored production model; Python 73 (67 run, 6 skip). Areas: 15 EE units, identity/smoke, image/disc/volume, 15 translation, 17 gt4boot-lifecycle, 1 synth module-exit |
+| CTest suite | 57 `add_test` lines → 53 unique names (if/else disc branches register once) | `ctest --test-dir build` | **53/53 green**, rerun slice 95 with six return-preemption regressions inside ee_kernel; Python 73 (67 run, 6 skip). Existing gate expressions unchanged; shared-model consistency is not movie/menu acceptance |
 | Generated whole-program header | Translator output (ignored build tree, never committed) | `--all` → `translated-whole-program.hpp` | 15,068 functions, 924,991 instructions, 146.4 MB, ~136 s; MSVC syntax check 27.5 s (`docs/reverse-engineering/m29-whole-program-build.md`) |
 
 ## B. External tools used

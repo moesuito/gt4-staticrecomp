@@ -3,6 +3,7 @@
 // data. The tests drive the services directly, exactly as the syscall
 // handlers would, and check the register contexts across switches.
 #include "gt4recomp/disc_image.hpp"
+#include "gt4recomp/ee_compare.hpp"
 #include "gt4recomp/ee_device.hpp"
 #include "gt4recomp/ee_kernel.hpp"
 #include "gt4recomp/ee_timer.hpp"
@@ -2206,6 +2207,146 @@ int main() {
                   && kernel.current_thread_id() == 1
                   && kernel.threads()[0].status == ThreadRun,
               "the last return restores the frame over the running thread");
+    }
+
+    // Slice 95: a handler's higher-priority wake is deferred through the
+    // whole chain, then preempts at the final return. Interrupt resumption
+    // must not inherit dispatch's syscall-PC +4 convention.
+    {
+        struct ReturnCase {
+            std::uint32_t ready_priority;
+            bool suspended;
+            bool wake_by_thread;
+            bool dmac;
+            bool expect_preemption;
+        };
+        const ReturnCase cases[] = {
+            {0, false, false, false, true},
+            {0, false, true, false, true},
+            {0, false, false, true, true},
+            {10, false, false, false, false},
+            {11, false, false, false, false},
+            {0, true, false, false, false},
+        };
+        for (const ReturnCase& test_case : cases) {
+            Kernel kernel;
+            GuestState state = make_state();
+            ServiceTable services;
+            kernel.register_services(services);
+            IntcUnit intc;
+            DmacStatusUnit dmac;
+            intc.map_into(state.memory());
+            dmac.map_into(state.memory());
+            kernel.set_intc_unit(&intc);
+            kernel.set_dmac_unit(&dmac);
+            check(setup_root(kernel, state)
+                      && start_second_thread(kernel, state, 10, 0x1234),
+                  "return-preemption root and worker start");
+
+            write_sema_struct(state, 1, 0);
+            state.write_gpr32(4, sema_struct);
+            check(kernel.create_sema(state) == ServiceOutcome::Handled,
+                  "return-preemption semaphore starts empty");
+            state.set_pc(0x00100040u);
+            state.write_gpr32(4, 3);
+            const ServiceOutcome blocked = test_case.wake_by_thread
+                ? kernel.sleep_thread(state) : kernel.wait_sema(state);
+            check(blocked == ServiceOutcome::Switched
+                      && kernel.current_thread_id() == 2,
+                  "root blocks so the lower-priority worker runs");
+            const RegisterContext root_resume = kernel.threads()[0].context;
+
+            const std::uint32_t cause = test_case.dmac ? 2u : 7u;
+            for (std::uint32_t index = 0; index < 2; ++index) {
+                state.write_gpr32(4, cause);
+                state.write_gpr32(5, 0x00100480u + index * 0x80u);
+                state.write_gpr32(7, 0x00AAA000u + index * 0x1000u);
+                const ServiceOutcome registered = test_case.dmac
+                    ? kernel.add_dmac_handler(state) : kernel.add_intc_handler(state);
+                check(registered == ServiceOutcome::Handled,
+                      "return-preemption chain handler registers");
+            }
+            state.write_gpr32(4, cause);
+            if (test_case.dmac) {
+                kernel.enable_dmac(state);
+                kernel.raise_dmac_completion(cause);
+            } else {
+                kernel.enable_intc(state);
+                kernel.raise_interrupt(cause);
+            }
+
+            RegisterContext interrupted = state.save_registers();
+            interrupted.pc = 0x00100080u;
+            interrupted.gpr[8] = 0x1122334455667788ull;
+            interrupted.gpr_high[8] = 0x8877665544332211ull;
+            interrupted.fpr[9] = 0x3F800000u;
+            interrupted.hi = 0x0102030405060708ull;
+            interrupted.lo1 = 0x12345678u;
+            interrupted.cp0[9] = 0xCAFEBABEu;
+            interrupted.vu0_vf[3][2] = 0x40000000u;
+            interrupted.vu0_vi[4] = 0x4321u;
+            interrupted.vu0_acc[1] = 0x40400000u;
+            state.restore_registers(interrupted);
+            interrupted = state.save_registers();
+            check(kernel.start_interrupt(state),
+                  "the worker is interrupted before its next instruction");
+
+            state.write_gpr32(4, 1);
+            state.write_gpr32(5, test_case.ready_priority);
+            check(kernel.change_thread_priority(state) == ServiceOutcome::Handled,
+                  "handler sets the blocked root's control priority");
+            state.write_gpr32(4, test_case.wake_by_thread ? 1u : 3u);
+            const ServiceOutcome woken = test_case.wake_by_thread
+                ? kernel.wakeup_thread(state) : kernel.signal_sema(state);
+            check(woken == ServiceOutcome::Handled
+                      && kernel.current_thread_id() == 2
+                      && kernel.threads()[0].status == ThreadReady,
+                  "handler wakes root without a mid-handler switch");
+            if (test_case.suspended) {
+                state.write_gpr32(4, 1);
+                check(kernel.suspend_thread(state) == ServiceOutcome::Handled,
+                      "a suspended READY root is not eligible");
+            }
+
+            const ServiceHandler* return_handler =
+                services.find(Kernel::patch_return_service);
+            check(return_handler != nullptr, "return-preemption stub exists");
+            if (return_handler == nullptr) {
+                continue;
+            }
+            check((*return_handler)(state) == ServiceOutcome::Jumped
+                      && kernel.current_thread_id() == 2
+                      && state.pc() == 0x00100500u
+                      && kernel.deferred_call_count() == 1,
+                  "intermediate return keeps the handler chain on the worker");
+            check((*return_handler)(state) == ServiceOutcome::Jumped
+                      && kernel.deferred_call_count() == 0,
+                  "final return completes the whole chain");
+
+            if (test_case.expect_preemption) {
+                check(kernel.current_thread_id() == 1
+                          && kernel.threads()[0].status == ThreadRun
+                          && kernel.threads()[1].status == ThreadReady
+                          && !compare_contexts(state.save_registers(), root_resume,
+                                               "root resume").has_value(),
+                      "final return dispatches the higher-priority root");
+                check(!compare_contexts(kernel.threads()[1].context, interrupted,
+                                        "interrupted worker").has_value(),
+                      "preempted worker saves the exact interrupted context and PC");
+                state.set_pc(0x001000A0u);
+                check(kernel.sleep_thread(state) == ServiceOutcome::Switched
+                          && kernel.current_thread_id() == 2
+                          && !compare_contexts(state.save_registers(), interrupted,
+                                               "worker resumed").has_value(),
+                      "worker really resumes the interrupted instruction, not PC +4");
+            } else {
+                check(kernel.current_thread_id() == 2
+                          && kernel.threads()[1].status == ThreadRun
+                          && !compare_contexts(state.save_registers(), interrupted,
+                                               "worker retained").has_value(),
+                      "equal, lower or suspended READY thread does not preempt");
+            }
+        }
     }
 
     // P04 (decision 0031): the DMAC registrations carry their argument
