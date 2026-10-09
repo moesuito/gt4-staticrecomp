@@ -1,5 +1,14 @@
 # M30, tenth slice — semaphore handle bits and the delay library
 
+> **Historical interpretation corrected in slice 96 (2026-10-09):** the
+> `ori ... 0x2` discussed below updates **timer+0xC flags**, not
+> descriptor+0xC's callback common/semaphore. The bit-0 test also concerns
+> timer state. Therefore that instruction sequence does not prove a
+> `semaphore | 2` requirement. Preserve the original report below as history,
+> not current evidence for semaphore IDs. Allocation follows decision 0039;
+> reviewed disassembly and live one-shot measurements are in
+> `slice96-update-loop-and-delay-balance.md`.
+
 Date: 2026-10-02. Inputs: the pinned CORE. Follow-up to the ninth slice
 (`m30-slice9-timer-and-dma-completions.md`), whose frontier was every thread
 waiting on semaphores created by the game's delay helper. This slice traces

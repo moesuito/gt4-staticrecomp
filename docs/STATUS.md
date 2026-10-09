@@ -1,20 +1,22 @@
 # Project status
 
-Updated 2026-10-09 after slice 95 (baseline `29d3585`): corrected final
-interrupt-return preemption required by decision 0013, with six test cases
-and exact interrupted-PC preservation. Semantic interrupt_model is now 4;
-old interrupt_model-3 checkpoints cannot resume. No clock quantum change.
-**Earlier frontier exposed:** fresh 10k/100k runs have only threads 1–3;
-main READY/prio64, delay thread RUN/prio0, 2 RPC pairs and zero GIF payload.
-This is less boot progression, not menu success; old later phases depended
-on missing preemption. The 1 ms/service time shortcut remains suspect.
-Slice 94's handler/return exclusions were insufficient under the OLD model;
-all such experiments removed. Next slice 96: measure the delay thread's
-time/self-wakeup balance under the corrected scheduling, seek independent
-timing evidence, and design a defensible clock contract. Evidence:
-`docs/reverse-engineering/slice95-interrupt-return-preemption.md`.
-Gates: 53/53 CTest (including 90k differential) + Python 73 (6 skips),
-without weakening any existing gate. This is the
+Updated 2026-10-09 after slice 96 (baseline `804b0a3`): **root exclusion
+measured, not fixed**. The priority-0 thread is the update/frame-sync loop,
+not a dedicated delay thread. All 270 measured 1000-us waits block with a
+full 1 ms left; WaitSema's own 1 ms charge expires them, and TIM2 interrupts
+the selected root before it executes any instruction. Excluding handlers/
+returns reproduces this in 273/273 waits. No new clock policy adopted.
+The same loop in the no-card/software reference has a VBlank waiter;
+phase alignment and relative timing still need independent measurement.
+Frontier unchanged: threads 1–3, main READY/prio64, update RUN/prio0,
+2 RPC pairs, zero GIF payload. Correct interrupt preemption retained;
+time=3, interrupt=4, kernel=2, RPC=1, translation=2; old interrupt-model-3
+checkpoints refused. All temporary experiments removed and gt4boot rebuilt.
+Next slice 97: reference-relative timing and a shared work-accounted clock
+contract, without guessing quantum or forcing scheduling. Evidence:
+`docs/reverse-engineering/slice96-update-loop-and-delay-balance.md`.
+Gates: unchanged CTest 53/53 (including 90k differential) + Python 73
+(67 run, 6 skip), re-run at slice 96; no acceptance expression weakened. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1701,15 +1703,18 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 96: measure the delay thread's service-time burden and self-wakeup
-   interval under interrupt_model 4. It now excludes the READY main thread
-   before later workers are created; do not undo a verified priority rule
-   merely to recover old boot counters. Seek independent timing evidence
-   and a defensible replacement clock contract, not a guessed quantum.
-   Slice-94 rates/exclusions apply to the old interrupt_model 3. Any new
-   semantic change needs model identity/compatibility review and tests.
-   Reference's device flag/callback head match the model, but BIOS semaphore
-   counts and phase alignment remain unverified. No experiments are running;
+1. Slice 97: measure reference-relative time/work around the update loop's
+   delay and root execution, then design a defensible shared clock contract.
+   Slice 96 proved WaitSema's 1 ms charge consumes the whole requested 1 ms,
+   interrupting root before any guest instruction; handler/return exclusions
+   do not fix it. Account for computation outside services and identical
+   observation points in both engines; no guessed instruction/cycle factor.
+   Do not undo correct preemption, force turns or special-case waits.
+   Any adopted semantic change needs model identity/compatibility review
+   and regression tests. Slice-94 rates belong to old interrupt_model 3.
+   Historical reference/model-3 device flag/callback-head matching does not
+   establish current phase alignment; BIOS semaphore counts remain unverified.
+   No experiments are running;
    all temporary instrumentation/quantum edits were removed and rebuilt.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.

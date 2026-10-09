@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 95, baseline `29d3585`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 96, baseline `804b0a3`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -122,22 +122,29 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 95, baseline `29d3585`, gr
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **delay thread excludes READY main earlier** (slice 95).
+- Frontier: **update loop excludes READY main before any instruction** (slice 96).
   Corrected final interrupt-return preemption (decision 0013), exact PC
   preserved; fresh 10k/100k census now only threads 1–3, main READY/prio64,
-  delay RUN/prio0, 2 RPC pairs, zero GIF payload. Less boot progression is
+  update RUN/prio0, 2 RPC pairs, zero GIF payload. Less boot progression is
   recorded honestly; old later phases depended on omitted preemption.
   Production still uses 1 ms/service; reference-backed time policy remains
   open. Semantic interrupt_model 4, time 3, kernel 2, RPC 1, translation 2;
   GT4CPT3/GT4KERN2 layout unchanged, old interrupt-model-3 checkpoints refused.
+  Slice 96: all 270 one-shot 1000-us waits really block with a full 1 ms
+  left; WaitSema's own 1 ms charge expires them and TIM2 interrupts root
+  at its exact restored PC, before any guest instruction. Handler/return
+  exclusion reproduces 273/273. Reference same loop has VBlank waiter;
+  elapsed timing/phase alignment still unknown. No replacement adopted.
   All temporary experiments removed; no experiment running. Evidence:
-  `docs/reverse-engineering/slice95-interrupt-return-preemption.md`.
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 95;
+  `docs/reverse-engineering/slice96-update-loop-and-delay-balance.md`.
+- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 96;
   no existing acceptance expression weakened.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 96 — delay-thread time/self-wakeup balance on model 4**.
-  Seek independent timing evidence and a defensible shared clock contract.
+- Next: **slice 97 — reference-relative timing and shared work-accounted clock**.
+  Seek independent elapsed-time/work evidence around delay/root execution.
+  Account identically in both engines, including non-service computation;
+  do not guess an instruction/cycle conversion or special-case WaitSema.
   Slice-94 attribution/exclusion rates concern the old interrupt_model 3,
   not the corrected trace. Do not undo correct preemption to recover older
   boot counters, adopt a guessed quantum, or resume

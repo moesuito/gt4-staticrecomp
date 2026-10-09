@@ -70,3 +70,24 @@ Verification:
   changed from the previous slice because the queued VBlank and timer
   causes now reach busy execution, and both engines followed the change
   identically.
+
+## Slice 96 evidence amendment (2026-10-09; policy unchanged)
+
+With corrected interrupt-model-4 preemption, the update loop's conditional
+1000-us delay blocks with exactly 147456 BUSCLK ticks still remaining.
+WaitSema's own service charge consumes that entire interval, so TIM2
+interrupts the newly selected root before any guest instruction; the
+callback wakes and immediately restores the higher-priority update loop.
+Confirmed in 270/270 fresh-run waits. Excluding handler/private-return
+charges produces the same result in 273/273 waits: the decisive charge
+belongs to ordinary WaitSema. The old later-boot outcomes above predate
+the preemption correction and cannot establish current correctness.
+
+Evidence: `docs/reverse-engineering/slice96-update-loop-and-delay-balance.md`.
+An independent no-card/software reference snapshot instead corroborates
+the same routine's blocking VBlank path; syscall duration/phase alignment
+are still unknown. The instruction-accounting objection above is an
+engineering limitation of the current emitter, not evidence that service
+counting models physical time. Investigate a shared work-accounted clock
+and independent relative timing; no guessed quantum or replacement policy
+is adopted in this evidence-only slice.
