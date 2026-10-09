@@ -314,7 +314,8 @@ void print_run_identity(const CheckpointProvenance& provenance) {
     std::cout << "run provenance: commit " << provenance.git_commit
               << "; binary " << provenance.binary << "; core "
               << provenance.core_sha256 << "; model time=" << model.time_model
-              << " interrupt=" << model.interrupt_model << " rpc="
+              << " interrupt=" << model.interrupt_model << " kernel="
+              << model.kernel_model << " rpc="
               << model.rpc_model << " translation=" << model.translation_model
               << "; time " << provenance.time_policy << '\n';
 }
@@ -325,6 +326,7 @@ void print_run_identity(const CheckpointProvenance& provenance) {
 void print_checkpoint_identity(const CheckpointFile& file) {
     std::cout << "checkpoint model: time=" << file.compatibility.time_model
               << " interrupt=" << file.compatibility.interrupt_model
+              << " kernel=" << file.compatibility.kernel_model
               << " rpc=" << file.compatibility.rpc_model << " translation="
               << file.compatibility.translation_model
               << "; written by commit " << file.provenance.git_commit
@@ -337,7 +339,7 @@ void print_checkpoint_identity(const CheckpointFile& file) {
 // Writes the whole stop state to a checkpoint file: the model-compatibility
 // identity, the write-time provenance, the service count, the
 // context+memory section, the kernel section and the device banks, framed
-// as GT4CPT2. Shared by --checkpoint-at and autosave (decision 0027) so
+// as GT4CPT3. Shared by --checkpoint-at and autosave (decision 0027) so
 // both paths write byte-identical files for the same stop state. Returns
 // the framed size for the log line.
 std::uint64_t write_stop_checkpoint(const GuestState& state,

@@ -1,5 +1,10 @@
 # 0037 (DRAFT — not adopted, no implementation): the first unblocking traffic — waiter-first design
 
+> **Superseded (2026-10-09, slice 89 / decision 0039):** the park was a
+> model-side semaphore id collision, not a missing deliverable event. With
+> the ids fixed the boot passes the gate with no synthesized traffic. This
+> draft stays as history for the waiter-first method and its prohibitions.
+
 Date: 2026-10-04. Status: **DRAFT**. Evidence:
 `docs/reverse-engineering/slice81-traffic-design.md` (waiter inventory,
 whole-text scans, latch instructions, submitter closure),

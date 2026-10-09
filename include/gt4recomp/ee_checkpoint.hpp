@@ -79,17 +79,18 @@ using BankRegisters = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 // frames them.
 //
 // Three things stay deliberately separate (decision 0028):
-//   format:      the GT4CPT2 magic (a bytes-on-wire version);
+//   format:      the GT4CPT3 magic (a bytes-on-wire version);
 //   provenance:  who wrote the file (commit, binary, inputs, config) for
 //                diagnosis — never a reason to refuse a restore;
 //   compatibility: the semantic model versions below (time, interrupt,
-//                RPC, translation). Only these gate a restore: a file from
-//                other semantics is refused before anything is applied,
-//                while a merely editorial change (a new commit, a comment)
-//                keeps the same versions and stays loadable.
+//                kernel, RPC, translation). Only these gate a restore: a
+//                file from other semantics is refused before anything is
+//                applied, while a merely editorial change (a new commit, a
+//                comment) keeps the same versions and stays loadable.
 struct ModelCompatibility {
     std::uint32_t time_model = 3;         // the service clock and timer advance
     std::uint32_t interrupt_model = 3;    // occurrence, pending, mask, dispatch, handler frames
+    std::uint32_t kernel_model = 2;       // kernel service tables, ids and returns
     std::uint32_t rpc_model = 1;          // SIF/RPC replies and backing stores
     std::uint32_t translation_model = 2;  // decoder and AOT emitter semantics
 };
@@ -108,6 +109,8 @@ struct ModelCompatibility {
 // idle). Slice 72 (decision 0034, option A) bumped translation to 2
 // (emitter poll points after falling-through sw: a store that starts a
 // completing DMA transfer delivers at the next guest instruction).
+// Slice 89 (decision 0039) bumped kernel to 2 (semaphore ids stay within
+// the game's 8-bit handle space, freed ids reusable).
 [[nodiscard]] constexpr ModelCompatibility current_model_compatibility() noexcept {
     return ModelCompatibility{};
 }
@@ -134,6 +137,8 @@ struct ModelCompatibility {
          current.time_model);
     note(file.interrupt_model != current.interrupt_model, "interrupt",
          file.interrupt_model, current.interrupt_model);
+    note(file.kernel_model != current.kernel_model, "kernel", file.kernel_model,
+         current.kernel_model);
     note(file.rpc_model != current.rpc_model, "rpc", file.rpc_model,
          current.rpc_model);
     note(file.translation_model != current.translation_model, "translation",

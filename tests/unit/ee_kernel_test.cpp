@@ -160,6 +160,40 @@ int main() {
               "DeleteSema fails for a missing id");
     }
 
+    // Semaphore ids stay inside the game's 8-bit handle space: the lowest
+    // free candidate 3, 7, ..., 255 wins and a deleted id is reusable
+    // (decision 0039). The game composes handles as (generation << 8) | id
+    // and decodes id = handle & 0xFF, so an id above 255 collides with
+    // another handle (slice 88: raw 319 = 0x13F produced the handle 0x13F).
+    {
+        Kernel kernel;
+        GuestState state = make_state();
+        std::vector<std::uint32_t> ids;
+        for (int index = 0; index < 64; ++index) {
+            write_sema_struct(state, 1, 0);
+            state.write_gpr32(4, sema_struct);
+            check(kernel.create_sema(state) == ServiceOutcome::Handled,
+                  "a semaphore is created while an id remains");
+            ids.push_back(state.read_gpr32(2));
+        }
+        check(ids.front() == 3 && ids.back() == 0xFF
+                  && kernel.semaphores().size() == 64,
+              "64 ids fill 3..255 with bits 0 and 1 set");
+        write_sema_struct(state, 1, 0);
+        state.write_gpr32(4, sema_struct);
+        check(kernel.create_sema(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == 0xFFFFFFFFu
+                  && kernel.semaphores().size() == 64,
+              "a full table refuses a new semaphore");
+        state.write_gpr32(4, ids[0]);
+        check(kernel.delete_sema(state) == ServiceOutcome::Handled,
+              "the first semaphore deletes");
+        state.write_gpr32(4, sema_struct);
+        check(kernel.create_sema(state) == ServiceOutcome::Handled
+                  && state.read_gpr32(2) == ids[0],
+              "the freed id is reused lowest-first");
+    }
+
     // A started thread has its entry, argument, gp and stack; lowering the
     // root's priority hands the CPU to it, saving the root at pc + 4.
     {

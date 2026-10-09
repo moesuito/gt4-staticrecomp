@@ -285,13 +285,14 @@ CheckpointProvenance load_provenance_section(
 
 std::vector<std::uint8_t> save_checkpoint_file(const CheckpointFile& file) {
     std::vector<std::uint8_t> out;
-    for (const char letter : {'G', 'T', '4', 'C', 'P', 'T', '2'}) {
+    for (const char letter : {'G', 'T', '4', 'C', 'P', 'T', '3'}) {
         out.push_back(static_cast<std::uint8_t>(letter));
     }
     // The semantic identity first, so a reader can name the mismatch
     // before touching any state section.
     put_u32(out, file.compatibility.time_model);
     put_u32(out, file.compatibility.interrupt_model);
+    put_u32(out, file.compatibility.kernel_model);
     put_u32(out, file.compatibility.rpc_model);
     put_u32(out, file.compatibility.translation_model);
     const std::vector<std::uint8_t> provenance =
@@ -317,28 +318,34 @@ std::vector<std::uint8_t> save_checkpoint_file(const CheckpointFile& file) {
 
 CheckpointFile load_checkpoint_file(std::span<const std::uint8_t> bytes) {
     Reader reader{bytes, 0};
-    // Pre-P00 files (GT4CPT1) carry no semantic identity: they are forensic
+    // GT4CPT1 files carry no semantic identity, and GT4CPT2 files predate
+    // the semaphore id-space fix (decision 0039): both are forensic
     // evidence for the old model, never a resume source. Name that plainly
     // instead of reporting a generic bad magic.
-    constexpr char old_magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '1'};
-    bool matches_old = true;
-    if (bytes.size() >= sizeof old_magic) {
-        for (std::size_t index = 0; index < sizeof old_magic; ++index) {
-            if (bytes[index] != static_cast<std::uint8_t>(old_magic[index])) {
-                matches_old = false;
-                break;
+    const auto has_magic = [&bytes](const char (&candidate)[7]) {
+        if (bytes.size() < 7) {
+            return false;
+        }
+        for (std::size_t index = 0; index < 7; ++index) {
+            if (bytes[index] != static_cast<std::uint8_t>(candidate[index])) {
+                return false;
             }
         }
-    } else {
-        matches_old = false;
-    }
-    if (matches_old) {
+        return true;
+    };
+    if (has_magic({'G', 'T', '4', 'C', 'P', 'T', '1'})) {
         throw std::runtime_error(
             "The checkpoint predates the model-compatibility identity "
             "(GT4CPT1): it is forensic evidence for the old model, not a "
             "resume source; run a fresh prefix instead");
     }
-    constexpr char magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '2'};
+    if (has_magic({'G', 'T', '4', 'C', 'P', 'T', '2'})) {
+        throw std::runtime_error(
+            "The checkpoint predates the semaphore id-space fix (GT4CPT2): "
+            "it is forensic evidence for the old model, not a resume "
+            "source; run a fresh prefix instead");
+    }
+    constexpr char magic[7] = {'G', 'T', '4', 'C', 'P', 'T', '3'};
     for (const char letter : magic) {
         if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
             throw std::runtime_error("The checkpoint file has a bad magic");
@@ -347,6 +354,7 @@ CheckpointFile load_checkpoint_file(std::span<const std::uint8_t> bytes) {
     CheckpointFile file;
     file.compatibility.time_model = reader.take_u32();
     file.compatibility.interrupt_model = reader.take_u32();
+    file.compatibility.kernel_model = reader.take_u32();
     file.compatibility.rpc_model = reader.take_u32();
     file.compatibility.translation_model = reader.take_u32();
     const auto take_section = [&reader]() {

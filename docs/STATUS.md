@@ -1,18 +1,15 @@
 # Project status
 
-Updated 2026-10-09 after slice 88 (live no-card session; `main` =
-`3ddc495` + this docs commit): the owner ordered the live capture with
-the memory card removed; the reference reaches the main menu with no
-input and its job system is stamped with **distinct** handles within
-seconds of game start. Comparing with the model exposed the root cause
-of the park: the model's semaphore allocator hands out raw ids
-3, 7, 11, … past the 8-bit id space the game's handle math assumes —
-the 80th allocation (319 = 0x13F) produces the handle 0x13F, colliding
-with sema 63's handle, so the gate's waits on A and B hit the same
-semaphore (the slice-78 "guest-side knot" verdict is superseded for its
-cause: the gap is model-side). Next: slice 89 fixes the id space and
-re-runs the boot. 53/53 + Python 73 gates stand (docs-only changes).
-This is the
+Updated 2026-10-09 after slice 89 (`main` = `4c2aaa2` + this commit): the
+semaphore id-space fix landed (decision 0039) — ids are the lowest free
+candidate 3, 7, …, 255 with reuse; a new `kernel` compatibility domain
+gates it and the checkpoint format is GT4CPT3. **The park is gone**: A/B/C
+stamp with distinct handles, the job submits (+0x34=1 between services
+3,000 and 3,500) and the machine marches to the 200M-step budget
+(3,697,027 services, VIF1/GIF growing) with no stationary cycle. Gates:
+CTest 53/53 + Python 73 (6 skips). Next: march past the budget and
+characterize the new frontier; the live no-card reference (slice 88)
+reaches the main menu and stays the comparison anchor. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1610,9 +1607,8 @@ proceeds. Details live in the linked evidence documents.
 
 - Build: VS 2022 Build Tools 17.14 + MSVC 19.44 + Ninja 1.13.2 + CMake 4.3.1;
   commands in `AGENTS.md` and `README.md`.
-- Tests: 53/53 CTest + Python 73 (67 run, 6 skip) owner-gated at
-  `main` = `b1ce75f` (2026-10-04; docs-only refresh 2026-10-08 changes
-  no code, so the gates stand). The translation tests, `gt4run` and
+- Tests: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89
+  (2026-10-09) on the fixed model. The translation tests, `gt4run` and
   `gt4boot` exist only where the local CORE does; `gt4boot_build`
   builds the whole-program module on demand.
 - Local inputs (ignored): ISO at the repository root;
@@ -1671,20 +1667,15 @@ proceeds. Details live in the linked evidence documents.
   module entries (correctness first; 278,120 instructions in the boot run).
   The two performance alternatives (resume entries per halt address, inline
   syscall calls in generated code) remain open.
-- **The boot now reaches the game's running state and parks
-  event-starved**: the arc above (decisions 0004–0021) carries it through
-  init, threads, SIF/RPC, disc, archive, sound and font phases; the
-  contract slices P00–P10 (decisions 0028–0036) then rebuilt the model's
-  time, interrupt, DMA, exit-reason, RPC-telemetry and comparison
-  machinery with the differential green; fresh legs march to a
-  stationary 5M limit-cycle (slices 75–76). **Slice 88 found the park's
-  root cause**: the model's semaphore ids leave the 8-bit space the
-  game's handle math assumes (raw 319 → handle 0x13F = sema 63's
-  handle), so the gate's waits on A and B collide on one semaphore —
-  the slice-77/78 "guest-side knot" wording is superseded for the
-  cause. The reference (no card, software renderer) stamps distinct
-  handles and submits the job within seconds of game start and reaches
-  the menu with no input. Next: slice 89 (fix the id space) and re-run.
+- **The boot marches** (slice 89): after the semaphore id-space fix
+  (decision 0039) the old event-starved park is gone — A/B/C stamp with
+  distinct handles, the job submits (+0x34=1 between services 3,000 and
+  3,500) and the run reaches the 200M-step budget (3,697,027 services,
+  VIF1 68,140 starts / 28.9 MB) with no stationary cycle. The
+  slice-77/78 "guest-side knot" wording is superseded: the knot was the
+  model's handle collision (raw 319 = 0x13F vs raw 63). The live no-card
+  reference (slice 88) reaches the main menu with no input and stays the
+  comparison anchor. Next: a longer march and the new frontier.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs up to twelve threads under VBlank and timer
@@ -1705,14 +1696,13 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 89: fix the semaphore id space (ids within 0..255 with slot
-   reuse, the contract the game's handle math assumes), update the
-   kernel tests, and re-run the boot — expected observable: A/B/C
-   distinct, job submitted (+0x34=1), differential green. Then re-check
-   the thread-id space for the same class of bug.
-2. If the fix does not unblock the gate, return to the live session
-   (playbook S1/S2/S3 remain valid; the no-card reference states are
-   archived under `private/pcsx2/sstates/slice88-live-no-card/`).
+1. Slice 90: march past the 200M-step budget (a longer step limit) and
+   characterize the new frontier — which phase the run reaches, which
+   wait stops it, and whether the thread-id space needs the same class
+   of check the semaphores got.
+2. Keep comparing against the live no-card reference (menu reached, no
+   input; states archived under
+   `private/pcsx2/sstates/slice88-live-no-card/`).
 3. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 4. Keep the journal and this file current after every working session.
@@ -1838,4 +1828,7 @@ proceeds. Details live in the linked evidence documents.
   input, distinct handles + job submitted within seconds), the model's
   A=B handle collision bisected to 0x00548520 and traced to the raw-id
   319 (0x13F) out-of-range allocation, out-of-bounds generation write
-  at 0x00874A4C, root cause named; slice 89 will fix the id space.
+  at 0x00874A4C, root cause named. Slice 89: the fix (lowest-free ids
+  3..255 with reuse, decision 0039, kernel compat domain + GT4CPT3);
+  the gate passes at ~3,300 services and the machine marches to 3.7M
+  services at the 200M-step budget; 53/53 + Python 73.

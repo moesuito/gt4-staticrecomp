@@ -158,8 +158,8 @@ int main() {
         check(framed.size() >= 7
                   && framed[0] == 'G' && framed[1] == 'T' && framed[2] == '4'
                   && framed[3] == 'C' && framed[4] == 'P' && framed[5] == 'T'
-                  && framed[6] == '2',
-              "the checkpoint file carries the GT4CPT2 format magic");
+                  && framed[6] == '3',
+              "the checkpoint file carries the GT4CPT3 format magic");
         const CheckpointFile parsed = load_checkpoint_file(framed);
         check(parsed.services_handled == 90000
                   && parsed.context_memory == blob
@@ -222,6 +222,8 @@ int main() {
         time_bump.time_model += 1;
         ModelCompatibility interrupt_bump = current_model_compatibility();
         interrupt_bump.interrupt_model += 1;
+        ModelCompatibility kernel_bump = current_model_compatibility();
+        kernel_bump.kernel_model += 1;
         ModelCompatibility rpc_bump = current_model_compatibility();
         rpc_bump.rpc_model += 1;
         ModelCompatibility translation_bump = current_model_compatibility();
@@ -230,6 +232,8 @@ int main() {
               "a foreign time model is refused naming time");
         check(refuses_naming(interrupt_bump, "interrupt"),
               "a foreign interrupt model is refused naming interrupt");
+        check(refuses_naming(kernel_bump, "kernel"),
+              "a foreign kernel model is refused naming kernel");
         check(refuses_naming(rpc_bump, "rpc"),
               "a foreign rpc model is refused naming rpc");
         check(refuses_naming(translation_bump, "translation"),
@@ -246,6 +250,19 @@ int main() {
                 != std::string::npos;
         }
         check(forensic, "a pre-P00 checkpoint is refused as forensic");
+        // GT4CPT2 predates the semaphore id-space fix (decision 0039): the
+        // refusal names that too instead of a generic bad magic.
+        std::vector<std::uint8_t> id_space_magic = framed;
+        id_space_magic[6] = '2';
+        bool id_space_forensic = false;
+        try {
+            (void)load_checkpoint_file(id_space_magic);
+        } catch (const std::runtime_error& error) {
+            id_space_forensic = std::string(error.what()).find("id-space")
+                != std::string::npos;
+        }
+        check(id_space_forensic,
+              "a GT4CPT2 checkpoint is refused as forensic");
     }
 
     // The provenance section round-trips its five fields standalone.

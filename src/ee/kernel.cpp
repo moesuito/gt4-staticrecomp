@@ -62,6 +62,23 @@ KernelSemaphore* Kernel::find_semaphore(std::uint32_t id) noexcept {
     return nullptr;
 }
 
+bool Kernel::find_free_semaphore_id(std::uint32_t& id) const noexcept {
+    for (std::uint32_t candidate = 3; candidate <= 0xFF; candidate += 4) {
+        bool used = false;
+        for (const KernelSemaphore& semaphore : semaphores_) {
+            if (semaphore.id == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            id = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 KernelThread* Kernel::current_thread() noexcept {
     return find_thread(current_thread_id_);
 }
@@ -926,8 +943,15 @@ ServiceOutcome Kernel::create_sema(GuestState& state) {
         write_error(state);
         return ServiceOutcome::Handled;
     }
-    semaphore.id = next_semaphore_id_;
-    next_semaphore_id_ += 4;
+    std::uint32_t id = 0;
+    if (!find_free_semaphore_id(id)) {
+        // The table is full; the real kernel refuses the creation too. The
+        // game's wrappers see -1 and retry, so this stays loud and visible
+        // instead of silently reusing a live id.
+        write_error(state);
+        return ServiceOutcome::Handled;
+    }
+    semaphore.id = id;
     semaphore.count = semaphore.init_count;
     semaphore.wait_threads = 0;
     // The kernel is the writer of count and wait_threads; mirror them into
@@ -2097,7 +2121,7 @@ struct Reader {
 
 std::vector<std::uint8_t> Kernel::save_kernel_state() const {
     std::vector<std::uint8_t> out;
-    for (const char letter : {'G', 'T', '4', 'K', 'E', 'R', 'N', '1'}) {
+    for (const char letter : {'G', 'T', '4', 'K', 'E', 'R', 'N', '2'}) {
         out.push_back(static_cast<std::uint8_t>(letter));
     }
     const auto put_size = [&out](std::size_t count) {
@@ -2134,7 +2158,6 @@ std::vector<std::uint8_t> Kernel::save_kernel_state() const {
         put_u32(out, semaphore.option);
     }
     put_u32(out, next_thread_id_);
-    put_u32(out, next_semaphore_id_);
     put_u32(out, current_thread_id_);
     put_u32(out, syscall_table_ready_ ? 1u : 0u);
     for (const std::uint32_t entry : patched_handlers_) {
@@ -2238,7 +2261,7 @@ std::vector<std::uint8_t> Kernel::save_kernel_state() const {
 
 void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     Reader reader{bytes, 0};
-    constexpr char magic[8] = {'G', 'T', '4', 'K', 'E', 'R', 'N', '1'};
+    constexpr char magic[8] = {'G', 'T', '4', 'K', 'E', 'R', 'N', '2'};
     for (const char letter : magic) {
         if (reader.take_byte() != static_cast<std::uint8_t>(letter)) {
             throw std::runtime_error("The kernel snapshot has a bad magic");
@@ -2287,7 +2310,6 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
         semaphores.push_back(semaphore);
     }
     const std::uint32_t next_thread_id = reader.take_u32();
-    const std::uint32_t next_semaphore_id = reader.take_u32();
     const std::uint32_t current_thread_id = reader.take_u32();
     const bool syscall_table_ready =
         take_bool("The kernel snapshot has a bad table flag");
@@ -2440,7 +2462,6 @@ void Kernel::load_kernel_state(std::span<const std::uint8_t> bytes) {
     threads_ = std::move(threads);
     semaphores_ = std::move(semaphores);
     next_thread_id_ = next_thread_id;
-    next_semaphore_id_ = next_semaphore_id;
     current_thread_id_ = current_thread_id;
     syscall_table_ready_ = syscall_table_ready;
     patched_handlers_ = patched_handlers;
@@ -2588,8 +2609,6 @@ std::optional<std::string> Kernel::describe_kernel_difference(
         }
     }
     fail32("next thread id", next_thread_id_, other.next_thread_id_);
-    fail32("next semaphore id", next_semaphore_id_,
-           other.next_semaphore_id_);
     fail32("current thread id", current_thread_id_,
            other.current_thread_id_);
     if (syscall_table_ready_ != other.syscall_table_ready_) {

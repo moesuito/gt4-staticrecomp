@@ -122,21 +122,22 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 do
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **slice 88 (live no-card session) found the park's root
-  cause** — the model's semaphore allocator hands out raw ids 3, 7, 11, …
-  past the 8-bit space the game's handle math assumes; the 80th
-  allocation (319 = 0x13F) composes the handle 0x13F, colliding with
-  sema 63's handle, so the gate's waits on A and B hit one semaphore
-  (the slice-77/78 "guest-side knot" wording is superseded for the
-  cause). The no-card reference stamps distinct handles, submits the job
-  (+0x34=1) within seconds and reaches the menu with no input
-  (`docs/reverse-engineering/slice88-live-no-card-session.md`).
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip). Tripwires armed;
-  M35's pad promoter watched (the first padman bind reopens input work).
-- Next: **slice 89 — fix the semaphore id space (0..255 with slot reuse),
-  update the kernel tests, re-run the boot** (expected: A/B/C distinct,
-  job submitted, differential green); then check the thread-id space for
-  the same class of bug. Draft decisions 0037/0038 remain parked.
+- Frontier: **slice 89 fixed the semaphore id space (decision 0039)** —
+  ids are the lowest free candidate 3, 7, …, 255 with reuse; a new
+  `kernel` compatibility domain gates it and the checkpoint format is
+  GT4CPT3. The old event-starved park is gone: A/B/C stamp with distinct
+  handles, the job submits (+0x34=1 between services 3,000 and 3,500)
+  and the run reaches the 200M-step budget (3,697,027 services, VIF1/GIF
+  growing) with no stationary cycle. The live no-card reference reaches
+  the main menu with no input
+  (`docs/reverse-engineering/slice88-live-no-card-session.md`,
+  `slice89-semaphore-id-space-fix.md`).
+- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89.
+  Tripwires armed; M35's pad promoter watched (the first padman bind
+  reopens input work).
+- Next: **slice 90 — march past the 200M-step budget and characterize the
+  new frontier**; check the thread-id space for the same class of bug.
+  Draft decisions 0037/0038 are superseded (marked in their files).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

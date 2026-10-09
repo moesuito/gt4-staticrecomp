@@ -542,6 +542,10 @@ public:
 private:
     [[nodiscard]] KernelThread* find_thread(std::uint32_t id) noexcept;
     [[nodiscard]] KernelSemaphore* find_semaphore(std::uint32_t id) noexcept;
+    // The lowest free semaphore id in the game's 8-bit handle space with
+    // bits 0 and 1 set (3, 7, ..., 255), stored in `id`. False when every
+    // candidate is in use (decision 0039; the bit shape is decision 0012).
+    bool find_free_semaphore_id(std::uint32_t& id) const noexcept;
     [[nodiscard]] KernelThread* current_thread() noexcept;
     [[nodiscard]] KernelThread* pick_next_ready() noexcept;
     // Saves the running thread as it resumes after its syscall (pc + 4, with
@@ -656,14 +660,17 @@ private:
     std::vector<KernelThread> threads_;
     std::vector<KernelSemaphore> semaphores_;
     std::uint32_t next_thread_id_ = 1;
-    // Semaphore ids carry bits 0 and 1 set. Evidence: the game's timer
-    // library ORs 0x2 into the "common" value it was handed (a semaphore id)
-    // and tests bit 0 of the same value to decide whether to activate the
-    // node (0x005B8B68). Both operations are only harmless when the kernel's
-    // handle already has those bits, so the model hands out ids that do:
-    // 3, 7, 11, ... The exact real-kernel handle format is not documented in
-    // the pinned sources; this is the shape the game's own code requires.
-    std::uint32_t next_semaphore_id_ = 3;
+    // Semaphore ids carry bits 0 and 1 set and stay inside the game's
+    // 8-bit handle space. Evidence: the game's timer library ORs 0x2 into
+    // the "common" value it was handed (a semaphore id) and tests bit 0 of
+    // the same value to decide whether to activate the node (0x005B8B68);
+    // the game's create wrapper composes handles as (generation << 8) | id
+    // and the resolve wrapper decodes id = handle & 0xFF (0x005782E8 /
+    // 0x00578290), so an id above 255 collides with another handle
+    // (slice 88: raw 319 = 0x13F produced the handle 0x13F). The model
+    // hands out the lowest free candidate 3, 7, ..., 255 and reuses freed
+    // ids; the game's generation table distinguishes stale handles
+    // (decisions 0012 and 0039).
     std::uint32_t current_thread_id_ = 0;  // 0 = no thread has run yet
     ServiceTable* service_table_ = nullptr;  // set by register_services
     bool syscall_table_ready_ = false;

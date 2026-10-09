@@ -1,5 +1,10 @@
 # 0038 (DRAFT — not adopted, no implementation): F's first-event chain, corrected and banked (paper only)
 
+> **Superseded (2026-10-09, slice 89 / decision 0039):** the park was a
+> model-side semaphore id collision; with the ids fixed the boot passes the
+> gate (B+0x34=1 between services 3,000 and 3,500) and no F-chain traffic
+> was needed. This record stays as history for the F chain analysis.
+
 Date: 2026-10-04. Status: **DRAFT**. Evidence:
 `docs/reverse-engineering/slice86-p10-traffic.md` (verbatim wrapper/gate
 bodies, widened invoker scans, acceptance audit), draft 0037 (the chain
