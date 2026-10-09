@@ -1,14 +1,16 @@
 # Project status
 
-Updated 2026-10-09 after slice 92 (message module mapped; `main` =
-`0dbbac6`): the main thread's job object is unclaimed (state +0x80 = 1,
-lock fields -1) and waits for a message; the message module (0x00576xxx)
-is mapped (lock-with-owner, try-dequeue+wake-all, blocking receive) and
-its wake path never runs for this object. New: the 12 job workers (prio
-13/14) are READY but have NEVER run — the CPU is held by the delay-library
-thread (prio 0) and the device-poll thread (prio 1). Next: scheduler
-instrumentation to see why no switch reaches the workers (slice 93).
-Gates: 53/53 CTest + Python 73 (slice 89; code unchanged). This is the
+Updated 2026-10-09 after slice 93 (baseline `3ff513f`; no production code
+change): measured the starvation mechanism. Device semaphore id 143 is
+nearly full; between 5k and 10k services it receives 300 signals but only
+92 waits, so thread 4 never blocks and excludes ten READY workers.
+Correction: threads 9/13 did execute and then slept; "all twelve never
+ran" was false. A diagnostic-only ~100 us service quantum gives all twelve
+CPU by service 2,478 and passes the old wait, but is NOT an adopted fix or
+proof of movie/menu output. Production remains at 1 ms/service. Next:
+attribute clock charges and establish a reference-backed time contract
+(slice 94). Evidence: `docs/reverse-engineering/slice93-scheduler-and-device-semaphore.md`.
+Gates re-run: 53/53 CTest + Python 73 (6 skips). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1695,11 +1697,15 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 93: temporary scheduler instrumentation (window ~9,990–10,000
-   services) logging thread switches and reasons; find the device loop's
-   intended blocking point (callers; waiters of the device sema
-   0x0064C718; the callback list 0x0064C878 at 10k); re-check the
-   reference's t=14s state by meaning.
+1. Slice 94: attribute service-clock time to normal thread calls, handlers
+   and synthetic returns; test selective exclusion diagnostically. Establish
+   a reference-backed clock contract, not a guessed smaller quantum. Slice
+   93 confirmed timing sensitivity, not a production correction. Review
+   interrupt-return priority preemption separately. Any adopted timing
+   change needs model identity/compatibility changes and automated tests.
+   Reference's device flag/callback head match the model, but BIOS semaphore
+   counts and phase alignment remain unverified. No experiments are running;
+   all temporary instrumentation/quantum edits were removed and rebuilt.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 3. Keep the journal and this file current after every working session.

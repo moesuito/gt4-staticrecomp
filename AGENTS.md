@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 docs, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 93, baseline `3ff513f`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -122,21 +122,24 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 do
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **the job workers starve** (slice 92) — the main thread's
-  job object is unclaimed (state +0x80 = 1) and waits for a message; the
-  message module (0x00576xxx: lock-with-owner 0x00576550, try+wake-all
-  0x00576640, receive 0x005767E0) never wakes it. The 12 job workers
-  (threads 5–16, prio 13/14) are READY but have NEVER run: the CPU is
-  held by the delay-library thread (prio 0) and the device-poll loop
-  0x005515xx (prio 1). Next: scheduler instrumentation to see why no
-  switch reaches the workers
-  (`docs/reverse-engineering/slice92-message-module-and-starved-workers.md`).
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89
-  (code unchanged since). Tripwires armed; M35's pad promoter watched
+- Frontier: **device-loop starvation is timing-sensitive** (slice 93).
+  Sema 143 gets 300 signals vs 92 waits over services 5k–10k and saturates;
+  thread 4 never blocks. Ten READY workers never dispatched in the 10,200
+  audit; threads 9/13 DID run then sleep (supersedes "all twelve never ran").
+  Diagnostic ~100 us/service lets all twelve run and passes the old wait,
+  but does NOT establish correct timing or visible output. Production still
+  uses 1 ms/service; temporary edits removed, no experiments running.
+  Evidence: `docs/reverse-engineering/slice93-scheduler-and-device-semaphore.md`.
+- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 93.
+  Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 93 — scheduler instrumentation** (window ~9,990–10,000:
-  who runs, why no switch to the workers) and the device loop's intended
-  blocking point. Draft decisions 0037/0038 are superseded.
+- Next: **slice 94 — clock attribution and reference-backed time contract**;
+  diagnose handler/synthetic-return charges, separately audit priority
+  preemption on interrupt return. Do not adopt a guessed quantum or resume
+  diagnostic timing with production checkpoint identity. Service 0x100 at
+  0x1604 is deferred return (Patch/Interrupt), NOT idle. Draft decisions
+  0037/0038 are superseded. Serialize builds and tests using their binaries
+  on Windows: parallel CLI tests can lock linker outputs.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

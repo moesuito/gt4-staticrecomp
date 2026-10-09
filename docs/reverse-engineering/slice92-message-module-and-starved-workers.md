@@ -5,6 +5,14 @@ changed (exploration only). Task: find the message-post function and its
 expected trigger; compare the job object with the reference; inspect the
 stream chain.
 
+**Correction (slice 93):** execution instrumentation shows threads 9 and
+13 did run and then slept; only the other ten workers were never dispatched
+in the 10,200-service audit. The blanket "twelve never ran" claim below is
+superseded, not Confirmed. The device loop does contain a WaitSema, but its
+counter saturates under the service clock. See
+[slice 93](slice93-scheduler-and-device-semaphore.md) for measured rates,
+timing sensitivity and limits.
+
 ## The message module (0x00576xxx), mapped
 
 Function starts found by prologue scan; direct `jal` callers counted over

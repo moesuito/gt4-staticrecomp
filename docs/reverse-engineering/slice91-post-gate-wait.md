@@ -4,6 +4,11 @@ Date: 2026-10-09. Baseline: `main` = `c8443ed` (slice 90). No model code
 changed here (exploration only). Task: identify the post-gate wait slice 90
 named (services ~3.5k–10k).
 
+**Corrections (slice 93):** threads 9/13 slept after executing; they are not
+READY at their entry with the other ten workers. Service 0x100 at 0x1604
+is the shared deferred return, **not idle**. Historical wording below is
+superseded by `slice93-scheduler-and-device-semaphore.md`.
+
 ## Method
 
 Trace to 12,000 services (per-service `service N at pc`), a checkpoint at
