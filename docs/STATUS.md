@@ -1,13 +1,13 @@
 # Project status
 
-Updated 2026-10-09 after slice 91 (post-gate wait identified; `main` =
-`c8443ed`): the machine's freeze is thread-side — from ~3,700 services
-threads 1/9/13 sleep forever (the main thread inside the game's
-message-receive, ra 0x0057689C) waiting for a **completion message from a
-file/stream job** (job object on thread 1's stack 0x01FFFE00; callbacks in
-the 0x004Axxxx stream region; start path via the 0x0044Dxxx descriptor
-family). The producer never fires; all RPC traffic is done before ~10k.
-Next: find the message-post function and its expected trigger (slice 92).
+Updated 2026-10-09 after slice 92 (message module mapped; `main` =
+`0dbbac6`): the main thread's job object is unclaimed (state +0x80 = 1,
+lock fields -1) and waits for a message; the message module (0x00576xxx)
+is mapped (lock-with-owner, try-dequeue+wake-all, blocking receive) and
+its wake path never runs for this object. New: the 12 job workers (prio
+13/14) are READY but have NEVER run — the CPU is held by the delay-library
+thread (prio 0) and the device-poll thread (prio 1). Next: scheduler
+instrumentation to see why no switch reaches the workers (slice 93).
 Gates: 53/53 CTest + Python 73 (slice 89; code unchanged). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
@@ -1695,11 +1695,11 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 92: find the message-**post** function in the 0x00576xxx module
-   and its callers; determine which producer should fire for the main
-   thread's stream job. Compare the job object's state with the
-   reference's t=14s state by meaning; inspect the stream descriptor
-   chain (0x0044Dxxx) at ~10k in the model.
+1. Slice 93: temporary scheduler instrumentation (window ~9,990–10,000
+   services) logging thread switches and reasons; find the device loop's
+   intended blocking point (callers; waiters of the device sema
+   0x0064C718; the callback list 0x0064C878 at 10k); re-check the
+   reference's t=14s state by meaning.
 2. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 3. Keep the journal and this file current after every working session.
@@ -1834,4 +1834,8 @@ proceeds. Details live in the linked evidence documents.
   ~3.5k–10k named; provenance reconfigure. Slice 91: the wait is a
   file/stream job completion message (main thread in the message-receive
   0x005767E0 via the job framework; producer never fires); thread-id
-  space closed.
+  space closed. Slice 92: message module mapped (lock-with-owner
+  0x00576550 ← 0x0022FC10; try+wake-all 0x00576640; receive 0x005767E0);
+  the 12 job workers (prio 13/14) have NEVER run — the CPU is held by the
+  delay-library thread (prio 0) and the device-poll loop (0x005515xx,
+  prio 1); job object unclaimed (state +0x80 = 1).

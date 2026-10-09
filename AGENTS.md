@@ -122,21 +122,21 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 do
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **the post-gate wait is thread-side** (slice 91) — from
-  ~3,700 services threads 1/9/13 sleep forever; the main thread waits in
-  the game's message-receive (ra 0x0057689C) for a **completion message
-  from a file/stream job** (job object on its stack 0x01FFFE00; callbacks
-  in the 0x004Axxxx stream region; start path via the 0x0044Dxxx
-  descriptor family). The producer never fires; all RPC traffic is done
-  before ~10k and the workers render frames forever
-  (`docs/reverse-engineering/slice91-post-gate-wait.md`).
+- Frontier: **the job workers starve** (slice 92) — the main thread's
+  job object is unclaimed (state +0x80 = 1) and waits for a message; the
+  message module (0x00576xxx: lock-with-owner 0x00576550, try+wake-all
+  0x00576640, receive 0x005767E0) never wakes it. The 12 job workers
+  (threads 5–16, prio 13/14) are READY but have NEVER run: the CPU is
+  held by the delay-library thread (prio 0) and the device-poll loop
+  0x005515xx (prio 1). Next: scheduler instrumentation to see why no
+  switch reaches the workers
+  (`docs/reverse-engineering/slice92-message-module-and-starved-workers.md`).
 - Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89
   (code unchanged since). Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 92 — find the message-post function and its expected
-  trigger** (0x00576xxx module callers; compare the job object with the
-  reference's t=14s state; inspect the 0x0044Dxxx stream chain at ~10k).
-  Draft decisions 0037/0038 are superseded (marked in their files).
+- Next: **slice 93 — scheduler instrumentation** (window ~9,990–10,000:
+  who runs, why no switch to the workers) and the device loop's intended
+  blocking point. Draft decisions 0037/0038 are superseded.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
