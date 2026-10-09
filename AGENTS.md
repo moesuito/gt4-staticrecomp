@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 93, baseline `3ff513f`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 94, baseline `992e255`):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -130,12 +130,16 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 93, baseline `3ff513f`, gr
   but does NOT establish correct timing or visible output. Production still
   uses 1 ms/service; temporary edits removed, no experiments running.
   Evidence: `docs/reverse-engineering/slice93-scheduler-and-device-semaphore.md`.
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 93.
+- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 94.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 94 — clock attribution and reference-backed time contract**;
-  diagnose handler/synthetic-return charges, separately audit priority
-  preemption on interrupt return. Do not adopt a guessed quantum or resume
+- Next: **slice 95 — regression and fix for interrupt-return preemption**.
+  Slice 94 found that removing return/handler clock charges is insufficient
+  (steady signals/waits 233/97 vs baseline 300/92); no timing change adopted.
+  Separately confirmed final RUN interrupt return lacks the preemption
+  required by decision 0013. Preserve the exact interrupted PC when fixing.
+  A reference-backed replacement clock contract remains open. Do not adopt
+  a guessed quantum or resume
   diagnostic timing with production checkpoint identity. Service 0x100 at
   0x1604 is deferred return (Patch/Interrupt), NOT idle. Draft decisions
   0037/0038 are superseded. Serialize builds and tests using their binaries

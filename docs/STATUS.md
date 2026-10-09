@@ -1,16 +1,18 @@
 # Project status
 
-Updated 2026-10-09 after slice 93 (baseline `3ff513f`; no production code
-change): measured the starvation mechanism. Device semaphore id 143 is
-nearly full; between 5k and 10k services it receives 300 signals but only
-92 waits, so thread 4 never blocks and excludes ten READY workers.
-Correction: threads 9/13 did execute and then slept; "all twelve never
-ran" was false. A diagnostic-only ~100 us service quantum gives all twelve
-CPU by service 2,478 and passes the old wait, but is NOT an adopted fix or
-proof of movie/menu output. Production remains at 1 ms/service. Next:
-attribute clock charges and establish a reference-backed time contract
-(slice 94). Evidence: `docs/reverse-engineering/slice93-scheduler-and-device-semaphore.md`.
-Gates re-run: 53/53 CTest + Python 73 (6 skips). This is the
+Updated 2026-10-09 after slice 94 (baseline `992e255`; no production timing
+change): removing handler/synthetic-return clock charges is NOT sufficient.
+At services 5k–10k the original device signals/waits are 300/92; excluding
+only returns gives 251/96, excluding handlers too gives 233/97. Ten workers
+still never dispatch, main stays asleep, GIF payload remains zero. The
+ordinary 1 ms/service shortcut therefore remains an open timing problem;
+the slice-93 ~100 us diagnostic is not an adopted fix or visible-output
+proof. All diagnostic edits removed. Separately confirmed a contract
+defect: final interrupt return over RUN lacks higher-priority preemption.
+Next: regression-test and correct that defect independently (slice 95).
+Evidence: `docs/reverse-engineering/slice94-clock-charge-attribution.md`.
+Restored production gates re-run slice 94: 53/53 CTest + Python 73
+(6 skips). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1697,12 +1699,13 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 94: attribute service-clock time to normal thread calls, handlers
-   and synthetic returns; test selective exclusion diagnostically. Establish
-   a reference-backed clock contract, not a guessed smaller quantum. Slice
-   93 confirmed timing sensitivity, not a production correction. Review
-   interrupt-return priority preemption separately. Any adopted timing
-   change needs model identity/compatibility changes and automated tests.
+1. Slice 95: regression-test and fix missing higher-priority preemption on
+   final interrupt return, preserving the interrupted PC exactly. Accepted
+   decision 0013 already requires this; it is separate from the clock issue.
+   Slice 94 rejected overhead exclusion as a sufficient timing correction.
+   Establish a reference-backed replacement clock contract later, not a
+   guessed smaller quantum. Any semantic change needs model identity/
+   compatibility review and automated tests.
    Reference's device flag/callback head match the model, but BIOS semaphore
    counts and phase alignment remain unverified. No experiments are running;
    all temporary instrumentation/quantum edits were removed and rebuilt.
