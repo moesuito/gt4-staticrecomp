@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-08 (`main` = `b1ce75f`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 docs, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -122,18 +122,21 @@ Live state: `docs/STATUS.md`. As of 2026-10-08 (`main` = `b1ce75f`, green):
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: the machine parks event-starved (the sema-63 wait is a
-  guest-side knot, no model gap); the PCSX2 reference shows recreated
-  semaphores at menu phase. P10 needs originating traffic or a later
-  phase; draft decisions 0037/0038 hold the waiter-first design. Open
-  owner question: interactive PCSX2 session yes/no/later
-  (`docs/plans/live-pcsx2-session-playbook.md`).
+- Frontier: **slice 88 (live no-card session) found the park's root
+  cause** — the model's semaphore allocator hands out raw ids 3, 7, 11, …
+  past the 8-bit space the game's handle math assumes; the 80th
+  allocation (319 = 0x13F) composes the handle 0x13F, colliding with
+  sema 63's handle, so the gate's waits on A and B hit one semaphore
+  (the slice-77/78 "guest-side knot" wording is superseded for the
+  cause). The no-card reference stamps distinct handles, submits the job
+  (+0x34=1) within seconds and reaches the menu with no input
+  (`docs/reverse-engineering/slice88-live-no-card-session.md`).
 - Gates: 53/53 CTest + Python 73 (67 run, 6 skip). Tripwires armed;
   M35's pad promoter watched (the first padman bind reopens input work).
-- Next: **await owner direction on the live session** (or the validator's
-  findings in this refresh): without live observation, H1/H2′ and the F
-  traffic stay as documented; parallel tracks (M33 assets, lessons, STATUS
-  compaction) remain available.
+- Next: **slice 89 — fix the semaphore id space (0..255 with slot reuse),
+  update the kernel tests, re-run the boot** (expected: A/B/C distinct,
+  job submitted, differential green); then check the thread-id space for
+  the same class of bug. Draft decisions 0037/0038 remain parked.
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.

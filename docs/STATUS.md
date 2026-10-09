@@ -1,18 +1,18 @@
 # Project status
 
-Updated 2026-10-08 (docs refresh for external validation, `main` =
-`b1ce75f`, green): this pass updates every stale header, count and
-next-action in the doc set without changing history or evidence. Live
-frontier unchanged since slice 87 (2026-10-04): E2 adjudicated on the
-ROM worker (delete-wake delivers NO -1, waiter resumes with park v0=-2
-intact; final minimal live shopping list specified, no live run):
-DRAFT 0038 stays DRAFT (E1 contradicted game-side, E3 unmet and
-load-bearing — no invoker; E2 now adjudicated against the -1 clause,
-acceptance needs the no-error reword). Delete_sema refusal intact.
-53/53 + Python 73 owner-gated. Next: an interactive PCSX2 session per
-the slice-87 list (S0 calibration first), or owner direction — plus the
-validator's findings from this refresh. Open question for owner:
-interactive PCSX2 session yes/no/later. This is the
+Updated 2026-10-09 after slice 88 (live no-card session; `main` =
+`3ddc495` + this docs commit): the owner ordered the live capture with
+the memory card removed; the reference reaches the main menu with no
+input and its job system is stamped with **distinct** handles within
+seconds of game start. Comparing with the model exposed the root cause
+of the park: the model's semaphore allocator hands out raw ids
+3, 7, 11, … past the 8-bit id space the game's handle math assumes —
+the 80th allocation (319 = 0x13F) produces the handle 0x13F, colliding
+with sema 63's handle, so the gate's waits on A and B hit the same
+semaphore (the slice-78 "guest-side knot" verdict is superseded for its
+cause: the gap is model-side). Next: slice 89 fixes the id space and
+re-runs the boot. 53/53 + Python 73 gates stand (docs-only changes).
+This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1626,11 +1626,17 @@ proceeds. Details live in the linked evidence documents.
   `docs/references/used-tools.md`.
 - Disposable Ghidra project directory: `%TEMP%\GT4Recomp-M7`.
 - PCSX2 nightly 2.9.93 at `F:\Games\PS2` on the original machine; the owner
-  added a pre-configured **PCSX2 v2.9.94 under `private/pcsx2/`** (with its
-  `pcsx2-config` and BIOS), all ignored by `/private/`. PINE stays on port
+  added a pre-configured PCSX2 under `private/pcsx2/` — the folder is named
+  `pcsx2-v2.9.94` but the binary is **v2.9.114** (exe metadata + emulog;
+  slice 88). The **active** config is `Documents\PCSX2\inis\PCSX2.ini`
+  (BIOS repointed at the repo `private/pcsx2/bios`; PINE on; software
+  renderer; card slots disabled for the no-card reference), all ignored by
+  `/private/`; the bundled `private/pcsx2/pcsx2-config/PCSX2.ini` is a stale
+  copy. PINE stays on port
   28011 (`EnablePINE = true`; the original ini is kept as
   `.bak-gt4recomp`). Savestates: the copies that travel in
-  `private/pcsx2/sstates/` (slot 9 = PINE/menu, ours; slot 1 = owner) and the
+  `private/pcsx2/sstates/` (slot 9 = PINE/menu, ours; slot 1 = owner; plus
+  the slice-88 no-card set under `slice88-live-no-card/`) and the
   live `Documents/PCSX2/sstates`; `scripts/pcsx2_savestate.py` decodes their
   CPU state offline.
 - Live RAM dump (ignored): `private/pcsx2/text-ram.bin` and
@@ -1671,10 +1677,14 @@ proceeds. Details live in the linked evidence documents.
   contract slices P00–P10 (decisions 0028–0036) then rebuilt the model's
   time, interrupt, DMA, exit-reason, RPC-telemetry and comparison
   machinery with the differential green; fresh legs march to a
-  stationary 5M limit-cycle (slices 75–76) and the sema-63 wait is a
-  guest-side knot (slices 77–78), with the reference showing recreated
-  semaphores at menu phase (slice 79). The remaining frontier: the
-  originating traffic or later phase of draft decisions 0037/0038.
+  stationary 5M limit-cycle (slices 75–76). **Slice 88 found the park's
+  root cause**: the model's semaphore ids leave the 8-bit space the
+  game's handle math assumes (raw 319 → handle 0x13F = sema 63's
+  handle), so the gate's waits on A and B collide on one semaphore —
+  the slice-77/78 "guest-side knot" wording is superseded for the
+  cause. The reference (no card, software renderer) stamps distinct
+  handles and submits the job within seconds of game start and reaches
+  the menu with no input. Next: slice 89 (fix the id space) and re-run.
 - The cooperative scheduler was **exercised end to end by the boot run** in
   the fifth slice (the game's own CreateThread/StartThread/ChangeThreadPriority/
   WaitSema sequence) and now runs up to twelve threads under VBlank and timer
@@ -1695,13 +1705,17 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Validator findings from this refresh, then an interactive PCSX2
-   session per the slice-87 list or owner direction (S0 calibration
-   first; without live observation H1/H2′ and the F traffic stay as
-   documented).
-2. Performance: resume entries or inline syscall calls to shrink the
+1. Slice 89: fix the semaphore id space (ids within 0..255 with slot
+   reuse, the contract the game's handle math assumes), update the
+   kernel tests, and re-run the boot — expected observable: A/B/C
+   distinct, job submitted (+0x34=1), differential green. Then re-check
+   the thread-id space for the same class of bug.
+2. If the fix does not unblock the gate, return to the live session
+   (playbook S1/S2/S3 remain valid; the no-card reference states are
+   archived under `private/pcsx2/sstates/slice88-live-no-card/`).
+3. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
-3. Keep the journal and this file current after every working session.
+4. Keep the journal and this file current after every working session.
 
 ## Journal
 
@@ -1819,3 +1833,9 @@ proceeds. Details live in the linked evidence documents.
   validation: three read-only audits, stale headers/counts/next-actions
   fixed across AGENTS/STATUS/requirements/lessons/plans/HANDOFF/
   environment/PLAN/README, save-screen G3 note, zero missing links.
+- [2026-10-09](journal/2026-10-09.md) — slice 88: live no-card session
+  (v2.9.114 correction, no-card reference reaches the menu with no
+  input, distinct handles + job submitted within seconds), the model's
+  A=B handle collision bisected to 0x00548520 and traced to the raw-id
+  319 (0x13F) out-of-range allocation, out-of-bounds generation write
+  at 0x00874A4C, root cause named; slice 89 will fix the id space.
