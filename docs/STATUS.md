@@ -1,15 +1,13 @@
 # Project status
 
-Updated 2026-10-09 after slice 89 (`main` = `4c2aaa2` + this commit): the
-semaphore id-space fix landed (decision 0039) — ids are the lowest free
-candidate 3, 7, …, 255 with reuse; a new `kernel` compatibility domain
-gates it and the checkpoint format is GT4CPT3. **The park is gone**: A/B/C
-stamp with distinct handles, the job submits (+0x34=1 between services
-3,000 and 3,500) and the machine marches to the 200M-step budget
-(3,697,027 services, VIF1/GIF growing) with no stationary cycle. Gates:
-CTest 53/53 + Python 73 (6 skips). Next: march past the budget and
-characterize the new frontier; the live no-card reference (slice 88)
-reaches the main menu and stays the comparison anchor. This is the
+Updated 2026-10-09 after slice 90 (post-gate exploration; `main` =
+`180e1b3`): the slice-89 fix holds — the boot passes the gate and runs
+18.5M services (1G-step budget) with frames flowing. It then settles into
+a steady render loop frozen from ~10k services (main thread sleeping,
+workers rendering, all RPC traffic done; VIF1 341,054 chains / 144.6 MB
+at the stop). The reference proceeds (notice → movie → menu); the
+divergence window is services ~3.5k–10k — the next hunt. Gates: 53/53
+CTest + Python 73 (slice 89; code unchanged since). This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
@@ -1696,13 +1694,12 @@ proceeds. Details live in the linked evidence documents.
 
 ## Next actions
 
-1. Slice 90: march past the 200M-step budget (a longer step limit) and
-   characterize the new frontier — which phase the run reaches, which
-   wait stops it, and whether the thread-id space needs the same class
-   of check the semaphores got.
-2. Keep comparing against the live no-card reference (menu reached, no
-   input; states archived under
-   `private/pcsx2/sstates/slice88-live-no-card/`).
+1. Slice 91: identify the post-gate wait — compare the model's ~10k
+   state with the reference's t=14s state by meaning and trace services
+   ~3.5k–10k (the main thread's sleep origin and its intended waker;
+   the card-service (MCSERV) completion path is a candidate).
+2. Check the thread-id space for the same class of bug the semaphores
+   had (open from slices 88/89).
 3. Performance: resume entries or inline syscall calls to shrink the
    interpreted gaps; jump-table dispatch for computed `jr` into local blocks.
 4. Keep the journal and this file current after every working session.
@@ -1831,4 +1828,7 @@ proceeds. Details live in the linked evidence documents.
   at 0x00874A4C, root cause named. Slice 89: the fix (lowest-free ids
   3..255 with reuse, decision 0039, kernel compat domain + GT4CPT3);
   the gate passes at ~3,300 services and the machine marches to 3.7M
-  services at the 200M-step budget; 53/53 + Python 73.
+  services at the 200M-step budget; 53/53 + Python 73. Slice 90:
+  1G-step march to 18.5M services; steady render loop frozen from ~10k
+  (main sleeping, workers rendering, RPC done); divergence window
+  ~3.5k–10k named; provenance reconfigure.

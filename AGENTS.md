@@ -122,22 +122,21 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (`main` = `3ddc495` + slice-88 do
   advance machine, handler arguments with explicit idle, jr capture with
   explicit module-exit reasons, real DMA payload with chain walking, RPC
   telemetry with `--strict-rpc`, and a widened state comparator.
-- Frontier: **slice 89 fixed the semaphore id space (decision 0039)** —
-  ids are the lowest free candidate 3, 7, …, 255 with reuse; a new
-  `kernel` compatibility domain gates it and the checkpoint format is
-  GT4CPT3. The old event-starved park is gone: A/B/C stamp with distinct
-  handles, the job submits (+0x34=1 between services 3,000 and 3,500)
-  and the run reaches the 200M-step budget (3,697,027 services, VIF1/GIF
-  growing) with no stationary cycle. The live no-card reference reaches
-  the main menu with no input
-  (`docs/reverse-engineering/slice88-live-no-card-session.md`,
-  `slice89-semaphore-id-space-fix.md`).
-- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89.
-  Tripwires armed; M35's pad promoter watched (the first padman bind
-  reopens input work).
-- Next: **slice 90 — march past the 200M-step budget and characterize the
-  new frontier**; check the thread-id space for the same class of bug.
-  Draft decisions 0037/0038 are superseded (marked in their files).
+- Frontier: **the slice-89 fix holds and the frontier moved** — the boot
+  passes the gate (~3.3k services) and runs 18.5M services (1G-step
+  budget) with frames flowing, then settles into a steady render loop
+  frozen from ~10k (main thread sleeping, workers rendering, all RPC
+  traffic done; VIF1 341,054 chains / 144.6 MB). The reference proceeds
+  (notice → movie → menu); the divergence window is services ~3.5k–10k
+  (`docs/reverse-engineering/slice90-post-gate-steady-loop.md`).
+- Gates: 53/53 CTest + Python 73 (67 run, 6 skip), re-run at slice 89
+  (code unchanged since). Tripwires armed; M35's pad promoter watched
+  (the first padman bind reopens input work).
+- Next: **slice 91 — identify the post-gate wait** (compare the model's
+  ~10k state with the reference's t=14s state by meaning; trace services
+  ~3.5k–10k; the card-service completion path is a candidate); check the
+  thread-id space for the same class of bug. Draft decisions 0037/0038
+  are superseded (marked in their files).
 - Build (VS Developer PowerShell):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=cl`
   then `cmake --build build` then `ctest --test-dir build --output-on-failure`.
