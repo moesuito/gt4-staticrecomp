@@ -1,7 +1,20 @@
 # Project status
 
-Updated 2026-10-09 after slice 98 (baseline `80bc985`): **completed-work
-observation verified, not a new clock**. Optional `--count-work` reports
+Updated 2026-10-09 after slice 99 (baseline `89cabf6`): **source/fixture
+branch-event audit verified; live reference matrix/time policy still open**.
+Pinned PCSX2 interpreter BEQ/BNE-false tests events at the next executed word;
+normal dynarec ordinary paths execute the slot before branch event testing.
+Other branch families differ; no universal slot-exclusion "fix" adopted.
+Debugger Step Into resumes to a temporary breakpoint with selected engine,
+does not force interpreter or guarantee one completed word. Thirteen pinned
+source hashes independently reverified; decision 0041 qualifies future evidence.
+24 model characterization controls added in existing suites: six BEQ/BGEZ/
+BEQL paths, direct/segmented synthetic event injection, ordinary syscall slots,
+three equal-state slot stops with unequal pending ownership, one native callee
+poll/restore edge (work 3 -> 7, service subset 1, v0=9). These are not hardware
+acceptance and no BIOS slot return has been measured. No reference run launched.
+
+Production binary byte-identical to slice 98. Optional `--count-work` reports
 22,566,319 completed instructions / 90,000 accepted services identically in
 both engines, with full final state still identical. 26 independently
 hand-counted synthetic paths, acceptance/segmentation/DMA-poll and snapshot/
@@ -22,13 +35,14 @@ checkpoints refused. Snapshot bytes unchanged by observation; new checkpoint
 invocation observes only its leg, live snapshot apply conserves the counter.
 No experiment running. Whole generated module now ~216 MB with readable
 counting calls; static metadata remains 15,068 functions / 924,991 instructions.
-Next slice 99: reference-backed branch/slot event eligibility and trap-resume
-audit plus matched reference update/root interval, before work->time policy.
-Evidence: `docs/reverse-engineering/slice98-completed-guest-work.md`.
-Gates: CTest 53/53 (54.29 s, 90k gate now counts work too) + Python 84
-(78 run, 6 skip; 68.851 s), warning-free full/whole-program rebuild.
-Original acceptance/failure phrases retained; added work-mismatch tripwire
-independently rejects a fake old-success/new-failure output. This is the
+Next slice 100: live interpreter/dynarec branch/trap controls with mode per
+segment, vector EPC/BD and BIOS-selected return; matched reference update
+1000-us/root-work interval remains required before any work->time policy.
+Evidence: `docs/reverse-engineering/slice99-branch-slot-event-audit.md`.
+Gates: CTest 53/53 (56.34 s, same work-enabled 90k gate) + Python 84
+(78 run, 6 skip; 70.937 s), warning-free build; production target no work.
+Original acceptance/failure phrases retained, including slice-98's verified
+work-mismatch tripwire. This is the
 first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 

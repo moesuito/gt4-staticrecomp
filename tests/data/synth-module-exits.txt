@@ -25,6 +25,8 @@ seed 0x00100124
 seed 0x00100130
 seed 0x00100144
 seed 0x00100150
+seed 0x0010015C
+seed 0x0010016C
 max 256
 functions 32
 # 0x00100000 jr_case: jr ra with a slot that rewrites ra.
@@ -138,3 +140,12 @@ word 0x0000000D
 word 0xAD090000
 word 0x24420001
 word 0x0000000D
+# 0x0010015C: caller must not execute its continuation after callee poll exit.
+word 0x0C04005B
+word 0x00000000
+word 0x24420008
+word 0x0000000D
+# 0x0010016C: store raises; resume at JR then slot and caller continuation.
+word 0xAD090000
+word 0x03E00008
+word 0x24420001

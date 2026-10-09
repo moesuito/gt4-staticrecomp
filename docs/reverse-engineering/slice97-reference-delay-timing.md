@@ -3,6 +3,14 @@
 Date: 2026-10-09, baseline `25b0269`. Observation/tooling slice; no production
 clock, scheduler, checkpoint or translation semantics changed.
 
+Slice-99 qualification (source audit only): Qt Step Into resumes to a temporary
+breakpoint using the selected motor; it does not force interpreter and may
+execute a branch/slot pair rather than one word. Run alone does not attest
+dynarec either. Mode per historical segment remains unqualified. The measured
++1 syscall-cycle delta and retry/frame intervals below remain observed deltas,
+not universal opcode costs or proof of a particular motor. Pinned source and
+hashes: `docs/reverse-engineering/slice99-branch-slot-event-audit.md`.
+
 ## Live reference setup / first positive control
 
 Reverified ISO and CORE against usa-v2.00.json before running. Stock

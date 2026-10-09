@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <iostream>
 #include <utility>
+#include <vector>
 
 using namespace gt4recomp::ee;
 
@@ -160,6 +161,123 @@ int main() {
     const auto check = [&](bool passed, const char* label) {
         if (!passed) { std::cerr << label << '\n'; ++failures; }
     };
+
+    // Slice 99 audit controls, not architectural acceptance: record the
+    // CURRENT bridge event eligibility. The ordinary not-taken slot is
+    // exposed to a callback; reference equivalence is a separate question.
+    struct BranchAuditCase {
+        std::uint32_t word;
+        bool likely;
+        std::uint64_t not_taken_operand;
+    };
+    const BranchAuditCase audited_branches[] = {
+        {0x11000002u, false, 1u},                   // BEQ t0,zero,+2
+        {0x05010002u, false, 0xFFFFFFFFFFFFFFFFull}, // BGEZ t0,+2
+        {0x51000002u, true, 1u},                    // BEQL t0,zero,+2
+    };
+    for (const auto& audited_branch : audited_branches) {
+        const bool likely = audited_branch.likely;
+        for (const bool taken : {false, true}) {
+            const auto branch = audited_branch.word;
+            const auto expected_probes = taken
+                ? std::vector<std::uint32_t>{window_base, window_base + 12}
+                : likely
+                    ? std::vector<std::uint32_t>{window_base, window_base + 8, window_base + 12}
+                    : std::vector<std::uint32_t>{window_base, window_base + 4,
+                                                 window_base + 8, window_base + 12};
+            {
+                GuestWorkCounter work;
+                auto state = make_state(window_base);
+                state.set_guest_work_counter(&work);
+                write_words(state, window_base,
+                            {branch, 0x24020011u, 0x24020022u, break_word});
+                state.write_gpr64(8, taken ? 0u : audited_branch.not_taken_operand);
+                std::vector<std::uint32_t> probes;
+                RunOptions options;
+                options.start_interrupt = [&probes](GuestState& running) {
+                    probes.push_back(running.pc());
+                    return false;
+                };
+                Driver driver(state, module_from_entries({}));
+                ServiceTable services;
+                const auto result = driver.run(services, options);
+                check(probes == expected_probes,
+                      "audit: exact current branch/slot callback PCs");
+                check(result.boundary.kind == BoundaryKind::Break
+                          && state.read_gpr64(2) == (taken ? 0x11u : 0x22u)
+                          && work.completed_instructions == (!taken && !likely ? 3u : 2u),
+                      "audit: false event probe does not change completed branch effects");
+            }
+            // Synthetic delivery redirects to a BREAK, without claiming to
+            // emulate CP0/BIOS. One completed word makes an event due. Test
+            // both uninterrupted run and same-driver segmented execution.
+            for (const bool segmented : {false, true}) {
+                GuestWorkCounter work;
+                auto state = make_state(window_base);
+                state.set_guest_work_counter(&work);
+                write_words(state, window_base,
+                            {branch, 0x24020011u, 0x24020022u, break_word});
+                write_words(state, window_base + 0x100, {break_word});
+                state.write_gpr64(8, taken ? 0u : audited_branch.not_taken_operand);
+                Driver driver(state, module_from_entries({}));
+                ServiceTable services;
+                if (segmented) {
+                    RunOptions one_attempt;
+                    one_attempt.step_limit = 1;
+                    const auto pause = driver.run(services, one_attempt);
+                    check(pause.boundary.kind == BoundaryKind::StepLimit
+                              && work.completed_instructions == 1
+                              && driver.pending_transfer() == taken,
+                          "audit: budget stop preserves current pending-slot state");
+                }
+                RegisterContext interrupted;
+                bool delivered = false;
+                RunOptions options;
+                options.start_interrupt = [&](GuestState& running) {
+                    if (delivered || work.completed_instructions < 1) {
+                        return false;
+                    }
+                    interrupted = running.save_registers();
+                    delivered = true;
+                    running.set_pc(window_base + 0x100);
+                    return true;
+                };
+                const auto result = driver.run(services, options);
+                const auto expected_pc = taken ? window_base + 12
+                    : likely ? window_base + 8 : window_base + 4;
+                check(delivered && interrupted.pc == expected_pc
+                          && interrupted.gpr[2] == (taken ? 0x11u : 0u)
+                          && work.completed_instructions == (taken ? 2u : 1u)
+                          && result.boundary.kind == BoundaryKind::Break
+                          && result.boundary.pc == window_base + 0x100,
+                      "audit: current first due event exposes only ordinary not-taken slot");
+            }
+        }
+    }
+
+    // Same ordinary branch with a syscall slot: the CURRENT taken path
+    // refuses acceptance; the not-taken bridge treats it as a
+    // plain syscall. Keep this visible without choosing BIOS trap resume.
+    for (const bool taken : {false, true}) {
+        GuestWorkCounter work;
+        auto state = make_state(window_base);
+        state.set_guest_work_counter(&work);
+        write_words(state, window_base, {0x11000002u, syscall_word, ordinary_word, break_word});
+        state.write_gpr64(8, taken ? 0u : 1u);
+        state.write_gpr64(3, 0x42u);
+        FakeService service;
+        ServiceTable services;
+        services.add(0x42u, make_fake_service(service));
+        Driver driver(state, module_from_entries({}));
+        const auto result = driver.run(services, RunOptions{});
+        check(service.calls == (taken ? 0u : 1u)
+                  && work.accepted_services == service.calls
+                  && work.completed_instructions == (taken ? 1u : 3u)
+                  && driver.pending_transfer() == taken
+                  && result.boundary.kind == (taken ? BoundaryKind::Syscall : BoundaryKind::Break)
+                  && result.boundary.pc == window_base + (taken ? 4u : 12u),
+              "audit: ordinary not-taken syscall slot acceptance differs from taken");
+    }
 
     // module_from_entries answers for exactly the listed addresses.
     {

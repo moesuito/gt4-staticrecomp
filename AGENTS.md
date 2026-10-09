@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 98, baseline `80bc985`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 99, baseline `89cabf6`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -147,15 +147,25 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 98, baseline `80bc985`, gr
   identically, full state identical. 10k counted/plain output otherwise exact.
   Host counter outside contexts/checkpoints, no clock conversion. Preexisting
   handled likely-slot syscall gap explicitly tested: native5/1 vs reference1/0.
+  Slice 99 source/fixture audit (decision 0041): pinned PCSX2 interpreter
+  BEQ/BNE-false tests at next word; normal dynarec pairs branch/slot before
+  event test. Other families differ; no universal exclusion fix adopted.
+  Qt Step Into resumes to temporary breakpoint with selected motor, not
+  forced interpreter/one-word execution. 24 characterization controls:
+  six branch paths, direct/segmented event probes, three equal-state stopped
+  slots with different pending ownership, native callee poll/restore work3->7.
+  BIOS slot return/live trap context and matched update interval unknown;
+  production binary identical to slice98, no new clock or compatibility.
   No experiment running. Evidence:
-  `docs/reverse-engineering/slice98-completed-guest-work.md`.
-- Gates: 53/53 CTest + Python 84 (78 run, 6 skip), re-run at slice 98;
+  `docs/reverse-engineering/slice99-branch-slot-event-audit.md`.
+- Gates: 53/53 CTest + Python 84 (78 run, 6 skip), re-run at slice 99;
   no existing acceptance expression weakened.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 99 — reference-backed branch/slot event and trap-resume audit**.
-  Include handled likely-slot syscall gap, both taken/not-taken slot exclusion,
-  and a matched reference update/root interval before any work->time policy.
+- Next: **slice 100 — mode-qualified live branch/trap reference controls**.
+  Record engine per segment, vector entry EPC/BD, slot effect and BIOS-selected
+  return; include handled likely-slot gap. Match reference update 1000-us/root
+  interval before any work->time policy; do not assume both PCSX2 engines agree.
   Account identically, including non-service computation;
   do not guess an instruction/cycle conversion or special-case WaitSema.
   Slice-94 attribution/exclusion rates concern the old interrupt_model 3,

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <iostream>
 #include <functional>
+#include <vector>
 
 using namespace gt4recomp;
 using namespace gt4recomp::ee;
@@ -64,6 +65,8 @@ constexpr std::uint32_t image_words[] = {
     0x51000002u, 0x24420001u, 0x24420002u, 0x03E00008u, 0x00000000u,
     0x01004009u, 0x00000000u, 0x0000000Du,
     0xAD090000u, 0x24420001u, 0x0000000Du,
+    0x0C04005Bu, 0x00000000u, 0x24420008u, 0x0000000Du,
+    0xAD090000u, 0x03E00008u, 0x24420001u,
 };
 
 constexpr std::uint32_t dest_tail[] = {0x24080001u, 0x00200000u};
@@ -663,6 +666,85 @@ int main() {
               "counted native poll exit matches the completed interpreter path");
     }
 
+    // Slice 99: a real generated caller/callee pair, with the existing DMA
+    // poll as an exact native exit. This proves propagation and restoration,
+    // NOT an instruction clock or CP0/BIOS exception implementation.
+    {
+        constexpr std::uint32_t caller = 0x0010015Cu;
+        constexpr std::uint32_t callee_continuation = 0x00100170u;
+        constexpr std::uint32_t caller_continuation = 0x00100164u;
+        GuestWorkCounter native_work;
+        auto state = make_state(caller, &native_work);
+        state.memory().map_region(0x1000A000u, 4);
+        state.memory().write_word(common_dest, 0x0000000Cu); // synthetic handler service
+        state.write_gpr64(8, 0x1000A000u);
+        state.write_gpr64(9, 0x100u);
+        RegisterContext interrupted;
+        int polls = 0;
+        state.set_dma_start_poll([&](GuestState& running) {
+            ++polls;
+            check(native_work.completed_instructions == 3
+                      && running.pc() == callee_continuation
+                      && running.read_gpr64(31) == caller_continuation
+                      && running.read_gpr64(2) == 0
+                      && running.memory().read_word(0x1000A000u) == 0x100u,
+                  "callee poll sees call+slot+store completed, no obsolete continuation");
+            interrupted = running.save_registers();
+            running.set_pc(common_dest);
+            running.write_gpr64(3, 0x100u);
+            return true;
+        });
+        const auto exit = translated::call_entry(state, caller);
+        check(exit == BoundaryKind::Returned && state.pc() == common_dest && polls == 1
+                  && native_work.completed_instructions == 3 && state.read_gpr64(2) == 0,
+              "callee injected context survives unwinding of its native caller frame");
+        ServiceTable synthetic_handler;
+        synthetic_handler.add(0x100u, [&](GuestState& running) {
+            running.restore_registers(interrupted);
+            return ServiceOutcome::Jumped;
+        });
+        Driver driver(state, make_module());
+        const auto result = driver.run(synthetic_handler, RunOptions{});
+        check(result.boundary.kind == BoundaryKind::Break
+                  && result.boundary.pc == caller_continuation + 4
+                  && state.read_gpr64(2) == 9 && native_work.completed_instructions == 7
+                  && native_work.accepted_services == 1 && polls == 1,
+              "restored callee JR/slot and caller continuation each complete once");
+
+        // Separate instruction-at-a-time control: redirect after the third
+        // completed word (the SW), then explicitly accept the synthetic
+        // handler and restore. No shared Driver or native poll used here.
+        GuestWorkCounter reference_work;
+        auto reference = make_state(caller, &reference_work);
+        reference.memory().map_region(0x1000A000u, 4);
+        reference.memory().write_word(common_dest, 0x0000000Cu);
+        reference.write_gpr64(8, 0x1000A000u);
+        reference.write_gpr64(9, 0x100u);
+        Interpreter interpreter(reference);
+        for (int instruction = 0; instruction < 3; ++instruction) {
+            check(interpreter.step().outcome == StepOutcome::Executed,
+                  "nested reference executes call, slot and store");
+        }
+        const auto reference_interrupted = reference.save_registers();
+        check(!interpreter.pending_transfer() && reference.pc() == callee_continuation
+                  && reference.memory().read_word(0x1000A000u) == 0x100u,
+              "reference store completes at same clean callee continuation");
+        reference.set_pc(common_dest);
+        reference.write_gpr64(3, 0x100u);
+        check(interpreter.step().operation == Operation::Syscall,
+              "nested reference stops before synthetic return service");
+        reference.restore_registers(reference_interrupted);
+        reference.record_accepted_service();
+        const auto stop = run_to_stop(reference);
+        check(stop.result.operation == Operation::Break
+                  && reference_work.completed_instructions == 7
+                  && reference_work.accepted_services == 1
+                  && states_match(state, reference, "nested poll and restore")
+                  && reference.memory().read_word(0x1000A000u)
+                      == state.memory().read_word(0x1000A000u),
+              "nested native unwind/restore equals independent interpreter continuation");
+    }
+
     // Confirm the preexisting service-in-likely-slot gap, not a new promise
     // of parity: the native stop has no pending transfer, the interpreter's
     // taken branch does. No scheduling or trap-resume semantics change here.
@@ -687,6 +769,62 @@ int main() {
                   && stop.outcome == StepOutcome::Exception && stop.pc == beql_slot
                   && interpreter.pending_transfer(),
               "known gap: interpreter leaves the likely-slot service pending");
+    }
+
+    // Slice 99: matching stop PC/effects do NOT prove matching resumability.
+    // These generated exits lose the interpreter's pending-slot flag. A
+    // false callback records eligibility only, never models BIOS recovery.
+    for (const auto entry : {beql_case, 0x00100124u, 0x001000FCu}) {
+        GuestWorkCounter native_work;
+        auto native_state = make_state(entry, &native_work);
+        native_state.write_gpr64(31, ra_landing);
+        native_state.write_gpr64(3, 0x42u);
+        if (entry == 0x001000FCu) {
+            native_state.write_gpr64(8, 0x7FFFFFFFu);
+            native_state.write_gpr64(9, 1);
+        }
+        GuestWorkCounter bridge_work;
+        auto bridge_state = make_state(entry, &bridge_work);
+        bridge_state.restore_registers(native_state.save_registers());
+        Driver native_driver(native_state, make_module());
+        Driver bridge_driver(bridge_state, module_from_entries({}));
+        const auto native_stop = native_driver.run(no_services, RunOptions{});
+        const auto bridge_stop = bridge_driver.run(no_services, RunOptions{});
+        const auto expected_kind = entry == beql_case ? BoundaryKind::Syscall
+            : entry == 0x00100124u ? BoundaryKind::UnsupportedWord : BoundaryKind::InstructionStop;
+        check(native_stop.boundary.kind == expected_kind
+                  && bridge_stop.boundary.kind == expected_kind
+                  && native_stop.boundary.pc == entry + 4
+                  && bridge_stop.boundary.pc == entry + 4
+                  && native_work.completed_instructions == 1
+                  && bridge_work.completed_instructions == 1
+                  && states_match(native_state, bridge_state, "stopped slot state")
+                  && !native_driver.pending_transfer() && bridge_driver.pending_transfer(),
+              "audit: equal slot stop/effects hide different pending-transfer ownership");
+        std::vector<std::uint32_t> native_probes;
+        std::vector<std::uint32_t> bridge_probes;
+        RunOptions native_options;
+        native_options.start_interrupt = [&](GuestState& running) {
+            native_probes.push_back(running.pc());
+            return false;
+        };
+        RunOptions bridge_options;
+        bridge_options.start_interrupt = [&](GuestState& running) {
+            bridge_probes.push_back(running.pc());
+            return false;
+        };
+        const auto native_repeat = native_driver.run(no_services, native_options);
+        const auto bridge_repeat = bridge_driver.run(no_services, bridge_options);
+        check(native_probes == std::vector<std::uint32_t>{entry + 4}
+                  && bridge_probes.empty() && native_work.completed_instructions == 1
+                  && bridge_work.completed_instructions == 1
+                  && native_repeat.boundary.kind == expected_kind
+                  && bridge_repeat.boundary.kind == expected_kind
+                  && native_repeat.boundary.pc == entry + 4
+                  && bridge_repeat.boundary.pc == entry + 4
+                  && !native_driver.pending_transfer() && bridge_driver.pending_transfer()
+                  && states_match(native_state, bridge_state, "repeated slot state"),
+              "audit: repeated native slot stop permits event probe, bridge excludes it");
     }
 
     // Acceptance outcomes count the syscall once, including private returns
@@ -735,6 +873,7 @@ int main() {
     std::cout << "synthetic module exits match the interpreter on 11 legs: "
                  "effect and stop reason; 26 hand-counted work paths, "
                  "service outcomes, segmented stops and DMA poll verified; "
-                 "treated likely-slot service gap retained explicitly\n";
+                 "treated likely-slot service gap retained explicitly; "
+                 "nested poll restore and stopped-slot event ownership audited\n";
     return 0;
 }

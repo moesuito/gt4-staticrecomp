@@ -83,3 +83,13 @@ for guest reads between STR and the boundary.
   Zero in-module raise / divergent-delivery pairs.
 - `WILL_FAIL` markers on both `gt4boot_services` legs removed by
   those green runs; the loud mismatch regexes stay.
+
+## Slice 99 scope clarification (2026-10-09, no semantics change)
+
+Pinned PCSX2 source differentiates interpreter BEQ/BNE-false event testing
+before the next executed word from normal dynarec paired-slot paths. Other
+branch families differ too; debugger Step Into does not force interpreter.
+This decision's observed plain falling-through SW scope remains intact, not
+an all-branch event/time contract. Source-derived trap EPC/BD predictions do
+not establish BIOS-selected return or justify servicing native stopped slots.
+See decision 0041 and `docs/reverse-engineering/slice99-branch-slot-event-audit.md`.
