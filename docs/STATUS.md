@@ -1,30 +1,35 @@
 # Project status
 
-Updated 2026-10-09 after slice 97 (baseline `25b0269`): **reference timing
-measured; production root exclusion not fixed**. Pinned stock PCSX2
-v2.9.114: root retry 2000-us WaitSema -> blocking dispatch pre-ERET takes
-1111 EE cycles (~3.77 us nominal emulator time), leaving 294400/294912
-BUSCLK ticks. Actual update/frame SleepThread dispatch takes 1630 cycles;
-both select idle EPC 0x00081FC0, not root. Two earlier update-stack waits
-were GPU semaphore synchronization, not VBlank. No matched reference
-update 1000-us delay/root-work interval captured; no new clock policy.
+Updated 2026-10-09 after slice 98 (baseline `80bc985`): **completed-work
+observation verified, not a new clock**. Optional `--count-work` reports
+22,566,319 completed instructions / 90,000 accepted services identically in
+both engines, with full final state still identical. 26 independently
+hand-counted synthetic paths, acceptance/segmentation/DMA-poll and snapshot/
+overflow controls pass. At 10k, counted/plain full output is identical after
+removing only observation lines (8,946,331 completed / 10,000 accepted).
+Decision 0040 accepted: external host observer, off by default, never part
+of thread saves/checkpoints or timer policy. No universal cycle cost inferred.
+Known preexisting handled syscall-in-likely-slot gap now executed explicitly:
+native work 5/subset 1 versus interpreter work 1/subset 0. No guessed fix.
+Reference-relative update 1000-us delay/root interval still unmeasured;
+slice-97 retry/frame dispatch samples select idle, not root.
 Slice 96's 270 model waits still explain starvation: WaitSema's own 1 ms
 charge expires the full delay and interrupts root before any instruction.
 Frontier unchanged: threads 1–3, main READY/prio64, update RUN/prio0,
 2 RPC pairs, zero GIF payload. Correct interrupt preemption retained;
 time=3, interrupt=4, kernel=2, RPC=1, translation=2; old interrupt-model-3
-checkpoints refused. Offline savestate `timing` reader now gates both save
-version and audited build label; raw cycles/counts only. Diagnostic reference
-closed, all breakpoints removed, original slot 9/.backup hashes restored,
-clipboard restored. No experiment running; production code unchanged.
-Next slice 98: shared observation-only completed-work accounting with
-hand-counted tests, no timer/scheduler changes; then branch/slot delivery
-audit and matched reference interval before any work->time conversion.
-Evidence: `docs/reverse-engineering/slice97-reference-delay-timing.md`.
-Gates: unchanged CTest 53/53 (54.90 s, including 90k differential) + Python
-81 (75 run, 6 skip; 69.193 s), re-run at slice 97; build no work/warnings;
-no acceptance expression weakened. This is the first document to read in
-a new session; it is kept current as work
+checkpoints refused. Snapshot bytes unchanged by observation; new checkpoint
+invocation observes only its leg, live snapshot apply conserves the counter.
+No experiment running. Whole generated module now ~216 MB with readable
+counting calls; static metadata remains 15,068 functions / 924,991 instructions.
+Next slice 99: reference-backed branch/slot event eligibility and trap-resume
+audit plus matched reference update/root interval, before work->time policy.
+Evidence: `docs/reverse-engineering/slice98-completed-guest-work.md`.
+Gates: CTest 53/53 (54.29 s, 90k gate now counts work too) + Python 84
+(78 run, 6 skip; 68.851 s), warning-free full/whole-program rebuild.
+Original acceptance/failure phrases retained; added work-mismatch tripwire
+independently rejects a fake old-success/new-failure output. This is the
+first document to read in a new session; it is kept current as work
 proceeds. Details live in the linked evidence documents.
 
 ## Where we are

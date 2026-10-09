@@ -150,6 +150,7 @@ ServiceOutcome Driver::handle_syscall(std::uint32_t pc, std::uint32_t service,
         return ServiceOutcome::Unhandled;
     }
     ++stats.services_handled;
+    state_.record_accepted_service();
     if (options.advance_time) {
         options.advance_time(state_);
     }

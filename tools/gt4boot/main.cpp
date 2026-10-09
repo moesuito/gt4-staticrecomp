@@ -652,6 +652,7 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
                 const ServiceOutcome outcome = (*handler)(state);
                 if (outcome == ServiceOutcome::Handled) {
                     ++result.services_handled;
+                    state.record_accepted_service();
                     kernel.advance_service_time(state);
                     state.set_pc(step.pc + 4);
                     continue;
@@ -659,11 +660,13 @@ ReferenceResult run_reference(GuestState& state, ServiceTable& services,
                 if (outcome == ServiceOutcome::Switched
                     || outcome == ServiceOutcome::Jumped) {
                     ++result.services_handled;
+                    state.record_accepted_service();
                     kernel.advance_service_time(state);
                     continue;
                 }
                 if (outcome == ServiceOutcome::NoRunnableThread) {
                     ++result.services_handled;
+                    state.record_accepted_service();
                     kernel.advance_service_time(state);
                     if (kernel.deliver_idle_interrupt(state)) {
                         continue;
@@ -684,7 +687,7 @@ void usage() {
                  "[--compare-interpreter] [--threads] [--dump ADDRESS LENGTH]\n"
                  "       [--checkpoint-at N PATH] [--resume PATH] [--verify-resume PATH]\n"
                  "       [--checkpoint-every K DIR --keep M [--max-bytes B]] [--quiet]\n"
-                 "       [--strict-rpc]\n"
+                 "       [--strict-rpc] [--count-work]\n"
                  "  --services N          handle at most N services, then stop at the next\n"
                  "                        syscall (default: no limit)\n"
                  "  --steps N             stop after N translated calls plus interpreted\n"
@@ -693,7 +696,10 @@ void usage() {
                  "                        disc image (the pinned ISO); without it file\n"
                  "                        opens answer \"not found\"\n"
                  "  --compare-interpreter repeat the run in the interpreter and require the\n"
-                 "                        stop and the full final state to match\n"
+                  "                        stop and the full final state to match\n"
+                 "  --count-work          observe completed instructions, including accepted\n"
+                 "                        syscalls; compare totals with the interpreter\n"
+                 "                        when requested (no clock conversion; current leg)\n"
                  "  --threads             print the kernel's thread table after the run\n"
                  "                        (with the slice-73 RPC inventory)\n"
                  "  --strict-rpc          stop loudly at the first unknown (SID,\n"
@@ -733,6 +739,7 @@ int wmain(int argc, wchar_t* argv[]) {
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
     bool compare_interpreter = false;
+    bool count_work = false;
     std::uint64_t service_limit = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t step_limit = default_step_limit;
     std::filesystem::path core_path;
@@ -767,6 +774,8 @@ int wmain(int argc, wchar_t* argv[]) {
         const std::wstring argument = argv[index];
         if (argument == L"--compare-interpreter") {
             compare_interpreter = true;
+        } else if (argument == L"--count-work") {
+            count_work = true;
         } else if (argument == L"--threads") {
             print_threads = true;
         } else if (argument == L"--strict-rpc") {
@@ -815,6 +824,12 @@ int wmain(int argc, wchar_t* argv[]) {
         != std::numeric_limits<std::uint64_t>::max();
     const bool want_resume = !resume_path.empty();
     const bool want_verify = !verify_resume_path.empty();
+    // Checkpoints deliberately do not carry diagnostic work. A fresh replay
+    // and a resumed leg observe different intervals, so do not compare them.
+    if (count_work && (want_verify || (want_resume && compare_interpreter))) {
+        std::cerr << "--count-work cannot compare checkpoint and fresh work intervals\n";
+        return 2;
+    }
     // Autosave (decision 0027): unset counts use the max sentinel. A zero
     // interval or keep is a usage error, not "off"; --keep/--max-bytes
     // without --checkpoint-every are usage errors too.
@@ -1048,7 +1063,11 @@ int wmain(int argc, wchar_t* argv[]) {
             driver_kernel.raise_dmac_completion(channel);
         });
         driver_devices.wire_kernel(driver_kernel);
+        GuestWorkCounter driver_work;
         auto driver_state = make_boot_state(image, driver_devices);
+        if (count_work) {
+            driver_state.set_guest_work_counter(&driver_work);
+        }
         // Option-A poll points (decision 0034): translated code asks the
         // kernel to deliver a synchronously raised DMA completion at the
         // next guest instruction, the pc the interpreter uses. The hook
@@ -1407,6 +1426,12 @@ int wmain(int argc, wchar_t* argv[]) {
 
         print_dumps();
 
+        if (count_work) {
+            std::cout << "guest work: " << driver_work.completed_instructions
+                      << " completed instructions, " << driver_work.accepted_services
+                      << " accepted services (current observation interval; not cycles)\n";
+        }
+
         if (compare_interpreter) {
             Kernel reference_kernel;
             reference_kernel.set_strict_rpc(strict_rpc);
@@ -1421,7 +1446,11 @@ int wmain(int argc, wchar_t* argv[]) {
                 reference_kernel.raise_dmac_completion(channel);
             });
             reference_devices.wire_kernel(reference_kernel);
+            GuestWorkCounter reference_work;
             auto reference_state = make_boot_state(image, reference_devices);
+            if (count_work) {
+                reference_state.set_guest_work_counter(&reference_work);
+            }
             // A resumed run sits N services in: the reference must run the
             // same total from the entry.
             std::uint64_t reference_total = service_limit;
@@ -1454,6 +1483,19 @@ int wmain(int argc, wchar_t* argv[]) {
                               reference_devices)) {
                 std::cerr << "the driver and the interpreter states differ\n";
                 return 1;
+            }
+            if (count_work) {
+                if (driver_work.completed_instructions != reference_work.completed_instructions
+                    || driver_work.accepted_services != reference_work.accepted_services) {
+                    std::cerr << "guest work differs: native " << driver_work.completed_instructions
+                              << "/" << driver_work.accepted_services << ", interpreter "
+                              << reference_work.completed_instructions << "/"
+                              << reference_work.accepted_services << '\n';
+                    return 1;
+                }
+                std::cout << "guest work identical: " << reference_work.completed_instructions
+                          << " completed instructions, " << reference_work.accepted_services
+                          << " accepted services\n";
             }
             std::cout << "interpreter: " << reference.interpreted_steps
                       << " instructions, state identical (registers, RAM "

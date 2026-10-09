@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -303,6 +304,38 @@ std::vector<MemoryRegion> GuestMemory::regions_snapshot() const {
         snapshot.push_back(std::move(copy));
     }
     return snapshot;
+}
+
+void GuestWorkCounter::record_instruction() {
+    if (completed_instructions == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error("Completed guest-work observation overflow");
+    }
+    ++completed_instructions;
+}
+
+void GuestWorkCounter::record_service() {
+    if (completed_instructions == std::numeric_limits<std::uint64_t>::max()
+        || accepted_services == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error("Accepted-service guest-work observation overflow");
+    }
+    ++completed_instructions;
+    ++accepted_services;
+}
+
+void GuestState::set_guest_work_counter(GuestWorkCounter* counter) noexcept {
+    guest_work_counter_ = counter;
+}
+
+void GuestState::record_completed_instruction() {
+    if (guest_work_counter_ != nullptr) {
+        guest_work_counter_->record_instruction();
+    }
+}
+
+void GuestState::record_accepted_service() {
+    if (guest_work_counter_ != nullptr) {
+        guest_work_counter_->record_service();
+    }
 }
 
 GuestState::GuestState(GuestMemory memory) : memory_(std::move(memory)) {

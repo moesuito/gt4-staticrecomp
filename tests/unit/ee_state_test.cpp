@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -125,6 +126,44 @@ int main() {
               "overlapping regions rejected");
         check(throws([&] { with_scratchpad.map_region(0x00100080u, 0x10u); }),
               "a region overlapping the main one is rejected");
+    }
+
+    // Work observation is external to register contexts and disabled by default.
+    {
+        GuestState observed(make_memory());
+        GuestWorkCounter work;
+        observed.record_completed_instruction();
+        observed.record_accepted_service();
+        check(work.completed_instructions == 0, "detached work counter is unchanged");
+        observed.set_guest_work_counter(&work);
+        const auto saved = observed.save_registers();
+        observed.record_completed_instruction();
+        observed.record_accepted_service();
+        observed.restore_registers(saved);
+        check(work.completed_instructions == 2 && work.accepted_services == 1,
+              "register restore cannot rewind completed work");
+        observed.record_completed_instruction();
+        observed.set_guest_work_counter(nullptr);
+        observed.record_completed_instruction();
+        check(work.completed_instructions == 3 && work.accepted_services == 1,
+              "detach stops observation without clearing the total");
+
+        const auto maximum = std::numeric_limits<std::uint64_t>::max();
+        work.completed_instructions = maximum - 1;
+        observed.set_guest_work_counter(&work);
+        observed.record_completed_instruction();
+        check(work.completed_instructions == maximum,
+              "completed work preserves the full 64-bit range");
+        check(throws([&] { observed.record_completed_instruction(); }),
+              "completed work overflow stops rather than wrapping");
+        check(throws([&] { observed.record_accepted_service(); })
+                  && work.accepted_services == 1 && work.completed_instructions == maximum,
+              "service overflow does not partially change diagnostic totals");
+        work.completed_instructions = 0;
+        work.accepted_services = maximum;
+        check(throws([&] { observed.record_accepted_service(); })
+                  && work.completed_instructions == 0,
+              "service subset overflow is also explicit");
     }
 
     // Register file semantics.

@@ -7,6 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "build/gt4translate.exe"
+BOOT = ROOT / "build/gt4boot.exe"
 CORE = ROOT / "private/fingerprint-check/CORE.GT4"
 
 
@@ -91,6 +92,40 @@ class TranslateCliTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("inline ee::BoundaryKind function_00577878", result.stdout)
+
+
+@unittest.skipUnless(BOOT.exists() and CORE.exists(), "Requires whole-program build and private CORE")
+class BootWorkCliTests(unittest.TestCase):
+    def run_boot(self, *arguments):
+        return subprocess.run([str(BOOT), str(CORE), "--quiet", *arguments],
+                              capture_output=True, text=True, timeout=60)
+
+    def test_work_flag_only_adds_observation_output(self):
+        plain = self.run_boot("--services", "400", "--compare-interpreter")
+        counted = self.run_boot("--services", "400", "--compare-interpreter", "--count-work")
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        self.assertEqual(counted.returncode, 0, counted.stderr)
+        observations = [line for line in counted.stdout.splitlines() if line.startswith("guest work")]
+        self.assertEqual(len(observations), 2)
+        self.assertIn("400 accepted services", observations[0])
+        self.assertIn("guest work identical:", observations[1])
+        without_observations = "\n".join(
+            line for line in counted.stdout.splitlines() if not line.startswith("guest work")) + "\n"
+        self.assertEqual(without_observations, plain.stdout)
+
+    def test_work_rejects_verify_resume_before_loading_a_checkpoint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            missing = str(Path(folder) / "missing.bin")
+            result = self.run_boot("--count-work", "--verify-resume", missing)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("--count-work cannot compare checkpoint and fresh work intervals", result.stderr)
+
+    def test_work_rejects_fresh_vs_resumed_comparison(self):
+        with tempfile.TemporaryDirectory() as folder:
+            missing = str(Path(folder) / "missing.bin")
+            result = self.run_boot("--count-work", "--compare-interpreter", "--resume", missing)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("--count-work cannot compare checkpoint and fresh work intervals", result.stderr)
 
 
 if __name__ == "__main__":

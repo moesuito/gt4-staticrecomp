@@ -276,7 +276,7 @@ if(BUILD_TESTING)
         add_test(NAME ee_translation_5b72a8 COMMAND ee_translation_5b72a8_tests "${GT4_LOCAL_CORE}")
 
         # The whole game as one module under the driver. Generating it takes
-        # minutes and the object is ~100 MB, so gt4boot is excluded from the
+        # minutes and produces a large object, so gt4boot is excluded from the
         # default build; the gt4boot_build fixture builds it on demand the
         # first time the gt4boot_services test runs.
         set(GT4_WHOLE_PROGRAM_HEADER "${CMAKE_CURRENT_BINARY_DIR}/translated-whole-program.hpp")
@@ -285,7 +285,7 @@ if(BUILD_TESTING)
             COMMAND gt4translate "${GT4_LOCAL_CORE}" --functions 20000 --all 2000000
                     "${GT4_WHOLE_PROGRAM_HEADER}"
             DEPENDS gt4translate
-            COMMENT "Translating the whole program (15k functions, ~150 MB)"
+            COMMENT "Translating the whole program (15k functions)"
             VERBATIM)
         add_executable(gt4boot tools/gt4boot/main.cpp "${GT4_WHOLE_PROGRAM_HEADER}")
         target_include_directories(gt4boot PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
@@ -302,7 +302,7 @@ if(BUILD_TESTING)
         if(EXISTS "${GT4_LOCAL_ISO}")
             add_test(NAME gt4boot_services
                 COMMAND gt4boot "${GT4_LOCAL_CORE}" --disc "${GT4_LOCAL_ISO}"
-                        --services 90000 --compare-interpreter)
+                        --services 90000 --compare-interpreter --count-work)
             # Incident 2026-10-04 (slices 69-72): the driver/interpreter
             # differential diverged at service 1606 (delivery granularity:
             # a synchronous DMA completion raised mid-module and the two
@@ -313,7 +313,7 @@ if(BUILD_TESTING)
             set_tests_properties(gt4boot_services PROPERTIES
                 FIXTURES_REQUIRED gt4boot
                 PASS_REGULAR_EXPRESSION "services handled 90000"
-                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at")
+                FAIL_REGULAR_EXPRESSION "states differ;but the interpreter stopped at;guest work differs")
             # The first originating event (decision 0026): a fresh disc
             # boot delivers the synthesized SIF pump packet, so the pump
             # queue reads back drained with the packet words, while the

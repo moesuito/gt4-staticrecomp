@@ -12,6 +12,19 @@ seed 0x00100040
 seed 0x00100060
 seed 0x00100074
 seed 0x0010007C
+seed 0x00100080
+seed 0x00100098
+seed 0x001000AC
+seed 0x001000B8
+seed 0x001000C8
+seed 0x001000D8
+seed 0x001000F0
+seed 0x001000FC
+seed 0x00100108
+seed 0x00100124
+seed 0x00100130
+seed 0x00100144
+seed 0x00100150
 max 256
 functions 32
 # 0x00100000 jr_case: jr ra with a slot that rewrites ra.
@@ -56,4 +69,72 @@ word 0x00000000
 word 0x01000008
 word 0x00000000
 # 0x0010007C leaf2: a trap reached only through the internal dispatch.
+word 0x0000000D
+# 0x00100080: initialization + three decrement/branch/slot passes + return.
+word 0x24080003
+word 0x2508FFFF
+word 0x1500FFFE
+word 0x24420001
+word 0x03E00008
+word 0x00000000
+# 0x00100098: direct call, leaf below, caller continuation then break.
+word 0x0C04002B
+word 0x24420001
+word 0x24420002
+word 0x0000000D
+word 0x00000000
+# 0x001000AC: returning leaf.
+word 0x24420003
+word 0x03E00008
+word 0x00000000
+# 0x001000B8: direct call to trapping leaf2; continuation must not execute.
+word 0x0C04001F
+word 0x24420001
+word 0x24420002
+word 0x0000000D
+# 0x001000C8: jalr ra,t0, known or bridged target, then caller continuation.
+word 0x0100F809
+word 0x24420001
+word 0x24420002
+word 0x0000000D
+# 0x001000D8: jump + slot + target effect + break.
+word 0x0804003A
+word 0x24420001
+word 0x00200000
+word 0x00000000
+word 0x24420002
+word 0x0000000D
+# 0x001000F0: checked ADD fallback, returning if it does not overflow.
+word 0x01095020
+word 0x03E00008
+word 0x00000000
+# 0x001000FC: completed JR followed by the same checked ADD in its slot.
+word 0x03E00008
+word 0x01095020
+word 0x00200000
+# 0x00100108: taken branch targets the labelled slot of the later JR.
+word 0x11000004
+word 0x24420001
+word 0x08040046
+word 0x24420002
+word 0x03E00008
+word 0x24420004
+word 0x0000000D
+# 0x00100124: JR completes but its unsupported slot does not.
+word 0x03E00008
+word 0x00200000
+word 0x00200000
+# 0x00100130: ordinary likely slot (executed or nullified).
+word 0x51000002
+word 0x24420001
+word 0x24420002
+word 0x03E00008
+word 0x00000000
+# 0x00100144: JALR with rd==rs must capture its target before link rewrite.
+word 0x01004009
+word 0x00000000
+word 0x0000000D
+# 0x00100150: store poll must see the completed store before module unwinding.
+word 0xAD090000
+word 0x24420001
 word 0x0000000D

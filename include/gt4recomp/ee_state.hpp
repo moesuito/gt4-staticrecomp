@@ -139,6 +139,18 @@ struct RegisterContext {
     std::uint32_t pc = 0;
 };
 
+// Optional host observation, never a clock or part of a thread/checkpoint.
+// completed_instructions includes accepted syscall words; accepted_services
+// is that subset. Stops, nullified slots and failed effects are not work.
+// The owner keeps this counter alive while it is attached to a GuestState.
+struct GuestWorkCounter {
+    std::uint64_t completed_instructions = 0;
+    std::uint64_t accepted_services = 0;
+
+    void record_instruction();
+    void record_service();
+};
+
 // The register file and program counter. R0 reads as zero and ignores writes;
 // 32-bit writes sign-extend into the 64-bit register, matching the CPU's rule
 // for all 32-bit results.
@@ -150,6 +162,13 @@ public:
     // Together they are the thread-switch primitive the kernel uses.
     [[nodiscard]] RegisterContext save_registers() const noexcept;
     void restore_registers(const RegisterContext& context) noexcept;
+
+    // Both engines report after a successful effect. The service owner, not
+    // the stopping instruction, reports an accepted syscall. Null disables
+    // observation. Register restores never rewind the external total.
+    void set_guest_work_counter(GuestWorkCounter* counter) noexcept;
+    void record_completed_instruction();
+    void record_accepted_service();
 
     [[nodiscard]] std::uint64_t read_gpr64(std::uint8_t index) const;
     void write_gpr64(std::uint8_t index, std::uint64_t value);
@@ -276,6 +295,7 @@ private:
     // compare registers and memory only, and a resumed run keeps the same
     // object the boot wired.
     DmaStartPoll dma_start_poll_;
+    GuestWorkCounter* guest_work_counter_ = nullptr;
 };
 
 } // namespace gt4recomp::ee

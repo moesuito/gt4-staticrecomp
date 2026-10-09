@@ -94,6 +94,32 @@ int main() {
     check(blob.size() == 8 + 1484 + 4 + 4 + (8 + 0x100) + (8 + 0x40),
           "the snapshot size is exact");
 
+    {
+        GuestState observed(GuestMemory(0x00100000, 0x40));
+        GuestWorkCounter work;
+        observed.set_guest_work_counter(&work);
+        const auto before = save_snapshot(observed.save_registers(), false,
+                                          observed.memory().regions_snapshot());
+        observed.record_completed_instruction();
+        observed.record_accepted_service();
+        const auto after = save_snapshot(observed.save_registers(), false,
+                                         observed.memory().regions_snapshot());
+        check(before == after, "diagnostic work never changes snapshot bytes");
+        const auto photo = load_snapshot(before);
+        observed.restore_registers(photo.context);
+        restore_memory(observed.memory(), photo);
+        observed.record_completed_instruction();
+        check(work.completed_instructions == 3 && work.accepted_services == 1,
+              "applying a snapshot cannot rewind or detach live work observation");
+        GuestState loaded(GuestMemory(0x00100000, 0x40));
+        GuestWorkCounter fresh_work;
+        loaded.set_guest_work_counter(&fresh_work);
+        loaded.restore_registers(photo.context);
+        restore_memory(loaded.memory(), photo);
+        check(fresh_work.completed_instructions == 0 && fresh_work.accepted_services == 0,
+              "a checkpoint does not invent historical work for a new observation interval");
+    }
+
     // Mutate everything, then restore and compare.
     GuestMemory restored(0x00100000, 0x100);
     restored.map_region(0x70000000, 0x40);

@@ -2548,6 +2548,7 @@ StepResult Interpreter::step() {
         }
         transfer_pending_ = false;
         state_.set_pc(transfer_target_);
+        state_.record_completed_instruction();
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     }
 
@@ -2562,6 +2563,7 @@ StepResult Interpreter::step() {
             return StepResult{StepOutcome::Exception, pc, instruction.operation};
         }
         state_.set_pc(pc + 4);
+        state_.record_completed_instruction();
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     case FlowKind::Branch: {
         if (branch_taken(instruction, state_)) {
@@ -2576,12 +2578,14 @@ StepResult Interpreter::step() {
         } else {
             state_.set_pc(pc + 4);  // the delay slot still runs
         }
+        state_.record_completed_instruction();
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     }
     case FlowKind::Jump:
         transfer_target_ = flow.target;
         transfer_pending_ = true;
         state_.set_pc(pc + 4);
+        state_.record_completed_instruction();
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     case FlowKind::Call:
         if (instruction.operation == Operation::Jal) {
@@ -2596,6 +2600,7 @@ StepResult Interpreter::step() {
         }
         transfer_pending_ = true;
         state_.set_pc(pc + 4);
+        state_.record_completed_instruction();
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     case FlowKind::Return:
     case FlowKind::IndirectJump:
@@ -2611,12 +2616,14 @@ StepResult Interpreter::step() {
                 state_.set_pc(state_.read_cp0(14));
                 state_.write_cp0(12, status & ~0x00000002u);
             }
+            state_.record_completed_instruction();
             return StepResult{StepOutcome::Executed, pc, instruction.operation};
         }
         // JR targets the low 32 bits of the register in the 32-bit model.
         transfer_target_ = static_cast<std::uint32_t>(state_.read_gpr64(instruction.rs));
         transfer_pending_ = true;
         state_.set_pc(pc + 4);
+        state_.record_completed_instruction();
         return StepResult{StepOutcome::Executed, pc, instruction.operation};
     }
     throw std::logic_error("unhandled flow kind");

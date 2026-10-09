@@ -614,6 +614,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                      << "        state.set_pc(state.read_cp0(14));\n"
                      << "        state.write_cp0(12, state.read_cp0(12) & ~0x00000002u);\n"
                      << "    }\n"
+                     << "    state.record_completed_instruction();\n"
                      << "    return ee::BoundaryKind::ExceptionReturn;\n\n";
             } else {
                 // Every other halt stops with the pc at its own word and an
@@ -706,6 +707,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                 body << "    if (" << condition_for(instruction) << ") { state.write_gpr64(31, 0x"
                      << hex_value(address + 8, 8) << "u); }\n";
             }
+            body << "    state.record_completed_instruction();\n";
             comment(address + 4, word_at(text, address + 4), "    ");
             body << "    // the delay slot is unmodeled: the module stops there\n"
                  << "    state.set_pc(0x" << hex_value(address + 4, 8) << "u);\n"
@@ -718,6 +720,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         case FlowKind::FallThrough:
             comment(address, word);
             body << "    " << statement_at(address) << "\n";
+            body << "    state.record_completed_instruction();\n";
             if (instruction.operation == Operation::Sw) {
                 // Option-A poll point (decision 0034): a store that starts a
                 // DMA transfer raises synchronously, so the module asks the
@@ -748,6 +751,7 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                     body << "        state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
                          << "u);\n";
                 }
+                body << "        state.record_completed_instruction();\n";
                 comment(address + 4, word_at(text, address + 4), "        ");
                 if (unit.trap_slots.contains(address + 4)) {
                     // The delay slot traps or is unmodeled: the taken path
@@ -767,17 +771,22 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                 } else {
                     body << "        " << statement_at(address + 4)
                          << " // delay slot (runs only when taken)\n";
+                    body << "        state.record_completed_instruction();\n";
                     body << "        goto " << label_for(flow.target) << ";\n";
                 }
-                body << "    }\n\n";
+                body << "    } else {\n"
+                     << "        state.record_completed_instruction(); // nullified slot is not work\n"
+                     << "    }\n\n";
             } else {
                 if (writes_link_register(instruction.operation)) {
                     body << "    if (" << taken << ") { state.write_gpr64(31, 0x"
                          << hex_value(address + 8, 8) << "u); }\n";
                 }
+                body << "    state.record_completed_instruction();\n";
                 comment(address + 4, word_at(text, address + 4));
                 body << "    " << statement_at(address + 4)
                      << " // delay slot (always executes)\n";
+                body << "    state.record_completed_instruction();\n";
                 body << "    if (" << taken << ") goto " << label_for(flow.target)
                      << ";\n\n";
             }
@@ -790,9 +799,11 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
         }
         case FlowKind::Jump: {
             comment(address, word);
+            body << "    state.record_completed_instruction();\n";
             comment(address + 4, word_at(text, address + 4));
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n";
+            body << "    state.record_completed_instruction();\n";
             body << "    goto " << label_for(flow.target) << ";\n\n";
             consumed_delay_slots.insert(address + 4);
             break;
@@ -809,9 +820,11 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                 const auto exit = "exit_" + hex_value(address, 8);
                 body << "    state.write_gpr64(31, 0x" << hex_value(address + 8, 8)
                      << "u); // link\n";
+                body << "    state.record_completed_instruction();\n";
                 comment(address + 4, word_at(text, address + 4));
                 body << "    " << statement_at(address + 4)
                      << " // delay slot (always executes)\n";
+                body << "    state.record_completed_instruction();\n";
                 body << "    " << exit << " = function_" << hex_value(flow.target, 8)
                      << "(state);\n";
                 body << "    if (" << exit << " != ee::BoundaryKind::Returned || state.pc() != 0x"
@@ -837,9 +850,11 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                      << "    }\n"
                      << "    state.write_gpr64(" << rd << ", 0x"
                      << hex_value(address + 8, 8) << "u); // link\n";
+                body << "    state.record_completed_instruction();\n";
                 comment(address + 4, word_at(text, address + 4), "    ");
                 body << "    " << statement_at(address + 4)
                      << " // delay slot (always executes)\n";
+                body << "    state.record_completed_instruction();\n";
                 body << "    " << exit << " = detail::call_entry(state, " << target << ");\n"
                      << "    if (" << exit << " != ee::BoundaryKind::Returned || state.pc() != 0x"
                      << hex_value(address + 8, 8)
@@ -872,9 +887,11 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
                  << "u); // unknown computed target: stop at the transfer\n"
                  << "        return ee::BoundaryKind::IndirectTransfer;\n"
                  << "    }\n";
+            body << "    state.record_completed_instruction();\n";
             comment(address + 4, word_at(text, address + 4), "    ");
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n"
+                 << "    state.record_completed_instruction();\n"
                  << "    return detail::call_entry(state, " << target << ");\n"
                  << "    }\n\n";
             consumed_delay_slots.insert(address + 4);
@@ -890,9 +907,11 @@ std::string emit_unit_body(const ImageRecord& text, const TranslationUnit& unit)
             body << "    " << saved
                  << " = static_cast<std::uint32_t>(state.read_gpr64(31));"
                  << " // capture before the slot\n";
+            body << "    state.record_completed_instruction();\n";
             comment(address + 4, word_at(text, address + 4));
             body << "    " << statement_at(address + 4)
                  << " // delay slot (always executes)\n";
+            body << "    state.record_completed_instruction();\n";
             body << "    state.set_pc(" << saved << "); // return to the captured target\n"
                  << "    return ee::BoundaryKind::Returned;\n\n";
             consumed_delay_slots.insert(address + 4);

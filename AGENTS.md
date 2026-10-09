@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 97, baseline `25b0269`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 98, baseline `80bc985`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -111,7 +111,8 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 97, baseline `25b0269`, gr
   function-0x38 words plus two DMA-dependent BC0F and two unassigned
   function-0x28 encodings — slice-58 address audit). The translator
   handles 99.5% of direct-call targets, and `--all` generates the whole
-  game as one module (15,068 functions, 924,991 instructions, 146 MB).
+  game as one module (15,068 functions, 924,991 static instructions,
+  ~216 MB with slice-98 observation calls).
 - Boot + model: historical slices reached disc/archive/sound/font, but the
   slice-95 corrected interrupt return exposes an earlier timing frontier
   (details below). The translator-vs-interpreter 90,000-service gate is
@@ -141,15 +142,20 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 97, baseline `25b0269`, gr
   No matched reference update 1000-us/root-work interval. Offline timing
   reader pinned to audited save/build; no new clock policy. Reference closed,
   breakpoints removed and original slot9/backup restored with hashes.
+  Slice 98: optional --count-work (decision 0040), 26 hand-counted paths;
+  90k differential reports 22,566,319 completed / 90,000 accepted services
+  identically, full state identical. 10k counted/plain output otherwise exact.
+  Host counter outside contexts/checkpoints, no clock conversion. Preexisting
+  handled likely-slot syscall gap explicitly tested: native5/1 vs reference1/0.
   No experiment running. Evidence:
-  `docs/reverse-engineering/slice97-reference-delay-timing.md`.
-- Gates: 53/53 CTest + Python 81 (75 run, 6 skip), re-run at slice 97;
+  `docs/reverse-engineering/slice98-completed-guest-work.md`.
+- Gates: 53/53 CTest + Python 84 (78 run, 6 skip), re-run at slice 98;
   no existing acceptance expression weakened.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 98 — shared observation-only completed guest work**.
-  Hand-count dynamic paths in both engines, no timer/scheduler coupling yet.
-  Then audit precise event delivery and matched reference root interval.
+- Next: **slice 99 — reference-backed branch/slot event and trap-resume audit**.
+  Include handled likely-slot syscall gap, both taken/not-taken slot exclusion,
+  and a matched reference update/root interval before any work->time policy.
   Account identically, including non-service computation;
   do not guess an instruction/cycle conversion or special-case WaitSema.
   Slice-94 attribution/exclusion rates concern the old interrupt_model 3,
