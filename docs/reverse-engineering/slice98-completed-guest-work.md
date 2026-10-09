@@ -224,3 +224,12 @@ trap-resume audit, including the executed likely-slot discrepancy, plus a
 matched reference update-delay/root-work interval. Do not convert the new
 counter into a clock before independently justified costs, precise native
 event exits, serialized residues and explicit compatibility review exist.
+
+Publication: code/tests/docs committed as `6fe1db2`, fast-forwarded to main
+and pushed to origin. Reconfigured and rebuilt on main after checkout/merge,
+including regeneration of the whole module; warning-free. Re-ran the active
+90k work/state differential and build fixture: 2/2 pass, 15.30 s (differential
+12.44 s). Post-merge gt4boot.exe SHA256
+`4c1dd903ee1bdc82d516e714fc5107ef448b34269ffbf83de61fa573d17230ba`.
+This closing provenance note is documentation-only, not another semantic
+change or a reason to invalidate compatible checkpoints.
