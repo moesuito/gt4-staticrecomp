@@ -1,6 +1,29 @@
 # Project status
 
-Updated 2026-10-09 after slice 99 (baseline `89cabf6`): **source/fixture
+Updated 2026-10-09 after bounded slice 100, baseline `63a3fc8`.
+Live synthetic controls with isolated settings/BIOS and private save folders.
+Plain dynarec GetThreadId captured vector -> BIOS ERET -> continuation, v0=1.
+Six dynarec syscall-slot paths captured: five reach branch continuation with
+EXL=1/EPC=B/BD=0/v0=-1 and no vector hit; BEQL false annuls the slot (EXL=0).
+Pinned source explains the BEQ PC overwrite after synchronous exception state.
+Interpreter per-word breakpoints are build-guarded and ignored in this binary;
+no live interpreter vector/return evidence. Six effect-slot controls distinguish
+execution from annulment. Latch-only repeats and BEQL taken with no range
+breakpoints retain dynarec's lost-vector state; interpreter run logs a BD-path
+warning and later pauses in BIOS code, not at latch. Exact failure chain unknown.
+31 private captures re-extracted/verified. No production behavior or clock change.
+Reference closed normally; owner INI, BIOS, original slot9/backup hashes intact.
+Gates: warning-free no-work build, **53/53 CTest (52.44s)** + **91 Python
+(85 run/6 skip,72.281s)**; existing socket ResourceWarnings. Production hash
+still slice98. New readable original ELF generator +7 tests; no payload in git.
+Next **slice101**: separately pinned interpreter observation of first slot trap/
+selected BIOS return and failure chain, including handled likely-slot gap.
+Matched real update1000-us/root interval still required; no guessed quantum,
+WaitSema exception or reversal of correct preemption. No experiment running.
+Evidence:
+`docs/reverse-engineering/slice100-live-branch-controls.md`.
+
+Historical slice-99 baseline below (`89cabf6`): **source/fixture
 branch-event audit verified; live reference matrix/time policy still open**.
 Pinned PCSX2 interpreter BEQ/BNE-false tests events at the next executed word;
 normal dynarec ordinary paths execute the slot before branch event testing.

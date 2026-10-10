@@ -103,7 +103,7 @@ Additional standards:
 
 ## Quick reference
 
-Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 99, baseline `89cabf6`, green):
+Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 100, baseline `63a3fc8`, green):
 
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
@@ -156,15 +156,27 @@ Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 99, baseline `89cabf6`, gr
   slots with different pending ownership, native callee poll/restore work3->7.
   BIOS slot return/live trap context and matched update interval unknown;
   production binary identical to slice98, no new clock or compatibility.
-  No experiment running. Evidence:
-  `docs/reverse-engineering/slice99-branch-slot-event-audit.md`.
-- Gates: 53/53 CTest + Python 84 (78 run, 6 skip), re-run at slice 99;
+  Slice100 live: plain dynarec GetThreadId vector -> ERET -> continuation
+  captured, v0=1. Six syscall-slot paths: five EXL1/EPC=B/BD0/v0=-1
+  continuations with no vector hit, BEQL false annuls. Six effect controls
+  confirm slot/annulment. Pinned BEQ emitter overwrites exception-selected
+  PC before dispatch; do not copy this reference defect into production.
+  Latch-only and BEQL no-range-breakpoint repeats agree. Interpreter
+  per-word breakpoint probe build-guarded and ignored by this binary;
+  BEQL run logs cpuException's BD warning then later BIOS PC, not latch.
+  Warning is PCSX2 output, not BIOS text; exact failure/selected return
+  still unknown. 31 captures re-extracted; owner INI/BIOS/slot9+backup
+  hashes preserved, isolated process closed normally. No runtime change.
+  Evidence: `docs/reverse-engineering/slice100-live-branch-controls.md`.
+- Gates: 53/53 CTest + Python 91 (85 run, 6 skip), re-run at slice 100;
   no existing acceptance expression weakened.
   Tripwires armed; M35's pad promoter watched
   (the first padman bind reopens input work).
-- Next: **slice 100 — mode-qualified live branch/trap reference controls**.
-  Record engine per segment, vector entry EPC/BD, slot effect and BIOS-selected
-  return; include handled likely-slot gap. Match reference update 1000-us/root
+- Next: **slice 101 — separately qualified interpreter trap observation**.
+  Pin any diagnostic/Devel reference build anew; capture first slot vector
+  EPC/BD, BIOS-selected return and interpreter failure chain; include handled
+  likely-slot gap. Do not call release interpreter Step Into a word trace.
+  Match reference update 1000-us/root
   interval before any work->time policy; do not assume both PCSX2 engines agree.
   Account identically, including non-service computation;
   do not guess an instruction/cycle conversion or special-case WaitSema.

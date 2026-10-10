@@ -45,3 +45,11 @@ translation/interrupt identities, not just a BoundaryKind and PC.
 Matched update 1000-us/root interval is still required before work->time.
 No guessed quantum, WaitSema special case or reversal of correct preemption.
 Evidence: `docs/reverse-engineering/slice99-branch-slot-event-audit.md`.
+
+Slice100 application (2026-10-09): plain dynarec vector/ERET control succeeded,
+but syscall-slot continuations retained EXL and bypassed the handler; pinned
+BEQ source explains an exception-selected PC overwritten before dispatch.
+The release interpreter ignored build-guarded per-word breakpoint probes;
+late BEQL run paused in BIOS, not fixture latch. No universal exclusion,
+branch/return policy or clock conversion inferred. Evidence:
+`docs/reverse-engineering/slice100-live-branch-controls.md`.
