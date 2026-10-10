@@ -1,5 +1,12 @@
 # Project status
 
+Owner-requested model-switch checkpoint, 2026-10-09:
+**read `docs/RETOMADA.md` for the self-contained resumption guide**. Code at
+`2e0de29`, publication docs at `434dcc8`, both pushed to origin/main; this
+checkpoint adds documentation only. Slice101 not started, no active OpenCode
+goal or experiment. Rechecked local capture/owner config/BIOS/binary/ZIP hashes;
+full test results below are the preceding verified run, not a new run today.
+
 Updated 2026-10-09 after bounded slice 100, baseline `63a3fc8`.
 Live synthetic controls with isolated settings/BIOS and private save folders.
 Plain dynarec GetThreadId captured vector -> BIOS ERET -> continuation, v0=1.

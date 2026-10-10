@@ -105,6 +105,10 @@ Additional standards:
 
 Live state: `docs/STATUS.md`. As of 2026-10-09 (slice 100, baseline `63a3fc8`, green):
 
+Owner-requested model-switch handoff: `docs/RETOMADA.md` (2026-10-09).
+It records the closed slice100, local artifacts, qualified limits and the
+not-yet-started slice101; root `HANDOFF.md` is archival machine-move material.
+
 - Recompiler pipeline M0–M29 complete: decoder covers 349 operations;
   whole-text scan finds 497 unsupported words of 1,334,917 (467 inside
   the trailing 700-word data table, 30 in real code: 26 COP2 macro

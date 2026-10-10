@@ -1,9 +1,11 @@
 # HANDOFF — continuing GT4Recomp on the secondary machine
 
 > ARCHIVAL (2026-10-08): this file describes a machine move at M29
-> (25/25 CTest). Do not use it for state — read `docs/STATUS.md`
-> (53/53 CTest at `main` = `b1ce75f`), `PLAN.md` and `AGENTS.md`
-> instead. Kept for its copy-folder inventory (§2) only.
+> (25/25 CTest). Do not use it for current state or model switching.
+> Current resumption guide: **`docs/RETOMADA.md`** (slice100, 2026-10-09),
+> alongside `docs/STATUS.md` and `AGENTS.md`. `PLAN.md` is strategic context.
+> Kept for its historical copy-folder inventory (§2) only; the versions,
+> deletion/rebuild recipe and next-M30 work below are not current instructions.
 
 > **Resumo rápido (para o dono)**
 > - Esta pasta foi feita para ser **copiada inteira** (não clonada): ela já

@@ -1,5 +1,10 @@
 # PLAN.md — Plano de continuidade do GT4Recomp
 
+> Atualização de orientação (2026-10-09): este plano estratégico foi escrito
+> na baseline abaixo, não descreve a fronteira operacional atual. Para retomar
+> após trocar de modelo, leia `docs/RETOMADA.md`, `docs/STATUS.md` e `AGENTS.md`.
+> A slice100 está encerrada; o menu ainda não foi alcançado pela produção.
+
 **Data:** 2026-10-04  
 **Baseline consultada:** 9fc08c4cd3dcec06a11df4c6c6622b1087b3e8e1  
 **Alvo:** Gran Turismo 4 USA v2.00, SCUS-97328, Windows x86-64, C++20.  
