@@ -313,3 +313,23 @@ Private helper SHA256:
 | slice100_breakpoints.py | `9d5d7fe270b4ae366d525d34c14fa9976d2c27f6ef3c3ab8aadeae78a96168c0` |
 | slice100_close.ps1 | `d15609dea12a5c9f719a6a6c0caa5034d85a77f005a41fa96c1b305c25787dce` |
 | slice100_next.ps1 | `9b90661d900fc51147c2ac2b3e4bf4eccaaa302023d401961cafbe84106a54e6` |
+
+Publication: verified slice100 commit `2e0de29` pushed on its branch, fast-forward
+merged into main and pushed to origin. Artifact ledger independently matched
+48 private files (31 captures/13 ELFs/4 helpers) against the document. Launch
+INI EE modes/software/card disables and normal cycle rate/skip independently
+re-read from preserved effective-launch copies. No reference process remained.
+
+Owner-requested Desktop source archive refreshed without overwriting old ZIP:
+`C:/Users/Alano/Desktop/gt4recomp-fonte-2e0de29.zip`, source commit
+`2e0de29f5ac8fec78e3c16db640fe2271b6ddbd7`, 381 members including provenance
+text and current generated `whole_program_tu.cpp`/`whole-program.hpp` only.
+Excludes ISO, BIOS, private tools/captures, build, .obj and other binaries.
+157,244,275 uncompressed bytes /16,331,733 ZIP bytes; SHA256
+`583ea1896e7616f2ed1afaa3009d470f30667e65e1ed08e691de238d2a8df789`.
+Member list checked exactly, all source members independently streamed and
+hashed against working files after creation. These are the current generated
+files, not a promise that every private counted specimen is included. This
+publication paragraph is added after the archive's pinned source commit.
+Post-merge recheck: gt4boot build + unchanged 90k service/work/full-state gate
+**2/2 (13.58s)**, generator **7/7 (0.310s)**. Closing docs add no semantics.

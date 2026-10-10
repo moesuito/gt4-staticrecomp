@@ -23,6 +23,15 @@ WaitSema exception or reversal of correct preemption. No experiment running.
 Evidence:
 `docs/reverse-engineering/slice100-live-branch-controls.md`.
 
+Publication: slice100 `2e0de29` fast-forward merged and pushed to `origin/main`.
+Desktop source ZIP refreshed: `gt4recomp-fonte-2e0de29.zip` (16,331,733 bytes),
+381 members, including current generated C++/header, excluding ISO/private/
+build/binaries. Every archived source hash rechecked; old ZIP left untouched.
+SHA256 `583ea1896e7616f2ed1afaa3009d470f30667e65e1ed08e691de238d2a8df789`.
+This archive pins the slice100 code commit; publication-only docs follow it.
+Post-merge build/90k differential recheck **2/2 (13.58s)** and generator **7/7**
+pass; full-suite evidence above remains valid for identical code.
+
 Historical slice-99 baseline below (`89cabf6`): **source/fixture
 branch-event audit verified; live reference matrix/time policy still open**.
 Pinned PCSX2 interpreter BEQ/BNE-false tests events at the next executed word;
