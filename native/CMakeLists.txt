@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(GT4NativeVulkan LANGUAGES CXX)
+project(GT4NativeVulkan LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -710,6 +710,19 @@ if(GT4_PERF_RUNTIME_SOURCE)
 endif()
 target_link_libraries(native_host_io PUBLIC winmm xinput user32 gt4_pacing gt4_sdl3)
 target_compile_options(native_host_io PRIVATE /W4)
+file(GLOB RCHEEVOS_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rcheevos/src/api/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rcheevos/src/client/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rcheevos/src/hash/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rcheevos/src/runtime/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rcheevos/src/util/*.c")
+add_library(gt4_rcheevos STATIC ${RCHEEVOS_SOURCES})
+target_include_directories(gt4_rcheevos PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rcheevos/include")
+target_compile_definitions(gt4_rcheevos PUBLIC RC_CLIENT_SUPPORTS_HASH _CRT_SECURE_NO_WARNINGS)
+add_library(gt4_achievements STATIC achievements.cpp achievements_overlay.cpp)
+target_include_directories(gt4_achievements PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(gt4_achievements PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32)
+target_compile_options(gt4_achievements PRIVATE /W4)
 # Windows icon and version resource of the game executable (display name "Gran Turismo 4").
 set(GT4_BRANDING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../launcher/assets/brand" CACHE PATH "Brand assets folder (official or neutral)")
 set(GT4_VERSION "1.0.0")
@@ -730,7 +743,7 @@ if(GT4_MEMCARD_FLUSH_ENABLED)
 endif()
 target_link_libraries(gt4vulkan PRIVATE
     "${GAME_LIBRARY}"
-    ps2runtime_vulkan native_host_io user32)
+    ps2runtime_vulkan native_host_io gt4_achievements user32)
 # TASK-075: SDL3.dll and its licence next to the executables that load it (the build tree; make_distribution ships them).
 add_custom_command(TARGET gt4vulkan POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GT4_SDL3_ROOT}/${GT4_SDL3_RUNTIME_DLL}" "$<TARGET_FILE_DIR:gt4vulkan>/SDL3.dll")
@@ -756,6 +769,9 @@ target_compile_options(vulkan_fixture PRIVATE /W4)
 add_executable(pacing_fixture pacing_fixture.cpp)
 target_link_libraries(pacing_fixture PRIVATE gt4_pacing)
 target_compile_options(pacing_fixture PRIVATE /W4)
+add_executable(achievements_fixture achievements_fixture.cpp)
+target_link_libraries(achievements_fixture PRIVATE gt4_achievements)
+target_compile_options(achievements_fixture PRIVATE /W4)
 # Input bindings: pure parser and readers (no Windows dependency in controls.cpp).
 add_executable(controls_fixture controls_fixture.cpp controls.cpp)
 target_compile_options(controls_fixture PRIVATE /W4)

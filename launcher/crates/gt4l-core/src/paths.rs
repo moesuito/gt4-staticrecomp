@@ -165,6 +165,11 @@ impl DataDirs {
         self.root.join("runtime").join("card.ps2")
     }
 
+    /// Cache folder for downloaded RetroAchievements badge images (`<data>\runtime\ra_cache`).
+    pub fn retroachievements_cache(&self) -> PathBuf {
+        self.root.join("runtime").join("ra_cache")
+    }
+
     pub fn sessions(&self) -> PathBuf {
         self.root.join("sessions")
     }
@@ -306,6 +311,10 @@ impl UserDirs {
 
     pub fn config_file(&self) -> PathBuf {
         self.config_dir.join("settings.toml")
+    }
+
+    pub fn retroachievements_file(&self) -> PathBuf {
+        self.config_dir.join("retroachievements.toml")
     }
 
     pub fn controls_file(&self) -> PathBuf {

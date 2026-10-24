@@ -774,3 +774,44 @@ body.input-pad .info:focus .tip { display: block; }
 .release-notes .notes-heading { font-weight: 700; margin-top: 10px; }
 .release-notes ul { margin: 0 0 8px; padding-left: 20px; }
 .release-notes li { margin: 2px 0; line-height: 1.4; }
+
+/* ---------- achievements page (js/pages/achievements.js) ---------- */
+.ra-user-badge { color: var(--white); font-weight: 500; }
+.ra-form { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.ra-field { display: flex; flex-direction: column; gap: 6px; }
+.ra-field-label { font: 500 11px var(--label); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); }
+.ra-input {
+  width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--hair); border-radius: 3px;
+  background: var(--ink); color: var(--white); font: 400 14px var(--text);
+}
+.ra-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ra-login-error { min-height: 18px; font-size: 13px; color: #ffb4a8; }
+.ra-ach-list {
+  margin-top: 12px; border-top: 1px solid var(--hair); max-height: 360px;
+  overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--faint) transparent;
+  overscroll-behavior: contain; touch-action: pan-y;
+}
+.ra-ach-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  min-height: 58px; padding: 10px 8px; border-bottom: 1px solid var(--hair);
+}
+.ra-ach-row:focus { outline: none; }
+.ra-ach-main { flex: 1; min-width: 0; }
+.ra-ach-head { display: flex; align-items: center; gap: 10px; }
+.ra-ach-title { color: var(--white); font-weight: 500; }
+.ra-ach-row:not(.is-earned) .ra-ach-title { color: var(--silver); }
+.ra-ach-type {
+  font: 500 10px var(--label); letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 2px; background: var(--graphite); color: var(--dim);
+}
+.ra-ach-desc { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.ra-ach-meta { display: flex; align-items: center; gap: 12px; flex: none; }
+.ra-ach-pts { font: 500 12px var(--label); letter-spacing: 0.06em; color: var(--dim); }
+.ra-pill {
+  font: 500 11px var(--label); letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 3px; border: 1px solid var(--hair);
+}
+.ra-pill.is-hc { background: rgba(227, 179, 65, 0.18); border-color: #e3b341; color: #f6d365; }
+.ra-pill.is-unlocked { background: rgba(47, 168, 102, 0.16); border-color: var(--ok); color: #7ee2a8; }
+.ra-pill.is-locked { color: var(--faint); }
+

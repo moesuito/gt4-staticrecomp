@@ -197,6 +197,10 @@ fn main() {
             updates::apply_update,
             updates::skip_update,
             tray::confirm_close,
+            commands::ra_status,
+            commands::ra_login,
+            commands::ra_logout,
+            commands::ra_set_options,
         ])
         .run(tauri::generate_context!());
     // TASK-091: a web view that could not start (WebView2 missing) gets the native message, not a silent exit.

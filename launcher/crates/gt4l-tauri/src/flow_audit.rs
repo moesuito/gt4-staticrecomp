@@ -366,6 +366,81 @@ fn without_gsdx_setup_finishes_and_play_refuses_with_the_log_folder() {
 }
 
 #[test]
+fn retroachievements_options_and_launch_environment() {
+    let root = scratch("retroachievements");
+    let dirs = DataDirs::new(root.join("data"));
+    let game = synthetic_game(0x0010_0000, 0x0010_0008, b"synthetic guest code, not game data, 0123456789abcdef");
+    let image = build_iso(
+        "GT4 USA",
+        &[
+            ("SYSTEM.CNF;1", system_cnf("SCUS_973.28", "2.00", "NTSC")),
+            ("CORE.GT4;1", game.core.clone()),
+            ("SCUS_973.28;1", vec![0xA5; 3000]),
+        ],
+    );
+    let pins = pins_for(&image, &game, "SCUS-97328", "2.00");
+    let picked = root.join("disc.iso");
+    fs::write(&picked, image).unwrap();
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &picked).unwrap();
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+
+    // Simulate a signed-in RetroAchievements profile in the user config folder.
+    let ra_cfg = gt4l_core::retroachievements::RaConfig {
+        enabled: true,
+        username: "GranTurismoDriver".to_string(),
+        display_name: "GranTurismoDriver".to_string(),
+        token: "secret-ra-token".to_string(),
+        hardcore: false,
+        encore: false,
+        score: 1500,
+        score_softcore: 250,
+    };
+    ra_cfg.save(&lock(&shared).user_dirs.retroachievements_file()).unwrap();
+
+    // Update options via command helper and verify persistence.
+    let updated = commands::ra_set_options_of(true, true, true, &shared).expect("ra_set_options_of");
+    assert!(updated.enabled);
+    assert!(updated.signed_in);
+    assert_eq!(updated.username, "GranTurismoDriver");
+    assert!(updated.hardcore);
+    assert!(updated.encore);
+
+    // Verify prepare_play injects GT4_RA_* environment variables when GSdx is present.
+    let gs_root = dirs.renderer_root();
+    let gs_ver = gt4l_core::gs_release::MINIMUM_VERSION.text();
+    let gs_ver_dir = gs_root.join(&gs_ver);
+    fs::create_dir_all(&gs_ver_dir).unwrap();
+    let gs_bytes = b"stand-in gt4-gs.exe";
+    fs::write(gs_ver_dir.join(gt4l_core::gs_release::EXECUTABLE_NAME), gs_bytes).unwrap();
+    fs::write(gs_ver_dir.join("sha256.txt"), gt4l_core::gs_release::sha256_hex(gs_bytes)).unwrap();
+    fs::write(gs_root.join(gt4l_core::gs_release::CURRENT_FILE), &gs_ver).unwrap();
+
+    let program = root.join("program");
+    fs::create_dir_all(program.join("game")).unwrap();
+    fs::write(program.join("game").join("gt4vulkan.exe"), b"stand-in gt4vulkan.exe").unwrap();
+
+    let play_inputs = commands::prepare_play(&shared, &program).expect("prepare_play succeeds with stand-in binaries");
+    assert!(play_inputs.extra.contains(&("GT4_RA_ENABLED".to_string(), "1".to_string())));
+    assert!(play_inputs.extra.contains(&("GT4_RA_USERNAME".to_string(), "GranTurismoDriver".to_string())));
+    assert!(play_inputs.extra.contains(&("GT4_RA_TOKEN".to_string(), "secret-ra-token".to_string())));
+    assert!(play_inputs.extra.contains(&("GT4_RA_HARDCORE".to_string(), "1".to_string())));
+    assert!(play_inputs.extra.contains(&("GT4_RA_ENCORE".to_string(), "1".to_string())));
+    assert!(play_inputs.extra.contains(&(
+        "GT4_RA_HASH".to_string(),
+        gt4l_core::retroachievements::GT4_NTSC_U_RA_HASH.to_string()
+    )));
+
+    // Sign out clears token and disables launch env injection.
+    let signed_out = commands::ra_logout_of(&shared).expect("ra_logout_of");
+    assert!(!signed_out.signed_in);
+    let play_inputs_after_logout = commands::prepare_play(&shared, &program).expect("prepare_play after logout");
+    assert!(!play_inputs_after_logout.extra.iter().any(|(k, _)| k.starts_with("GT4_RA_")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 #[ignore = "real discs, a real copy of the image and a real download; see the module comment"]
 fn real_flow_end_to_end() {
     let data = PathBuf::from(std::env::var("GT4_AUDIT_DATA_DIR").expect("set GT4_AUDIT_DATA_DIR"));

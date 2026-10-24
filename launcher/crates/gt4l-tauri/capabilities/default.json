@@ -39,6 +39,10 @@
     "allow-apply-update",
     "allow-skip-update",
     "allow-confirm-close",
-    "allow-ui-ready"
+    "allow-ui-ready",
+    "allow-ra-status",
+    "allow-ra-login",
+    "allow-ra-logout",
+    "allow-ra-set-options"
   ]
 }

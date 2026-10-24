@@ -22,6 +22,7 @@
     { id: "controls", label: "Controls" },
     { id: "saves", label: "Saves" },
     { id: "replays", label: "Replays" },
+    { id: "achievements", label: "Achievements" },
     { id: "mods", label: "Mods" },
     { id: "about", label: "About" }
   ];

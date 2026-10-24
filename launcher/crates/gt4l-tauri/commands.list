@@ -36,3 +36,7 @@ apply_update
 skip_update
 confirm_close
 ui_ready
+ra_status
+ra_login
+ra_logout
+ra_set_options

@@ -14,6 +14,7 @@ pub mod migrate;
 pub mod paths;
 pub mod releases;
 pub mod relocate;
+pub mod retroachievements;
 pub mod settings;
 pub mod system_check;
 pub mod textures;
