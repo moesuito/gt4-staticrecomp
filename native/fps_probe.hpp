@@ -44,7 +44,8 @@ enum class MutationBucket {
   coursedata_ms,          // 0x006214D8
   camera_cached_matrix,   // CameraView + 0x100..0x13F
   dma_safe_idle_swap,     // per-car / course DMA buffer pointers in DMAsafe
-  render_packet_ptr,      // RacePS2Base + 0x0DDC..0x0DF0 DMA packet heads
+  render_packet_ptr,      // RacePS2Base DMA packet heads (excluding flare)
+  flare_state,            // RacePS2Base + 0xDA0..0xEA0 (flare header/samples) and +0xEA4..0x16A4 (result table)
   unattributed            // MUST be 0 for pure simulation state
 };
 
@@ -64,6 +65,7 @@ struct PurityReport {
   std::uint64_t coursedata_mutations = 0;
   std::uint64_t camera_matrix_mutations = 0;
   std::uint64_t dma_swap_mutations = 0;
+  std::uint64_t flare_mutations = 0;
   std::uint64_t render_packet_ptr_mutations = 0;
   std::uint64_t unattributed_mutations = 0;
 
@@ -159,7 +161,10 @@ public:
 
   const FrameStats &stats() const noexcept { return stats_; }
   MainLoopPhase current_phase() const noexcept { return phase_; }
+  std::uint32_t active_race_object() const noexcept { return active_race_obj_; }
   const std::vector<MutationRecord> &recent_mutations() const noexcept { return recent_mutations_; }
+
+  void observe_candidate_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept;
 
 private:
   std::uint64_t now_us() const noexcept;
@@ -195,16 +200,30 @@ inline void on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::si
   if (!probe.enabled()) return;
 
   const auto &hooks = ::gt4::target::active().hooks;
+  const std::uint32_t ra = c.r[31].w[0];
 
   // 1. Functor entries and phase transitions
   if (hooks.main_update_functor && pc == hooks.main_update_functor) {
+    if (c.r[4].w[0] != 0) {
+      probe.observe_candidate_object(c.r[4].w[0], ram, ram_size);
+    }
     if (probe.current_phase() != MainLoopPhase::update) {
-      if (probe.current_phase() == MainLoopPhase::flip_wait || probe.current_phase() == MainLoopPhase::idle) {
-        probe.on_frame_boundary();
+      if (probe.current_phase() == MainLoopPhase::render) {
+        probe.on_render_leave(ram, ram_size);
       }
+      if (probe.current_phase() == MainLoopPhase::idle) {
+        probe.on_idle_leave(ram, ram_size);
+      }
+      if (probe.current_phase() == MainLoopPhase::flip_wait) {
+        probe.on_flip_wait_leave();
+      }
+      probe.on_frame_boundary();
       probe.on_update_enter(c.r[4].w[0], ram, ram_size);
     }
   } else if (hooks.main_render_functor && pc == hooks.main_render_functor) {
+    if (c.r[4].w[0] != 0) {
+      probe.observe_candidate_object(c.r[4].w[0], ram, ram_size);
+    }
     if (probe.current_phase() == MainLoopPhase::update) {
       probe.on_update_leave(ram, ram_size);
     }
@@ -222,17 +241,20 @@ inline void on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::si
     if (probe.current_phase() == MainLoopPhase::idle) {
       probe.on_idle_leave(ram, ram_size);
     }
-    probe.on_flip_wait_enter();
+    if (probe.current_phase() != MainLoopPhase::flip_wait) {
+      probe.on_flip_wait_enter();
+    }
   }
 
-  // 2. Main loop debug pad label after idle / direct wait
-  if (pc == 0x001015B8u && probe.current_phase() == MainLoopPhase::idle) {
+  // 2. Idle exit and flip wait entry in real game main loop:
+  // In func_001016E8, after Manager B idle walk finishes, line 2479 calls the debug pad combo
+  // via indirect call with $ra = 0x001015E4u, which passes through dispatch.
+  if (probe.current_phase() == MainLoopPhase::idle && (ra == 0x001015E4u || pc == 0x001015E4u || pc == 0x001015B8u)) {
     probe.on_idle_leave(ram, ram_size);
     probe.on_flip_wait_enter();
   }
 
   // 3. Returns from functors and flip wait
-  const std::uint32_t ra = c.r[31].w[0];
   if (hooks.functor_return && (pc == hooks.functor_return || (ra == hooks.functor_return &&
       pc != hooks.main_update_functor && pc != hooks.main_render_functor && pc != hooks.main_idle_functor))) {
     if (probe.current_phase() == MainLoopPhase::update) {

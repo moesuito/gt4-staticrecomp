@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "donor_revision": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "donor_sha256": {
+    "dispatch.cpp": "691c1d045b928ef789338f0954ec820fc0fd4e938cd2b2940743b3ad6005f995",
+    "kernel.cpp": "003c9e0a0e2c1cb61a6fd8ec846a4798c3027ed933b6825c6377112106f0168a",
+    "iop/cdvdfsv.cpp": "c313e10af0baaf63d9bd31040c168f38936c979c37fdce45afdf060d11560fbe"
+  },
+  "license_guard_profile": "task017-guard-v2+task080-aspect-v2+task082-fps-probe-v1",
+  "license_guard_overlay_sha256": "7765a1c79d5c4ef8846fd7b4d6a2c629453342bc552be78547c9be6fc5a6e79a",
+  "display_aspect_overlay_sha256": "65992ad963a5b166cc960ab8f3366edafd048908769a79817651a18b50dde901",
+  "fps_probe_overlay_sha256": "075f3097447b03ba51f747bd93cc3db8eee9df7c45d455643e4b4d87904427eb",
+  "halt_dump_overlay_sha256": "519027e1b425fa99d93c401868b29611001440d3df3b2b090d00b37c03af659c",
+  "fsv_trace_overlay_sha256": "03579b77bb1ae26f040325157f7dcf91d32afd57e484b43b32bd1040dcbc59a0",
+  "frame_counters_profile": "task084-frame-counters-v1",
+  "source_sha256": {
+    "cdvdfsv.cpp": "0074d14f838d303314cdc7601450993134702cacd59bef9e288ec74e87ffad1d",
+    "dispatch.cpp": "e2cbeaf5c90067ca60f41a8d9ee0fadac1e3347aefa8a7fb0db43de29803957d",
+    "kernel.cpp": "9384da59e72fb056d6b52363f8d26d7bbf4793e8c47481f41304d741f00e5754"
+  },
+  "receipt_sha256": "92953c067f6db9d0171fb7897ddecc690fa5918a43743f7c4b34350e51a339f4",
+  "build_variable": "GT4_LICENSE_GUARD_SOURCE"
+}

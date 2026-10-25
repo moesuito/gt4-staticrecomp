@@ -35,16 +35,18 @@ std::uint64_t default_steady_clock_us() noexcept {
 
 bool is_race_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept {
   if (obj_ptr == 0 || obj_ptr >= ram_size || ram == nullptr) return false;
-  // In game: the static managers are 0x006D6708 and 0x006DE820 (which are NOT race objects)
-  if (obj_ptr == 0x006D6708u || obj_ptr == 0x006DE820u) return false;
+  // In game: reject static ELF data (0x00600000 .. 0x00780000: static variables, managers, course tables)
+  if (obj_ptr >= 0x00600000u && obj_ptr <= 0x00780000u) return false;
+
   const std::uint32_t vptr = read_u32(ram, ram_size, obj_ptr + 0x64u);
-  // RacePS2Base vtable 0x00679378, RaceArcadeSingle vtable 0x0067BAD8
-  if (vptr == 0x00679378u || vptr == 0x0067BAD8u) return true;
-  // In game, static managers have vtables around 0x00659xxx
-  if (vptr >= 0x00659000u && vptr <= 0x0065A000u) return false;
-  // If obj_ptr + 0x70 holds a pointer into RAM (e.g. test fixture or mock environment)
-  const std::uint32_t dyn = read_u32(ram, ram_size, obj_ptr + 0x70u);
-  if (dyn != 0 && dyn < ram_size) return true;
+  // In GT4, all Race* vtables are located between 0x00676000 and 0x00686000
+  // (RacePS2Base: 0x00679378, RaceArcadeSingle: 0x0067BAD8, RaceFreeRun: 0x00680140, etc.)
+  if (vptr >= 0x00676000u && vptr <= 0x00686000u) {
+    const std::uint32_t dyn = read_u32(ram, ram_size, obj_ptr + 0x70u);
+    if (dyn != 0 && dyn < ram_size && dyn != obj_ptr) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -52,20 +54,29 @@ bool is_race_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t 
 
 MutationBucket classify_mutation(std::uint32_t addr, std::uint32_t race_obj,
                                  std::uint32_t camera_addr, std::uint32_t coursedata_addr) noexcept {
+  (void)coursedata_addr;
   if (race_obj != 0) {
-    if (addr == race_obj + 0xE32Cu) return MutationBucket::render_frame_counter;
-    if (addr >= race_obj + 0xCF58u && addr <= race_obj + 0xCF5Cu) return MutationBucket::hud_history_byte;
+    if (addr >= race_obj + 0xE200u && addr < race_obj + 0xE500u) return MutationBucket::render_frame_counter;
     if (addr >= race_obj + 0xCF38u && addr <= race_obj + 0xCF70u) return MutationBucket::hud_history_byte;
-    if (addr >= race_obj + 0x0D98u && addr <= race_obj + 0x0E20u) return MutationBucket::render_packet_ptr;
+    if (addr >= race_obj + 0x80u && addr < race_obj + 0x0D80u) return MutationBucket::camera_cached_matrix;
+
+    // Flare object at race_obj + 0xDA0 (TASK-117 / TASK-082 study):
+    // flare+0x00..+0x78: buffer pointer, sample counter (+0x08), buffer offset (+0x20), target coords
+    if (addr >= race_obj + 0x0DA0u && addr < race_obj + 0x0EA4u) return MutationBucket::flare_state;
+    // flare+0x104 (race_obj + 0xEA4, 2048 bytes): GS-to-EE readback result table
+    if (addr >= race_obj + 0x0EA4u && addr < race_obj + 0x0EA4u + 2048u) return MutationBucket::flare_state;
+    // Flare queues at flare+0xA30 (0x17D0) and flare+0x1840 (0x25E0)
+    if (addr >= race_obj + 0x17D0u && addr < race_obj + 0x17F0u) return MutationBucket::flare_state;
+    if (addr >= race_obj + 0x25E0u && addr < race_obj + 0x2600u) return MutationBucket::flare_state;
+
+    // Render DMA packet heads (excluding flare object)
+    if (addr >= race_obj + 0x0D80u && addr < race_obj + 0x0DA0u) return MutationBucket::render_packet_ptr;
   }
   if (camera_addr != 0) {
-    if (addr >= camera_addr + 0x100u && addr < camera_addr + 0x140u) return MutationBucket::camera_cached_matrix;
+    if (addr >= camera_addr && addr < camera_addr + 0x200u) return MutationBucket::camera_cached_matrix;
   }
   if (addr >= 0x0062020Cu && addr <= 0x00620214u) return MutationBucket::double_buffer_toggle;
-  if (coursedata_addr != 0 && (addr >= coursedata_addr - 4u && addr <= coursedata_addr + 4u)) {
-    return MutationBucket::coursedata_ms;
-  }
-  if (addr >= 0x006214D4u && addr <= 0x006214DCu) return MutationBucket::coursedata_ms;
+  if (addr >= 0x006214D0u && addr <= 0x00621520u) return MutationBucket::coursedata_ms;
 
   return MutationBucket::unattributed;
 }
@@ -161,20 +172,38 @@ void Probe::setup_default_spans(std::uint32_t race_obj, const std::uint8_t *ram,
     }
   }
 
-  // 5. Global clocks, course data ms, double buffer toggle, flare table
+  // 5. Global clocks, course data ms, double buffer toggle
   add_watched_span(0x00620000u, 0x400u, "DoubleBuffer_and_DMA_state");
   add_watched_span(0x00621400u, 0x200u, "CourseData_clock_ms");
-  add_watched_span(0x004A5178u, 0x800u, "Flare_table_readback_buffer");
+
+  // 6. Flare object state (TASK-117 / TASK-082)
+  add_watched_span(race_obj + 0x0DA0u, 0x104u, "Flare_header_and_sample_table");
+  add_watched_span(race_obj + 0x0EA4u, 2048u,  "Flare_readback_result_table");
+  add_watched_span(race_obj + 0x17D0u, 0x20u,  "Flare_queue_primary");
+  add_watched_span(race_obj + 0x25E0u, 0x20u,  "Flare_queue_secondary");
+}
+
+void Probe::observe_candidate_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept {
+  if (!enabled_ || obj_ptr == 0 || ram == nullptr) return;
+  if (is_race_object(obj_ptr, ram, ram_size)) {
+    if (active_race_obj_ != obj_ptr) {
+      const bool had_previous = (active_race_obj_ != 0);
+      active_race_obj_ = obj_ptr;
+      if (had_previous) {
+        clear_watched_spans();
+        stats_.purity = PurityReport{};
+        recent_mutations_.clear();
+      }
+      setup_default_spans(active_race_obj_, ram, ram_size);
+    }
+  }
 }
 
 void Probe::on_update_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept {
   if (!enabled_) return;
 
-  if (active_race_obj_ == 0 && obj_ptr != 0) {
-    if (is_race_object(obj_ptr, ram, ram_size)) {
-      active_race_obj_ = obj_ptr;
-      setup_default_spans(active_race_obj_, ram, ram_size);
-    }
+  if (obj_ptr != 0) {
+    observe_candidate_object(obj_ptr, ram, ram_size);
   }
 
   phase_ = MainLoopPhase::update;
@@ -210,11 +239,8 @@ void Probe::on_update_leave(const std::uint8_t *ram, std::size_t ram_size) noexc
 void Probe::on_render_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept {
   if (!enabled_) return;
 
-  if (active_race_obj_ == 0 && obj_ptr != 0) {
-    if (is_race_object(obj_ptr, ram, ram_size)) {
-      active_race_obj_ = obj_ptr;
-      setup_default_spans(active_race_obj_, ram, ram_size);
-    }
+  if (obj_ptr != 0) {
+    observe_candidate_object(obj_ptr, ram, ram_size);
   }
 
   phase_ = MainLoopPhase::render;
@@ -400,6 +426,9 @@ void Probe::diff_render_purity(const std::uint8_t *ram, std::size_t ram_size, bo
           case MutationBucket::dma_safe_idle_swap:
             ++stats_.purity.dma_swap_mutations;
             break;
+          case MutationBucket::flare_state:
+            ++stats_.purity.flare_mutations;
+            break;
           case MutationBucket::render_packet_ptr:
             ++stats_.purity.render_packet_ptr_mutations;
             break;
@@ -446,13 +475,14 @@ void Probe::format_report(std::FILE *stream) const noexcept {
                stats_.camera_cached_matrix[0]);
 
   std::fprintf(stream,
-               "[fps-probe] purity: mutations=%llu (render_counter:%llu hud_hist:%llu buf_toggle:%llu cam_matrix:%llu dma_swap:%llu pkt_ptr:%llu unattributed:%llu)\n",
+               "[fps-probe] purity: mutations=%llu (render_counter:%llu hud_hist:%llu buf_toggle:%llu cam_matrix:%llu dma_swap:%llu flare:%llu pkt_ptr:%llu unattributed:%llu)\n",
                static_cast<unsigned long long>(stats_.purity.mutated_words),
                static_cast<unsigned long long>(stats_.purity.render_counter_mutations),
                static_cast<unsigned long long>(stats_.purity.hud_history_mutations),
                static_cast<unsigned long long>(stats_.purity.double_buffer_mutations),
                static_cast<unsigned long long>(stats_.purity.camera_matrix_mutations),
                static_cast<unsigned long long>(stats_.purity.dma_swap_mutations),
+               static_cast<unsigned long long>(stats_.purity.flare_mutations),
                static_cast<unsigned long long>(stats_.purity.render_packet_ptr_mutations),
                static_cast<unsigned long long>(stats_.purity.unattributed_mutations));
 

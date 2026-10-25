@@ -118,7 +118,7 @@ class FpsProbeReportParserTests(unittest.TestCase):
         "[fps-probe] interval: frames=60 update_ms=1.420 render_ms=8.150 idle_ms=0.180 flip_ms=6.850 total_ms=16.600\n"
         "[fps-probe] guest: clock_f898=35950 render_counter=1971 hud_hist=0x01 buf_toggle=1 course_ms=10950\n"
         "[fps-probe] camera: fov=60.0 cached_m00=1.0000\n"
-        "[fps-probe] purity: mutations=4 (render_counter:1 hud_hist:1 buf_toggle:1 cam_matrix:1 dma_swap:0 unattributed:0)\n"
+        "[fps-probe] purity: mutations=4 (render_counter:1 hud_hist:1 buf_toggle:1 cam_matrix:1 dma_swap:0 flare:0 pkt_ptr:0 unattributed:0)\n"
         "[fps-probe] verdict: clean (unattributed_words=0)\n"
     )
 

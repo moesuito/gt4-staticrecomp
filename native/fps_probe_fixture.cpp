@@ -147,6 +147,10 @@ void test_state_and_phase_timings() {
   std::vector<std::uint8_t> ram(32u << 20, 0);
 
   const std::uint32_t race_obj = 0x10000;
+  const std::uint32_t vptr = 0x00679378u;
+  const std::uint32_t dyn = 0x15000;
+  std::memcpy(ram.data() + race_obj + 0x64u, &vptr, sizeof vptr);
+  std::memcpy(ram.data() + race_obj + 0x70u, &dyn, sizeof dyn);
   const std::uint32_t dynamics_ptr = 0x20000;
   std::memcpy(ram.data() + race_obj + 0x70u, &dynamics_ptr, sizeof dynamics_ptr);
 
@@ -251,6 +255,10 @@ void test_render_purity_diff_attribution() {
   std::vector<std::uint8_t> ram(32u << 20, 0);
 
   const std::uint32_t race_obj = 0x10000;
+  const std::uint32_t vptr = 0x00679378u;
+  const std::uint32_t dyn = 0x15000;
+  std::memcpy(ram.data() + race_obj + 0x64u, &vptr, sizeof vptr);
+  std::memcpy(ram.data() + race_obj + 0x70u, &dyn, sizeof dyn);
   const std::uint32_t dynamics_ptr = 0x20000;
   std::memcpy(ram.data() + race_obj + 0x70u, &dynamics_ptr, sizeof dynamics_ptr);
 
@@ -261,7 +269,8 @@ void test_render_purity_diff_attribution() {
   probe.add_watched_span(0x00620200u, 0x20u, "buf_toggle_span");
   probe.add_watched_span(dynamics_ptr + 0xF880u, 0x40u, "dynamics_sim_state");
   probe.add_watched_span(0x00620000u, 0x40u, "dma_chain_span");
-  probe.add_watched_span(race_obj + 0x0DD8u, 0x30u, "render_pkt_ptrs");
+  probe.add_watched_span(race_obj + 0x0D80u, 0x20u, "render_pkt_ptrs");
+  probe.add_watched_span(race_obj + 0x0DA0u, 0x20u, "flare_header_sample_counter");
 
   // Enter render (sets active_race_obj and takes snapshot)
   probe.on_render_enter(race_obj, ram.data(), ram.size());
@@ -277,17 +286,21 @@ void test_render_purity_diff_attribution() {
   std::memcpy(ram.data() + 0x00620210u, &new_buf, sizeof new_buf);
 
   std::uint32_t new_pkt = 0x0080E030;
-  std::memcpy(ram.data() + race_obj + 0x0DDCu, &new_pkt, sizeof new_pkt);
+  std::memcpy(ram.data() + race_obj + 0x0D88u, &new_pkt, sizeof new_pkt);
+
+  std::uint32_t new_flare_sample_cnt = 2; // flare+0x08 sample counter
+  std::memcpy(ram.data() + race_obj + 0x0DA8u, &new_flare_sample_cnt, sizeof new_flare_sample_cnt);
 
   // Run purity diff
   probe.diff_render_purity(ram.data(), ram.size(), /*is_idle=*/false);
 
   const auto &p1 = probe.stats().purity;
-  require(p1.mutated_words == 4, "4 legitimate words mutated");
+  require(p1.mutated_words == 5, "5 legitimate words mutated");
   require(p1.render_counter_mutations == 1, "1 render counter mutation attributed");
   require(p1.hud_history_mutations == 1, "1 hud history mutation attributed");
   require(p1.double_buffer_mutations == 1, "1 double buffer mutation attributed");
   require(p1.render_packet_ptr_mutations == 1, "1 render packet ptr mutation attributed");
+  require(p1.flare_mutations == 1, "1 flare state mutation attributed");
   require(p1.unattributed_mutations == 0, "0 unattributed mutations");
   require(p1.simulation_clean(), "simulation state is clean");
 
@@ -334,6 +347,10 @@ void test_report_formatting() {
 
   std::vector<std::uint8_t> ram(32u << 20, 0);
   const std::uint32_t race_obj = 0x10000;
+  const std::uint32_t vptr = 0x00679378u;
+  const std::uint32_t dyn = 0x15000;
+  std::memcpy(ram.data() + race_obj + 0x64u, &vptr, sizeof vptr);
+  std::memcpy(ram.data() + race_obj + 0x70u, &dyn, sizeof dyn);
   probe.on_update_enter(race_obj, ram.data(), ram.size());
   mock_time_us += 1500;
   probe.on_update_leave(ram.data(), ram.size());
@@ -377,6 +394,10 @@ void test_dispatch_helper() {
 
   std::vector<std::uint8_t> ram(32u << 20, 0);
   const std::uint32_t race_obj = 0x10000;
+  const std::uint32_t vptr = 0x00679378u;
+  const std::uint32_t dyn = 0x15000;
+  std::memcpy(ram.data() + race_obj + 0x64u, &vptr, sizeof vptr);
+  std::memcpy(ram.data() + race_obj + 0x70u, &dyn, sizeof dyn);
 
   MockCpu cpu;
   cpu.r[4].w[0] = race_obj; // $a0
@@ -430,6 +451,60 @@ void test_dispatch_helper() {
   cpu.r[31].w[0] = hooks.flip_wait_return;
   gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
   require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::outside, "on_dispatch flip wait left");
+
+  // 9. In-game direct transition: idle entered, then debug pad combo (ra == 0x001015E4) starts flip wait
+  cpu.pc = hooks.main_idle_functor;
+  cpu.r[31].w[0] = 0x1000;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::idle, "idle re-entered");
+
+  cpu.pc = 0x0055F000u;
+  cpu.r[31].w[0] = 0x001015E4u; // ra after Manager B idle walk finishes
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::flip_wait, "ra=0x001015E4 transitions idle to flip wait");
+
+  // 10. Start of next frame update functor completes flip wait and advances frame boundary
+  cpu.pc = hooks.main_update_functor;
+  cpu.r[31].w[0] = 0x1000;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::update, "next frame update functor entered");
+}
+
+void test_race_object_detection() {
+  gt4::fps_probe::Probe probe;
+  probe.init("1", nullptr);
+  std::vector<std::uint8_t> ram(32u << 20, 0);
+
+  // 1. Menu manager object (vtable 0x00659100) and static table (0x00621000) must NOT be recognized
+  const std::uint32_t menu_obj = 0x10000;
+  const std::uint32_t menu_vptr = 0x00659100u;
+  std::memcpy(ram.data() + menu_obj + 0x64u, &menu_vptr, sizeof menu_vptr);
+  probe.observe_candidate_object(menu_obj, ram.data(), ram.size());
+  require(probe.active_race_object() == 0, "menu object must not latch as race object");
+
+  const std::uint32_t static_obj = 0x00621400u;
+  const std::uint32_t static_vptr = 0x00680140u;
+  std::memcpy(ram.data() + static_obj + 0x64u, &static_vptr, sizeof static_vptr);
+  probe.observe_candidate_object(static_obj, ram.data(), ram.size());
+  require(probe.active_race_object() == 0, "static table in 0x00600000..0x00780000 must be rejected");
+
+  // 2. RaceFreeRun object (vtable 0x00680140, day scene) MUST be recognized
+  const std::uint32_t free_run_obj = 0x20000;
+  const std::uint32_t free_run_vptr = 0x00680140u;
+  const std::uint32_t dyn1 = 0x25000;
+  std::memcpy(ram.data() + free_run_obj + 0x64u, &free_run_vptr, sizeof free_run_vptr);
+  std::memcpy(ram.data() + free_run_obj + 0x70u, &dyn1, sizeof dyn1);
+  probe.observe_candidate_object(free_run_obj, ram.data(), ram.size());
+  require(probe.active_race_object() == free_run_obj, "RaceFreeRun object must latch as race object");
+
+  // 3. RaceArcadeSingle object (vtable 0x0067BAD8, night scene) MUST also be recognized
+  const std::uint32_t arcade_obj = 0x30000;
+  const std::uint32_t arcade_vptr = 0x0067BAD8u;
+  const std::uint32_t dyn2 = 0x35000;
+  std::memcpy(ram.data() + arcade_obj + 0x64u, &arcade_vptr, sizeof arcade_vptr);
+  std::memcpy(ram.data() + arcade_obj + 0x70u, &dyn2, sizeof dyn2);
+  probe.observe_candidate_object(arcade_obj, ram.data(), ram.size());
+  require(probe.active_race_object() == arcade_obj, "RaceArcadeSingle object must update race object");
 }
 
 }  // namespace
@@ -441,6 +516,7 @@ int main() {
   test_render_purity_diff_attribution();
   test_report_formatting();
   test_dispatch_helper();
+  test_race_object_detection();
 
   std::printf("fps_probe_fixture: ok\n");
   return 0;
