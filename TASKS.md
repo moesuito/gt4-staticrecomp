@@ -138,7 +138,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑115 | Game recognition and Discord: Windows Game Mode/Game Bar, AMD and NVIDIA capture (Instant Replay, ShadowPlay) and Discord Rich Presence | 📋 Planned (owner, 2026-10-24) · future (1.3.1 or later) |
 | TASK‑116 | George V Paris below 60 FPS: one GS readback per frame makes the game wait for VU1 and GSdx; 1.3.1 = no VU1 drain when the readback returns nothing, plus unsynchronized readbacks in gt4-gs 1.2.2 | 🔧 Step 1 studied (2026-10-24), moved to 1.3.0-rc6 with TASK-117 (owner); step 2 stays 1.3.1 |
 | TASK‑117 | Performance mode, part 2: fewer light flares at night (no halo, distance cull, light caps), our own clean implementation in GT4 v2.00, off when Performance mode is off | 🔧 Study done (2026-10-24), plan below · 1.3.0-rc6 with TASK-116 step 1 (owner) |
-| TASK‑118 | Choose which controller is player 1 (keyboards and other devices that create virtual Xbox pads must not steal it) | 📋 Planned (owner, 2026-10-25) · release 1.3.1, or a 1.3.0 rc if small |
+| TASK‑119 | Choose which controller is player 1 (keyboards and other devices that create virtual Xbox pads must not steal it) | 📋 Planned (owner, 2026-10-25) · release 1.3.1, or a 1.3.0 rc if small |
 | TASK‑093 | Custom textures straight in the Textures folder: gt4-gs 1.2.1 reads the folder itself; the launcher stops creating `replacements` and moves an old `replacements` folder's contents up once gt4-gs 1.2.1 is in use | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑096 | Remove CoreGS 1.1 from the launcher (owner, 2026-10-22): GSdx only, CoreGS 2.0 shown as "Coming soon" (disabled), a stored CoreGS 1.1 choice migrates to GSdx, a GSdx failure shows a clear error instead of falling back; CoreGS 1.1 stays in the game executable, unused by the launcher. For launcher release 1.2.3 | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
@@ -917,7 +917,7 @@ Work:
    sent anywhere else. In-game details (mode, track, car) need guest-memory reads: a later step.
 Acceptance: the owner sees each feature work on his machines; unit tests for the presence payload and the switch.
 
-### TASK-118 — Choose the player 1 controller
+### TASK-119 — Choose the player 1 controller
 Planned (owner, 2026-10-25) for 1.3.1; it goes into a later 1.3.0 rc if it stays small. Source: a YouTube comment and
 the matching complaint that the game "only recognizes the very first controller": the commenter's keyboard creates
 virtual Xbox 360 pads (one per hardware profile), which take player 1.
