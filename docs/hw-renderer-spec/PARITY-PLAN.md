@@ -34,7 +34,7 @@ the owner moved the work to another agent. Read it together with `AGENTS.md`, `d
   - The fast scaled raster itself (the early-Z second pass) is **not** implemented yet.
   - The build tree `O:\gt4recomp-scratch\coregs2-slice270-present\build` matches the branch HEAD; rebuild before use.
 - **Candidate 274:** `O:\gt4recomp-scratch\coregs2-candidate-274`.
-  - `gt4vulkan.exe` sha256 `48807db18536591d0ab4a0f3068f0d28418b95a99b0229116793ba8df3d5bc5b` (97,969,664 bytes; rebuilt with the scaled-texture origin fix).
+  - `gt4vulkan.exe` sha256 `49361e0b073633d7572e36c7a92695df22313f97a90d7eedf14a53c94ed46781` (97,969,664 bytes; rebuilt with the scaled-texture origin fix).
   - `build\hwr-play-scale.ps1` defaults to it (`-Candidate`, run folder `private\hwr-play-274`).
   - Contents: IN-384 (scaled images sized to their slot) on top of candidate 273's IN-371..IN-383.
 - **Candidate 273 (owner test 10, superseded):** `O:\gt4recomp-scratch\coregs2-candidate-273`, sha256

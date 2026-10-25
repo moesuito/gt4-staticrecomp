@@ -6,9 +6,13 @@
 // CoreGS 2.0 keeps every resident target as exact 1x GS words (the authority for memory, the GLM and
 // readbacks) and, when GT4_HW_SCALE > 1, a second image of the same words at s x s sub-pixels per native
 // pixel that only the presentation reads. Whenever the 1x image changes by anything other than a draw (a load
-// from the shadow memory or the GLM), the changed rectangle of the scaled image is refreshed from it here: every
-// sub-pixel of a native pixel takes that pixel's word (nearest, 06.8 "memory sources are always 1x"). Draws
-// reach the scaled image by being rasterised a second time at scale (IN-371), not through this kernel.
+// from the shadow memory or the GLM), the changed rectangle of the scaled image is refreshed from it here.
+// Draws reach the scaled image by being rasterised a second time at scale (IN-371), not through this kernel.
+//
+// IN-384 follow-up (Q-GSDX-COMPARISON section 6): the reference blits a 1x upload into a scaled target with
+// BILINEAR by default (nearest is an option) and always bilinear for depth; nearest keeps the source's 6-pixel
+// steps visible on a flat gradient at 6x. `linear` (push word 5) selects bilinear for the colour slots; the depth
+// slots stay nearest because their words are compared, not shown.
 
 #version 450
 
@@ -23,7 +27,25 @@ layout(push_constant) uniform UpsampleParameters {
     uint width;   // native pixels
     uint height;
     uint scale;   // s
+    uint linear;  // 1 = bilinear (colour), 0 = nearest (depth)
 } pc;
+
+uint channel(uint word, uint c) {
+    return (word >> (8u * c)) & 0xFFu;
+}
+
+// Bilinear over the four native neighbours, channel by channel (the packed word is R | G << 8 | B << 16 | A << 24).
+uint blend4(uint w00, uint w10, uint w01, uint w11, uint fx, uint fy) {
+    uint out_word = 0u;
+    for (uint c = 0u; c < 4u; ++c) {
+        uint a = channel(w00, c) * (16u - fx) * (16u - fy);
+        uint b = channel(w10, c) * fx * (16u - fy);
+        uint d = channel(w01, c) * (16u - fx) * fy;
+        uint e = channel(w11, c) * fx * fy;
+        out_word |= ((a + b + d + e) >> 8) << (8u * c);
+    }
+    return out_word;
+}
 
 void main() {
     uvec2 sub = gl_GlobalInvocationID.xy;  // scaled pixel relative to the rectangle's scaled origin
@@ -32,5 +54,14 @@ void main() {
     }
     uvec2 native = uvec2(pc.x0, pc.y0) + sub / pc.scale;
     uint word = imageLoad(native_words, ivec2(native)).x;
+    if (pc.linear != 0u) {
+        const ivec2 last = ivec2(int(pc.x0) + int(pc.width) - 1, int(pc.y0) + int(pc.height) - 1);
+        const ivec2 here = ivec2(native);
+        const uint fx = (sub.x % pc.scale) * 16u / pc.scale;
+        const uint fy = (sub.y % pc.scale) * 16u / pc.scale;
+        word = blend4(word, imageLoad(native_words, min(here + ivec2(1, 0), last)).x,
+                      imageLoad(native_words, min(here + ivec2(0, 1), last)).x,
+                      imageLoad(native_words, min(here + ivec2(1, 1), last)).x, min(fx, 15u), min(fy, 15u));
+    }
     imageStore(scaled_words, ivec2(uvec2(pc.x0, pc.y0) * pc.scale + sub), uvec4(word, 0u, 0u, 0u));
 }

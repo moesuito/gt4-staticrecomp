@@ -212,6 +212,13 @@ struct GpuDrawer::Impl {
   // IN-384 follow-up (owner test 11): GT4_HW_SCALED_FILTER=linear samples the 1x texel atlas bilinearly in the scaled
   // pass, which smooths the source's 6-pixel steps the way the reference renderer's upscaling filter does.
   bool scaledLinearFilter = false;
+  // IN-384 follow-up (Q-GSDX-COMPARISON section 2): the reference dithers per OUTPUT pixel by default at scale; the
+  // per-native-pixel cell (06.5 native mode) stays available with GT4_HW_DITHER=native.
+  bool ditherFine = true;
+  // IN-384 follow-up: bilinear refresh of the colour slots (the reference's default for a 1x upload at scale).
+  // Default NEAREST: the 06.7 gate (box downsample against 1x, 25 dB on the synthetic capture) prefers the exact
+  // block; GT4_HW_SCALED_REFRESH=linear turns the smoothing on for the owner's A/B.
+  bool scaledRefreshLinear = false;
   void record_scaled_draws(bool barrierBetween) {
     if (!scaled() || scaledDraws.empty()) return;
     if (scaledPaused) {
@@ -295,8 +302,8 @@ struct GpuDrawer::Impl {
       std::memcpy(push, sizes, sizeof(sizes));
       push[2] = FloatToBits(static_cast<float>(scale));
       push[3] = FloatToBits(scaleOffset);
-      push[7] = (draw.scaledTexture ? scale : 1u) |
-                (scaledLinearFilter ? 0x80000000u : 0u);  // IN-374 / IN-384: tex_scale + the forced-linear bit
+      push[7] = (draw.scaledTexture ? scale : 1u) | (scaledLinearFilter ? 0x80000000u : 0u) |
+                (ditherFine ? 0x40000000u : 0u);  // IN-374 / IN-384: tex_scale, forced-linear and dither-fine bits
       if (!pushed || std::memcmp(lastPush, push, sizeof(push)) != 0) {
         gt4_hwd_vkCmdPushConstants(cmd, pipelineLayout, kGraphicsPushStages, 0, kPushBytes, push);
         std::memcpy(lastPush, push, sizeof(push));
@@ -342,7 +349,10 @@ struct GpuDrawer::Impl {
     boundComputeSet = upsampleSets[set];
     const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
     const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
-    const std::uint32_t push[5] = {static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height, scale};
+    // IN-384 follow-up: bilinear for the colour slots (the reference's default for a 1x upload into a scaled target),
+    // nearest for the depth slots (their words are compared, not shown).
+    const std::uint32_t push[6] = {static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height, scale,
+                                   depthSlot ? 0u : (scaledRefreshLinear ? 1u : 0u)};
     gt4_hwd_vkCmdPushConstants(cmd, upsampleLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     recorded_work();
     gt4_hwd_vkCmdDispatch(cmd, (width * scale + 7) / 8, (height * scale + 7) / 8, 1);
@@ -3597,6 +3607,10 @@ void GpuDrawer::SetScale(std::uint32_t scale, float scaleOffset) {
   impl_->scaleOffset = scaleOffset;
   const char *filter = std::getenv("GT4_HW_SCALED_FILTER");
   impl_->scaledLinearFilter = filter != nullptr && std::strcmp(filter, "linear") == 0;
+  const char *dither = std::getenv("GT4_HW_DITHER");
+  impl_->ditherFine = dither == nullptr || std::strcmp(dither, "native") != 0;
+  const char *refresh = std::getenv("GT4_HW_SCALED_REFRESH");
+  impl_->scaledRefreshLinear = refresh != nullptr && std::strcmp(refresh, "linear") == 0;
 }
 
 std::uint32_t GpuDrawer::Scale() const { return impl_->scale; }

@@ -1,0 +1,527 @@
+# Q — Reference renderer comparison (TASK-026 specification team, for TASK-027)
+
+Behavioural comparison of the reference emulator's GS renderer (PCSX2/GSdx, read-only) with CoreGS 2.0 as it stands
+on `task/027-coregs2` at IN-384, written for the implementer of PARITY-PLAN sections 3 and 10.
+
+**Status of this document and clean-room rules.**
+
+- Written by the TASK-026 specification team, which is allowed to read the reference sources. The implementation
+  agent is not, and must not open them, the `gt4recomp-gs` fork or any `private/tooling/pcsx2-*` tree (decision 0070).
+- This file contains **no source code, no pseudocode of their functions and no identifiers from their sources**. It
+  describes behaviour, rules, formulas, invariants and edge cases in prose. Every number is a real constant from the
+  reference or from our own documents.
+- Read it as evidence about *what the reference does*, never as code to port. Where the reference's behaviour comes
+  from an option or a per-game database entry, the entry is described, not named.
+- Method: read-only study of the pinned reference tree, its shaders, its configuration defaults and its GT4
+  per-game entry. Our side was read from `docs/hw-renderer-spec` (06, 13, PARITY-PLAN, IN-371..IN-384) and from
+  `native/hw_gs/writeback/hw_gs_writeback_gpu.cpp`, `native/hw_gs/writeback/hw_gs_writeback.cpp` and the shaders named
+  in the brief. Nothing was built, run or measured for this document; no reference log or dump was opened.
+
+**Labels.** *Confirmed* = seen in the reference source, its shaders or its configuration, or in our own source.
+*High confidence* = follows from two or more confirmed facts with no plausible alternative. *Hypothesis* = a
+plausible mechanism; the falsification test is given. *Unknown* = not determined.
+
+---
+
+## 0. The structural difference that explains most of the rest
+
+**Confirmed: the reference never keeps an exact 1x image.** At an internal resolution above 1x it rasterises every
+target once, at the scale, into a real colour attachment (8 bits per channel) and a real depth attachment. There is
+no second, exact copy of the frame in GS words; the scaled image *is* the frame. A "1x image" only exists when the
+internal resolution is 1x, which is a different render of the same scene, not a downsample of the scaled one.
+
+Consequences that matter for every topic below:
+
+| | Reference | CoreGS 2.0 today |
+|---|---|---|
+| Authority | the scaled attachment | the 1x GS words (`frames`/`depths`), the scaled image is derived |
+| Draws per frame | one | two (1x exact + scaled), the scaled one skippable (IN-382) |
+| Intermediates (tone, channel shuffle, brightness) | done at scale, in place, on the scaled target | done at 1x for memory exactness, then the scaled image is rebuilt (IN-379 carry) |
+| Textures that come from a target | sampled from the scaled target, at scale | sampled at scale only when the source is a resident slot (IN-374); otherwise decoded from the GLM at 1x |
+| Feedback fallbacks | none: there is nothing to fall back to | per sub-pixel fallback to the 1x word (IN-377 shadow check, IN-379 carry check) |
+
+The owner's artifacts split exactly along this line: everything that looks like "1x content inside a 6x frame"
+(lattice, dashes, checkerboard, ghost) comes from the right-hand column, and the reference cannot produce it because
+it has no 1x authority to fall back to. That is not an argument for dropping the 1x authority (it is a project
+requirement, and memory exactness is the reason TASK-027 exists); it is an argument for making the *scaled* result
+independent of per-pixel validity tests, which is what the reference's architecture gives for free.
+
+---
+
+## 1. Sub-pixel alignment when upscaling
+
+### What the reference does
+
+**Confirmed.** At scale s > 1 the reference has exactly two families of vertex mapping, chosen per game (and, inside
+the first family, per target):
+
+1. **Scaled family** (the default for most games): the vertex is placed at `s·P + 0.5` output pixels, where P is the
+   GS position in native pixels. The 0.5 means "the centre of the first sub-pixel of native pixel P". A per-game
+   multiplier may enlarge that half-pixel term to `0.5·m` with `m = s + 0.2` (s even), `s + 0.3` (s ≡ 1 mod 4, e.g.
+   1, 5) or `s + 0.1` (otherwise, e.g. 3, 7).
+2. **Native family**: the geometry is expressed in native units and then magnified, which places the vertex at
+   `s·P + s/2` — the **centre of block P**. Every edge lands on a native pixel boundary, so a primitive that starts
+   exactly on native edge 0 leaves the first `floor(s/2)` sub-pixel rows and columns undrawn.
+
+**Confirmed: GT4 uses the native family.** The GT4 entry of the reference's per-game database selects its
+native-alignment half-pixel mode (one of five modes besides "off"), with the comment that it fixes edge shadows and
+depth bleed at the edges. That is the same entry our spec 06.3 quotes as the provenance of our `native` default.
+
+**Confirmed, and identical to our spec:** the two compensations that the native family needs are the ones we already
+implement.
+
+- Box downsample of a scaled target to 1x: the average of the s x s block, with the read origin clamped to `max(out·s,
+  s)` — i.e. the first s sub-pixels are skipped because they were never drawn. This is exactly 06.7.
+- Region-clamp margins when sampling a scaled source in this mode: `(1, 1, 0.1, 0.1) + 0.1·s` texels — exactly the
+  `a = 1 + 0.1·s`, `b = 0.1` of 06.3.
+
+**Confirmed: sampling uses half a *scaled* texel.** The bilinear offset the reference subtracts from the texture
+coordinate is `-0.5` divided by the sampled texture's *scaled* size, i.e. half a sub-texel, the same convention as our
+`(U·s) − 8` in `hw_pixel_uber.frag` (`sample_texture_scaled`). There is **no** texture-coordinate realignment for GT4:
+the realignment code paths belong to the other half-pixel modes, and the native mode does not use them.
+
+**Confirmed: the reference has no box-downsample identity to satisfy.** It never renders a 1x image at scale, so
+"does a box downsample reproduce 1x" is not a property it maintains. When it *does* need a 1x copy of a scaled target
+(palette sources, 1x destinations, CPU-side reads) it produces one with the box filter above, which is the defined
+approximation, not an equality.
+
+### What CoreGS 2.0 does today
+
+`hw_vertex.vert` maps `gpu = scale·P + 0.5·scale_offset − 1/320`, with `scale_offset = 1` at 1x and `= s` in native
+mode; `record_scaled_draws` moves the native scissor to `native·s + floor(s/2)`; `hw_display_compose_scaled.comp`
+clamps its read to `undrawn = s/2`; `hw_scale_upsample.comp` refreshes nearest; `sample_texture_scaled` uses half a
+scaled texel. So for GT4 we are on the same mapping as the reference, formula for formula.
+
+### The difference
+
+**Confirmed: there is none in the geometry.** Our `native` (default) equals the reference's native family; our `off`
+equals its scaled family; our `normal` equals its scaled family with the multiplier. The remaining differences in
+this area are not geometric:
+
+- the reference filters the final image at present time (section 6), ours presents the internal image (IN-375 box
+  steps plus one linear blit);
+- the reference reads a scaled target for the whole display rectangle, ours selects a source per sub-pixel
+  (section 3 and 7);
+- the reference has no 1x layer to sample (section 0).
+
+### Which artifact it could explain
+
+**None of them, by itself.** This is the useful part of the answer: the half-pixel convention is not a suspect, which
+agrees with the third measurement in PARITY-PLAN section 10 (shift = s gives 27.4-28.0 dB box PSNR against our own
+1x, shift = 1 gives 21.7-22.0 dB). The 6-pixel lattice is not a vertex-alignment artifact. If someone re-opens this
+question, the falsifying observation would be a *whole-image* half-native-pixel shift between our 6x dump and the
+reference's 6x screenshot of the same frame — which the native family in both renderers rules out.
+
+---
+
+## 2. Dithering at scale
+
+### What the reference does
+
+**Confirmed.** Dither is a per-fragment add of the game's 4x4 matrix value, in the pixel shader, with three
+preconditions: the game's dither enable bit is on, the destination is a 16-bit target, and the matrix is not all
+zero.
+
+**Confirmed: the index has two modes and the default is per *output* pixel.**
+
+- one mode divides the fragment coordinate by the render target's scale before indexing, so each matrix cell covers
+  `s x s` output pixels (the "per native pixel" pattern, the one our spec calls `native`);
+- the other indexes with the raw fragment coordinate, so the pattern is 4x4 *output* pixels whatever the scale (the
+  one our spec calls `fine`);
+- a third setting forces 32-bit output and disables the dither;
+- the shipped default is the **raw fragment coordinate**, i.e. the fine pattern.
+
+**Confirmed: the dither is added after the shader-side blend, with an alpha compensation.** When the blend is done by
+the hardware blend unit (which runs after the fragment shader), the dither value is divided by the source alpha so
+that, after multiplication by that alpha, the visible dither amount is the one the GS would have added after blending.
+So the reference approximates the GS's post-blend dither instead of computing it exactly.
+
+**Confirmed: upscaling does not disable the dither.** The reference keeps it at every scale and only changes the space
+the matrix is indexed in (and, in the "force 32-bit" setting, the output precision). There is no scale-dependent
+switch that turns it off, and no per-target exception.
+
+### What CoreGS 2.0 does today
+
+`hw_pixel_core.glsl` (`hw_process_pixel`, `hw_dither_entry`) adds the matrix value **after** the exact integer blend,
+which is the GS's own order, and indexes it with `floor(gl_FragCoord)/s` — the native pixel — unconditionally
+(`hw_pixel_uber.frag`, `f.x = pixel.x / pixel_scale`). `GT4_HW_DITHER=native|fine|off` is parsed in
+`hw_gs_options.cpp` but **never reaches the GPU**: a grep of the drawer and the shader shows the only dither input is
+the game's enable bit. So `fine` and `off` are documented but not implemented.
+
+### The difference
+
+| | Reference (default) | CoreGS 2.0 |
+|---|---|---|
+| Cell size at 6x | 4x4 **output** pixels | 4x4 **native** pixels = 24x24 output pixels |
+| Appearance on a flat gradient | fine noise | one flat 6x6 tile per native pixel, with a 4-native-pixel modulation |
+| Order | after the shader blend, alpha-compensated before a hardware blend | after the exact integer blend (GS order) |
+| 32-bit targets | dither off (16-bit only) | dither off (`format == CT16` only) |
+| On a 480i field | 4x8 output pixels after the 2x field stretch | 6x**12** output pixels after the 2x field stretch |
+
+### Which artifact it could explain
+
+**High confidence: the 6x12 cell grid on flat backgrounds (owner test 11, the GT Mode map, the "Info" dialog).**
+The measured period is one native pixel horizontally and *two* native rows vertically. Two native rows is exactly what
+a 480i field stretch does to one native row (224 rows shown as 448), and one native pixel is exactly one dither cell
+in our mode. So "6 wide x 12 tall cells" = one 6x6 native dither cell, doubled vertically by the field. The reference,
+on the same scene, re-dithers per output pixel and shows a 4x4 (then 4x8) pattern instead — no tile grid.
+
+Falsification: force the shader to index the matrix with the raw fragment coordinate (the reference's default) and
+re-dump the same menu frame at 6x. The 6x12 lattice must disappear and the flat area must turn into fine noise. If the
+lattice survives, the cause is a magnified 1x *texture* (then look at the source format and filter of that draw, not
+at dither), and the second test is to dump the draw's target format: if it is CT32, dither is off in both renderers
+and the lattice is not dither at all.
+
+**Also relevant:** the owner compares window screenshots, and the reference's present filter (section 6) further
+smooths a 4x8 dither. Our dumps are pre-present. A like-for-like comparison needs both images before the present
+filter, or the same filter on both.
+
+---
+
+## 3. Interlaced frames at scale
+
+### What the reference does
+
+**Confirmed.** The order is: merge the display circuits into a full-size image at the scale, then deinterlace that
+merged image, then post-filters, then present.
+
+- **Field offset**: when the frame is really interlaced, the game uses half-height fields (`FFMD = 1`), and the merge
+  is not a bob, the destination rectangle of each circuit is shifted down by `scale.y · (field XOR parity)` — one
+  *native* row, i.e. s output rows. A setting can disable it; it is enabled by default. This is the same rule and the
+  same magnitude as our 13.3 step 3 / IN-381.
+- **Field stretching**: the read rectangle of a half-height field is half the display height, and the merge stretches
+  it to the full display height. So each source row becomes **two** native rows in the merged image (line doubling),
+  before any deinterlace. The stretch filter is nearest, because the option that would make it bilinear is off by
+  default.
+- **Deinterlace on the upscaled image**: every mode works on the merged image, whose size is the display size times
+  the scale, and a "row" in the algorithm is **one output row**, not one native row:
+  - weave: writes only the output rows whose parity matches the field, keeps the other output rows from the previous
+    frame (so at 6x it keeps 1344 of 2688 rows, and the comb period is 2 output rows, i.e. it interleaves the two
+    fields *inside* each doubled source row);
+  - bob: shifts the whole merged image down by `scale·(1 − field)` output rows (bilinear);
+  - blend: weave, then a vertical 1/4, 1/2, 1/4 filter;
+  - motion-adaptive (its default for GT4, because `FFMD = 1`): a two-bank history buffer at twice the merged height,
+    three-line comparison above/at/below with a per-channel threshold of 0.08 (normalised), weave when static, average
+    of the line above and below when moving; field rows and the first/last row pass through.
+- **Presentation**: the interlaced image is not filtered by FXAA unless the user asks; the present filter of
+  section 6 applies to it as to any other image.
+
+**Confirmed: there is no 1x deinterlace at scale.** The history images, the weave buffer and the adaptive buffer are
+all allocated at the merged (upscaled) size.
+
+### What CoreGS 2.0 does today
+
+`hw_display_compose_scaled.comp` reads the field's read rectangle (224 rows) and stretches it over the placement (448
+rows) with `ny·srch/h` — a nearest line doubling at *sub-pixel* resolution, i.e. each source row becomes 12 identical
+output rows at 6x, and the sub-pixel detail inside the row is kept. `hw_deinterlace_scaled.comp` then applies every
+13.4 rule **per native row** (`native_row = gid.y / scale`): the field's rows are the native rows of the field's
+parity, the line above/below are s output rows away, and the edges are the first and last native rows. The history is
+four fields, tracked in `Renderer::Impl::DeinterlaceGpu`.
+
+### The difference
+
+| | Reference | CoreGS 2.0 |
+|---|---|---|
+| Where the rules run | on the merged upscaled image | on the merged upscaled image |
+| What a "row" is | one **output** row | one **native** row (s output rows) |
+| Comb period at 6x | 2 output rows | 2 native rows = 12 output rows |
+| Field offset | one native row (s output rows) | one native row (IN-381) — same |
+| Line doubling | nearest, before the deinterlace | nearest at sub-pixel resolution, before the deinterlace — same |
+| A one-line difference between the two fields | a half-block comb (a slight blur) | a **full native row ghost** (6 output rows at 6x) |
+| History | 2 banks x 2 fields, one buffer at twice the height | 4 fields + woven image + last output, separate images |
+
+### Which artifacts it could explain
+
+**High confidence: the ghosted second copy of a dialog's text (480i menus).** If the two fields' text differs by one
+line — which is what a half-line XYOFFSET difference between fields produces when the offset and the weave parity do
+not cancel exactly — then our per-native-row weave shows the two copies one full native row apart, which at 6x is a
+6-pixel ghost of high-contrast text, exactly "a second copy". The reference, weaving at output-row granularity,
+splits the same mismatch inside each doubled source row, so it degrades to a half-block comb that reads as a slight
+blur instead of a second copy.
+
+Falsification, in order: (a) on the same menu frame, force `GT4_HW_DEINTERLACE=bob`; if the ghost becomes a vertical
+smear of the whole text block, the two fields do carry different text and the weave is what duplicates it; (b) dump
+the two consecutive merge images of that frame and compare the text rows; (c) if the two fields are identical, the
+ghost is not the deinterlacer and the suspect moves to the compose's per-sub-pixel source selection (section 7).
+
+**High confidence: the "jitter" on the 3D sprite (480i).** A one-native-row alternation between fields is a 6-pixel
+vertical jump at 6x in our weave; in the reference the same alternation is 2 output rows, i.e. sub-native, and reads as
+a shimmer. Same falsification as above.
+
+**Hypothesis: the thin vertical line.** A line one native pixel wide is the width of one *native* column, which is the
+width of our per-sub-pixel fallbacks (a column where the shadow check or the carry check fails shows the 1x word, and
+the 1x word is one native pixel). The reference cannot produce this because it has no fallback. The falsification is
+in section 7.
+
+---
+
+## 4. The fast-path classification (feeds Part B)
+
+### What the reference does
+
+**Confirmed: the reference has exactly one uber pixel shader** with a large permutation space, and one vertex shader.
+Texture format (indexed 4/8-bit, 16-bit with TEXA expansion, 24-bit, depth-as-texture, palette), wrap mode (including
+region repeat and region clamp), texture function, fog, alpha test method, colour write mask and dither mode are all
+*shader permutations*, not different paths. They cost shader variants, never an extra pass.
+
+**Confirmed: what makes the reference leave its single-pass hardware raster is *feedback* — reading the destination
+or the depth buffer — and precision it cannot express in the fixed-function pipeline.** Concretely:
+
+| GS state | Reference behaviour | Cost class |
+|---|---|---|
+| Blend the API can express: `(Cs − Cd)·As + Cd`, `(Cs − 0)·As + Cd`, `(Cs − 0)·FIX + Cd`, opaque, additive | hardware blend unit, factors from the API; `Ad` is replaced by the constant `Af` when the target's alpha range is constant, and by 1.0 for a 24-bit target | fast |
+| Accumulation (`Cs·As + Cd`, `Cs·Af + Cd`) | shader multiplies the source by the alpha, hardware blend `ONE/ONE` | fast |
+| Blend that needs the destination *colour* per pixel (`Cs·Ad`, `(Cs − Cd)·Ad` with a varying `Ad`, subtract with a varying factor) | software blend: the shader reads the target (texture barrier, framebuffer fetch or ROV); without barriers, a two-pass blend when the primitives do not overlap | slow |
+| Alpha test, failure action KEEP | `discard` in the shader | fast |
+| Alpha test, failure action FB_ONLY / ZB_ONLY / RGB_ONLY | feedback of the target and/or the depth buffer, or two passes; the reference first simplifies the action away when it cannot matter (no colour write, no depth write, no alpha write) | slow |
+| DATE | an 8-bit stencil in the depth attachment, or an alpha test plus a barrier; a primitive-id variant needs a full barrier | slow-ish |
+| PABE | the shader decides the blend per pixel from the source alpha, reading the target | slow |
+| COLCLAMP = 0 (colour wrap) | a **separate 16-bit-per-channel UNORM target** at the same size, plus convert/resolve passes around the draws that need it (9 bits of headroom for the wrap) | very slow |
+| FBMSK all ones or all zeros per byte channel | the API's colour write mask | fast |
+| FBMSK partial inside a byte | shader read-modify-write of the target with a barrier | slow |
+| Texture format, AEM, palette, depth-as-texture | shader permutation | fast |
+| Wrap modes incl. REGION_REPEAT / REGION_CLAMP | shader arithmetic on integer texel coordinates | fast |
+| Z16 / Z24 / Z32 | one 32-bit float depth attachment for all three; the shader clamps the incoming Z to the format's maximum, and floors it when the target's precision requires it | fast |
+| Depth target whose page offset differs from the colour target's | a temporary depth buffer at the colour target's size and scale, with copies around the draw | slow |
+| Texture = the target being drawn (feedback) | sample the same texture when the coordinates match, else a copy of the region | depends |
+| GT4's RGB channel shuffle + ramp palette (the tone/brightness sequence) | a per-game database entry **replaces it with one HLE draw at the source's scale**, reading the channel and the palette per output pixel | fast (and it is the same idea as our IN-379/IN-383) |
+
+**Confirmed: the reference also has a CPU rasteriser for tiny sprites**, chosen for speed, not for exactness. It is
+not a fallback for unsupported state.
+
+### What CoreGS 2.0 does today
+
+`record_scaled_draws` runs the exact uber shader for every sample of every scaled draw: colour and depth are
+read-modify-written in `R32_UINT` storage images under the fragment interlock, textures are fetched with `imageLoad`,
+and there are no attachments. The classification of PARITY-PLAN section 3 is not implemented.
+
+### The difference, and what to change in Part B
+
+The reference's split is **"does the fragment need the destination?"**, not "is the state unusual?". Two rows of our
+planned classification are therefore stricter than the reference and cost us draws for no fidelity reason:
+
+- **Wrap modes.** `REGION_REPEAT`, `REGION_CLAMP` and the 4-bit fix do not need the destination. A hardware sampler
+  cannot express them, but a shader can (the reference does it in the fragment shader with integer texel arithmetic,
+  on top of a clamp-to-edge sampler). Our plan sends them to the exact path; they could stay fast with a shader-side
+  wrap, at the price of a sampler that must be clamp-to-edge and a coordinate that must be computed, not fetched.
+- **CT16 targets.** The reference keeps every colour target in 8 bits per channel and quantises to 5 bits in the
+  shader, so a 16-bit target is the same path as a 32-bit one. We cannot do that without giving up the exact packed
+  word, which is the authority. This one is a genuine constraint of our architecture, not an oversight: CT16 targets
+  must stay exact until (if ever) we give them an attachment representation of their own.
+
+The rows where our plan and the reference agree, and where the exact path is right: DATE, PABE, AFAIL ≠ KEEP,
+COLCLAMP = 0, a non-byte-aligned FBMSK, Z16/Z24 depth *writes* (our packed word merges the upper byte; the reference
+has no packed word), and anything that reads depth in the shader.
+
+One more thing the reference does that we should consider for Part B: **it renders the alpha test as a discard even
+when the action is KEEP and the comparison needs a shader-side clamp of AREF** (it corrects the reference value when
+the target format quantises alpha). Our plan already does the discard; the AREF correction for CT16 is the part worth
+copying, because it is the difference between "the same pixels pass" and "almost the same pixels pass".
+
+---
+
+## 5. Depth at scale
+
+### What the reference does
+
+**Confirmed.**
+
+- Every depth target is a **real depth attachment** at `ceil(unscaled · s)` per axis, in a 32-bit float format (with
+  an 8-bit stencil when DATE needs one). Depth test and depth write are the fixed-function ones, so **early-Z works**,
+  and the driver's depth compression applies.
+- Z16 and Z24 are *not* separate formats: the attachment is always 32-bit float, and the shader clamps the incoming Z
+  to the format's maximum (`0xFFFFFFFF >> (fmt·8)`), floors it when the target's precision requires it (non-flat Z
+  with a depth write, or a "greater or equal" read), and lets the hardware compare the resulting float. A 24-bit
+  target is therefore stored with float32 precision (24 mantissa bits), not with the GS's exact 24-bit word.
+- Depth is turned into a colour-like texture only when the game samples it, and then as `R32_UINT` for 24/32-bit and
+  `R16` for 16-bit, with the sampling coordinate multiplied by the target's scale.
+- A depth target whose offset relative to the colour target differs from the frame's uses a **temporary depth buffer**
+  at the colour target's size and scale, copied in and out around the draw. That is the only depth "conversion" the
+  reference has.
+- Feedback depth (software blending that needs the depth value, or ROV) uses a depth read in the shader, which is a
+  separate feature and off unless the state needs it.
+
+### What CoreGS 2.0 does today
+
+The scaled depth is an `R32_UINT` storage image (`scaledDepths`), read-modify-written by `hw_pixel_uber.frag` /
+`hw_pixel_core.glsl` under the interlock, with the exact GS words. There is no depth attachment, so there is no
+early-Z and no compression, and the plan's measurement (dropping the interlock saved only 0.5-1 ms of 8 ms) is
+consistent with the cost being the per-sample shading, not the ordering.
+
+### The difference
+
+**Confirmed:** the reference has **one** depth representation and it is a hardware attachment; we will have **two**
+(the exact words plus a derived `D32_SFLOAT` twin) and must keep them in step. Three consequences for the plan:
+
+1. **The r32ui → D32 conversion is lossy in the same way the reference is lossy.** A `uint32` depth word has 32 bits;
+   a `float32` has 24 mantissa bits. Converting on the way in keeps the top 24 bits, which is exactly what the
+   reference stores. So the twin is *not* less faithful than the reference; it is less faithful than our own 1x path,
+   which is why the plan's rule "never convert D32 back to r32ui" is right: keep the words as the authority and treat
+   the twin as a test-only derivative.
+2. **The mirror write is our invention and is the risky part.** The reference never writes two depth representations.
+   Our fast shader must write the depth word it computed into the storage image *and* let the attachment do the test,
+   and the two must agree fragment for fragment. That only holds if the depth test is guaranteed to run **before** the
+   fragment shader: with the early-fragment-test declaration the attachment rejects a fragment before the shader runs,
+   so a rejected fragment never writes the mirror, and an accepted one writes the same word the attachment stores at
+   the end of the fragment. Without that guarantee (the default in Vulkan) the implementation may run the shader
+   first, and a fragment the attachment then rejects has already written the mirror — the two representations
+   diverge, silently, only on hidden geometry. The plan should state this as a requirement of step 3, not as an
+   optimisation, and gate it with a fixture that draws overlapping triangles with a depth write and compares the
+   r32ui image against the exact path bit for bit.
+3. **Z24 writes on the fast path.** The plan's rule (Z24 keeps the exact path) is stricter than the reference, which
+   stores Z24 in float and never merges bytes. We need the merge because the packed word is the authority. Keep the
+   rule.
+
+### Which artifact it could explain
+
+**None of the owner's artifacts.** Depth is not presented; a depth error shows up as wrong occlusion, which the owner
+has not reported. The one place it could leak into the picture is the tone carry and the display shadow, which use
+depth writes on the shown buffer (IN-377), and those are 1x-word mechanisms, not attachment mechanisms.
+
+---
+
+## 6. Upscaling filters
+
+### What the reference does
+
+**Confirmed.** There are three separate filter decisions, and only one of them is "the upscaling filter" in the sense
+the owner means.
+
+1. **Texture filtering** (how a texture is sampled inside a draw): four settings — nearest; forced bilinear; **the
+   game's own filter bits (the default)**; forced bilinear except on sprites. Plus a trilinear/mipmap setting
+   (automatic, off, game, forced) and anisotropic filtering. So by default the reference does **not** force bilinear
+   on a texture the game samples nearest. There is an option to do it, and a variant that spares sprites because
+   forcing bilinear on sprites is what produces seams at sprite edges when upscaling.
+2. **Uploads into an upscaled target**: when the EE writes into a region that a scaled target covers, the reference
+   blits the 1x upload into the scaled target with **bilinear** by default (nearest is an option), and always
+   bilinear for depth. This is a *forced* filter that has nothing to do with the game's filter bits, and it is on by
+   default.
+3. **Presentation** (the final image to the window): three settings — off (nearest), bilinear smooth (the shipped
+   default), bilinear sharp (the UI default). The sharp mode first pre-scales the image by an integer factor with
+   nearest until it covers the window, then samples bilinearly, which keeps text crisp; the smooth mode is a plain
+   bilinear sample of the whole image into the destination rectangle. Optional CAS (sharpen only, or sharpen and
+   resize) and FXAA sit before it.
+
+**Confirmed: the reference's present filter is the main reason a 6x internal image does not look like blocks.** A
+bilinear sample of a 3840x2688 image into a 2560x1440 window averages about 1.5 x 1.9 source pixels per output pixel;
+a 6-pixel lattice survives only as a faint modulation. The sharp mode preserves more of it, by design.
+
+### What CoreGS 2.0 does today
+
+- Textures: `sample_texture` / `sample_texture_scaled` honour the game's linear bit; `GT4_HW_SCALED_FILTER=linear`
+  forces bilinear on 1x textures in the scaled pass (the owner's A/B, no visible change, as measured). `GT4_HW_FILTER`
+  exists in `hw_gs_options.cpp`.
+- Uploads into a scaled target: `refresh_scaled` / `hw_scale_upsample.comp` are **nearest**, always.
+- Present: IN-375 reduces a frame larger than the presentation rectangle by 2x2 box steps and one linear blit; spec
+  13.6 also defines nearest and "sharp bilinear" (`GT4_HW_PRESENT_FILTER`). FXAA (IN-376) is edge-only.
+
+### The difference
+
+| | Reference | CoreGS 2.0 |
+|---|---|---|
+| Texture filter | game's bits by default; forced-bilinear options | game's bits; forced-linear option |
+| 1x upload into a scaled target | **bilinear by default** | **nearest** |
+| Present filter | bilinear smooth (default) / sharp / nearest, plus CAS | box steps + one linear blit; nearest and sharp exist |
+| Present default at 6x | smooth, i.e. the lattice is filtered | linear blit after box steps (similar), but the dumps are pre-present |
+
+### Which artifact it could explain
+
+- **The 6x12 lattice (A1), partially.** Even with our dither unchanged, the reference's present filter would soften
+  it in a window screenshot. This is why the owner's comparison must be made before the present filter, or with the
+  same filter on both sides. Note the plan's own finding that `GT4_HW_SCALED_FILTER=linear` changed the picture by a
+  mean absolute difference of 0.44 and did **not** remove the grid: that rules out the *texture* filter and leaves
+  dither (section 2) and the present filter.
+- **The map's white dashed lines and the 6-pixel checkerboard (A6, A7), partly.** If the map layer reaches the frame
+  through an EE upload into a scaled target, the reference smooths it with bilinear and we do not. Falsification: find
+  the draw that produces that layer in the replay and check whether it is a dirty upload (`UploadIntoSlot`) or a
+  GLM decode. If it is a decode, the filter is not the cause and section 7 is.
+
+---
+
+## 7. The two mechanisms that have no reference counterpart
+
+These are the two places where our architecture can produce an artifact the reference cannot, and they are the
+remaining unexplained owner artifacts.
+
+**7.1 Per-sub-pixel source selection in the compose.** `hw_display_compose_scaled.comp` chooses, for *every sub-pixel*,
+between the slot's scaled image, a display shadow (with a two-word validity check) and the GLM at 1x. A sub-pixel that
+fails a check shows the 1x word. The reference has one source per circuit (the scaled target) and no validity test.
+
+- Artifacts: a one-native-pixel vertical line (A2), a one-native-pixel column or row of 1x content, and any artifact
+  whose measured width is exactly one native pixel.
+- High confidence that this is the *class* of the line; the plan's own bisection already showed the line survives with
+  the tone carry off, which points at the shadow check or at a column the slot does not cover.
+- Falsification: add the counter the plan describes (per circuit, how many sub-pixels came from each source, with a
+  per-column and per-row histogram) and check whether the measured column or row is the one with the fallback. Then
+  the fix is a policy choice, not a bug fix: fall back per native pixel, per block row, or per frame. Per native
+  pixel turns a 1-pixel line into a 6-pixel block (aligned with the lattice, arguably worse); per frame turns it into
+  a whole frame at 1x (the 0.8% of frames already seen, `Counters::gpuComposeSkips`). There is no option that matches
+  the reference, because the reference does not have the problem.
+
+**7.2 The tone carry.** `TrackToneRun` / `FinishToneRun` / `CarryTone` rebuild the scaled image of GT4's tone/brightness
+source from a per-channel table learned on the GPU, and fall back to the 1x word per sub-pixel where the table cannot
+explain the current word. The reference does the same sequence as **one HLE draw at the source's scale** (its GT4
+database entry), i.e. it applies the palette per output pixel on the scaled target and never produces a 1x
+intermediate.
+
+- Artifacts: the 6-row banding with the anomalous phase (A3), any per-native-row structure in the race, and the
+  "linha certa, linha preta" banding.
+- Confirmed by the plan's bisection that the banding tracks the carry; the mechanism is that a per-native-row (or
+  per-sub-pixel) decision is a 6-row structure at 6x, and the reference has no such decision.
+- Falsification / fix direction: the plan already tried a per-native-pixel version of the decision and the phases did
+  not move, which means the fallback is not the only mechanism. The next measurement should be the *learned table*
+  itself: dump the table (the kernel already exists) and check whether the band corresponds to a row range where the
+  table has an unseen value (interpolated) rather than a fallback. If the band is a table interpolation artifact, the
+  fix is a better table (more samples, or a per-row table), not a per-pixel decision.
+
+---
+
+## 8. Owner artifacts, ranked
+
+| # | Artifact | Most likely mechanism | Label | Test that settles it |
+|---|---|---|---|---|
+| A1 | 6-pixel lattice / 6x12 cells on flat backgrounds | our per-native-pixel dither, doubled by the field stretch | High confidence | dither index = raw fragment coordinate; re-dump |
+| A1b | same, if dither is off for that draw | 1x texture magnified nearest, or the missing present filter | Hypothesis | check the draw's target format; present with the reference's filter |
+| A2 | one-native-pixel vertical line | per-sub-pixel source selection in the compose | High confidence (class) | the per-source, per-column fallback counter |
+| A3 | 6-row banding, phase 5 | the tone carry (table or fallback) | Confirmed that it tracks the carry; mechanism Unknown | dump the learned table and the fallback mask |
+| A4 | ghosted second copy of dialog text | per-native-row weave against a one-line field difference | High confidence | force bob; compare the two fields' rows |
+| A5 | jitter on a 3D sprite | same as A4 | High confidence | same |
+| A6 | map's dashed lines | 1x layer (GLM decode) sampled at 1x | Confirmed as a class (IN-374 limitation) | find the draw; if it is a decode, only a scaled decode fixes it |
+| A7 | 6-pixel checkerboard on a full-screen region | same as A6 | Confirmed as a class | same |
+| A8 | lattice on the car's rear window and hood | a texture taken from a slot but sampled from the wrong origin, or a 1x layer | Hypothesis (IN-384 follow-up fixed one origin bug) | replay the frame and dump the scaled texel image of that draw |
+| A9 | 0.8% of frames presented at 1x | `GpuComposeApplies` declining, or the compose failing | Unknown (instrumented) | the `compose_skips` counter on the owner's run |
+
+---
+
+## 9. What to copy, what not to copy
+
+**Copy (behaviour, not code):**
+
+1. Dither per output pixel as the *default at scale*, with per-native-pixel as the faithful option. This is a
+   one-line change in `hw_pixel_uber.frag` and it is the highest-value item in this document. Record it as a new IN
+   note with the owner approval of 2026-10-23 (presentation-only tolerance, same rule as Part B).
+2. Bilinear for 1x uploads into a scaled target, at least as an option, and always for depth. It is what the
+   reference does by default and it removes the block edges of EE-uploaded content (A6/A7 class).
+3. A present filter choice that matches the reference's three modes, and a comparison protocol that dumps the
+   internal image on both sides.
+4. The Part B classification rule "feedback decides", with wrap modes and texture formats staying on the fast path.
+
+**Do not copy:**
+
+1. The single-representation architecture (no 1x authority). It is incompatible with TASK-027's memory exactness and
+   with every 1x gate.
+2. The 16-bit target as 8 bits per channel with a shader-side mask. Our packed word is the authority.
+3. The per-game database hacks (the tone HLE is the one that matters for GT4, and we already have our own).
+4. The reference's depth precision (float32 for Z24/Z32). Our exact words are stricter; keep them, and treat the D32
+   twin as a test-only derivative.
+
+---
+
+## 10. Limits of this document
+
+- No measurement was taken. Every claim about *our* current picture is quoted from PARITY-PLAN section 10 or from the
+  code, not re-measured.
+- The reference's per-game GT4 entry is one data point in a database that changes upstream; if a future reference
+  build changes GT4's half-pixel or skip entries, section 1's "we already match" conclusion must be rechecked.
+- The tone-carry mechanism (section 7.2) is the least understood item here and the only one where the reference gives
+  no usable rule, because it does not have the problem.

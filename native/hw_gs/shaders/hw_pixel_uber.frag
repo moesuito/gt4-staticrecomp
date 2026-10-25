@@ -99,7 +99,12 @@ layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D hw_texels;
 
 // IN-384 follow-up: set from the top bit of the tex_scale push word (the GPU drawer's GT4_HW_SCALED_FILTER=linear).
 bool g_force_linear = false;
-uint g_tex_scale = 1u;  // pc.tex_scale without the filter bit
+uint g_tex_scale = 1u;  // pc.tex_scale without the filter/dither bits
+// IN-384 follow-up (Q-GSDX-COMPARISON section 2): the reference indexes the dither matrix with the raw fragment
+// coordinate (one cell = 4x4 OUTPUT pixels) and only offers the per-native-pixel pattern as an option; ours always
+// divided by the scale, so one cell covered s x s output pixels (24x24 at 6x, doubled vertically on a 480i field:
+// the owner's 6 x 12 lattice). Fine is the default at scale > 1; native stays available for fidelity checks.
+bool g_dither_fine = true;
 
 // The vertex stage's push constants (hw_vertex.vert), read here for the internal scale (IN-371): the native dither
 // mode of 06.5 indexes DIMX by the native pixel, so each dither cell covers s x s sub-pixels.
@@ -165,7 +170,7 @@ ivec4 fetch_texel_scaled(int x, int y, int s) {
 
 // The texture at s x s texels per native texel: the coordinate times s, the same 4-bit weights.
 ivec4 sample_texture_scaled(int uvs, int uvt, int s) {
-    if (state.tex_linear == 0u) {
+    if (state.tex_linear == 0u && !g_force_linear) {
         int x = wrap_scaled((uvs * s) >> 4, s, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
         int y = wrap_scaled((uvt * s) >> 4, s, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
         return fetch_texel_scaled(x, y, s);
@@ -223,7 +228,8 @@ void main() {
     ivec2 pixel = ivec2(floor(gl_FragCoord.xy));
     // IN-384 follow-up: the top bit of the tex_scale push word requests the forced linear filter for 1x textures.
     g_force_linear = (pc.tex_scale & 0x80000000u) != 0u;
-    g_tex_scale = pc.tex_scale & 0x7FFFFFFFu;
+    g_dither_fine = (pc.tex_scale & 0x40000000u) != 0u;
+    g_tex_scale = pc.tex_scale & 0x3FFFFFFFu;
 
     HwPixelState s;
     s.format = state.format;
@@ -281,10 +287,11 @@ void main() {
     }
 
     HwFragment f;
-    // Native pixel of the fragment for the dither index (06.5 native mode); at 1x the GPU pixel itself.
+    // Dither index. IN-384 follow-up: the reference's default at scale is the raw fragment coordinate (4x4 output
+    // pixels per cell); the 06.5 native mode (one cell per s x s block) is the optional one. At 1x both are identical.
     uint pixel_scale = max(uint(pc.scale + 0.5), 1u);
-    f.x = uint(pixel.x) / pixel_scale;
-    f.y = uint(pixel.y) / pixel_scale;
+    f.x = g_dither_fine ? uint(pixel.x) : uint(pixel.x) / pixel_scale;
+    f.y = g_dither_fine ? uint(pixel.y) : uint(pixel.y) / pixel_scale;
     f.colour = colour;
     f.z = uint(clamp(in_z, 0.0, 4294967040.0));
 

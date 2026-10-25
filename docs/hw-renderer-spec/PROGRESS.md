@@ -23,8 +23,28 @@ step; the same state goes to the ai-memory page `decisions/coregs2-implementatio
 | M10 GLM | Started: GLM, decode, swizzle, unswizzle, CLUT, merge and upload kernels (IN-347, IN-349..IN-351) | `hw_glm_decode`, `hw_glm_swizzle`, `hw_glm_unswizzle`, `hw_glm_clut`, `hw_glm_upload_merge`, `hw_glm_host_upload` |
 | M11, M13, M16, M18 | Pure references only (lod, replace) | lod, `hw_replace_*` CTest |
 
-## 2026-10-23 scaled images sized to their slot (IN-384, parity plan Part A)
+## 2026-10-24 reference comparison (IN-385): dither per output pixel, bilinear 1x uploads
 
+The TASK-026 specification team compared the reference renderer with CoreGS 2.0 (prose only, no reference code; see
+`Q-GSDX-COMPARISON.md`) and three presentation-only changes came out of it:
+
+- **Dither indexed per output pixel** (the reference's default at scale): our cell covered s x s output pixels, which
+  on a 480i field is the owner's 6 x 12 lattice on flat backgrounds. `GT4_HW_DITHER=fine` is now the default;
+  `native` restores the old cell. It only reaches CT16 targets, so the menus (CT32) were unchanged: on the 480p race
+  capture the modes differ on 38% of pixels by at most 8 levels and the presented mixed-block share rises
+  0.786 -> 0.915, with memory byte-identical on all 121 frames.
+- **`GT4_HW_SCALED_REFRESH=linear`** for bilinear 1x uploads into a scaled target (the reference's default; ours is
+  nearest). The default stays nearest because the 06.7 gate prefers the exact block (28.76 dB nearest against 23.55 dB
+  bilinear on the synthetic capture); it is an owner choice.
+- **`GT4_HW_SCALED_FILTER=linear`** now also covers textures sampled from a scaled source; it moves 4% of a 6x menu
+  frame, so it is not the menu grid either.
+- Confirmed by the comparison: our 06.3 half-pixel geometry already matches the reference formula for formula, and the
+  reference's slow path is decided by feedback only (DATE, PABE, AFAIL != KEEP, COLCLAMP 0, partial FBMSK), which
+  widens what Part B may keep on the fast path (wrap modes, texture formats).
+
+Gates: CTest 245/245 in both interlock modes, race480p memory identical, `--check-presented` 0 low-detail frames at 6x.
+
+## 2026-10-23 scaled images sized to their slot (IN-384, parity plan Part A)
 Part A of `PARITY-PLAN.md`, the memory half of the GSdx-parity work: every scaled presentation image now holds only
 its slot's real extent instead of a fixed 1024 x 1024 native square.
 
