@@ -260,6 +260,8 @@ void test_render_purity_diff_attribution() {
   probe.add_watched_span(race_obj + 0xCF50u, 0x20u, "hud_history_span");
   probe.add_watched_span(0x00620200u, 0x20u, "buf_toggle_span");
   probe.add_watched_span(dynamics_ptr + 0xF880u, 0x40u, "dynamics_sim_state");
+  probe.add_watched_span(0x00620000u, 0x40u, "dma_chain_span");
+  probe.add_watched_span(race_obj + 0x0DD8u, 0x30u, "render_pkt_ptrs");
 
   // Enter render (sets active_race_obj and takes snapshot)
   probe.on_render_enter(race_obj, ram.data(), ram.size());
@@ -274,14 +276,18 @@ void test_render_purity_diff_attribution() {
   std::uint32_t new_buf = 1;
   std::memcpy(ram.data() + 0x00620210u, &new_buf, sizeof new_buf);
 
+  std::uint32_t new_pkt = 0x0080E030;
+  std::memcpy(ram.data() + race_obj + 0x0DDCu, &new_pkt, sizeof new_pkt);
+
   // Run purity diff
   probe.diff_render_purity(ram.data(), ram.size(), /*is_idle=*/false);
 
   const auto &p1 = probe.stats().purity;
-  require(p1.mutated_words == 3, "3 legitimate words mutated");
+  require(p1.mutated_words == 4, "4 legitimate words mutated");
   require(p1.render_counter_mutations == 1, "1 render counter mutation attributed");
   require(p1.hud_history_mutations == 1, "1 hud history mutation attributed");
   require(p1.double_buffer_mutations == 1, "1 double buffer mutation attributed");
+  require(p1.render_packet_ptr_mutations == 1, "1 render packet ptr mutation attributed");
   require(p1.unattributed_mutations == 0, "0 unattributed mutations");
   require(p1.simulation_clean(), "simulation state is clean");
 
@@ -297,6 +303,18 @@ void test_render_purity_diff_attribution() {
   require(!probe.recent_mutations().empty(), "recent mutations list has recorded the fault");
   require(probe.recent_mutations().front().address == dynamics_ptr + 0xF884u, "exact fault address recorded");
   require(probe.recent_mutations().front().new_value == 0x1337, "exact fault value recorded");
+
+  // 3. Test idle pass: legitimate DMA swap at 0x00620020
+  std::uint32_t dma_chain_swap = 0x01E00000;
+  std::memcpy(ram.data() + 0x00620020u, &dma_chain_swap, sizeof dma_chain_swap);
+  probe.diff_render_purity(ram.data(), ram.size(), /*is_idle=*/true);
+  require(probe.stats().purity.dma_swap_mutations == 1, "1 dma safe swap attributed on idle");
+
+  // 4. Test idle pass: illegal mutation in simulation memory during idle MUST NOT be relabelled
+  std::uint32_t idle_sim_leak = 0xDEADBEEF;
+  std::memcpy(ram.data() + dynamics_ptr + 0xF888u, &idle_sim_leak, sizeof idle_sim_leak);
+  probe.diff_render_purity(ram.data(), ram.size(), /*is_idle=*/true);
+  require(probe.stats().purity.unattributed_mutations == 2, "idle simulation mutation is NOT relabelled and remains unattributed");
 }
 
 void test_report_formatting() {

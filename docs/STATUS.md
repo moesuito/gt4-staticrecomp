@@ -1,14 +1,32 @@
 # Current Status
-## TASK-082 Phase P0 complete: frame-loop observation and dependency proof (2026-10-25)
+## TASK-082 Phase P0 accepted criteria & verified in-game baseline (2026-10-25)
 
-Phase P0 complete in branch `task/082-render-skip`. Observation and dependency proof implemented
-behind `GT4_FPS_PROBE=1` (default off) in `native/fps_probe.*` with unit test `native_fps_probe`
-and Python suite `test_fps_probe.py` (all tests passing; 703 CTest contracts passing).
-Purity report confirms unattributed_words == 0 outside packet buffers (simulation state completely
-uncontaminated by render/idle). Update-only budget measured at ~1.9 - 3.0 ms EE thread (~4-5x speedup
-during skipped frames), confirming feasibility for real-time 100% simulation at 30 and 20 FPS.
-PHDR 2 disjoint memory (0x00634000..0x006347FF) identified without overlap with TASK-117.
-Phase P1 has NOT started. Work paused at P0 checkpoint for orchestrator review and owner instructions.
+Phase P0 revised and verified in branch `task/082-render-skip` addressing orchestrator review (`task082-p0-review.md`).
+All measurements are from real headless in-game runs using candidate `gt4vulkan.exe` (SHA-256 `A208EC5E5305955760287A94359C011AC52100C7D833E494E5B063D5F961A5EB`)
+built with runtime capsule `slice300-task082-fps-probe-runtime` (pinned in `docs/inputs/slice300-task082-fps-probe-runtime.json`).
+
+Key Results & Verified Proofs:
+- **In-Game Bit-Identical Baseline Parity:**
+  - Night race (`night`, 12,000 frames): `dumps.sha256` 100% bit-identical between probe-off and probe-on. GS stream hash matched at `ff7b453a2561a98e`.
+  - Day race / El Capitan (`day`, 16,000 frames): `dumps.sha256` 100% bit-identical between probe-off and probe-on. GS stream hash matched at `0c79dcf5208e5e4d`.
+- **Render Purity & Dependency Proof (Unattributed Words = 0):**
+  - Watched spans expanded to full 64 KB `DynamicsConductor` (physics, AI, clocks, collision, lap times; dereferenced from `race_obj + 0x70`), all 6 active `Automobile` cars (`race_obj + 0x60`), controller inputs (`race_obj + 0x20`), replay state (`race_obj + 0xD00`), CameraManager & views (`race_obj + 0x80`), flare table readback buffer (`0x004A5178`), and CourseData / DMA state (`0x00620000`, `0x00621400`).
+  - Zero mutations observed across render and idle in physics, AI, inputs, cars, replay, or flare table.
+  - All mutations strictly accounted for: `render_frame_counter` (+1), `hud_history_byte` (`RacePS2Base + 0xCF5A`), `double_buffer_toggle` (`0x00620210`), display page/packet descriptors (`RacePS2Base + 0x0D98..0x0E20`), and CourseData DMA swap pointers during idle.
+  - Live in-game verdict: `clean (unattributed_words=0)`.
+- **Measured In-Game Timings vs Projected Budgets:**
+  - Measured in-game EE host timings (night race 3D section): `update_ms = ~0.62 - 0.68 ms`, `render_ms = ~1.62 - 1.73 ms`.
+  - Measured in-game EE host timings (day race 16k cumulative): `update_ms = ~1.12 ms`, `render_ms = ~1.09 ms`.
+  - Projected budget for update-only frames: ~1.5 - 2.5 ms including IOP audio/sound services and host pacing.
+- **Architectural Decisions:**
+  - Abandoned guest code cave. P1 will use pure host hooks in native dispatch / frame loop.
+  - Clarified flare table: EE does not read the 2 KB table during render; VU1 consumes it directly.
+  - Line endings restored to Unix LF in commit `52fd684`.
+- **Test Suite:**
+  - CTest `native_fps_probe`: PASSED.
+  - CTest `native_game_target`: PASSED.
+  - CTest `python_native_contracts`: PASSED (100% passing pointing `GT4_NATIVE_BUILD` at candidate binary directory).
+- **Status:** Phase P0 complete. Stopped at P0 checkpoint for orchestrator review. Phase P1 has NOT started.
 
 ## rc5 Settings open at once, TASK-114 item 8 (2026-10-24, `task/101-multi-game`, 1.3.0-rc5)
 

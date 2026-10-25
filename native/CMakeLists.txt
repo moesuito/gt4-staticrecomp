@@ -38,7 +38,7 @@ get_filename_component(GT4_PRIVATE_BASE "${GT4_ASSETS_ROOT}" ABSOLUTE)
 # its own manifest docs/inputs/<capsule name>.json; the license guard capsule of the same profile pins
 # docs/inputs/<its name>.json. Only the Spec II build selects a slice27x guard capsule (slice277, TASK-100 S8b: the
 # per-target Manager add/body shift for the Spec II demo loaders); v2.00 keeps its slice262 capsule.
-set(GT4_TASK084_GUARD_RE "^private/slice2[67][0-9]-[a-z0-9-]*license-guard-runtime$")
+set(GT4_TASK084_GUARD_RE "^private/(slice2[67][0-9]-[a-z0-9-]*license-guard-runtime|slice3[0-9][0-9]-task082-[a-z0-9-]*runtime)$")
 # TASK-100 S7b (slice276): the TASK-084 frame-cost profile plus the Spec II IOP reboot rule (sif.cpp), so the frame-cost
 # capsule family spans slice260..slice279. Only the Spec II executable selects a slice27x capsule; v2.00 keeps its
 # slice262 capsule. It shares the TASK-084 file list and pin rules.

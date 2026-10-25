@@ -33,6 +33,21 @@ std::uint64_t default_steady_clock_us() noexcept {
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+bool is_race_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept {
+  if (obj_ptr == 0 || obj_ptr >= ram_size || ram == nullptr) return false;
+  // In game: the static managers are 0x006D6708 and 0x006DE820 (which are NOT race objects)
+  if (obj_ptr == 0x006D6708u || obj_ptr == 0x006DE820u) return false;
+  const std::uint32_t vptr = read_u32(ram, ram_size, obj_ptr + 0x64u);
+  // RacePS2Base vtable 0x00679378, RaceArcadeSingle vtable 0x0067BAD8
+  if (vptr == 0x00679378u || vptr == 0x0067BAD8u) return true;
+  // In game, static managers have vtables around 0x00659xxx
+  if (vptr >= 0x00659000u && vptr <= 0x0065A000u) return false;
+  // If obj_ptr + 0x70 holds a pointer into RAM (e.g. test fixture or mock environment)
+  const std::uint32_t dyn = read_u32(ram, ram_size, obj_ptr + 0x70u);
+  if (dyn != 0 && dyn < ram_size) return true;
+  return false;
+}
+
 }  // namespace
 
 MutationBucket classify_mutation(std::uint32_t addr, std::uint32_t race_obj,
@@ -41,6 +56,7 @@ MutationBucket classify_mutation(std::uint32_t addr, std::uint32_t race_obj,
     if (addr == race_obj + 0xE32Cu) return MutationBucket::render_frame_counter;
     if (addr >= race_obj + 0xCF58u && addr <= race_obj + 0xCF5Cu) return MutationBucket::hud_history_byte;
     if (addr >= race_obj + 0xCF38u && addr <= race_obj + 0xCF70u) return MutationBucket::hud_history_byte;
+    if (addr >= race_obj + 0x0D98u && addr <= race_obj + 0x0E20u) return MutationBucket::render_packet_ptr;
   }
   if (camera_addr != 0) {
     if (addr >= camera_addr + 0x100u && addr < camera_addr + 0x140u) return MutationBucket::camera_cached_matrix;
@@ -56,6 +72,12 @@ MutationBucket classify_mutation(std::uint32_t addr, std::uint32_t race_obj,
 
 Probe::Probe() noexcept {
   init();
+}
+
+Probe::~Probe() noexcept {
+  if (enabled_) {
+    finish(stderr);
+  }
 }
 
 Probe &Probe::shared() noexcept {
@@ -105,33 +127,54 @@ void Probe::add_watched_span(std::uint32_t guest_addr, std::uint32_t size_bytes,
   watched_spans_.push_back({guest_addr, size_bytes, name});
 }
 
-void Probe::setup_default_spans(std::uint32_t race_obj) noexcept {
-  if (!watched_spans_.empty() || race_obj == 0) return;
+void Probe::setup_default_spans(std::uint32_t race_obj, const std::uint8_t *ram, std::size_t ram_size) noexcept {
+  if (!watched_spans_.empty() || race_obj == 0 || ram == nullptr) return;
 
-  // RacePS2Base header and tails
-  add_watched_span(race_obj + 0xE280u, 0x100u, "RacePS2Base_tail_render_counter");
-  add_watched_span(race_obj + 0xCF30u, 0x60u,  "RacePS2Base_hud_history");
+  // 1. RacePS2Base root, input, replay, HUD history, render frame counter
+  add_watched_span(race_obj + 0x0000u, 0x100u, "RacePS2Base_root_pointers");
+  add_watched_span(race_obj + 0x0020u, 0x50u,  "RacePS2Base_input_control_fetch");
+  add_watched_span(race_obj + 0x0D00u, 0x100u, "RacePS2Base_replay_timers");
+  add_watched_span(race_obj + 0xCF00u, 0x100u, "RacePS2Base_hud_history_smoothing");
+  add_watched_span(race_obj + 0xE200u, 0x200u, "RacePS2Base_render_frame_counter_tail");
 
-  // CameraManager (race_obj + 0x80) and CameraView 0
+  // 2. CameraManager (race_obj + 0x80) and CameraView 0
   const std::uint32_t cam_mgr = race_obj + 0x80u;
   active_camera_view_ = cam_mgr + 0x158u;
-  add_watched_span(active_camera_view_ + 0x20u, 0x140u, "CameraView_poses_matrix");
+  add_watched_span(cam_mgr, 0x1000u, "CameraManager_and_views");
 
-  // DynamicsConductor simulation state (race_obj + 0x70 -> pointer)
-  active_dynamics_ = race_obj + 0x70u;
-  add_watched_span(active_dynamics_ + 0xF880u, 0x40u, "DynamicsConductor_clock");
+  // 3. DynamicsConductor simulation state (dereferenced from pointer at race_obj + 0x70)
+  const std::uint32_t dynamics_ptr = read_u32(ram, ram_size, race_obj + 0x70u);
+  if (dynamics_ptr != 0 && dynamics_ptr + 0x10000u <= ram_size) {
+    active_dynamics_ = dynamics_ptr;
+    // Full 64 KB DynamicsConductor: physics, clocks, lap times, collision, AI
+    add_watched_span(active_dynamics_, 0x10000u, "DynamicsConductor_physics_clocks_ai");
+  }
 
-  // CourseData ms and buffer toggle
-  add_watched_span(0x006214C0u, 0x40u, "CourseData_clock");
-  add_watched_span(0x00620200u, 0x20u, "DoubleBuffer_toggle");
+  // 4. Cars (Automobile entries from race_obj + 0x60)
+  const std::uint32_t cars_ptr = read_u32(ram, ram_size, race_obj + 0x60u);
+  if (cars_ptr != 0 && cars_ptr < ram_size) {
+    for (std::uint32_t i = 0; i < 6u; ++i) {
+      const std::uint32_t car_entry = read_u32(ram, ram_size, cars_ptr + i * 4u);
+      if (car_entry != 0 && car_entry + 0x3000u <= ram_size) {
+        add_watched_span(car_entry, 0x3000u, "Automobile_car_entry");
+      }
+    }
+  }
+
+  // 5. Global clocks, course data ms, double buffer toggle, flare table
+  add_watched_span(0x00620000u, 0x400u, "DoubleBuffer_and_DMA_state");
+  add_watched_span(0x00621400u, 0x200u, "CourseData_clock_ms");
+  add_watched_span(0x004A5178u, 0x800u, "Flare_table_readback_buffer");
 }
 
 void Probe::on_update_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept {
   if (!enabled_) return;
 
   if (active_race_obj_ == 0 && obj_ptr != 0) {
-    active_race_obj_ = obj_ptr;
-    setup_default_spans(active_race_obj_);
+    if (is_race_object(obj_ptr, ram, ram_size)) {
+      active_race_obj_ = obj_ptr;
+      setup_default_spans(active_race_obj_, ram, ram_size);
+    }
   }
 
   phase_ = MainLoopPhase::update;
@@ -142,7 +185,7 @@ void Probe::on_update_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std:
 
   // Read guest race clock if accessible
   if (ram != nullptr && active_race_obj_ != 0) {
-    const std::uint32_t dynamics_ptr = read_u32(ram, ram_size, active_race_obj_ + 0x70u);
+    const std::uint32_t dynamics_ptr = active_dynamics_ ? active_dynamics_ : read_u32(ram, ram_size, active_race_obj_ + 0x70u);
     if (dynamics_ptr != 0) {
       stats_.race_clock_f898 = read_u32(ram, ram_size, dynamics_ptr + 0xF898u);
     }
@@ -157,7 +200,7 @@ void Probe::on_update_leave(const std::uint8_t *ram, std::size_t ram_size) noexc
   phase_ = MainLoopPhase::outside;
 
   if (ram != nullptr && active_race_obj_ != 0) {
-    const std::uint32_t dynamics_ptr = read_u32(ram, ram_size, active_race_obj_ + 0x70u);
+    const std::uint32_t dynamics_ptr = active_dynamics_ ? active_dynamics_ : read_u32(ram, ram_size, active_race_obj_ + 0x70u);
     if (dynamics_ptr != 0) {
       stats_.race_clock_f898 = read_u32(ram, ram_size, dynamics_ptr + 0xF898u);
     }
@@ -168,8 +211,10 @@ void Probe::on_render_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std:
   if (!enabled_) return;
 
   if (active_race_obj_ == 0 && obj_ptr != 0) {
-    active_race_obj_ = obj_ptr;
-    setup_default_spans(active_race_obj_);
+    if (is_race_object(obj_ptr, ram, ram_size)) {
+      active_race_obj_ = obj_ptr;
+      setup_default_spans(active_race_obj_, ram, ram_size);
+    }
   }
 
   phase_ = MainLoopPhase::render;
@@ -275,6 +320,10 @@ void Probe::on_frame_boundary() noexcept {
   }
   frame_start_us_ = now;
   ++stats_.frame_count;
+
+  if (stats_.frame_count > 0 && stats_.frame_count % 600 == 0) {
+    format_report(stderr);
+  }
 }
 
 void Probe::take_render_snapshot(const std::uint8_t *ram, std::size_t ram_size) noexcept {
@@ -325,8 +374,11 @@ void Probe::diff_render_purity(const std::uint8_t *ram, std::size_t ram_size, bo
 
         MutationBucket bucket = classify_mutation(word_addr, active_race_obj_, active_camera_view_, 0x006214D8u);
         if (is_idle_pass && bucket == MutationBucket::unattributed) {
-          // If in an idle span and classified as buffer swap
-          bucket = MutationBucket::dma_safe_idle_swap;
+          // Attribute only known DMA buffer chain pointers in CourseData or double buffer swaps during idle
+          if ((word_addr >= 0x00620000u && word_addr < 0x00620100u) ||
+              (word_addr >= 0x00621400u && word_addr < 0x00621450u)) {
+            bucket = MutationBucket::dma_safe_idle_swap;
+          }
         }
 
         switch (bucket) {
@@ -347,6 +399,9 @@ void Probe::diff_render_purity(const std::uint8_t *ram, std::size_t ram_size, bo
             break;
           case MutationBucket::dma_safe_idle_swap:
             ++stats_.purity.dma_swap_mutations;
+            break;
+          case MutationBucket::render_packet_ptr:
+            ++stats_.purity.render_packet_ptr_mutations;
             break;
           case MutationBucket::unattributed:
           default:
@@ -391,13 +446,14 @@ void Probe::format_report(std::FILE *stream) const noexcept {
                stats_.camera_cached_matrix[0]);
 
   std::fprintf(stream,
-               "[fps-probe] purity: mutations=%llu (render_counter:%llu hud_hist:%llu buf_toggle:%llu cam_matrix:%llu dma_swap:%llu unattributed:%llu)\n",
+               "[fps-probe] purity: mutations=%llu (render_counter:%llu hud_hist:%llu buf_toggle:%llu cam_matrix:%llu dma_swap:%llu pkt_ptr:%llu unattributed:%llu)\n",
                static_cast<unsigned long long>(stats_.purity.mutated_words),
                static_cast<unsigned long long>(stats_.purity.render_counter_mutations),
                static_cast<unsigned long long>(stats_.purity.hud_history_mutations),
                static_cast<unsigned long long>(stats_.purity.double_buffer_mutations),
                static_cast<unsigned long long>(stats_.purity.camera_matrix_mutations),
                static_cast<unsigned long long>(stats_.purity.dma_swap_mutations),
+               static_cast<unsigned long long>(stats_.purity.render_packet_ptr_mutations),
                static_cast<unsigned long long>(stats_.purity.unattributed_mutations));
 
   if (stats_.purity.simulation_clean()) {
