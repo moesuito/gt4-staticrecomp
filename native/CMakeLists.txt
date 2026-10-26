@@ -815,6 +815,28 @@ add_library(gt4_achievements STATIC achievements.cpp achievements_overlay.cpp ac
 target_include_directories(gt4_achievements PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gt4_achievements PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32)
 target_compile_options(gt4_achievements PRIVATE /W4)
+# TASK-133: Test fixture library wiring across game targets.
+# In a Spec II build, gt4_achievements carries the Spec II target guard (which disables RA).
+# A Spec II build therefore compiles a second copy pinned to v2.00 for the positive test fixture,
+# exactly like gt4_quickfix_v200_fixture. Conversely, a v2.00 build compiles a Spec II copy for
+# the negative fixture achievements_spec2_fixture.
+if(GT4_TARGET STREQUAL "spec2")
+    add_library(gt4_achievements_v200_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+    target_include_directories(gt4_achievements_v200_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(gt4_achievements_v200_fixture PUBLIC GT4_TARGET_FIXTURE_V200)
+    target_link_libraries(gt4_achievements_v200_fixture PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+    target_compile_options(gt4_achievements_v200_fixture PRIVATE /W4)
+    set(GT4_ACHIEVEMENTS_FIXTURE_LIB gt4_achievements_v200_fixture)
+    set(GT4_ACHIEVEMENTS_SPEC2_LIB gt4_achievements)
+else()
+    add_library(gt4_achievements_spec2_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+    target_include_directories(gt4_achievements_spec2_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(gt4_achievements_spec2_fixture PUBLIC GT4_TARGET_SPEC2)
+    target_link_libraries(gt4_achievements_spec2_fixture PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+    target_compile_options(gt4_achievements_spec2_fixture PRIVATE /W4)
+    set(GT4_ACHIEVEMENTS_FIXTURE_LIB gt4_achievements)
+    set(GT4_ACHIEVEMENTS_SPEC2_LIB gt4_achievements_spec2_fixture)
+endif()
 # Windows icon and version resource of the game executable (display name "Gran Turismo 4").
 set(GT4_BRANDING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../launcher/assets/brand" CACHE PATH "Brand assets folder (official or neutral)")
 set(GT4_VERSION "1.0.0")
@@ -870,15 +892,15 @@ add_executable(pacing_fixture pacing_fixture.cpp)
 target_link_libraries(pacing_fixture PRIVATE gt4_pacing)
 target_compile_options(pacing_fixture PRIVATE /W4)
 add_executable(achievements_fixture achievements_fixture.cpp)
-target_link_libraries(achievements_fixture PRIVATE gt4_achievements)
+target_link_libraries(achievements_fixture PRIVATE ${GT4_ACHIEVEMENTS_FIXTURE_LIB})
 target_compile_options(achievements_fixture PRIVATE /W4)
-add_executable(achievements_spec2_fixture achievements_spec2_fixture.cpp achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+add_executable(achievements_spec2_fixture achievements_spec2_fixture.cpp)
 target_compile_definitions(achievements_spec2_fixture PRIVATE GT4_TARGET_SPEC2)
 target_include_directories(achievements_spec2_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(achievements_spec2_fixture PRIVATE gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+target_link_libraries(achievements_spec2_fixture PRIVATE ${GT4_ACHIEVEMENTS_SPEC2_LIB} winhttp gdiplus gdi32 user32 bcrypt)
 target_compile_options(achievements_spec2_fixture PRIVATE /W4)
 add_executable(achievements_http_fixture achievements_http_fixture.cpp)
-target_link_libraries(achievements_http_fixture PRIVATE gt4_achievements ws2_32)
+target_link_libraries(achievements_http_fixture PRIVATE ${GT4_ACHIEVEMENTS_FIXTURE_LIB} ws2_32)
 target_compile_options(achievements_http_fixture PRIVATE /W4)
 # Input bindings: pure parser and readers (no Windows dependency in controls.cpp).
 add_executable(controls_fixture controls_fixture.cpp controls.cpp)
@@ -930,7 +952,8 @@ target_compile_options(shape_capture_control_fixture PRIVATE /W4)
 # v2.00 so the same checks still run (the Spec II half of game_target_fixture deliberately does not). Production targets
 # never define GT4_TARGET_FIXTURE_V200.
 foreach(v200_fixture IN ITEMS license_guard_fixture race_display_fixture race_widescreen_fixture display_aspect_fixture
-                               shape_observer_fixture shape_capture_export_fixture shape_capture_control_fixture)
+                               shape_observer_fixture shape_capture_export_fixture shape_capture_control_fixture
+                               achievements_fixture)
     target_compile_definitions(${v200_fixture} PRIVATE GT4_TARGET_FIXTURE_V200)
 endforeach()
 set_source_files_properties(game_target_fixture.cpp PROPERTIES COMPILE_DEFINITIONS GT4_TARGET_FIXTURE_V200)
