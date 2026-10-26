@@ -446,6 +446,24 @@ HLE), 07 (CLUT, CLD modes), 04.9 (GLM); IN-347..IN-351, IN-370, IN-379, IN-382.
 
 ## 10. Open items from the scene sweep
 
+- **Headless reproduction of the owner's GT Mode screens (2026-10-24).** The game accepts a scripted button sequence
+  (`--press <vblank>:<button>:<duration>`), which is how the race schedules are driven. With a card that has GT4 save
+  data (`private/slice113-video/widescreen-seed/card.ps2`, a copy, never the owner's card):
+
+  ```
+  gt4vulkan.exe <elf> --ntsc --disc <iso> --frames 9600 --memcard <copy> ^
+    --press 700:start:30 --press 1200:start:30 --press 5000:triangle:20 --press 6000:triangle:20
+  ```
+
+  reaches the **GT Mode map with the "Do you really want to quit Gran Turismo Mode?" dialog** (frame 9600), i.e. the
+  owner's artifact screens, deterministically and headless. With `GT4_HW_DUMP_SOURCE=upscaled` and `=vram` the same
+  VBlank gives the 6x and the 1x image of the same frame, which is what the artifact measurements below compare.
+  - **Measured on that frame:** the thin vertical line the owner reports **exists in the 1x image** (native column 481,
+    contrast 15.2 levels against a 5.0 median) and so does the horizontal one (native row 409, 46.4) - they are 1-pixel
+    features of the map content magnified 6x, not a scaled-pass artifact. The 3-level checkerboard on flat areas is
+    **not** in the 1x image and is still ours to find (next: dump the slot's scaled image, the shadow copy and the
+    composed frame of one VBlank; `ReadImageDebug` already reads a slot's scaled image, the shadow needs a case).
+
 - **Owner test 11 comparison against GSdx (2026-10-24):** the owner sent side-by-side shots (GSdx 6x against ours) of
   the GT Mode map and of an "Info" dialog. Ours shows a fine grid over the flat background, a vertical line, and a
   ghosted second copy of the dialog text; GSdx is clean. Measured on a headless 6x menu dump (Hue's Home, 3840 x 2688):
