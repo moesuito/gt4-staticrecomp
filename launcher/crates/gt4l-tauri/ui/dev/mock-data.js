@@ -158,6 +158,8 @@
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
     { id: "performance_mode", label: "Performance Mode", help: "Faster on weaker PCs. Some effects that read the image back are skipped, such as headlight and sun flares and the car icons next to the gap time. Applies the next time you play.",
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
+    { id: "skip_frames_when_slow", label: "Skip frames when slow", help: "When your PC cannot keep 60 FPS in a race, draws fewer frames (down to 30) so the game keeps its full speed. Gran Turismo 4 only for now.",
+      page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
     { id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [

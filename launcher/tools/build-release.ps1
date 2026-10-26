@@ -23,7 +23,7 @@ param(
     [string]$Label = ""
 )
 $ErrorActionPreference = "Stop"
-if ($Label -and $Label -notmatch '^rc[1-9][0-9]*$') { throw "-Label must be empty or rc<N> (for example rc5), got '$Label'" }
+if ($Label -and $Label -notmatch '^rc[1-9][0-9]*(-[a-zA-Z0-9]+)?$') { throw "-Label must be empty or rc<N>[-suffix] (for example rc5 or rc7-test082), got '$Label'" }
 $savedLabel = $env:GT4_RELEASE_LABEL
 $env:GT4_RELEASE_LABEL = $Label
 

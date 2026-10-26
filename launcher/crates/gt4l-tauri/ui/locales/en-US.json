@@ -491,6 +491,8 @@
   "setting.fxaa.help": "Smooths jagged edges with a fast filter. It softens fine detail a little. Off by default.",
   "setting.performance_mode.label": "Performance Mode",
   "setting.performance_mode.help": "Faster on weaker PCs. The game stops waiting for the graphics card to send images back: the car icons next to the gap time can come out blank and the loading screen picture may be missing. The night lights and the sun glare are turned off. Applies the next time you play.",
+  "setting.skip_frames_when_slow.label": "Skip frames when slow",
+  "setting.skip_frames_when_slow.help": "When your PC cannot keep 60 FPS in a race, draws fewer frames (down to 30) so the game keeps its full speed. Gran Turismo 4 only for now.",
   "setting.cas_mode.label": "Sharpening (CAS)",
   "setting.cas_mode.help": "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
   "choice.cas_mode.off": "Off",

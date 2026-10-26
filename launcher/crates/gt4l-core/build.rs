@@ -28,11 +28,12 @@ fn release_label() {
     let label = std::env::var("GT4_RELEASE_LABEL").unwrap_or_default();
     let label = label.trim();
     if !label.is_empty() {
-        let digits = label.strip_prefix("rc").unwrap_or("");
+        let (base, _) = label.split_once('-').unwrap_or((label, ""));
+        let digits = base.strip_prefix("rc").unwrap_or("");
         let valid = !digits.is_empty()
             && digits.bytes().all(|byte| byte.is_ascii_digit())
             && !digits.starts_with('0');
-        assert!(valid, "GT4_RELEASE_LABEL must be empty or rc<N> (N from 1, no leading zero), got '{label}'");
+        assert!(valid, "GT4_RELEASE_LABEL must be empty or rc<N>[-suffix] (N from 1, no leading zero), got '{label}'");
     }
     let cargo = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
     let full = if label.is_empty() { cargo } else { format!("{cargo}-{label}") };

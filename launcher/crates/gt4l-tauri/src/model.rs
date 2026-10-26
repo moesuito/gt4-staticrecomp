@@ -159,7 +159,8 @@ pub fn settings_table_with_monitors(
             continue;
         }
         // TASK-108: the Graphics card row sits after the Graphics API row (added with the table rows below).
-        if definition.id == "graphics_card" {
+        // TASK-082: Skip frames when slow sits after Performance Mode (added with the table rows below).
+        if definition.id == "graphics_card" || definition.id == "skip_frames_when_slow" {
             continue;
         }
         let mut row = launcher_row(definition, settings);
@@ -184,6 +185,14 @@ pub fn settings_table_with_monitors(
                 let mut card = launcher_row(definition, settings);
                 fill_card_row(&mut card, settings, cards);
                 rows.push(card);
+            }
+            continue;
+        }
+        if row.id == "performance_mode" {
+            rows.push(out);
+            if let Some(definition) = gt4l_core::settings::definition("skip_frames_when_slow") {
+                let skip = launcher_row(definition, settings);
+                rows.push(skip);
             }
             continue;
         }
@@ -848,6 +857,20 @@ mod table_tests {
         assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1344");
         assert!(scale.get("visible_when").is_none(), "GSdx is the only renderer: no visibility rule");
         assert_eq!(scale["group"], "graphics");
+    }
+
+    #[test]
+    fn skip_frames_when_slow_is_a_graphics_toggle_off_by_default_placed_near_performance_mode() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let skip = row(&table, "skip_frames_when_slow");
+        assert_eq!(skip["control"], "toggle");
+        assert_eq!(skip["page"], "basic");
+        assert_eq!(skip["default"], json!(false));
+        assert_eq!(skip["current"], json!(false));
+        let rows = table["rows"].as_array().unwrap();
+        let perf_idx = rows.iter().position(|r| r["id"] == "performance_mode").unwrap();
+        let skip_idx = rows.iter().position(|r| r["id"] == "skip_frames_when_slow").unwrap();
+        assert_eq!(skip_idx, perf_idx + 1, "placed right after performance_mode");
     }
 
     #[test]

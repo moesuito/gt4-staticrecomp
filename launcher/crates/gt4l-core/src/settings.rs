@@ -159,6 +159,16 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
+        id: "skip_frames_when_slow",
+        page: Page::Graphics,
+        group: "Performance",
+        title: "Skip frames when slow",
+        info: "When your PC cannot keep 60 FPS in a race, draws fewer frames (down to 30) so the game keeps its full speed. Gran Turismo 4 only for now.",
+        kind: TOGGLE,
+        default: "off",
+        connected: true,
+    },
+    SettingDef {
         id: "monitor",
         page: Page::Display,
         group: "Window",

@@ -1,14 +1,14 @@
 # Current Status
-## TASK-082 controlled render skip (2026-10-26, 	ask/082-render-skip)
+## TASK-082 controlled render skip (2026-10-26, task/082-render-skip, rc7)
 
-Phase P0 and Phase P1 implemented and verified on branch 	ask/082-render-skip. Headless identity and simulation equality
-against unskipped runs verified in slice 311 across night (12,000 frames) and day (16,000 frames) runs.
-- **Controlled Render Skip:** GT4_NATIVE_FPS=skip enables dynamic render skipping when frame time exceeds 16.68 ms budget, with 30 FPS floor (never skips 2 consecutive frames) and debt hard cap (33.37 ms). Test forced patterns GT4_NATIVE_FPS_FORCE=2 (30 FPS presented) and GT4_NATIVE_FPS_FORCE=3 (20 FPS presented) verified.
+Phase P0, Phase P1, and rc6 merge finalized and verified on branch task/082-render-skip for 1.3.0-rc7.
+- **Controlled Render Skip:** GT4_NATIVE_FPS=skip enables dynamic render skipping when frame time exceeds 16.68 ms budget, with 30 FPS floor (never skips 2 consecutive frames) and debt hard cap (33.37 ms). Developer test switches GT4_NATIVE_FPS_FORCE=2 (30 FPS presented) and GT4_NATIVE_FPS_FORCE=3 (20 FPS presented) verified.
 - **Engagement Gate:** Verified 60 consecutive frames of rising clock_f898 (+50) required before skipping engages; Spec II disabled.
-- **Flare Queue Zeroing:** Flare queues at
-ace_obj + 0xDA0 (+0x1848 and +0x0A34) safely zeroed on skipped frames before the next update functor runs; maximum flare count at a skip stays <= 25 (well below 100 limit).
-- **Simulation Equality:** Bit-for-bit digest match against unskipped reference across entire race in night and day scenes.
-- **Status:** Integrated with rc6 (	ask/116-117-flare-perf) for 1.3.0-rc7 release.
+- **Flare Queue Zeroing:** Flare queues at race_obj + 0xDA0 (+0x1848 and +0x0A34) safely zeroed on skipped frames before the next update functor runs; maximum flare count at a skip stays <= 25 (well below 100 limit).
+- **Merged Code Identity (Slice 312):** Bit-for-bit match on stream hash and frame dumps between merged build and rc6 baseline across night (12,000 frames) and day (16,000 frames) runs. Simulation digests match bit-for-bit with force 2 against probe reference without skip across all race intervals.
+- **Launcher Switch:** Added "Skip frames when slow" / "Pular quadros quando lento" (off by default) in Settings > Graphics, placed after Performance Mode. Sets GT4_NATIVE_FPS=skip for GT4 v2.00 only. 100% key and placeholder parity; focus-check passed headless.
+- **Test Kit:** Built portable test kit GT4Recomp-1.3.0-rc7-test082-portable on Desktop with LEIA-ME-TESTE.txt in plain Portuguese. rc6 copy and user saves untouched.
+- **Status:** Implemented, owner test pending, PR opened into task/116-117-flare-perf for 1.3.0-rc7.
 
 ## rc6 performance, TASK-116 step 1 and TASK-117 (2026-10-25, `task/116-117-flare-perf`)
 

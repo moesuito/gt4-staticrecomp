@@ -38,7 +38,7 @@ FORBIDDEN_SUFFIXES = ('.iso', '.bin', '.elf', '.ps2', '.mc2', '.gt4')
 FORBIDDEN_NAMES = ('core.gt4', 'scus_973.28', 'scus_973.28.elf', 'card.ps2')
 # The release version: numeric, with the label of a test build (TASK-109): 1.3.0 or 1.3.0-rc5. The name matches the asset the
 # launcher looks for (releases.rs package_name_for).
-VERSION_PATTERN = re.compile(r'^\d+\.\d+\.\d+(-rc[1-9][0-9]*)?$')
+VERSION_PATTERN = re.compile(r'^\d+\.\d+\.\d+(-rc[1-9][0-9]*(-[a-zA-Z0-9]+)?)?$')
 FIXED_TIME = (2026, 1, 1, 0, 0, 0)
 PORTABLE_NOTE = """GT4Recomp, portable copy
 ========================

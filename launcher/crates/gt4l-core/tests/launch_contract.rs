@@ -505,3 +505,40 @@ fn the_game_defaults_are_the_values_the_launcher_sets_for_default_settings() {
         assert_eq!(at_play[name], value, "{name}");
     }
 }
+
+// ---- TASK-082: Native frame skipping when slow -------------------------------------------------------------
+
+#[test]
+fn skip_frames_when_slow_on_sends_gt4_native_fps_skip_for_gt4_v2_only() {
+    let mut on_settings = Settings::default();
+    on_settings.set("skip_frames_when_slow", "on").unwrap();
+
+    // 1. GT4 v2.00 with switch ON sets GT4_NATIVE_FPS=skip
+    let gt4_plan = plan_launch(&inputs(), &on_settings, None, &[]);
+    let gt4_env = env_map(&gt4_plan.environment);
+    assert_eq!(gt4_env.get("GT4_NATIVE_FPS"), Some(&"skip".to_string()));
+    assert!(!gt4_env.contains_key("GT4_NATIVE_FPS_FORCE"), "developer switch is never set");
+
+    // 2. GT4 v2.00 with switch OFF does NOT set GT4_NATIVE_FPS
+    let off_settings = Settings::default();
+    let off_plan = plan_launch(&inputs(), &off_settings, None, &[]);
+    let off_env = env_map(&off_plan.environment);
+    assert!(!off_env.contains_key("GT4_NATIVE_FPS"));
+    assert!(!off_env.contains_key("GT4_NATIVE_FPS_FORCE"));
+
+    // 3. Spec II with switch ON never receives GT4_NATIVE_FPS
+    let spec2_inputs = LaunchInputs { elf: Path::new("C:/work/SCUS_974.36"), ..inputs() };
+    let spec2_plan = plan_launch(&spec2_inputs, &on_settings, None, &[]);
+    let spec2_env = env_map(&spec2_plan.environment);
+    assert!(!spec2_env.contains_key("GT4_NATIVE_FPS"), "Spec II never receives GT4_NATIVE_FPS");
+    assert!(!spec2_env.contains_key("GT4_NATIVE_FPS_FORCE"));
+
+    // 4. Inherited GT4_NATIVE_FPS and GT4_NATIVE_FPS_FORCE are scrubbed
+    let inherited = vec!["GT4_NATIVE_FPS".to_string(), "GT4_NATIVE_FPS_FORCE".to_string()];
+    let scrubbed_off = plan_launch(&inputs(), &off_settings, None, &inherited);
+    assert!(scrubbed_off.removed_inherited.contains(&"GT4_NATIVE_FPS".to_string()));
+    assert!(scrubbed_off.removed_inherited.contains(&"GT4_NATIVE_FPS_FORCE".to_string()));
+    let scrubbed_off_env = env_map(&scrubbed_off.environment);
+    assert!(!scrubbed_off_env.contains_key("GT4_NATIVE_FPS"));
+    assert!(!scrubbed_off_env.contains_key("GT4_NATIVE_FPS_FORCE"));
+}

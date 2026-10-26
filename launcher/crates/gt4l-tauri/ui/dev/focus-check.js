@@ -879,11 +879,11 @@
     await routeTo("#/settings/general");
     await wait(500);
 
-    // The rows: Language, Channel, Version, in that order.
+    // The rows: Language, Channel, Version and Launcher GPU acceleration in that order (TASK-118).
     var order = Array.prototype.map.call(document.querySelectorAll(".content .row"), function (row) {
       return row.getAttribute("data-row");
     });
-    check("General lists Language, Channel and Version in that order", order.join(",") === "language,update_channel,launcher_version", order.join(","));
+    check("General lists Language, Channel and Version in that order", order.join(",") === "language,update_channel,launcher_version,launcher_gpu", order.join(","));
     var channelSelect = document.querySelector("[data-setting=\"update_channel\"]");
     check("the Channel row shows Stable", !!channelSelect && channelSelect.textContent.indexOf(T("choice.update_channel.stable")) === 0,
       channelSelect ? channelSelect.textContent : "no row");

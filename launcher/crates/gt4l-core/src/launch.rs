@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::display::{self, DisplayTarget};
-use crate::games::Game;
+use crate::games::{Game, GT4};
 use crate::gs_release::Installed;
 use crate::gs_table;
 use crate::settings::Settings;
@@ -324,6 +324,12 @@ pub fn is_scrubbed(name: &str) -> bool {
 }
 
 /// Plans one PCSX2 GS launch. Pure: the caller writes `paths.config` (see [`gs_config_text`]) before starting.
+/// Whether the launch inputs target the Gran Turismo 4 v2.00 retail game (not Spec II).
+pub fn is_gt4_v2(inputs: &LaunchInputs<'_>) -> bool {
+    inputs.elf.file_name().and_then(|name| name.to_str()) == Some(GT4.elf_name)
+}
+
+/// Plans one PCSX2 GS launch. Pure: the caller writes `paths.config` (see [`gs_config_text`]) before starting.
 pub fn plan_pcsx2_launch(
     inputs: &LaunchInputs<'_>,
     settings: &Settings,
@@ -332,6 +338,9 @@ pub fn plan_pcsx2_launch(
     inherited_names: &[String],
 ) -> LaunchPlan {
     let mut environment = pcsx2_environment(settings, paths);
+    if settings.is_on("skip_frames_when_slow") && is_gt4_v2(inputs) {
+        environment.push(("GT4_NATIVE_FPS".to_string(), "skip".to_string()));
+    }
     plan_with(inputs, with_display(environment, display), inherited_names)
 }
 
