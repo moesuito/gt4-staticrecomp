@@ -1629,3 +1629,23 @@ Existing RetroAchievements protections and TASK-120 controller curves/standardiz
 See docs/WHEEL.md and docs/PR-100-101-INTEGRATION.md. No new release is built or published here;
 1.2.4 remains Latest. The later rc7 port must keep RA disabled for Spec II and pass both-game,
 frame-skipping, input and language gates without replacing published rc6 assets.
+
+
+### TASK-122 — Prepare the 1.2.5 wheel and controller draft
+
+Owner request 2026-10-26: build the integrated stable-line controller and wheel contributions as
+version 1.2.5, without an rc label, and upload a private GitHub draft for physical wheel testing.
+The owner will publish it as Latest after testing. Public publication and a source merge are not
+part of this preparation. Dedicated branch `task/122-release-125`, worktree
+`C:\Antigravity\gt4-wt-122-release-125`, based on main `38e5167`.
+
+State: unlabeled final launcher and installer built and verified; private draft upload pending.
+Release checks: Rust 391 passed (4 ignored), UI focus 114/114 and navigation 169/169;
+24 staged program files plus the WebView2 bootstrapper match their sources. Owner explicitly approved the legacy English-only interface
+with matching en-US and pt-BR short notes. Full and short notes exist before the build.
+Reuse the validated slice1210 executable and immutable pin; no native rebuild or old pin edit.
+The reused game's file-version resource retains 1.2.4; package, launcher and installer use 1.2.5.
+Fresh distribution reservation: `private/slice1220-release125-dist`; output:
+`private/release-125-draft-out`. Physical device/feedback and installer acceptance remain pending.
+Preserve all RetroAchievements fixes. Do not change active rc7 work, owner data or public assets.
+After acceptance, port 1.2.4/1.2.5 to rc7 separately, preserving frame skipping and RA off for Spec II.
