@@ -500,42 +500,82 @@ void test_diag_update_only_bypass() {
   cpu.r[4].w[0] = race_obj;
   const auto &hooks = gt4::target::kV200Hooks;
 
-  // 1. Update functor is NOT bypassed (returns false)
+  // 1. Before race clock is advancing (clock_f898 == 0), render is NOT bypassed (pre-race/menus)
+  cpu.pc = hooks.main_render_functor;
+  cpu.r[31].w[0] = hooks.functor_return;
+  bool bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(!bypass, "render functor must NOT be bypassed when clock_f898 == 0");
+
+  // 2. Set race clock > 0 (race has started)
+  const std::uint32_t clock_val = 50u;
+  std::memcpy(ram.data() + dyn + 0xF898u, &clock_val, sizeof clock_val);
+
+  // Update functor runs (reads clock_f898 = 50)
   cpu.pc = hooks.main_update_functor;
   cpu.r[31].w[0] = 0x1000;
-  bool bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
   require(!bypass, "update functor must not be bypassed");
-  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::update, "update phase entered");
+  require(probe.stats().race_clock_f898 == 50u, "clock_f898 read as 50");
 
   // Return from update functor
   cpu.pc = 0x1000;
   cpu.r[31].w[0] = hooks.functor_return;
   gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
 
-  // 2. Render functor IS bypassed (returns true)
+  // Render functor on this frame is NOT skipped (first frame of rising clock)
   cpu.pc = hooks.main_render_functor;
   cpu.r[31].w[0] = hooks.functor_return;
   bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
-  require(bypass, "render functor MUST be bypassed in diag update-only mode");
+  require(!bypass, "render functor not bypassed on first frame of rising clock");
 
-  // 3. Idle functor IS bypassed (returns true)
+  // Idle functor runs
   cpu.pc = hooks.main_idle_functor;
   cpu.r[31].w[0] = hooks.functor_return;
-  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
-  require(bypass, "idle functor MUST be bypassed in diag update-only mode");
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
 
-  // 4. Debug pad combo transitions to flip_wait
+  // Transition to flip_wait via debug pad combo
   cpu.pc = 0x0055F000u;
   cpu.r[31].w[0] = 0x001015E4u;
   gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
-  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::flip_wait, "transitions to flip wait");
 
-  // 5. Next frame update starts
+  // Next frame update enters: advances boundary, diag_skip_render toggles to true
   cpu.pc = hooks.main_update_functor;
   cpu.r[31].w[0] = 0x1000;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(probe.diag_skip_render(), "diag_skip_render toggled to true for alternating skip");
+
+  // Return from update functor
+  cpu.pc = 0x1000;
+  cpu.r[31].w[0] = hooks.functor_return;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+
+  // 3. Render functor IS bypassed on this alternating frame
+  cpu.pc = hooks.main_render_functor;
+  cpu.r[31].w[0] = hooks.functor_return;
   bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
-  require(!bypass, "next frame update not bypassed");
-  require(probe.stats().frame_count == 2, "frame count advanced on next frame boundary");
+  require(bypass, "render functor MUST be bypassed on alternate frame");
+
+  // 4. Idle functor IS bypassed on this alternating frame
+  cpu.pc = hooks.main_idle_functor;
+  cpu.r[31].w[0] = hooks.functor_return;
+  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(bypass, "idle functor MUST be bypassed on alternate frame");
+
+  // 5. Next frame boundary: diag_skip_render toggles back to false
+  cpu.pc = 0x0055F000u;
+  cpu.r[31].w[0] = 0x001015E4u;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+
+  cpu.pc = hooks.main_update_functor;
+  cpu.r[31].w[0] = 0x1000;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(!probe.diag_skip_render(), "diag_skip_render toggled to false for rendered frame");
+
+  // Render is NOT bypassed on rendered frame
+  cpu.pc = hooks.main_render_functor;
+  cpu.r[31].w[0] = hooks.functor_return;
+  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(!bypass, "render functor must NOT be bypassed on rendered frame");
 
   // Reset probe
   probe.init(nullptr, nullptr);

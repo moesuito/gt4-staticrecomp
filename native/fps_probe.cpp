@@ -115,6 +115,7 @@ void Probe::reset() noexcept {
   active_camera_view_ = 0;
   active_dynamics_ = 0;
   seen_render_ = true;
+  diag_skip_render_ = false;
 
   stats_ = FrameStats{};
   watched_spans_.clear();
@@ -348,6 +349,12 @@ void Probe::on_frame_boundary() noexcept {
   }
   frame_start_us_ = now;
   ++stats_.frame_count;
+
+  if (diag_update_only_ && stats_.race_clock_f898 > 0) {
+    diag_skip_render_ = !diag_skip_render_;
+  } else {
+    diag_skip_render_ = false;
+  }
 
   if (stats_.frame_count > 0 && stats_.frame_count % 600 == 0) {
     format_report(stderr);
