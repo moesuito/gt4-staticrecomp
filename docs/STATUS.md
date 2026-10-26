@@ -1,4 +1,20 @@
 # Current Status
+
+## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)
+
+Owner requested mapping only: published rc6 is the fixed program baseline, with RetroAchievements
+from1.2.4 and controller-only changes from1.2.5. Frame skipping is excluded, preserved remotely
+at15b7bf3 in task/082-render-skip (PR113 draft, report committed) for future CoreGS2.0 resumption.
+
+Prepared task/133-rc7-ra-controls in C:/Antigravity/gt4-wt-133-rc7-ra-controls from exact tag
+v1.3.0-rc6/5832222. Integration map: docs/tasks/TASK-133-RC7-RA-CONTROLS-INTEGRATION.md.
+Main's1.2.5 program is the source reference, not a launcher/base replacement. RA is originalGT4-only
+with a native and launcher SpecII guard; controller curves are shared by both games. Preserve modern
+multi-game/portable paths, localization, channels and rc6 performance behavior. No wheel code.
+
+Mapping/preparation only, no implementation/build/test run or agent dispatch. Installer and portable
+rc7 will require new target builds/pins, both languages and draft checks. No public rc7 yet.
+
 ## rc6 performance, TASK-116 step 1 and TASK-117 (2026-10-25, `task/116-117-flare-perf`)
 
 Implemented and tested headless, owner test pending; nothing merged or released.
