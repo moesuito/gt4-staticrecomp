@@ -718,3 +718,180 @@ of causes and is cheaper than any counter.
 **Two items, not one:** with the deinterlacer off the deviation halves but the 329-value noise remains, so about half
 of the 4.47 is the field weave and half is this pattern. Fixing the weave will not remove the checkerboard and vice
 versa; the owner will report whichever is left.
+
+---
+
+## 14. 1x texture sources at scale (IN-387)
+
+New evidence from the implementer, same scene (GT Mode map + "Info" dialog, 480i, 6x): a lattice whose cell is exactly
+one native pixel (6 x 12 output pixels after the field stretch) with an amplitude of one 8-bit level; the 1x words of
+the same slot read 138.33 on average, the 6x image reads 137.3-137.7 in the cell structure; the map background is a
+1024 x 1024 texture from guest memory, TFX = 0, FST = 1; the menu layer is a quad whose texture is a resident-slot
+copy; forcing linear on both atlas kinds changes 21.8% of the CT24 layer's 6x image but leaves the two displayed slots
+and the composed frame byte-identical.
+
+**Confirmed, and it corrects the premise of question 3: TFX is not a filter.** TFX is the texture *function*
+(modulate, decal, highlight); the sampling filter is the magnification bit and the minification field of the TEX1
+register, and mipmapping is gated by that register's maximum-level field. A trace line "TFX = 0 (nearest)" therefore
+does not establish that the guest asked for nearest, and FST only says the coordinates are integers (1/16 texel
+units), nothing about filtering. Read: `pcsx2/GS/GSRegs.h` (the TEX1 register and its linear-filter predicates),
+`pcsx2/GS/Renderers/Common/GSVertexTrace.cpp`, `Update`.
+
+**Confirmed: the one number that is *not* part of this question is the 0.8-level DC difference** between the 1x mean
+(138.33) and the 6x mean (about 137.5). A one-level lattice can exist with or without a DC offset; the offset needs its
+own explanation (section 14.4). Do not use the mean to decide the shape.
+
+### 14.1 Question 1: scaled surface or 1x surface?
+
+**Confirmed: both, and the deciding rule is "is the source a live render target".**
+
+- If the texture's block range is covered by a live, compatible render target, the lookup returns that target's own
+  surface. The source shares the target's texture (no copy) or receives a copy allocated at `ceil(unscaled x scale)`,
+  and the source's scale is the target's scale. So the surface is the internal-resolution image, not a 1x image.
+  Read: `pcsx2/GS/Renderers/HW/GSTextureCache.cpp`, `LookupSource` (the target scan) and `CreateSource` (the
+  target branch), and `Target::Create` (allocation at `ceil(size x scale)`).
+- If no live target covers it, the texture is decoded from guest memory into a surface of its own size and its scale
+  is exactly 1, so the sampler does the magnification. Read: `GSTextureCache.cpp`, `CreateSource`, the branch with no
+  target.
+
+**Confirmed: there is no 1x copy of a target kept for sampling.** The reference has no exact 1x frame to fall back to
+(section 0). It produces a 1x reduction of a scaled target in exactly two places, and both are one-way: the
+palette/index conversion (an 8-bit index source is forced to scale 1 and reduced with a point sample before the
+palette lookup) and the readback to guest memory. Neither is ever re-expanded into the presented frame at scale.
+
+**Confirmed: even the "linear" case of a target source interpolates on the scaled grid.** For a 24-bit target the
+reference does not use the hardware bilinear unit; it takes four point samples and mixes them in the shader, with the
+half-texel offset expressed in *scaled* texels. So a target sampled with linear is smoothed at sub-native resolution,
+never between two 1x texels. Read: `pcsx2/GS/Renderers/HW/GSRendererHW.cpp`, `EmulateTextureSampler` (the
+shader-emulated-sampler condition, true for a 24-bit target source) and `bin/resources/shaders/vulkan/tfx.glsl`,
+`sample_color`.
+
+**Confirmed: a target source never receives mip filtering.** Trilinear is allowed only when the source is not a
+palette, not a target and not a shuffle. A target is therefore always sampled from level 0 of its scaled surface.
+
+Answer: the reference samples the *scaled copy* for a rendered target, and keeps the texture at 1x with sampler
+magnification only for a texture that is not a live target. It never returns a native-resolution surface for
+something it also holds as a target (with the palette/index exception above).
+
+### 14.2 Question 2: nearest or filtered when 1x content goes into the scaled surface?
+
+**Confirmed: neither "always nearest" nor "always filtered"; it is a per-path decision, and the default is not the
+same on both paths.**
+
+- A target that is created or recreated and preloaded from guest memory receives its 1x content with a **bilinear**
+  blit for every colour format of 16 bits or wider (and always for depth). The preload asks for the filtered blit
+  explicitly for those formats. Read: `GSTextureCache.cpp`, `PreloadTarget` (the linear request passed with the dirty
+  rectangle) and `Target::Update` (the filter decision, `BilinearHack` = automatic).
+- A partial dirty rectangle patched into a target that survives is uploaded with **nearest** under the same default,
+  because the generic invalidation path does not request the filtered blit; only depth, an explicit request or the
+  forced-bilinear option turn it on. Read: `GSTextureCache.cpp`, `InvalidateVideoMem` (the dirty-rectangle call) and
+  `Target::Update`.
+- 8-bit and palette formats are nearest on both paths.
+
+**High confidence: this matters more than it looks.** A bilinear magnification by an exact integer factor is not a
+block replication: the destination samples land at fractional positions inside each source texel, so the result is a
+ramp *through* each block, and a nearly flat 1x area stays smooth. A nearest magnification is the opposite: each
+source texel becomes a hard s x s block, and a one-level difference between neighbouring 1x words becomes a one-level
+lattice with a cell of exactly one native pixel. So the reference's preload path cannot produce the owner's lattice
+from 1x content; its nearest patch path can.
+
+**Hypothesis (needs one log line to settle): which path GT4's transfers take.** A transfer that covers the whole valid
+area removes the target, so the next use recreates it through the bilinear preload; a partial transfer patches it and
+gets the nearest path. Falsification: log, for the CT24 display buffer on that frame, whether the target was
+recreated or patched, and whether the dirty rectangle carried the linear request.
+
+Answer: when the reference does resample 1x content into a scaled surface, the surface is a *filtered* magnification
+by default (bilinear), not a nearest one; nearest happens only on the partial-patch path and for 8-bit/palette
+formats.
+
+**Correction to section 6:** the row "1x upload into a scaled target: bilinear by default" is true for the preload
+path and needs this refinement for the partial-patch path, where the default is nearest. The distinction matters
+exactly for this artifact, because only the nearest path can turn a one-level 1x difference into a one-native-pixel
+lattice.
+
+### 14.3 Question 3: filters wider than one texel, mip levels, and the 1024 x 1024 case
+
+**Confirmed: wider-than-one-texel filtering exists only where the guest asks for it (or the user forces it).** The
+shipped default is "the game's own bits"; the forced-bilinear and forced-bilinear-except-sprites options and the
+forced-trilinear option exist and are off by default, and anisotropic filtering is off by default. With the default,
+a 2 x 2 bilinear tap happens only when the magnification bit is set or the minification field selects a linear form,
+and blending between two mip levels happens only when the minification field selects a linear mip form.
+
+**Confirmed: there is no user LOD bias.** The guest's own fixed-LOD constant and its L term are implemented (they bias
+and scale the LOD), but the reference adds nothing of its own.
+
+**Confirmed: mipmapping is active only when three conditions hold together** — a non-zero maximum-level field, a
+minification field in the mipmap range, and a computed maximum LOD above zero. Otherwise the minification field is
+ignored, and with a zero maximum-level field the filter is the magnification bit alone. Read: `pcsx2/GS/GSState.cpp`,
+`IsMipMapDraw`; `GSVertexTrace.cpp`, `Update`.
+
+**Confirmed: the LOD never depends on the internal resolution.** For a draw with floating texture coordinates the LOD
+is derived from the guest's own texture-coordinate range (its Q or ST extent), i.e. from the native texture-to-screen
+ratio; for an integer-coordinate draw (FST = 1, which the trace reports) the LOD is the guest's fixed constant
+divided by 16, with no geometric term at all. Upscaling changes neither the selected level nor the filter. Read:
+`GSVertexTrace.cpp`, `Update`.
+
+**Confirmed: therefore, for the 1024 x 1024 texture on the 640 x 224 screen, the reference samples level 0 with point
+filtering when the guest asks for point** — either because the maximum-level field is zero, or because the
+minification field is the plain nearest form, or because the draw is FST with a fixed LOD of zero. It does not
+substitute a mip level to reduce the aliasing of a texture the guest chose to sample nearest. If the guest does ask
+for mipmapping, the level is the integer LOD clamped to the maximum level (from the guest's fixed constant for an
+integer-coordinate draw, or from its Q for a floating-coordinate one), and the within-level filter is nearest for the
+nearest-mip forms and linear for the linear-mip forms. The internal resolution never enters that choice, so the level
+at 6x is the level the reference would use at 1x; if the guest's constant is zero, that is level 0 even though the
+texture is minified more than four times vertically.
+
+**Confirmed: there is no "texture scaling for 2D art".** A texture that is not a target is allocated at its own size
+and magnified by the sampler. The only scaled sources are render targets, the opt-in merged-source mode (off by
+default), the native-scaling hack (off by default) and replacement texture packs (user assets).
+
+Answer: the reference does sample with a filter wider than one texel, but only when the guest's own filter field asks
+for it; for the 1024 x 1024 background with the guest asking nearest it samples level 0, point, at 1x and at 6x
+alike. The internal resolution does not change the answer.
+
+### 14.4 Question 4: what can still produce one level with a one-native-pixel cell
+
+**(a) A nearest magnification of a 1x texture — Confirmed possible, and the only mechanism that produces both the
+amplitude and the cell.** Nearest magnification makes each source texel an s x s block whose value *is* that texel,
+so two neighbouring native pixels differ by exactly the source's difference (one level here) and the cell is exactly
+one native pixel. In the reference this is available only where it genuinely keeps 1x content: a texture that is not
+a live target, a 1x patch uploaded through the nearest path, or an index/palette source reduced to 1x.
+
+**(b) Blend precision — Confirmed not a creator.** The reference works in 0..255 floats on 8-bit targets, uses the
+hardware blend unit where the equation allows and a shader blend otherwise, truncates and adds a GPU-dependent offset
+to emulate the GS's truncation; its own comments put the match at roughly 97-99% of pixels in the worst case, so a
+one-level difference is inside its error budget. But the blend runs per fragment, i.e. per *output* pixel at 6x. It
+can add a one-level error on top of an input that already varies per native pixel; it cannot create a period of one
+native pixel by itself. Read: `bin/resources/shaders/vulkan/tfx.glsl`, `ps_blend`.
+
+**(c) The tone/brightness HLE draw — Confirmed not this scene, and per output pixel in any case.** The reference
+replaces GT4's channel-shuffle plus ramp-palette sequence with one HLE draw at the source's scale, reading the channel
+and the palette per output pixel; it has no per-native-pixel indexing. Menus have no tone run (section 12), so it is
+not in play here. Read: section 4 of this document and `GSRendererHW.cpp`, the per-game entry's skip-draw hook.
+
+**(d) Something else — Confirmed nothing else in the reference has a one-native-pixel period.** Dither is indexed by
+the output pixel by default (the other mode divides by the scale and has a four-native-pixel period, not one);
+the deinterlacer works in output rows; the present filter is a resample and only attenuates; the CPU sprite rasteriser
+is off by default; replacement textures need user assets. Read: `tfx.glsl`, `ps_dither`; sections 2, 3 and 6.
+
+**High confidence: in the reference's model the lattice is the signature of a 1x surface that was nearest-magnified,
+and it cannot come from content that passed through a rendered target at 6x.** That is the whole point: a target
+sampled at scale is the 6x surface, and everything the reference writes into it is computed per output pixel. The
+reference can show this artifact only where it keeps 1x content itself.
+
+**The single measurement that settles it:** print, for the same VBlank and the same native rectangle, a per-native-
+pixel *map* of the slot's 1x words and, beside it, the mean of each 6 x 6 block of the 6x target (before the field
+stretch, not from the composed frame). Two outcomes, and they are exhaustive:
+
+- the two maps have the same shape and differ by a constant: the lattice is 1x content, the scaled pass only shifted
+  its level, and the magnifier is a 1x source (in the reference's model: a non-target texture or a nearest-patched
+  upload);
+- the 1x map is flat and the 6x block means alternate: the scaled pass computes the lattice from a per-native-pixel
+  input, which in the reference's model is again a 1x source sampled at scale, never a 6x target.
+
+Either way the question reduces to "what surface is being sampled", and the second dump (the slot's 6x image against
+the atlas the menu quad reads) says which pass introduced it. The 0.8-level DC difference is a separate number and
+must be explained separately: a nearest magnification cannot change the mean, so if the 6x mean really sits 0.8 below
+the 1x mean there is a second mechanism in the scaled pass (an 8-bit rounding or a blend-space difference), and the
+reference has the same class of difference for the same reason — its targets are 8-bit and its blend is approximate —
+which is why the reference cannot be used to calibrate it, only to bound it at about one level.
