@@ -548,7 +548,19 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
     for (const PrimRecord& record : batch.prims) {
         counters.primitives++;
         if (record.rect.Empty()) continue;
-        const Clip clip = Intersect(Intersect(ToClip(record.rect), scissor), surface);
+        // IN-391: never clip a primitive with its own draw rectangle. The reference computes one rectangle per DRAW and
+        // uses it (expanded by one native pixel) only for target sizing and dirty-rect work; it never scissors geometry
+        // with it (Q-GSDX-COMPARISON section 15). Ours used the per-primitive rectangle of chapter 03.1 step 9 as the
+        // scissor, and that rectangle's exclusive end rounds DOWN (floor(max + 0.6)), so it is one pixel tighter than
+        // the rasteriser's coverage: the last pixel row/column of every primitive is cut away. Invisible at 1x, a
+        // one-native-pixel notch at scale - the owner's bitten wheel rims, the dialog border notches and the same cut on
+        // the car in a race. One native pixel of slack per side restores the reference's rule.
+        PixelRect prim = record.rect;
+        prim.x0 -= 1;
+        prim.y0 -= 1;
+        prim.x1 += 1;
+        prim.y1 += 1;
+        const Clip clip = Intersect(Intersect(ToClip(prim), scissor), surface);
         if (Empty(clip)) continue;
         const Vertex* v = &batch.vertices[record.first];
         const uint32_t firstVertex = static_cast<uint32_t>(out.vertices.size());

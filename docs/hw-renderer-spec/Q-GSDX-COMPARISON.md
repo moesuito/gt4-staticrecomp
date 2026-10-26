@@ -893,5 +893,143 @@ Either way the question reduces to "what surface is being sampled", and the seco
 the atlas the menu quad reads) says which pass introduced it. The 0.8-level DC difference is a separate number and
 must be explained separately: a nearest magnification cannot change the mean, so if the 6x mean really sits 0.8 below
 the 1x mean there is a second mechanism in the scaled pass (an 8-bit rounding or a blend-space difference), and the
-reference has the same class of difference for the same reason — its targets are 8-bit and its blend is approximate —
+reference has the same class of difference for the same reason - its targets are 8-bit and its blend is approximate -
 which is why the reference cannot be used to calibrate it, only to bound it at about one level.
+
+---
+
+## 15. Notched primitive edges and menu lines at 6x (IN-391)
+
+Same scene (GT Mode map, "Info" dialog, 480i, 6x, displayed at 1920x1080). Four owner reports: text not 100% sharp,
+a line cutting across the dialog, small rectangular bites on the two "wheel" billboards and on the dialog border
+corners, and the same bite on the car in the race. Our facts: the dialog is composited from its own target over
+1024x256 and 1024x1024 textures sampled at FST; the composed 6x menu is within one level of a bilinear magnification
+of our 1x image (correlation 0.969), only the text differs; our per-primitive clip rectangle is
+`floor(min+0.9) .. floor(max+0.6)`, scaled as `offset*scale + scale/2`, `width*scale`, and used as the Vulkan scissor.
+
+The three artifacts do not share one cause. 15.1-15.3 are about the bites, 15.4 about the lines, 15.5 about the
+"not a magnification" question. Every reference claim below is read from `private/slice189-pcsx2-ref` in the main
+checkout.
+
+### 15.1 Question 1: does the reference clip a primitive to a bounding rectangle?
+
+**Confirmed: it computes a rectangle, but never uses it to clip geometry, and it is one rectangle per *draw*, not per
+primitive.** `GSRendererHW::Draw` builds `m_r` from `round(min..max + 0.4)` over the vertex trace of the whole batch
+(`GSVertexTrace::Update` scans the full vertex list once), intersects it with the GS scissor and returns early only if
+the result is empty; `m_r` then feeds target sizing, page and block address math, dirty-rect invalidation and clear
+detection. The only rectangle that reaches the GPU as a region is `m_conf.drawarea` = scaled GS scissor intersected
+with `ComputeBoundingBoxRT`, and that box is the vertex extremes **expanded** by one native pixel per side (two when
+coverage alpha is available) *before* the scale multiply; the render pass itself uses the full target size and the
+scissor is the GS scissor alone (`GSDeviceVK::RenderHW`: `OMSetRenderTargets(..., config.scissor, ...)` and the
+`render_area` selection above `BeginRenderPass`). A per-draw union also cannot open a gap *between* two primitives of
+the same batch, because every primitive of the batch shares one rectangle that covers all of them.
+
+**High confidence: our rectangle does cut, and by up to a whole native pixel, not a sub-pixel.** `floor(min+0.9)` is
+never below `min`, so it drops the first covered column whenever `frac(min) >= 0.1`, and `floor(max+0.6)` exclusive
+drops the last covered column whenever `frac(max) <= 0.4`; that is 0 or 1 native pixel per side, i.e. 0 or 6 output
+pixels of hard, axis-aligned cut at 6x, and the `+ scale/2` offset biases the scaled rectangle half a native pixel
+(3 output pixels) right and down, so one edge loses and the other gains.
+
+**High confidence, checkable on the owner's screenshot: the bite should be at most about 5.4 output pixels wide by
+3.6 tall** (0.9 and 0.6 native pixels), i.e. slightly wider than tall and quantised to output pixels. The unit of the
+reported "6" is therefore the first number to settle: 6 output pixels of the 6x frame is exactly one native pixel and
+fits the scissor arithmetic; 6 *native* pixels (36 output pixels) is a square the size of a sprite and would need the
+rectangle to be scaled twice - the candidate is the write-back chunk rectangle of our fact 7, where a rectangle in
+native units is scaled and then used again in a pass that is itself scaled.
+
+### 15.2 Question 2: what makes rectangular bites in an alpha-tested billboard at high resolution?
+
+**Confirmed (ours), and the only mechanism that fits: a rectangle computed in native units and applied as a scissor.**
+Its signature is exactly the owner's: axis-aligned, quantised to the native grid, located where two primitives or two
+rectangles meet, and completely independent of texture content, filter, alpha and depth. The dialog border proves it
+independently of the 3D case: whether the border is four bars or four quads of a ring, each corner is where two
+rectangles meet, and no filter, alpha test or depth rule has an axis-aligned preference at a flat corner, so nothing
+but a clip rectangle can remove a square from it.
+
+The remaining candidates, ranked, with the reason each is excluded:
+
+1. **Texture cache dirty rectangles and partial updates - Confirmed possible in the reference, but scale-independent.**
+   `GSTextureCache::Target::Update` uploads the union of the dirty rectangles (its own comment: "the union of the
+   rects may also update wrong parts of the render target") and copies each one with `drect.filter = BilnIf(linear &&
+   (is_depth || m_dirty[i].req_linear || override_linear))`, i.e. nearest unless the preload asked for linear. That
+   produces rectangles aligned to *target* space, and it happens identically at 1x, so it cannot be "absent at 1x";
+   it also needs the rim to be a live target, and it is what the `samplearea`/region clamp exists to bound.
+2. **Alpha test on filtered samples - Confirmed not a creator.** `GSRendererHW::EmulateAlphaTest` discards per fragment
+   on that fragment's own alpha (`PS_AFAIL::KEEP`), so the contour follows the filtered alpha ramp: on a circular rim
+   it moves the radius by a fraction of a texel and stays circular. It can thin or thicken a ring; it cannot square it.
+3. **Sprite and rectangle fast paths - Confirmed not a creator.** The sprite class is two triangles; `MergeSprite` is a
+   paving user hack, off by default and gated on `UserHacks_MergePPSprite`, a target source and a uniform-vertex test;
+   `ReplaceVerticesWithSprite` rewrites *all* of a draw's vertices into one quad, so it is all-or-nothing per draw.
+4. **Z precision - Confirmed not a creator.** Depth is rasterised at the internal resolution into a float buffer, so
+   precision improves with scale; a Z error shows as stitching or speckle along shared edges, not as an axis-aligned
+   square, and a billboard at constant Z (`m_vt.m_eq.z`) either passes entirely or fails entirely.
+
+**High confidence: if the bite is one native pixel, nothing in the reference can produce it and our scissor is the
+whole story; if it is six native pixels, the scissor is still the shape but the scale is being applied twice.**
+
+### 15.3 Question 3: the car in the race
+
+**High confidence: the shared mechanism is the rectangle-as-scissor, and only that one.** The per-primitive rectangle
+is computed for every draw - textured or not, 2D or 3D, opaque or alpha-tested - so on the car it appears where two
+triangles of the body meet, or where a small triangle's extreme vertex rounds the rectangle inward, which is a square
+bite at a vertex exactly as on the rim.
+
+**Confirmed not shared: alpha test** (the car body is opaque, `ATE` off), **the sprite path** (a car is not a sprite),
+**dirty-rectangle texture updates** (only if GT4 renders a car texture into a target - worth one check for a reflection
+pass), and **Z precision** (present on the car, but with a stitching signature, not a square). The write-back chunk
+rectangle of fact 7 is a second instance of the same mechanism but applies only to batches that need a readback, so it
+is excluded by checking whether the car's notch sits on a chunk boundary rather than on a primitive junction.
+
+### 15.4 Question 4: the one-texel bright lines through the translucent dialog
+
+**Confirmed: at 1x a one-texel line cannot survive as a hard line under bilinear magnification, and mipmapping is not
+what decides it.** An integer magnification lands its samples at fractional texel offsets (at 6x: 1/12, 3/12, 5/12 of
+a texel from the centre), so the peak weight on the line's own texel never exceeds about 0.58: the line becomes a
+roughly 12-output-pixel ramp at about 58% of its contrast, but it stays continuous. Nearest instead gives a hard 6-pixel
+block at full contrast, quantised to the texel grid.
+
+The filter is decided by TEX1 alone: `MMAG` for magnification and, when `MXL == 0`, `MMIN` is ignored outright
+(`GSVertexTrace::Update`: "MXL == 0 => MMIN ignored, tested it on ps2"; `GSRegs.h`, `IsMagLinear`/`IsMinLinear`). For an
+FST draw the LOD is the guest's fixed constant divided by 16 (14.3), so the internal resolution never enters the choice.
+Mipmapping can only *attenuate* such a line by selecting a coarser level; it can never make it hard.
+
+**High confidence: the reference's thin, continuous line is therefore geometry re-rasterised at 6x, not a texture
+texel.** A sub-pixel-wide line primitive covers about 0.6 native pixels; at 1x the GS coverage rule ("a pixel is shaded
+only if the primitive crosses its centre") quantises that to whole native pixels and breaks it into dashes, while at 6x
+the same primitive is about 3.6 output pixels wide and resolved on every output row - thinner than our magnified
+1-native-pixel line and continuous. That is exactly the owner's comparison. Falsification: one dump of the draw that
+produces the line - a texture texel must give a soft ramp in the reference, a separate draw is re-rasterised.
+
+### 15.5 Question 5: is the reference's 6x menu a magnification of 1x content?
+
+**Confirmed: no. There is no 2D path (11.1): the menu is rasterised at the internal scale, and the only 1x content is a
+1x *source*.** What that explains:
+
+- **Smooth map - High confidence.** The sampler's ramp is computed per output pixel from the 1024x1024 and 1024x256
+  textures, so no one-native-pixel structure can exist in its 6x image (14.4); our lattice and our dashes are the
+  signature of a 1x intermediate.
+- **No notches - Confirmed.** There is no per-primitive rectangle to clip with (15.1) and no 1x quantisation to
+  magnify, so neither the junction gap nor the squared corner can occur.
+- **Sharp text - High confidence, with a limit.** The glyph quads are positioned and rasterised at 6x with alpha test
+  and blend per output pixel, which removes the 1x intermediate; it does not add glyph detail, because the glyph atlas
+  is still a magnified 1x source.
+- **"Text not 100% sharp" - Confirmed, and it is section 3, not the upscale.** Our deinterlace runs per *native* row
+  where the reference runs per *output* row, so a one-line difference between the two fields is a 6-pixel ghost or
+  blur in ours and a half-block comb in the reference. The owner's guess is right; the variable is the row
+  granularity, not the weave mode.
+
+**Confirmed: the measurement itself cannot decide this question, and should not be used as proof of a magnification.**
+On smooth content, "6x equals bilinear(1x)" is expected from a *correct* 6x re-render as well, because both are
+bilinear samplings of the same texture; only the high-frequency features separate them - the one-native-pixel lattice,
+the dashes, and the 1-level DC offset. Read the measurement as "our 6x image carries no more information than a
+bilinear magnification of our 1x image", which is the symptom of a 1x intermediate, not the proof.
+
+### 15.6 The four measurements that settle all five questions
+
+1. Print the scissor rectangle and the per-side primitive bounds of the rim draw or draws on the wheel; the predicted
+   loss is 0 or 1 native pixel per side, larger on the min side.
+2. The same for the four border bars of the dialog: each corner should be the intersection of two contracted
+   rectangles, and the notch should be symmetric in the sense that the border's outer edge loses a square at all four
+   corners while the inner edge does not.
+3. Whether the thin map line is a texel of the 1024x1024 background or its own draw (settles 15.4).
+4. Whether the car's notch lies on a chunk boundary of the write-back path or on a primitive junction (settles 15.3).
