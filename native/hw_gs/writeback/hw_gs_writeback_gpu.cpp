@@ -202,6 +202,7 @@ struct GpuDrawer::Impl {
     std::uint32_t vertexCount = 0;
     VkPipeline pipeline = VK_NULL_HANDLE;
     bool scaledTexture = false;  // IN-374: sample the scaled texel image (a texture copied from a slot at scale)
+    bool textured = false;       // IN-389: the chunk samples a texture at all (diagnostics)
   };
   std::vector<ScaledDraw> scaledDraws;  // reused
 
@@ -236,16 +237,20 @@ struct GpuDrawer::Impl {
     // the number of slot-copy-textured draws, so a layer that never reaches the sampler at scale can be identified.
     if (const char *tracePath = std::getenv("GT4_HW_SCALED_TRACE")) {
       std::uint32_t perSlot[kGpuColourSlots] = {};
+      std::uint32_t texSlot[kGpuColourSlots] = {};
       std::uint32_t copyTextured = 0;
       for (const ScaledDraw &draw : scaledDraws) {
         const std::uint32_t colour = draw.descriptorSet / kGpuDepthSlots;
         if (colour < kGpuColourSlots) ++perSlot[colour];
+        if (colour < kGpuColourSlots && draw.textured) ++texSlot[colour];
         if (draw.scaledTexture) ++copyTextured;
       }
       if (std::FILE *file = std::fopen(tracePath, "ab")) {
-        std::fprintf(file, "pass draws=%zu copyTex=%u slot0=%u slot1=%u slot2=%u slot3=%u slot4=%u slot5=%u\n",
-                     scaledDraws.size(), copyTextured, perSlot[0], perSlot[1], perSlot[2], perSlot[3], perSlot[4],
-                     perSlot[5]);
+        std::fprintf(file,
+                     "pass draws=%zu copyTex=%u slot0=%u/%u slot1=%u/%u slot2=%u/%u slot3=%u/%u slot4=%u/%u "
+                     "slot5=%u/%u\n",
+                     scaledDraws.size(), copyTextured, perSlot[0], texSlot[0], perSlot[1], texSlot[1], perSlot[2],
+                     texSlot[2], perSlot[3], texSlot[3], perSlot[4], texSlot[4], perSlot[5], texSlot[5]);
         std::fclose(file);
       }
     }
@@ -363,6 +368,15 @@ struct GpuDrawer::Impl {
     x1 = std::min(x1, static_cast<std::int32_t>(extent.width) - 1);
     y1 = std::min(y1, static_cast<std::int32_t>(extent.height) - 1);
     if (x1 < x0 || y1 < y0) return;
+    // IN-389: with GT4_HW_SCALED_TRACE the refresh is logged with the filter it actually pushes, so a 1x -> 6x
+    // magnification that ignores GT4_HW_SCALED_REFRESH can be told from one that never runs.
+    if (const char *tracePath = std::getenv("GT4_HW_SCALED_TRACE")) {
+      if (std::FILE *file = std::fopen(tracePath, "ab")) {
+        std::fprintf(file, "refresh depth=%u slot=%u linear=%u rect=%d,%d,%d,%d\n", depthSlot ? 1u : 0u, slot,
+                     depthSlot ? 0u : (scaledRefreshLinear ? 1u : 0u), x0, y0, x1, y1);
+        std::fclose(file);
+      }
+    }
     mark(kTimeUpload);  // the load before the refresh (12.8 timing: each interval goes to the mark after it)
     full_barrier();
     const std::uint32_t set = depthSlot ? kGpuColourSlots + slot : slot;
@@ -2291,6 +2305,7 @@ bool GpuDrawer::Impl::flush_run(std::string &error) {
       scaledDraw.firstVertex = static_cast<std::uint32_t>(draw.vertexOffsetBytes / sizeof(GpuVertex)) + draw.firstVertex;
       scaledDraw.vertexCount = draw.vertexCount;
       scaledDraw.pipeline = interlockTriangles;
+      scaledDraw.textured = true;  // IN-389: the interlock run path batches textured triangles only
       scaledDraws.push_back(scaledDraw);
     }
     record_scaled_draws(false);
@@ -2964,6 +2979,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
           scaledDraw.vertexCount = endVertex - firstVertex;
           scaledDraw.pipeline = s.interlockTriangles;
           scaledDraw.scaledTexture = scaledTextureCopy;
+          scaledDraw.textured = chunk.hasTexture;  // IN-389: diagnostics
           s.scaledDraws.push_back(scaledDraw);
         }
       }
@@ -3006,6 +3022,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
         scaledDraw.vertexCount = draw.count;
         scaledDraw.pipeline = s.pipelines[pipelineIndex];
         scaledDraw.scaledTexture = scaledTextureCopy;
+        scaledDraw.textured = chunk.hasTexture;  // IN-389: diagnostics
         s.scaledDraws.push_back(scaledDraw);
       }
     }
