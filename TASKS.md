@@ -1079,7 +1079,7 @@ and in PCSX2 GSdx). Performance felt clearly better even with the machine busy c
 a free machine. The build he tested stays as delivered until that run, so TASK-118 presets do not mix with its
 numbers. Split screen keeps the headlight glow (constant path, see the study); the sun is hidden there too.
 
-#### In progress (2026-10-26, owner switching agents): the four laptop fixes
+#### Done 2026-10-26 and published as 1.3.0-rc6 (public pre-release): the four laptop fixes
 The owner tested rc6 on an i5-7200U / Intel HD 620 and sent the sessions (`Z:` share). Four defects, each measured:
 
 1. **The launcher cost ~20% CPU in the background** (six full-screen 72 s CSS animations kept running after Play;
@@ -2279,3 +2279,21 @@ Acceptance: F8 on the laptop with the launcher idle, same scene and settings, EE
 PCSX2's, 60 FPS without dips, identity gates still green. Baseline and measurement plan: ai-memory
 `notes/pcsx2-baseline-weak-laptop`. Another agent is already working on the EE CPU side; coordinate before touching
 the same files.
+
+### Release 1.3.0-rc6 published (2026-10-26)
+Public **pre-release** on `moesuito/gt4-staticrecomp`, tag `v1.3.0-rc6` (commit `5832222`, branch
+`task/116-117-flare-perf`), above rc5 and with 1.2.4 still marked Latest. Assets:
+
+- `GT4Recomp-Setup-1.3.0-rc6.exe` (51,638,044 bytes, sha256 `5126645f…`) — installer build of the launcher
+  (`ab158b71…`), the two game programs pinned as `6682777e…` (v2.00) and `e8416152…` (Spec II), verified by
+  extracting the installer payload;
+- `GT4Recomp-1.3.0-rc6-portable.zip` (83,353,589 bytes, sha256 `d94479da…`);
+- `SHA256SUMS` with both.
+
+Covers TASK-116 step 1, TASK-117 (no flares, sun included) and TASK-118 (graphics settings). Notes:
+`docs/release-notes/1.3.0-rc6.md` (the 1.3.0 notes with the rc6 highlights on top).
+
+**Open: merge into `main` (PR #110).** It is not mergeable: `main` moved to the RetroAchievements 1.2.4 work and the
+new launcher frontend, and the conflicts touch `settings.js`, `commands.rs`, `TASKS.md`, `installer/gt4recomp.nsi`,
+`Cargo.toml`/`Cargo.lock`, `CMakeLists.txt`, the Python probes and tests. The tag and the release stay on the task
+branch until that integration is done carefully.
