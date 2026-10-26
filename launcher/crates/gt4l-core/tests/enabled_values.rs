@@ -46,7 +46,9 @@ fn every_enabled_choice_round_trips_into_the_ini_and_is_allowed() {
             checked += 1;
         }
     }
-    assert!(checked >= 60, "only {checked} enabled choices checked");
+    // A smoke floor, not a spec: TASK-118 cut the Advanced page down to a handful of rows, so only the choices that are
+    // still offered are counted. It only has to catch a table that is suddenly empty or unparsed.
+    assert!(checked >= 5, "only {checked} enabled choices checked");
 }
 
 #[test]

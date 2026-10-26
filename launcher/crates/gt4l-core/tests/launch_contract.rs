@@ -270,7 +270,7 @@ fn the_internal_resolution_follows_the_output_size_and_the_render_scale() {
         (2560, 1440, "100", "4"),
         (2560, 1440, "200", "8"),
         (3440, 1440, "100", "6"),
-        (3440, 1440, "200", "12"),
+        (3440, 1440, "200", "10"),
         (3088, 1440, "100", "5"),
         (3840, 2160, "75", "5"),
         (1280, 720, "100", "2"),
@@ -297,7 +297,7 @@ fn an_integrated_gpu_plays_the_untouched_default_at_native_resolution() {
     assert_eq!(multiplier_line(&launch::gs_config_text(&settings, &paths, Some(&target), false).unwrap()), "upscale_multiplier = 3");
     settings.set("render_scale", "150").unwrap();
     let text = launch::gs_config_text(&settings, &paths, Some(&target), true).unwrap();
-    assert_eq!(multiplier_line(&text), "upscale_multiplier = 5");
+    assert_eq!(multiplier_line(&text), "upscale_multiplier = 3");
 }
 
 #[test]
@@ -377,6 +377,29 @@ fn both_window_modes_pass_window_and_send_gt4_fullscreen_to_the_game_and_the_gs_
         assert_eq!(gs_plan.arguments.last().unwrap(), "--window");
         assert_eq!(env_map(&gs_plan.environment)["GT4_FULLSCREEN"], expected, "the PCSX2 GS path gets the same mode");
     }
+}
+
+// ---- TASK-117: the flare limits of the parked guest patch ---------------------------------------------------------
+
+/// The derived-ELF flare limits were parked in rc6: Performance Mode removes the flares in the host (the client answers
+/// the visibility table as zeros), so the launcher never sends `GT4_FLARE_LIMITS`, for either game or mode. An inherited
+/// value from a parent process is scrubbed.
+#[test]
+fn the_parked_flare_limits_are_never_sent() {
+    let mut performance = Settings::default();
+    performance.set_gs("performance_mode", "no-readbacks").unwrap();
+    let accurate = Settings::default();
+    for settings in [&performance, &accurate] {
+        assert!(!env_map(&plan_launch(&inputs(), settings, None, &[]).environment)
+            .contains_key("GT4_FLARE_LIMITS"));
+        let spec2 = LaunchInputs { elf: Path::new("C:/work/SCUS_974.36"), ..inputs() };
+        assert!(!env_map(&plan_launch(&spec2, settings, None, &[]).environment)
+            .contains_key("GT4_FLARE_LIMITS"));
+    }
+    let inherited = vec!["GT4_FLARE_LIMITS".to_string()];
+    let plan = plan_launch(&inputs(), &performance, None, &inherited);
+    assert_eq!(plan.removed_inherited, vec!["GT4_FLARE_LIMITS".to_string()]);
+    assert!(!env_map(&plan.environment).contains_key("GT4_FLARE_LIMITS"));
 }
 
 // ---- TASK-097: the config file of a direct start ---------------------------------------------------------------------

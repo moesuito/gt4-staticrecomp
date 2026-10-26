@@ -10,6 +10,11 @@
 
 #include "standalone.hpp"
 
+#ifdef GT4_GS_STREAM_CLIENT
+#include "gs_stream/gs_stream_client.hpp"
+#include "ps2/memory.hpp"
+#endif
+
 #include <windows.h>
 
 #include <bcrypt.h>
@@ -243,6 +248,11 @@ int run_standalone(int argc, char **argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+#ifdef GT4_GS_STREAM_CLIENT
+  // TASK-116 step 0 (P0 gate): the guest RAM window that turns a READ_FIFO host pointer into an EE address in the
+  // GT4_GS_READBACK_LOG lines (native/gs_stream/gs_readback_probe.hpp). Nothing happens when the switch is unset.
+  gt4::gs_stream::set_guest_ram(ps2::g_ram, ps2::kRamSize);
+#endif
   if (!sa::is_standalone_start(argc, argv)) return gt4_donor_main(argc, argv);
   return run_standalone(argc, argv);
 }

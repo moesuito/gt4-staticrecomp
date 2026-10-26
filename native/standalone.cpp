@@ -354,8 +354,35 @@ Config parse_config(std::string_view text) {
   return config;
 }
 
-Environment config_environment(const Config &config) {
-  Environment out;
+// TASK-117: a direct start with Performance mode on gets the flare limits too. At Play the launcher sets
+// GT4_FLARE_LIMITS; here the gt4-gs.ini of the config folder (the same file the game hands to the GS process) says
+// whether Performance mode is on: HWDownloadMode = 2 in [EmuCore/GS] (docs/launcher/gs-settings.toml). Only GT4 v2.00
+// has the derived ELF with the helpers; Spec II's ELF has no such code.
+bool gs_ini_performance_mode(const Access &access, const std::filesystem::path &ini) {
+  const std::optional<std::string> text = access.read_text ? access.read_text(ini) : std::nullopt;
+  if (!text) return false;
+  bool section = false;
+  std::size_t position = 0;
+  while (position <= text->size()) {
+    std::size_t end = text->find('\n', position);
+    if (end == std::string::npos) end = text->size();
+    const std::string line = trim(std::string_view(*text).substr(position, end - position));
+    position = end + 1;
+    if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+    if (line[0] == '[') {
+      section = line == "[EmuCore/GS]";
+      continue;
+    }
+    if (!section) continue;
+    const std::size_t equals = line.find('=');
+    if (equals == std::string::npos) continue;
+    if (trim(std::string_view(line).substr(0, equals)) != "HWDownloadMode") continue;
+    return trim(std::string_view(line).substr(equals + 1)) == "2";
+  }
+  return false;
+}
+
+Environment config_environment(const Config &config) {  Environment out;
   const auto get = [&](const char *key) -> const std::string * {
     const auto it = config.values.find(key);
     return it == config.values.end() ? nullptr : &it->second;
@@ -407,7 +434,13 @@ Resolved resolve(const Inputs &inputs, const Access &access) {
     layers.emplace_back("GT4_GS_PROCESS", inputs.renderer->executable.string());
     layers.emplace_back("GT4_GS_PROCESS_SHA256", inputs.renderer->recorded_sha256);
   }
-  if (pcsx2 && inputs.gs_ini_exists) layers.emplace_back("GT4_GS_CONFIG", (layout.config_dir / kGsConfigFileName).string());
+  if (pcsx2 && inputs.gs_ini_exists) {
+    const std::filesystem::path ini = layout.config_dir / kGsConfigFileName;
+    layers.emplace_back("GT4_GS_CONFIG", ini.string());
+    // TASK-117: Performance mode on also limits the flares in a direct start (GT4 v2.00 only).
+    if (std::string_view(layout.game.id) == "gt4" && gs_ini_performance_mode(access, ini))
+      layers.emplace_back("GT4_FLARE_LIMITS", "1");
+  }
   if (inputs.controls_exists) layers.emplace_back("GT4_CONTROLS_FILE", (layout.user_root / "controls.toml").string());
   const Environment defaults = default_environment();
   layers.insert(layers.end(), defaults.begin(), defaults.end());

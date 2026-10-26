@@ -60,6 +60,8 @@ SCENES = {
 }
 
 # The gt4-gs.ini the probe writes for performance runs (TASK-036 minimal settings, 1x), plus surfaceless dumping.
+# HWDownloadMode (TASK-116 step 0): 0 = Accurate (GSHardwareDownloadMode Enabled), 2 = NoReadbacks, the launcher's
+# Performance mode (docs/launcher/gs-settings.toml, performance_mode).
 GS_INI = """; gt4-gs.ini written by scripts/frame_cost_headless.py (the probe's TASK-036 settings, 1x).
 [EmuCore/GS]
 Renderer = 14
@@ -69,7 +71,7 @@ deinterlace_mode = 0
 AspectRatio = Auto 4:3/3:2
 VsyncEnable = true
 DisableMailboxPresentation = true
-HWDownloadMode = 0
+HWDownloadMode = {readback}
 
 [Folders]
 Cache = {cache}
@@ -87,6 +89,10 @@ def sha256(path):
         for block in iter(lambda: handle.read(1 << 20), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+# TASK-116 step 0: --readback to the HWDownloadMode value of the generated gt4-gs.ini (docs/launcher/gs-settings.toml).
+READBACK_MODES = {'accurate': 0, 'no-readbacks': 2}
 
 
 def builders_running():
@@ -141,6 +147,8 @@ def main():
     parser.add_argument('--frame-every', type=int, default=100, help='frame dump interval (0 = no dumps)')
     parser.add_argument('--renderer', choices=('pcsx2', 'donor'), default='pcsx2')
     parser.add_argument('--scale', type=int, default=1, help='gt4-gs internal resolution (1 = the owner 480p look)')
+    parser.add_argument('--readback', choices=('accurate', 'no-readbacks'), default='accurate',
+                        help='gt4-gs HWDownloadMode: accurate (0, the default) or no-readbacks (2, Performance mode)')
     parser.add_argument('--gs-exe', help='gt4-gs.exe used for pcsx2 runs')
     parser.add_argument('--gs-sha256', help='expected gt4-gs.exe SHA-256, forwarded as GT4_GS_PROCESS_SHA256')
     parser.add_argument('--elf', help='game ELF (default the pinned v2.00 reconstructed ELF)')
@@ -194,7 +202,8 @@ def main():
         if options.frame_every:
             # gt4-gs treats DumpEvery = 0 as "every frame", so the keys are omitted when no dumps are wanted.
             dump_lines = f'DumpDir = {run / "gs-frames"}\nDumpEvery = {options.frame_every}\n'
-        ini = with_textures(GS_INI.format(scale=options.scale, cache=assets / 'private/slice193-gt4gs-cache',
+        ini = with_textures(GS_INI.format(scale=options.scale, readback=READBACK_MODES[options.readback],
+                                          cache=assets / 'private/slice193-gt4gs-cache',
                                           data=assets / 'private/slice193-gt4gs-data', dump_lines=dump_lines),
                             str(textures) if textures else None)
         (run / 'gt4-gs.ini').write_text(ini, encoding='utf-8')
@@ -223,6 +232,7 @@ def main():
         'frame_every': options.frame_every,
         'renderer': options.renderer,
         'scale': options.scale,
+        'readback': options.readback,
         'build': str(exe),
         'build_sha256': sha256(exe),
         'elf': str(elf),

@@ -96,6 +96,10 @@ add_test(NAME native_gs_stream_client
     COMMAND $<TARGET_FILE:gs_stream_client_fixture> $<TARGET_FILE:gs_stream_record> "${CMAKE_BINARY_DIR}/gs-stream-client-scratch")
 set_tests_properties(native_gs_stream_ipc native_gs_stream_client PROPERTIES RUN_SERIAL TRUE TIMEOUT 300
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+# TASK-116 step 0: the READ_FIFO probe of the flare readback (GT4_GS_READBACK_LOG): ini parse, hash, aggregation.
+add_test(NAME native_gs_readback_probe
+    COMMAND $<TARGET_FILE:gs_readback_probe_fixture> "${CMAKE_BINARY_DIR}/gs-readback-probe-work")
+set_tests_properties(native_gs_readback_probe PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 add_test(NAME native_shape_capture_export COMMAND $<TARGET_FILE:shape_capture_export_fixture>)
 add_test(NAME native_shape_capture_control COMMAND $<TARGET_FILE:shape_capture_control_fixture>)
 add_test(NAME python_native_contracts

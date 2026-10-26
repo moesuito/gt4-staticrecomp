@@ -43,8 +43,15 @@ class SceneScheduleTests(unittest.TestCase):
 
 
 class GsIniTests(unittest.TestCase):
-    def render(self, dump_lines=''):
-        return harness.GS_INI.format(scale=1, cache='C:/cache', data='C:/data', dump_lines=dump_lines)
+    def render(self, dump_lines='', readback=0):
+        return harness.GS_INI.format(scale=1, readback=readback, cache='C:/cache', data='C:/data',
+                                     dump_lines=dump_lines)
+
+    def test_readback_option_maps_to_the_download_mode(self):
+        # TASK-116 step 0: --readback writes the launcher's HWDownloadMode into the generated ini.
+        self.assertEqual(harness.READBACK_MODES, {'accurate': 0, 'no-readbacks': 2})
+        self.assertIn('HWDownloadMode = 0\n', self.render())
+        self.assertIn('HWDownloadMode = 2\n', self.render(readback=harness.READBACK_MODES['no-readbacks']))
 
     def test_no_dump_keys_when_dumps_are_off(self):
         text = self.render()

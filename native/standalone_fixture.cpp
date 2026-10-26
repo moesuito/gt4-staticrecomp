@@ -340,6 +340,19 @@ void check_resolve() {
   check(has(resolved.set, "GT4_MONITOR", "\\\\.\\DISPLAY2") && has(resolved.set, "GT4_OUTPUT_SIZE", "3440x1440"), "the display from the config");
   check(has(resolved.set, "GT4_GS_CONFIG", (layout->config_dir / "gt4-gs.ini").string()), "the gt4-gs.ini of the launcher");
   check(has(resolved.set, "GT4_CONTROLS_FILE", (layout->user_root / "controls.toml").string()), "the controls file of the launcher");
+  // TASK-117: Performance mode on in that ini limits the flares (GT4 v2.00 only), like the launcher's GT4_FLARE_LIMITS.
+  World accurate = ready_world();
+  accurate.file(layout->config_dir / "gt4-gs.ini", "[EmuCore/GS]\nHWDownloadMode = 0\n");
+  check(lacks(sa::resolve(inputs, accurate.access()).set, "GT4_FLARE_LIMITS"), "Accurate mode keeps the original flares");
+  World performance = ready_world();
+  performance.file(layout->config_dir / "gt4-gs.ini", "; gt4-gs.ini\n[EmuCore/GS]\nRenderer = 14\nHWDownloadMode = 2\n\n[GT4GS]\nSurfaceless = true\n");
+  check(has(sa::resolve(inputs, performance.access()).set, "GT4_FLARE_LIMITS", "1"),
+        "Performance mode on in the gt4-gs.ini sends the flare limits");
+  // A GT4_FLARE_LIMITS the user set himself is never overwritten.
+  World inherited = ready_world();
+  inherited.file(layout->config_dir / "gt4-gs.ini", "[EmuCore/GS]\nHWDownloadMode = 2\n");
+  inherited.environment["GT4_FLARE_LIMITS"] = "0";
+  check(lacks(sa::resolve(inputs, inherited.access()).set, "GT4_FLARE_LIMITS"), "a set variable is never overwritten");
 
   // The process environment wins over the config and the defaults; an empty value counts as unset.
   world.environment["GT4_FULLSCREEN"] = "1";

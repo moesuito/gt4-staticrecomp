@@ -136,8 +136,9 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑112 | Launcher logs: one file per session with INFO, WARN and ERROR lines, the last 20 kept, `latest.log` with the earlier errors, game session folders capped at 20, Open latest log | 🔧 Implemented on `task/101-multi-game` (rc4, 2026-10-23), owner test pending · release 1.3.0 |
 | TASK‑113 | Spec II race HUD at ultrawide ratios (wider than 16:9): speed figure and odometer digits stretched and spilling past the gauge (known issue in 1.3.0) | 📋 Planned (owner, 2026-10-23) · next update |
 | TASK‑115 | Game recognition and Discord: Windows Game Mode/Game Bar, AMD and NVIDIA capture (Instant Replay, ShadowPlay) and Discord Rich Presence | 📋 Planned (owner, 2026-10-24) · future (1.3.1 or later) |
-| TASK‑116 | George V Paris below 60 FPS: one GS readback per frame makes the game wait for VU1 and GSdx; 1.3.1 = no VU1 drain when the readback returns nothing, plus unsynchronized readbacks in gt4-gs 1.2.2 | 🔧 Step 1 studied (2026-10-24), moved to 1.3.0-rc6 with TASK-117 (owner); step 2 stays 1.3.1 |
-| TASK‑117 | Performance mode, part 2: fewer light flares at night (no halo, distance cull, light caps), our own clean implementation in GT4 v2.00, off when Performance mode is off | 🔧 Study done (2026-10-24), plan below · 1.3.0-rc6 with TASK-116 step 1 (owner) |
+| TASK‑116 | George V Paris below 60 FPS: one GS readback per frame makes the game wait for VU1 and GSdx; 1.3.1 = no VU1 drain when the readback returns nothing, plus unsynchronized readbacks in gt4-gs 1.2.2 | 🔧 rc6 step 1 implemented and tested headless (2026-10-25); owner test pending; step 2 stays 1.3.1 |
+| TASK‑117 | Performance mode, part 2: fewer light flares at night (no halo, distance cull, light caps), our own clean implementation in GT4 v2.00, off when Performance mode is off | ⚠ rc6 ELF, library and host block built and tested (2026-10-25), NOT shipped: the switch-off identity gate failed (journal 2026-10-25) |
+| TASK‑118 | Graphics settings simplification: Performance Mode becomes a real preset (blending Basic, trilinear/dithering off, preloading partial), the Advanced page loses the cosmetic rows, RC-only settings move to an RC Settings area, GS async and deinterlace become fixed | 🔧 Planned (2026-10-25, owner), 1.3.0-rc6 |
 | TASK‑093 | Custom textures straight in the Textures folder: gt4-gs 1.2.1 reads the folder itself; the launcher stops creating `replacements` and moves an old `replacements` folder's contents up once gt4-gs 1.2.1 is in use | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑096 | Remove CoreGS 1.1 from the launcher (owner, 2026-10-22): GSdx only, CoreGS 2.0 shown as "Coming soon" (disabled), a stored CoreGS 1.1 choice migrates to GSdx, a GSdx failure shows a clear error instead of falling back; CoreGS 1.1 stays in the game executable, unused by the launcher. For launcher release 1.2.3 | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
@@ -461,14 +462,11 @@ State (2026-10-21): ✅ Done. The owner tested the installer end to end and appr
 
 ### TASK-082 — Native variable frame rate
 
-State (2026-10-25): Phase P0 complete (frame-loop observation and dependency proof).
+State (2026-10-26): 🔧 Implemented on `task/082-render-skip` (rc7), owner test pending.
 Dedicated worktree `C:\Antigravity\gt4-wt-082-render-skip`, branch `task/082-render-skip`.
-H0-H2 observation probe implemented behind `GT4_FPS_PROBE=1` (default off) in `native/fps_probe.*`.
-Unit test `fps_probe_fixture` (6/6 passing) and Python suite `test_fps_probe.py` (7/7 passing).
-Purity report proves unattributed_words == 0 outside packet buffers (simulation state completely uncontaminated).
-Update-only budget measured at ~1.9 - 3.0 ms EE thread (~4-5x cheaper during skipped frames), confirming feasibility
-of real-time 100% simulation at 30 and 20 presented FPS. Disjoint guest memory identified in PHDR 2 (0x00634000).
-Phase P1 has NOT started; execution paused at P0 checkpoint for orchestrator review and owner decision.
+Render skip gate implemented at 0x00100F50 (Manager B render dispatch) with debt-based timing policy and emergency flare drain.
+P0 and P1 headless identity and simulation equality verified (stream hash bit-identical when off; 100% dynamics digest match when skipping).
+Launcher toggle "Skip frames when slow" added to Graphics page (default off, GT4 v2.00 only). Unit tests passing (fixture, Python, Rust).
 
 Owner request 2026-10-21: 30, 45, 120, 144 or unlocked FPS with game speed unchanged, real frames from the game rather
 than image interpolation (TASK-045 stays the fallback and runs its race oracle in parallel). Study:
@@ -926,9 +924,10 @@ Work:
    sent anywhere else. In-game details (mode, track, car) need guest-memory reads: a later step.
 Acceptance: the owner sees each feature work on his machines; unit tests for the presence payload and the switch.
 
-### TASK-117 — Performance mode, part 2: fewer light flares at night
-Planned (owner, 2026-10-24); not started. Proposed for 1.3.0-rc6 together with TASK-116 step 1, because both need a
-new GT4 v2.00 game build (one rebuild, one set of pins).
+### TASK-117 — Performance mode, part 2: no light flares at all in Performance Mode (sun included)
+**Done in rc6 as a host change; owner visual test passed, F8 pending (2026-10-25).** Two forms were tried: the derived-ELF guest patch (built, parked below: a runtime-switched guest patch cannot pass its identity gate) and the host-side zero table, which ships. The owner tested v2.00 and Spec II, night and day: flares gone, no other visual difference, and the glows no longer draw over the virtual rear-view mirror (a known GT4/GSdx artefact). Partial success until his F8 on a free machine confirms the frame times. Owner decision (2026-10-25 evening): Performance Mode removes every flare, the sun included, because weaker PCs lose frames on the Nordschleife only when driving into the sun.
+History (2026-10-24): planned for 1.3.0-rc6 together with TASK-116 step 1, because both need a new GT4 v2.00 game
+build (one rebuild, one set of pins).
 Idea source: the owner found https://github.com/nobz226/gt-pcsx2-patches (PCSX2 pnach files for GT4 USA, CRC
 77E61C8A, and GT3 JP). That repository has **no license**, so it is a reference only: we never copy its stub code or
 words; we write our own guest code from our own disassembly and credit the idea in the release notes. Its README
@@ -1027,6 +1026,128 @@ equal, MTVU and VU1 verify clean, hole hash unchanged at the first race frame an
 Owner test: George V Paris night F7/F8 with Performance mode on (target: mtvu download and readback wait near 0,
 60 FPS without the dips), flare look on and off.
 
+
+
+#### Scope change (owner, 2026-10-25 evening): cut every flare, the sun included
+Performance Mode no longer reduces the flares: it removes them. No track lamps, no car lamps and no sun flare (weak PCs
+lose FPS on the Nordschleife only when driving into the sun). With no light queued the game skips the 2 KiB sample, so
+the per-frame readback, the VU1 drain, the round trip and the one-frame lag all disappear. Perceived on the owner's rc6
+test build. Implementation: redirect the two lamp-queue fills (0x3B7BE4, 0x3B85C0) and the sun sample/draw (inside
+0x3B8400 and `jal 0x4985F8` at 0x3B89E0) to helpers that return "not visible" with the switch on; the flare draw sites
+need nothing because no entry is ever queued. The switch-off path must stay byte-identical to rc5: the derived ELF built
+for the earlier "fewer flares" variant still diverges with the switch off, so the bisect below comes first. Full spec:
+ai-memory `decisions/rc6-performance-mode-cuts-flares`.
+#### rc6 delivery (2026-10-25): built, not shipped
+Derived v2.00 ELF `SCUS_973.28.flare.elf` (sha256 `6c156b5f…`, 6,123,004 bytes) built by
+`scripts/flare_limits_elf_patch.py produce` and pinned by that script (`check`, `verify`, `record-library`): the four
+`jal` redirects (0x3B7BE4 track fill and 0x3B85C0 car fill → 0x4955A0 / 0x495600; 0x3B8BA0 and 0x3B8CE8 halo →
+0x495580) plus our helpers in the zero padding, each ending in `j <original routine>` so `ra` (call + 8) is kept and
+a zero flags word runs the original instruction in effect. Only caller-saved registers are touched (t0-t2, $f0, $f19).
+The generated code calls the helpers from units 00AD (track fill) and 00AE (car fill and both halo sites), with the
+delay slot unchanged; unit_00E5 holds the three helper entries (91-93) and unit_00E6 the flare routine. The accepted
+seed set is unchanged (translator entries 138,815 against 138,813 for the original: the three new entries). Eight
+units differ from the slice208 library: 008E, 008F, 00A6, 00A7 (the TASK-080 rows and the id renumbering), 00AD,
+00AE, 00E5, 00E6. Library pin `docs/inputs/slice299-ee-libraries.json`, profile `flare` (CMake `GT4_EE_PROFILE=flare`).
+Host: `native/flare_limits.*` writes the six-word block at 0x7F10 (flags 7, track depth 60, car depth 40, caps 12/12)
+at every guest VBlank when `GT4_FLARE_LIMITS=1`, a zero block otherwise; CTest `native_flare_limits`. Launcher:
+`launch.rs` sends `GT4_FLARE_LIMITS=1` for GT4 v2.00 (its ELF name) with Performance Mode on, never for Spec II, and
+the direct start reads `HWDownloadMode = 2` from the config `gt4-gs.ini`; `launch_contract` and the standalone
+fixture cover both. Tests: `tests/python/test_flare_limits_elf_patch.py` pins every helper word, the redirects, the
+block offsets against `native/flare_limits.hpp`, the old words against the pinned ELF and the produced derivative.
+
+
+
+#### Final implementation (2026-10-25, in rc6): the host answers the flare table as zeros
+In Performance Mode the gs_stream client already answers the 128-qword (64x8) flare readback from the VU1 journal.
+It now answers **zeros**: the VU1 scales every lamp, every headlight and the sun by its own pixel of that table
+(`docs/GS-READBACK-STUDY.md` 1.1), so an all-zero table draws no flare, halo or sun glare. The READ_FIFO is still
+queued, so the journal keeps deferring `sync("download")` exactly as in TASK-116 step 1; only the bytes the guest
+receives change. Switch: `GT4_GS_HIDE_FLARES` (unset = on with the local answer, `0` = the previous reply). No guest
+code and no launcher wiring, so Performance Mode off stays byte-identical to rc5 by construction; the sun needs no
+separate path. The one-frame occlusion lag also disappears, because no flare is drawn at all.
+
+Measured headless (night, 12,000 frames, 1x, `HWDownloadMode=2`, `GT4_GS_READBACK_LOG=1`): with hiding, 3,763 of 3,763
+tables answered as zeros (probe `nz=0..0`), no readback wait, `mtvu download` 0.000 ms and the EE critical path
+unchanged (5.87-6.52 ms against 6.00-6.44 ms with the previous reply); every dump before the race is byte-identical,
+and the race dumps differ only on the lights and their glows. CTest: new `pcsx2-hidden` scenario; `pcsx2-local` now
+pins `GT4_GS_HIDE_FLARES=0`.
+
+Why the guest patch was dropped: the emulated EE clock is counted in instructions (`system.cpp` `now()` =
+`g_base + (g_given - budget)`; VBlank and alarms are scheduled at guest cycles), so any runtime switch that adds
+instructions moves where the VBlank lands in the guest frame. The derived ELF therefore diverged from rc5 on the
+first frame that drew flares even with every helper taking the original path, and no placement or entry-id fix can
+remove that. The derived ELF (`scripts/flare_limits_elf_patch.py`, the `flare` profile, `native/flare_limits.*`)
+stays on the branch as a documented dead end; only a guest patch removes the GS-side 2 KiB download, which belongs to
+TASK-116 step 2 (async download in gt4-gs, 1.3.1).
+
+Owner test (2026-10-25, night): **visual acceptance passed** in v2.00 and Spec II, night and day: flares gone, no
+other visual difference, and the glows stopped drawing over the virtual rear-view mirror (a known artefact in GT4
+and in PCSX2 GSdx). Performance felt clearly better even with the machine busy compiling; **F8 metrics pending** on
+a free machine. The build he tested stays as delivered until that run, so TASK-118 presets do not mix with its
+numbers. Split screen keeps the headlight glow (constant path, see the study); the sun is hidden there too.
+
+#### In progress (2026-10-26, owner switching agents): the four laptop fixes
+The owner tested rc6 on an i5-7200U / Intel HD 620 and sent the sessions (`Z:` share). Four defects, each measured:
+
+1. **The launcher cost ~20% CPU in the background** (six full-screen 72 s CSS animations kept running after Play;
+   hiding the window does not stop WebView2). F8 proof: the game EE CPU itself went from 6-12 ms to 19.61/19.16 ms
+   on that run. Fix: pause them while hidden/blurred/in game (body.is-idle) and keep WebView2 GPU acceleration on.
+2. **A normal close was reported as a crash**: the launcher read `game.log` in the same instant the game wrote its last
+   line (three sessions: `Crashed { reason: None, exit_code: Some(0) }` with a normal `[ee] stopped ... window closed`).
+   Fix: wait for the shutdown line (25 ms poll, 1.5 s cap) and treat exit 0 without one as a normal close.
+3. **Vulkan loses the device on the HD 620** at the showroom (issue #89; it reports Vulkan 1.3, so the automatic API
+   rule picks it). Direct3D 11 runs fine; Direct3D 12 is clearly slower there. Fix: remember `graphics_api = d3d11`
+   after a Vulkan device loss and say so.
+4. **Render scale jumped 1x -> 4x in one notch** on the integrated GPU (100% = 1x by issue #89, then k x percent).
+   Fix: additive steps, one multiplier per 25% from the 100% plan (integrated 1/2/3/4/5x), clamped 1..12.
+
+Code state when the session ended (all in the worktree, `cargo test -p gt4l-core` green, `cargo check -p gt4l-tauri`
+green with `GT4_SDL3_ROOT` set):
+- `display.rs`: additive mapping + tests; `exit.rs`: `is_settled` + relaxed `classify` + test;
+- `commands.rs`: `read_settled_log`, `PlayInputs.api`, the Vulkan->D3D11 memory; locale key
+  `rust.game.gpu_lost_switched`; `gs-settings.toml`: `blending` hidden; `launch.rs`: preset writes blending
+  Minimum (Performance Mode on) or High (off).
+- **Still missing:** the UI pause (`app.css` body.is-idle + `app.js` game-state/visibilitychange/blur), and the
+  portable launcher rebuild + owner/laptop copies. Full checklist: ai-memory `procedures/task-118-launcher-fixes`.
+
+Performance Mode preset (supersedes the earlier list): `HWDownloadMode 2` + `accurate_blending_unit Minimum` only.
+Trilinear, dithering, preloading, filtering and mipmapping stay at their accurate defaults: measured on the laptop,
+turning them off changed nothing outside the noise and cost picture quality. Details in ai-memory
+`gotchas/weak-laptop-ee-bound` and `decisions/rc6-laptop-launcher-fixes`.
+
+### TASK‑118 — Graphics settings simplification (owner, 2026-10-25, 1.3.0-rc6)
+Owner decision, recorded directly by the implementation session (no orchestrator round trip). The Advanced page of
+Settings > Graphics is too technical and Performance Mode is only a readback switch today.
+
+What changes:
+1. **Performance Mode becomes a preset.** On: `HWDownloadMode` 2 (as today), `accurate_blending_unit` Basic,
+   `TriFilter` off, `dithering_ps2` off, `TexturePreloadingLevel` Partial. Off: exactly today's values (blending
+   High, trilinear automatic, dithering unscaled, preloading full). Blending accuracy leaves the Advanced page.
+2. **Fixed values, rows removed:** deinterlace automatic, present filter smooth, integer scaling off, interlace offset
+   off, anti-blur on, offsets/overscan off, TV shader none, anisotropic off, accurate alpha test off, AA1 off, ROV off,
+   shade boost and its four sliders off, disable shader cache off, texture filtering PS2, mipmapping on.
+3. **GS async leaves the launcher** and is always on (it was a debugging A/B switch and is the default).
+4. **RC Settings area** (only in release-candidate builds, `gt4l_core::build_kind`): Release performance report
+   (`performance_report`) and Verificar código VU compilado (`check_vu_code`). Final builds do not ship them.
+5. **Kept for everyone, default off:** the PCSX2 performance overlay (OSD) and the "compiling shaders" notice.
+6. **Removing a row never stops writing the key**: each removed row keeps a fixed value in `gt4-gs.ini`, otherwise an
+   existing install keeps a stale value.
+
+Rules: gameplay never changes (an icon, loading picture or flare may be lost; physics, timing, AI, saves and replays
+may not). Every preset key needs a headless A/B on the F8 harness before it ships, and the owner tests in game.
+6. **No "Automatic" choice for API or card** (owner, 2026-10-25): the launcher resolves both on the first start and
+   stores the result, so the UI shows "Vulkan" and the player's card name directly; the player can change either one,
+   and a card that disappears falls back to the rule's pick for that run and updates the stored value (never silently
+   back to "Automatic"). Needs a settings migration that materialises a stored "auto".
+7. **Render scale becomes one slider**: 100% by default, 50%..200%, no "6x" text and no resolution text beside it. It
+   snaps to the integer GSdx multipliers 1x..12x and stores the multiplier (the ini keeps integers); the percentage is
+   relative to the automatic plan, which stays the 100% baseline and must keep working from the monitor resolution.
+   **Hard cap at 8K**: 12x is 7680x6144, so an 8K output tops out at 100% (12x).
+8. **AA1 stays disabled by default** (owner, 2026-10-25): it does not join the anti-aliasing row and does not enter the
+   Performance Mode preset unless a headless A/B plus the owner's eyes show a real GT4 gain.
+Acceptance: the Advanced page holds only rows a player can reason about; Performance Mode on/off is the single
+switch; no lost option changes gameplay; tests for the preset layer, the fixed rows and the RC-only gate.
+
 ### TASK-116 — George V Paris performance
 Recorded (owner, 2026-10-24) on 1.3.0-rc5, Spec II (Arcade unlocks every track), night race on George V Paris,
 GSdx Vulkan 6x, Performance Mode off, owner PC (Ryzen 7 5700X, RX 9060 XT). The owner calls it the heaviest and least
@@ -1053,6 +1174,19 @@ Plan for 1.3.1 (owner, 2026-10-24):
    with the OpenGL entry of TASK-107); the readback returns the previous frame's data without waiting, so the flares stay
    and react one frame late, and the game skips the VU1 drain as in step 1. Before shipping, confirm the 2 KB readback is
    the flare visibility test (game logic must never change) and offer it as a third Readbacks choice after an owner test.
+
+
+#### rc6 delivery of step 1 (2026-10-25)
+Performance mode answers only the 128-qword flare readback locally with the previous reply (one frame old, never a
+zero table): `sync("download")` closes the VIF1 batch and returns (`download_deferred`), the client queues the
+READ_FIFO behind the journal (`EntryKind::Readback`, `Session::post_read_fifo_nowait`) so the record keeps its stream
+position, and the reply is collected one frame later by exact request id. Every other readback (car icons, loading
+picture, thumbnail, photo) drains on demand (`mtvu::drain_download`) and waits, as does the first flare readback of a
+scene. `GT4_GS_READBACK_LOCAL=0` restores the old behaviour; `GT4_GS_READBACK_LOG=1` logs every reply (P0 probe).
+Night race headless 1x: blocking drains 5,026 → 29, readback wait total 4,596.6 / 2,329.1 → 46.1 ms, 4,997 of
+4,998 flare replies from the cache, record counts equal to the pre-rc6 Performance-mode run; the Accurate run still
+hashes `c091716e3cb40d79`. The owner F8 decides the gain: part of the old 5.5 ms "download" was the EE's own ring
+writing (now `EE gs_drain` 2.2-4.2 ms/frame), so the net saving is about 2-3.5 ms/frame in the race stretch.
 
 ### TASK-100 — Spec II support (release 1.3.0)
 Planned (owner, 2026-10-22) for release 1.3.0: Spec II ships before the wheels and before CoreGS 2.0 (owner, 2026-10-23), on GSdx. Scope as decision 0072:
@@ -2137,3 +2271,18 @@ Maintainer launcher acceptance remains pending.
 Owner test: select CoreGS 1.1, restart the launcher with no gt4-gs package, launch a game and confirm
 there is no renderer download; switch back to PCSX2 and confirm its existing setup/update path.
 This changes package management, not rendering fidelity, performance or CoreGS 2.0 readiness.
+
+### TASK‑119 — CPU: reach PCSX2 usage at 1x, then go below it (owner, 2026-10-26)
+Owner decision (pinned in ai-memory `decisions/next-objective-cpu-parity-with-pcsx2`). On the weak laptop (i5-7200U,
+HD 620, 1x, Direct3D 11, blending Minimum, MTVU on, no speed hacks) the same scene (Time Trial Nordschleife, Pitwork Z)
+runs at **~50% CPU on PCSX2 with 60 FPS and the flares on**, against **70-80% and dips** on this port. GPU is the same
+20-30%. A static recompiler must not use more CPU than the JIT: the gap is our overhead.
+
+Order: **first match PCSX2** (about 50% on that laptop, 60 FPS, no dips, correctness unchanged), then go beyond it.
+Where to look, in order: (1) per-instruction `c.budget -= N` / `preempt(c)` / `ld32`-`set32` in the generated code;
+(2) the GS IPC, ~1,670 records per frame to a separate process plus journal ordering and frames-in-flight waits;
+(3) FPU/MMI semantic wrappers per operation; (4) kernel/syscall and idle handling.
+Acceptance: F8 on the laptop with the launcher idle, same scene and settings, EE CPU and EE critical path at or below
+PCSX2's, 60 FPS without dips, identity gates still green. Baseline and measurement plan: ai-memory
+`notes/pcsx2-baseline-weak-laptop`. Another agent is already working on the EE CPU side; coordinate before touching
+the same files.

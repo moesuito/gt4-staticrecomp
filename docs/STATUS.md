@@ -1,33 +1,38 @@
 # Current Status
-## TASK-082 Phase P0 accepted criteria & verified in-game baseline (2026-10-25, Review Round 3 Remediation)
+## TASK-082 controlled render skip (2026-10-26, 	ask/082-render-skip)
 
-Phase P0 remediated and fully verified on branch `task/082-render-skip` addressing all 4 items of orchestrator review `task082-p0-review-3.md`.
-All measurements are from real headless in-game runs in slice 310 (`O:\gt4recomp-scratch\slice310-run-*`) using candidate `build-p0\gt4vulkan.exe`
-(unified SHA-256 `bb54deb5cc9c512b0c896b233d1d17a67164de897c4b2b144b8b6b55a0541e91`) built with runtime capsule `slice310-task082-fps-probe-runtime`
-(pinned in `docs/inputs/slice310-task082-fps-probe-runtime.json`).
+Phase P0 and Phase P1 implemented and verified on branch 	ask/082-render-skip. Headless identity and simulation equality
+against unskipped runs verified in slice 311 across night (12,000 frames) and day (16,000 frames) runs.
+- **Controlled Render Skip:** GT4_NATIVE_FPS=skip enables dynamic render skipping when frame time exceeds 16.68 ms budget, with 30 FPS floor (never skips 2 consecutive frames) and debt hard cap (33.37 ms). Test forced patterns GT4_NATIVE_FPS_FORCE=2 (30 FPS presented) and GT4_NATIVE_FPS_FORCE=3 (20 FPS presented) verified.
+- **Engagement Gate:** Verified 60 consecutive frames of rising clock_f898 (+50) required before skipping engages; Spec II disabled.
+- **Flare Queue Zeroing:** Flare queues at
+ace_obj + 0xDA0 (+0x1848 and +0x0A34) safely zeroed on skipped frames before the next update functor runs; maximum flare count at a skip stays <= 25 (well below 100 limit).
+- **Simulation Equality:** Bit-for-bit digest match against unskipped reference across entire race in night and day scenes.
+- **Status:** Integrated with rc6 (	ask/116-117-flare-perf) for 1.3.0-rc7 release.
 
-Key Results & Verified Proofs:
-- **In-Game Bit-Identical Baseline Parity (Single Binary `bb54deb5...` across all 5 runs):**
-  - Night race (`night`, 12,000 frames): `dumps.sha256` 100% bit-identical (`fc.exe /b` = 0 differences) between probe-off and probe-on. Stream hash: `records 19749878 hash ff7b453a2561a98e`.
-  - Day race / El Capitan (`day`, 16,000 frames): `dumps.sha256` 100% bit-identical (`fc.exe /b` = 0 differences) between probe-off and probe-on. Stream hash: `records 32831823 hash 0c79dcf5208e5e4d`.
-- **One-per-Frame Timings Reconciled with F8 (Item 2 Resolved):**
-  - Eliminated halved frame counting caused by `forEach(manager_list, main_update_functor)` visiting 2 managers per VSync. `seen_render_` ensures `on_frame_boundary()` fires exactly once per frame boundary.
-  - Night race (`night`, 12,000 frames): `frames=11997` (exact 12,000 VSyncs minus 3 boot frames), reporting intervals at 600, 1200, ..., 11400, 11997. Cumulative `total_ms = 7.220 ms`, reconciling directly with F8 `EE CPU 6.00 - 8.28 ms` and critical path 8.46 - 10.75 ms.
-  - Day race (`day`, 16,000 frames): `frames=15997` (exact 16,000 VSyncs minus 3 boot frames), reporting intervals at 600, ..., 15997. Cumulative `total_ms = 7.656 ms`, reconciling directly with F8 `EE CPU 8.28 - 10.42 ms` and critical path 8.61 - 11.54 ms.
-- **Real Diagnostic Update-Only Bypass & Evidence (Items 1 & 4 Resolved):**
-  - In `GT4_FPS_PROBE_DIAG_UPDATE_ONLY=1`, `on_dispatch` skips execution of `main_render_functor` and `main_idle_functor` during the race.
-  - Render counter frozen: guest RAM `RacePS2Base + 0xE32C` remains at 0 (never incremented by `render_world`).
-  - Render time: zero additional time accumulated in race (`render_ms` stays at cumulative 7,510 ms from menus, per-frame average dropping as frames advance).
-  - Dumps diff: `dumps.sha256` hash is `2dbe57b2d0036e94cf236b76f3f7ca186a38cd943003f85c81d3bcb94aa3211a`, differing completely from normal run `9e30cdfe...` (`fc.exe /b` confirms screen buffer frozen from frame 8100 onward).
-  - F8 per-frame EE time (**Experiment**): measured thread CPU drops to 0.125 - 0.219 ms/frame (EE CPU 0.12 - 0.22 ms/frame, critical path 0.42 - 0.44 ms/frame, down from 6.00 - 9.93 ms EE CPU in normal run). VU1 worker busy drops to 0.000 ms, wait drops to 0.000 ms.
-  - Active remaining systems during update-only frame: `forEach` Manager A `internal_update` (vehicle dynamics, clocks, AI), `controlFetch` (pad polling), debug pad combos, flip wait (`func_00107878` / VSync pacing), and background threads (VU1 worker idle, GS IPC idle, IOP emulator running audio/SIF).
-- **Flare Dependency Breakdown (Item 3 Resolved):**
-  - Base: `race_obj + 0x0DA0`. Queues filled in update pass (track light queue `0x003B7B70`, count at `+0x1848`, capacity 100 enforced at `0x003B7BA8` via `slti`; car light queue `0x003B8530`, count at `+0x0A34`, capacity 100 enforced at `0x003B8568` via `slti`).
-  - Drained & reset in render pass: `0x003B8214` resets car count to 0; `0x003B821C` resets track count to 0.
-  - Sample counter `+0x08`: written in render pass (`0x003B70D0`..`0x003B81FC`), read only in render pass (`0x003B8864`). Update never reads `+0x08`.
-  - GS Occlusion table (`+0x0EA4`, 2048B): written by render pass GS readback (`0x004A5178`), consumed by VU1 on next render. Update never reads occlusion table.
-  - Omission behavior: excess lights dropped at 100 cap without buffer overflow; next rendered frame flushes queues cleanly. Decoupled from simulation.
-- **Status:** Phase P0 complete. Stopped at P0 checkpoint for orchestrator review. Phase P1 has NOT started.
+## rc6 performance, TASK-116 step 1 and TASK-117 (2026-10-25, `task/116-117-flare-perf`)
+
+Implemented and tested headless, owner test pending; nothing merged or released.
+
+- **TASK-116 step 1 (both targets' code, no new ELF):** in Performance mode only the 128-qword flare readback is answered
+  locally with the previous reply (one frame old, never a zero table); `sync("download")` no longer drains the VU1 worker
+  for it, the READ_FIFO is still posted in stream order (one record per readback, the night record counts equal the
+  rc5 Performance-mode run), and every other readback keeps the blocking drain and the wait. Result (night race, headless
+  1x): blocking drains 5,026 -> 29, the readback wait total 4,596.6 (Accurate) / 2,329.1 (rc5 Performance) -> 46.1 ms,
+  4,997 of 4,998 flare replies from the cache. The Accurate run still hashes `c091716e3cb40d79` (release 1.3.0 pin). The
+  P0 probe (`GT4_GS_READBACK_LOG=1`) answered the gate: in Performance mode gt4-gs returns stale real pixels, not zeros
+  (139 distinct replies against 2,161), so the local answer can only be one frame late; the launcher help text of
+  Performance Mode was corrected in both languages.
+- **TASK-117 (GT4 v2.00 only): built, NOT shipped in rc6.** The derived ELF with four `jal` redirects and our own
+  helpers in the zero padding (`scripts/flare_limits_elf_patch.py`, pinned table and verify mode), the new EE library
+  profile `flare` (8 units differ from the slice208 library) and the host block at 0x7F10 are implemented and tested, but
+  the switch-off identity gate failed: with every helper taking the original path, the night race still diverges from rc5
+  from the first frame that draws flares (dumps from frame 10000; 27,246,609 records against 27,259,715). The rc6 v2.00
+  build keeps the `aspect` library and the launcher sends no flare switch until the cause is found.
+- **Checks:** CTest 46/46 and 47/47 (new `native_gs_readback_probe` and `native_flare_limits`), Python 697 tests OK
+  (43 skipped) plus the new ELF patch test, `cargo test -p gt4l-core` 313 passed, MTVU verify 11,000 frames 0 mismatches.
+  The Accurate identity vs rc5 holds (night stream hash `c091716e3cb40d79`). Next: the rc6 builds (v2.00 on the `aspect`
+  library, Spec II with step 1 only), the pins and the draft.
 
 ## rc5 Settings open at once, TASK-114 item 8 (2026-10-24, `task/101-multi-game`, 1.3.0-rc5)
 
