@@ -14,6 +14,7 @@
 #include "window_mode.hpp"
 #include "cursor_autohide.hpp"
 #include "fps_probe.hpp"
+#include "render_skip.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
@@ -317,6 +318,9 @@ void release_frame() {
   if (pacing_mode == gt4::pacing::Mode::paced)
     frame_pacer->release(released);
   pacing_diagnostics.record_release(released, frame_clock->frequency());
+  if (gt4::render_skip::SkipManager::shared().enabled()) {
+    gt4::render_skip::SkipManager::shared().record_frame_wall(released, frame_clock->frequency());
+  }
 }
 
 void on_vblank() {
@@ -326,6 +330,9 @@ void on_vblank() {
 #endif
   if (gt4::fps_probe::Probe::shared().enabled()) {
     gt4::fps_probe::Probe::shared().on_frame_boundary();
+  }
+  if (gt4::render_skip::SkipManager::shared().enabled()) {
+    gt4::render_skip::SkipManager::shared().on_frame_boundary();
   }
   release_frame();
   GT4_PERF_SCOPE(gt4::perf::Category::host_vblank);
@@ -491,6 +498,9 @@ int run_window(const std::function<int()> &emulate) {
     if (gt4::fps_probe::Probe::shared().enabled()) {
       gt4::fps_probe::Probe::shared().finish();
     }
+    if (gt4::render_skip::SkipManager::shared().enabled()) {
+      gt4::render_skip::SkipManager::shared().finish();
+    }
     audio_output = nullptr;
     frame_pacer.reset();
     frame_clock.reset();
@@ -584,6 +594,9 @@ int run_window(const std::function<int()> &emulate) {
       pacing_diagnostics.reset();
       if (gt4::fps_probe::Probe::shared().enabled()) {
         gt4::fps_probe::Probe::shared().format_report(output);
+      }
+      if (gt4::render_skip::SkipManager::shared().enabled()) {
+        gt4::render_skip::SkipManager::shared().format_report(output);
       }
 #ifdef GT4_MTVU_MEASURE
       // TASK-011 step 0: interval counters since the last F7 or report, then a new interval.

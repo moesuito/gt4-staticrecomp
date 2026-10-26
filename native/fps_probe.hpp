@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "game_target.hpp"
+#include "render_skip.hpp"
 
 namespace gt4::fps_probe {
 
@@ -93,6 +94,7 @@ struct FrameStats {
   std::uint8_t  hud_history_byte = 0;
   std::uint32_t double_buffer_toggle = 0;
   std::uint32_t coursedata_ms = 0;
+  std::uint64_t sim_digest = 0;
 
   CameraPose camera_pose0{};
   CameraPose camera_pose1{};
@@ -169,6 +171,7 @@ public:
   bool diag_skip_render() const noexcept { return diag_skip_render_; }
 
   void observe_candidate_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept;
+  std::uint64_t compute_sim_digest(const std::uint8_t *ram, std::size_t ram_size) const noexcept;
 
 private:
   std::uint64_t now_us() const noexcept;
@@ -209,7 +212,8 @@ inline bool on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::si
   const std::uint32_t ra = c.r[31].w[0];
 
   // In diagnostic update-only mode, bypass every second render only once race clock is advancing (> 0)
-  if (probe.diag_update_only() && probe.active_race_object() != 0 && probe.stats().race_clock_f898 > 0 && probe.diag_skip_render()) {
+  if ((probe.diag_update_only() && probe.active_race_object() != 0 && probe.stats().race_clock_f898 > 0 && probe.diag_skip_render()) ||
+      (gt4::render_skip::SkipManager::shared().skipped_this_frame())) {
     if (hooks.main_render_functor && pc == hooks.main_render_functor) {
       probe.set_seen_render(true);
       if (probe.current_phase() != MainLoopPhase::flip_wait) {

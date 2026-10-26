@@ -1,5 +1,9 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include "fps_probe.hpp"
+#include "render_skip.hpp"
+#ifdef GT4_PERF_PROBE
+#include "perf_probe.hpp"
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -48,6 +52,19 @@ bool is_race_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t 
     }
   }
   return false;
+}
+
+inline bool is_valid_guest_span(std::uint32_t addr, std::uint32_t size, std::size_t ram_size) noexcept {
+  return addr >= 0x00010000u && addr < ram_size && size <= (ram_size - addr) && (addr % 4u == 0);
+}
+
+inline std::uint64_t fnv1a_64(const void *data, std::size_t size, std::uint64_t hash = 14695981039346656037ULL) noexcept {
+  const auto *bytes = static_cast<const std::uint8_t *>(data);
+  for (std::size_t i = 0; i < size; ++i) {
+    hash ^= bytes[i];
+    hash *= 1099511628211ULL;
+  }
+  return hash;
 }
 
 }  // namespace
@@ -105,6 +122,19 @@ void Probe::init(const char *env_fps_probe, const char *env_diag_update_only) no
 
   clock_us_ = &default_steady_clock_us;
   reset();
+
+#ifdef GT4_PERF_PROBE
+  if (enabled_) {
+    gt4::perf::Probe::shared().set_report_section([](std::FILE *output) {
+      if (gt4::fps_probe::Probe::shared().enabled()) {
+        gt4::fps_probe::Probe::shared().format_report(output);
+      }
+      if (gt4::render_skip::SkipManager::shared().enabled()) {
+        gt4::render_skip::SkipManager::shared().format_report(output);
+      }
+    });
+  }
+#endif
 }
 
 void Probe::reset() noexcept {
@@ -157,7 +187,7 @@ void Probe::setup_default_spans(std::uint32_t race_obj, const std::uint8_t *ram,
 
   // 3. DynamicsConductor simulation state (dereferenced from pointer at race_obj + 0x70)
   const std::uint32_t dynamics_ptr = read_u32(ram, ram_size, race_obj + 0x70u);
-  if (dynamics_ptr != 0 && dynamics_ptr + 0x10000u <= ram_size) {
+  if (is_valid_guest_span(dynamics_ptr, 0x10000u, ram_size)) {
     active_dynamics_ = dynamics_ptr;
     // Full 64 KB DynamicsConductor: physics, clocks, lap times, collision, AI
     add_watched_span(active_dynamics_, 0x10000u, "DynamicsConductor_physics_clocks_ai");
@@ -165,10 +195,10 @@ void Probe::setup_default_spans(std::uint32_t race_obj, const std::uint8_t *ram,
 
   // 4. Cars (Automobile entries from race_obj + 0x60)
   const std::uint32_t cars_ptr = read_u32(ram, ram_size, race_obj + 0x60u);
-  if (cars_ptr != 0 && cars_ptr < ram_size) {
+  if (is_valid_guest_span(cars_ptr, 24u, ram_size)) {
     for (std::uint32_t i = 0; i < 6u; ++i) {
       const std::uint32_t car_entry = read_u32(ram, ram_size, cars_ptr + i * 4u);
-      if (car_entry != 0 && car_entry + 0x3000u <= ram_size) {
+      if (is_valid_guest_span(car_entry, 0x3000u, ram_size)) {
         add_watched_span(car_entry, 0x3000u, "Automobile_car_entry");
       }
     }
@@ -224,6 +254,22 @@ void Probe::on_update_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std:
   }
 }
 
+std::uint64_t Probe::compute_sim_digest(const std::uint8_t *ram, std::size_t ram_size) const noexcept {
+  if (ram == nullptr || active_race_obj_ == 0) return 0;
+  std::uint64_t h = 14695981039346656037ULL;
+  bool found_any = false;
+  for (const auto &span : watched_spans_) {
+    if (std::strcmp(span.name, "DynamicsConductor_physics_clocks_ai") == 0 ||
+        std::strcmp(span.name, "Automobile_car_entry") == 0) {
+      if (is_valid_guest_span(span.guest_addr, span.size_bytes, ram_size)) {
+        h = fnv1a_64(ram + span.guest_addr, span.size_bytes, h);
+        found_any = true;
+      }
+    }
+  }
+  return found_any ? h : 0;
+}
+
 void Probe::on_update_leave(const std::uint8_t *ram, std::size_t ram_size) noexcept {
   if (!enabled_ || phase_ != MainLoopPhase::update) return;
 
@@ -233,8 +279,9 @@ void Probe::on_update_leave(const std::uint8_t *ram, std::size_t ram_size) noexc
 
   if (ram != nullptr && active_race_obj_ != 0) {
     const std::uint32_t dynamics_ptr = active_dynamics_ ? active_dynamics_ : read_u32(ram, ram_size, active_race_obj_ + 0x70u);
-    if (dynamics_ptr != 0) {
+    if (dynamics_ptr != 0 && is_valid_guest_span(dynamics_ptr, 0x10000u, ram_size)) {
       stats_.race_clock_f898 = read_u32(ram, ram_size, dynamics_ptr + 0xF898u);
+      stats_.sim_digest = compute_sim_digest(ram, ram_size);
     }
   }
 }
@@ -484,6 +531,11 @@ void Probe::format_report(std::FILE *stream) const noexcept {
                stats_.camera_cached_matrix[0]);
 
   std::fprintf(stream,
+               "[fps-probe] digest: clock_f898=%u hash=0x%016llx\n",
+               stats_.race_clock_f898,
+               static_cast<unsigned long long>(stats_.sim_digest));
+
+  std::fprintf(stream,
                "[fps-probe] purity: mutations=%llu (render_counter:%llu hud_hist:%llu buf_toggle:%llu cam_matrix:%llu dma_swap:%llu flare:%llu pkt_ptr:%llu unattributed:%llu)\n",
                static_cast<unsigned long long>(stats_.purity.mutated_words),
                static_cast<unsigned long long>(stats_.purity.render_counter_mutations),
@@ -509,6 +561,10 @@ void Probe::format_report(std::FILE *stream) const noexcept {
 
   if (diag_update_only_) {
     std::fprintf(stream, "[fps-probe] diagnostic: UPDATE_ONLY_ACTIVE (render and idle bypassed for EE budgeting)\n");
+  }
+
+  if (gt4::render_skip::SkipManager::shared().enabled()) {
+    gt4::render_skip::SkipManager::shared().format_report(stream);
   }
 }
 
