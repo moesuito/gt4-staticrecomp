@@ -232,6 +232,23 @@ struct GpuDrawer::Impl {
       scaledDraws.clear();
       return;
     }
+    // IN-389: GT4_HW_SCALED_TRACE=<file> writes one line per scaled pass with the per-colour-slot draw histogram and
+    // the number of slot-copy-textured draws, so a layer that never reaches the sampler at scale can be identified.
+    if (const char *tracePath = std::getenv("GT4_HW_SCALED_TRACE")) {
+      std::uint32_t perSlot[kGpuColourSlots] = {};
+      std::uint32_t copyTextured = 0;
+      for (const ScaledDraw &draw : scaledDraws) {
+        const std::uint32_t colour = draw.descriptorSet / kGpuDepthSlots;
+        if (colour < kGpuColourSlots) ++perSlot[colour];
+        if (draw.scaledTexture) ++copyTextured;
+      }
+      if (std::FILE *file = std::fopen(tracePath, "ab")) {
+        std::fprintf(file, "pass draws=%zu copyTex=%u slot0=%u slot1=%u slot2=%u slot3=%u slot4=%u slot5=%u\n",
+                     scaledDraws.size(), copyTextured, perSlot[0], perSlot[1], perSlot[2], perSlot[3], perSlot[4],
+                     perSlot[5]);
+        std::fclose(file);
+      }
+    }
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     pass.renderPass = renderPass;
     pass.framebuffer = scaledFramebuffer;
