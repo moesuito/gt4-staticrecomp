@@ -1,14 +1,12 @@
 # Current Status
-## TASK-082 controlled render skip (2026-10-26, task/082-render-skip, rc7)
+## TASK-082 native variable frame rate (2026-10-26, task/082-render-skip)
 
-Phase P0, Phase P1, and rc6 merge finalized and verified on branch task/082-render-skip for 1.3.0-rc7.
-- **Controlled Render Skip:** GT4_NATIVE_FPS=skip enables dynamic render skipping when frame time exceeds 16.68 ms budget, with 30 FPS floor (never skips 2 consecutive frames) and debt hard cap (33.37 ms). Developer test switches GT4_NATIVE_FPS_FORCE=2 (30 FPS presented) and GT4_NATIVE_FPS_FORCE=3 (20 FPS presented) verified.
-- **Engagement Gate:** Verified 60 consecutive frames of rising clock_f898 (+50) required before skipping engages; Spec II disabled.
-- **Flare Queue Zeroing:** Flare queues at race_obj + 0xDA0 (+0x1848 and +0x0A34) safely zeroed on skipped frames before the next update functor runs; maximum flare count at a skip stays <= 25 (well below 100 limit).
-- **Merged Code Identity (Slice 312):** Bit-for-bit match on stream hash and frame dumps between merged build and rc6 baseline across night (12,000 frames) and day (16,000 frames) runs. Simulation digests match bit-for-bit with force 2 against probe reference without skip across all race intervals.
-- **Launcher Switch:** Added "Skip frames when slow" / "Pular quadros quando lento" (off by default) in Settings > Graphics, placed after Performance Mode. Sets GT4_NATIVE_FPS=skip for GT4 v2.00 only. 100% key and placeholder parity; focus-check passed headless.
-- **Test Kit:** Built portable test kit GT4Recomp-1.3.0-rc7-test082-portable on Desktop with LEIA-ME-TESTE.txt in plain Portuguese. rc6 copy and user saves untouched.
-- **Status:** Implemented, owner test pending, PR opened into task/116-117-flare-perf for 1.3.0-rc7.
+Deferred by owner. Experimental implementation preserved; not approved for integration or release.
+- **Owner Hardware Testing (Blocking Defect):** Tested experimental build rc7-test082 on i5-7200U laptop (Intel HD 620, 2x res, 15 W budget) in B-Spec and A-Spec. While simulation speed was preserved, video evidence (20261026_043310.mp4 and 20261026_051341.mp4) revealed old frames (Total Time 0:00.983 from frame 59) recurring between newer moving frames, and horizontal tearing strips between disparate views when host VSync was disabled.
+- **Root Cause Verified:** GT4 main loop flip (func_00107878 at unit_0001.cpp L4635-L4735) unconditionally toggles D_0061850C.cur (RAM 0x00618584) and invokes 0x004A0C10 to write GS privileged register DISPFB2 (0x12000090). On skipped frames, render was bypassed but flip ran unconditionally, pointing DISPFB2 to the alternate untouched page (frozen at frame 59). Furthermore, external 30 FPS RTSS capping stalled gt4-gs, causing frames_in_flight_limit (2) backpressure in gs_stream_ipc.cpp to throttle the 60 Hz simulation thread.
+- **Preserved Assets:** Experimental SkipManager timing debt policy, clock_f898 gate, flare queue zeroing, and launcher toggle are preserved in branch task/082-render-skip (commit 8da7bff). PR #113 converted to draft.
+- **Resumption Target:** Deferred to CoreGS 2.0. Will be resumed once CoreGS 2.0 achieves GSdx-equivalent graphical accuracy, required features, and GPU performance/cost at the same settings, without assigning a release number now.
+- **Resumption Report:** Tracked in docs/TASK-082-RESUMPTION-REPORT.md.
 
 ## rc6 performance, TASK-116 step 1 and TASK-117 (2026-10-25, `task/116-117-flare-perf`)
 

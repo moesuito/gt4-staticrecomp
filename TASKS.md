@@ -462,11 +462,11 @@ State (2026-10-21): ✅ Done. The owner tested the installer end to end and appr
 
 ### TASK-082 — Native variable frame rate
 
-State (2026-10-26): 🔧 Implemented on `task/082-render-skip` (rc7), owner test pending.
+State (2026-10-26): ⏸ Deferred by owner. Experimental implementation preserved on `task/082-render-skip` (commit `8da7bff`).
 Dedicated worktree `C:\Antigravity\gt4-wt-082-render-skip`, branch `task/082-render-skip`.
-Render skip gate implemented at 0x00100F50 (Manager B render dispatch) with debt-based timing policy and emergency flare drain.
-P0 and P1 headless identity and simulation equality verified (stream hash bit-identical when off; 100% dynamics digest match when skipping).
-Launcher toggle "Skip frames when slow" added to Graphics page (default off, GT4 v2.00 only). Unit tests passing (fixture, Python, Rust).
+Owner testing on laptop identified a blocking visual defect: the guest engine double-buffer flip unconditionally alternates display pointers to an unupdated framebuffer on skipped frames, causing older completed frames (such as Total Time 0:00.983) to recur between newer frames.
+Not approved for integration or release. PR #113 converted to draft. To be resumed later with CoreGS 2.0 (without assigning a release number) once CoreGS 2.0 achieves GSdx-equivalent graphical results, required features, and GPU performance/cost at the same settings.
+Resumption report: docs/TASK-082-RESUMPTION-REPORT.md.
 
 Owner request 2026-10-21: 30, 45, 120, 144 or unlocked FPS with game speed unchanged, real frames from the game rather
 than image interpolation (TASK-045 stays the fallback and runs its race oracle in parallel). Study:
