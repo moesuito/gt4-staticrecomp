@@ -525,3 +525,196 @@ intermediate.
   build changes GT4's half-pixel or skip entries, section 1's "we already match" conclusion must be rechecked.
 - The tone-carry mechanism (section 7.2) is the least understood item here and the only one where the reference gives
   no usable rule, because it does not have the problem.
+
+---
+
+## 11. Follow-up: 480i menu layers at scale
+
+Question from the implementer, after the owner reported a diagonal cross-hatch with a cell of roughly 6-8 output
+pixels over the whole background of the GT Mode "Info" dialog (480i menu, 6x, window 3440x1369), where the reference
+shows flat grey; the same pattern appears as thin doubled and broken white road lines on the GT Mode map. All
+measurements quoted here are the implementer's, at 6x on the same frame.
+
+### 11.1 How the reference renders a 2D menu layer above 1x
+
+**Confirmed: there is no 2D path.** A menu background, a full-screen dim and a HUD sprite go through the same uber
+shader, the same vertex mapping and the same targets as 3D, at the internal scale. The reference has no "2D at native
+resolution" mode, no menu-resolution setting and no per-game flag for it. The GT4 entry of its per-game database
+contains four items and nothing about 2D: the native-alignment half-pixel mode, an auto-flush at sprite boundaries, a
+skip-draw hook that replaces the RGB-shuffle (tone/brightness) post-processing with one HLE draw, and a recommended
+blending accuracy.
+
+**Confirmed: the only 1x content a menu can show at scale is a 1x *source*.** Two cases: a texture uploaded by the EE,
+which the reference keeps at its own size and magnifies with the sampler; and a target it deliberately reduces to 1x
+because it serves as a palette or index source (a narrow case: the reduction is a box downsample with the first s
+sub-pixels skipped, the same rule as 06.7).
+
+### 11.2 What happens to a pattern that lives at 1x in the source
+
+**Confirmed: the magnification is done by the sampler, not by a blit, so the filter decides the result.**
+
+- nearest: each source texel becomes an s x s block, i.e. a magnified checkerboard, which is the picture the owner
+  sees in ours;
+- bilinear: the four neighbouring texels are weighted, so a plus-or-minus-one-level checkerboard becomes a smooth
+  half-level diagonal ramp and reads as flat grey, and a one-pixel road line becomes a soft s-pixel line instead of a
+  hard one.
+
+**High confidence: that is the whole of the reference's smoothness for a *textured* 1x layer.** Its sampler is
+bilinear whenever the game asks for linear (the default setting honours the game's bits), and it is *forced* bilinear
+in two places: uploads of 1x data into a scaled target (always, including depth) and depth sampling. There is no other
+smoothing step.
+
+### 11.3 Any reference behaviour that averages a 1x pattern over the s x s block
+
+**Confirmed: three, all narrow, none of them a general rule.**
+
+1. The **box downsample** used when a scaled target has to become 1x (palette and index sources, 1x destinations): the
+   average of the s x s block with the read origin clamped to `max(out * s, s)`. It produces a 1x image; it never feeds
+   the presented frame at scale.
+2. The optional **native-scaling** behaviour (off by default): it reduces a scaled source to 1x before a draw that
+   itself downsamples.
+3. The **present filter**: a resample of the final image, not a block average. At the owner's window the image
+   rectangle is about 2434 x 1369, so the 3840 x 2688 frame is reduced by about 0.63x per axis, which averages roughly
+   1.6 x 1.6 source pixels per output pixel: it attenuates a 6-pixel structure but does not remove it. The sharp
+   present mode pre-scales by an integer nearest factor and then samples bilinearly, so it *preserves* a 6-pixel
+   structure more than the smooth mode does.
+
+**Confirmed: there is no "2D at native resolution" flag, and nothing in the reference re-expands a downsampled 1x
+layer.**
+
+### 11.4 What the evidence favours
+
+**Confirmed by the implementer's measurements plus our code:** the pattern is a function of the *native pixel index*.
+It survives the box downsample, each 6x6 block is internally uniform, and it is unaffected by the dither mode, by the
+1x-atlas filter, by the upload refresh and by the half-pixel geometry.
+
+**High confidence: the reference is smooth because no per-native-pixel pattern ever exists in its image at scale.**
+Everything it computes at 6x is per output pixel: the dither (output-resolution by default), the blend, the tone HLE
+draw, the sampler. Nothing in its 6x image is indexed by the native pixel, so nothing can be magnified into blocks.
+Ours has three mechanisms that *are* indexed by the native pixel, and the implementer's tests removed only the first.
+
+**Confirmed: at 1x our two dither modes are identical by construction** (the index divides by the scale, which is 1),
+so a dither A/B can never change the 1x words and can only change draws that are rasterised at scale. That is a useful
+invariant, because it makes the dither index memory-safe at 1x, but it also means the A/B cannot exclude a pattern that
+was already in the 1x content.
+
+**Hypothesis, in order of likelihood, for the three remaining creators of a per-native-pixel pattern:**
+
+1. **A texture sampled at scale with nearest, through a path the forced-linear switch does not cover.** The switch is
+   applied only when the sampled texture is the 1x atlas; a texture taken from a resident slot is sampled at scale and
+   ignores it by design, because `sample_texture_scaled` honours the game's bit only. If the menu background reaches
+   the frame that way, forcing linear changes nothing and the 6x image keeps one block per source texel.
+   Falsification: extend the force to `tex_scale > 1` and re-dump, or find the batch in the replay trace and read
+   whether its texture is the atlas or a slot copy.
+2. **The tone carry's learned table.** A one-level per-channel error in the table is exactly a per-native-pixel
+   pattern, it is invisible at 1x because the 1x words are exact, and no filter or refresh setting can touch it. It
+   also fits the map's *broken and doubled* road lines better than anything else: a one-pixel bright line with a
+   one-level error breaks into dashes and doubles. Falsification: `GT4_HW_TONE_CARRY=0` on that frame; if the pattern
+   disappears it is the carry, and the fix is the table, not a filter.
+3. **A 1x layer read through the compose's GLM fallback** (a circuit or a sub-rectangle the scaled slot does not
+   cover), which is a nearest magnification of the 1x word by construction. Falsification: the per-source, per-column
+   fallback counter already planned in PARITY-PLAN section 10; if the pattern's blocks all come from the GLM path,
+   this is it.
+
+**The single measurement that settles it:** dump our 1x `vram` image and our 6x frame of the *same* VBlank and compare
+them per native pixel. If the 1x words are flat and the 6x blocks differ, the pattern is created by the scaled pass
+and the answer is item 1 or 2 above. If the 1x words already carry it, it is in the 1x content (dither comes back as a
+suspect, or a 1x-only pass wrote it), and the reference's difference is then in its 1x-equivalent content, which it
+does not have.
+
+### 11.5 Note on the measured period
+
+**Confirmed arithmetic:** at 6x, 6-8 output pixels is one native pixel. What was measured is therefore a *cell*, not
+a period; a true 6-pixel period would be sub-native and cannot come from content that is 1x. The period of an ordered
+dither matrix would be 4 native pixels (24 output pixels) and would show as a slow modulation on top of the 6-pixel
+cell, which is consistent with a cross-hatch whose cell is 6-8 pixels.
+
+### 11.6 Correction to section 2
+
+The implementer has since wired the dither index: `hw_pixel_uber.frag` now selects between the raw fragment
+coordinate (the default, matching the reference) and the native index, and `GT4_HW_DITHER=native` selects the faithful
+one. Section 2's "documented but not implemented" is superseded; the behaviour table there still stands, and the
+invariant above (identical at 1x) is the reason the change is memory-safe.
+
+---
+
+## 12. Follow-up 2: the 4-native-pixel checkerboard
+
+New measurement from the implementer, same scene (GT Mode "Info" dialog, 480i, 6x, headless): the 6x background is a
+regular checkerboard of two greys with a square of about 24 output pixels, i.e. **4 native pixels**; the 1x image of
+the same background is nearly flat (20 distinct values in a 190 x 100 region, mean adjacent difference 1.83); a box
+downsample of the 6x frame differs from the 1x image by 4.47 mean absolute, so the scaled pass creates the structure.
+With the deinterlacer off the deviation falls to 2.31 and a 329-value noise remains. The pattern is unchanged by the
+dither mode, by forcing linear on 1x and scaled textures, by the refresh filter, and by the tone carry (menus have no
+tone run). Display shadows serve about 13,000 of 14,000 circuits on menus.
+
+### 12.1 Is a 4-native-pixel period a signature of anything?
+
+**Confirmed: 4 native pixels is exactly the period of a 4x4 ordered dither matrix indexed by the native pixel**, and
+that is the only thing in either renderer whose natural period is 4 native pixels. The reference has the same matrix
+but indexes it by the output pixel by default, so the period cannot appear in its image at scale; ours indexed it by
+the native pixel until the recent change. The *period* is therefore a genuine structural difference between the two
+renderers, and it is the reason the owner's two screenshots differ in character even when both are "correct".
+
+**Confirmed: the implementer's dither A/B is nevertheless valid, and the dither is not this pattern.** Three facts
+settle it. The flag is delivered correctly: the push word masks the filter bit and the dither bit separately, so the
+shader sees the intended value. The 1x words are identical in both modes by construction (the index divides by a scale
+of 1), so the only place the flag can act is the scaled pass, which is exactly the pass that creates the pattern. And
+if the scaled draw dithered, the two modes would differ. Byte-identical frames therefore mean the scaled draw adds no
+dither: the target is not 16-bit, or the game's dither enable is off, or the matrix is all zero (a case that occurs in
+real games and that the reference explicitly tests for).
+
+**Confirmed: the single dump that proves the state** is the per-batch trace of the batch that covers the background
+rectangle, read for four words: the frame format, the dither enable, the dither matrix and whether the batch is
+textured at all. That is one command with the existing replay tooling and it closes question 1 completely.
+
+### 12.2 Can the display shadow produce it?
+
+**Confirmed: the reference has no comparable behaviour.** One source per circuit, no validity test, no per-pixel
+source selection. It cannot produce a per-native-pixel mosaic of two sources.
+
+**Confirmed by arithmetic: the shadow cannot be the cause here.** A native pixel that fails the shadow validation
+shows the 1x word, and the 1x word is the smooth value. The shadow path can therefore only pull the 6x image *towards*
+the 1x image, never away from it. With the 6x image 4.47 away from the 1x image, the checkerboard must live in the
+*passing* pixels, i.e. in the slot's scaled image, which the shadow merely copies.
+
+**High confidence, and cheap to confirm without the planned counter:** compare a frame served by a display shadow with
+a frame served by a resident slot (the counters say about 7% of menu circuits are not shadows). If the checkerboard is
+the same in both, the shadow is exonerated. If it appears only in shadow frames, the fault is in the saved rectangle or
+its stride, not in the raster.
+
+### 12.3 Would the reference show the same checkerboard?
+
+**Confirmed: no.** Nothing in the reference's 6x image is indexed by the native pixel (dither, blend, tone HLE draw
+and sampler all run per output pixel), so a 4-native-pixel structure cannot exist there at all. The owner's GSdx
+screenshot is therefore a genuinely different image, and the difference is in our content, not in a filter.
+
+**Confirmed: the present filter cannot be the explanation.** A 0.63x bilinear reduction of a 24-pixel, roughly
+one-5-bit-step checkerboard attenuates it but leaves most of its contrast; the owner would still see it.
+
+**Confirmed: the per-game GT4 entry cannot be the explanation.** It has four items and none of them concerns 2D or
+menus (section 11.1).
+
+### 12.4 The split that has not been made yet
+
+Every measurement so far compares the *composed* 6x frame. The missing split is composed frame versus **the slot's own
+scaled image** and versus **the shadow's scaled copy** for the same VBlank. The dump machinery already exists (the tone
+diagnostic writes a saved scaled source and a rebuilt scaled image).
+
+- Checkerboard already in the slot's scaled image: it is the scaled raster, and the period-4 source is a 4x4-tiled 1x
+  source — a texture sampled at scale, the scaled texture copy, or an atlas origin. **Hypothesis**; falsification is
+  the amplitude below.
+- Checkerboard only in the shadow copy: the saved rectangle or its stride. **Hypothesis**; falsification is a byte
+  comparison of the shadow against the slot rectangle it was copied from.
+- Checkerboard only in the composed frame: the compose's read offset. **Hypothesis**; falsification is the compose
+  parameter block printed for that VBlank (read width/height, placement width/height, offsets).
+
+**The one number to read first: the difference between the two greys.** Exactly 8 levels in 8-bit units is one 5-bit
+step and is the signature of a 16-bit quantisation or dither, which would put the dither back on the table despite the
+A/B (and would mean the dither is applied to a 1x word the scaled pass then magnifies). One or two levels is a
+sampling or texture artifact, which points at the 4x4-tiled source above. This single number splits the two families
+of causes and is cheaper than any counter.
+
+**Two items, not one:** with the deinterlacer off the deviation halves but the 329-value noise remains, so about half
+of the 4.47 is the field weave and half is this pattern. Fixing the weave will not remove the checkerboard and vice
+versa; the owner will report whichever is left.
