@@ -13,6 +13,7 @@
 #include "pacing.hpp"
 #include "window_mode.hpp"
 #include "cursor_autohide.hpp"
+#include "achievements.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
@@ -263,6 +264,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
     if (ps2::g_options.presses.empty())
       apply_pad({});
   }
+  if (message == WM_MOVE || message == WM_SIZE)
+    gt4::achievements::on_window_pos_changed(window);
   // TASK-080: GT4_DISPLAY_ASPECT=auto follows the client area (windowed, fullscreen, Alt+Enter, resize).
   if (message == WM_SIZE)
     gt4::display_aspect::set_window_client_size(LOWORD(second), HIWORD(second));
@@ -359,6 +362,7 @@ void on_vblank() {
     if (audio_output->mode() == gt4::pacing::Mode::paced)
       pacing_diagnostics.record_ratio(audio_output->resampler_ratio());
   }
+  gt4::achievements::on_vblank(game_window, ps2::g_ram, ps2::kRamSize, ps2::g_spr, ps2::kScratchpadSize);
   ps2::gs::present();
 }
 } // namespace
@@ -480,6 +484,7 @@ int run_window(const std::function<int()> &emulate) {
   ControllerInput input(active_controls, input_backend);
   controller = &input;
   const auto cleanup = [&]() {
+    gt4::achievements::shutdown();
 #ifdef GT4_PERF_PROBE
     gt4::perf::Probe::shared().set_report_section({});
     gt4::perf::Probe::shared().finish();
@@ -562,6 +567,7 @@ int run_window(const std::function<int()> &emulate) {
                  "[window] real guest GPU output through native Vulkan\n");
     // shortcut: one thread and FIFO presentation, qualify pipelining later.
     ps2::g_options.on_vblank = on_vblank;
+    gt4::achievements::initialize(game_window, ps2::g_ram, ps2::kRamSize, ps2::g_spr, ps2::kScratchpadSize);
     AudioOutput audio(pump_messages, pacing_mode);
     audio_output = &audio;
 #ifdef GT4_PERF_PROBE
