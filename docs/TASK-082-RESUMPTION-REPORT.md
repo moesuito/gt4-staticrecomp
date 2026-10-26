@@ -2,6 +2,7 @@
 
 **Date:** 2026-10-26  
 **Status:** Deferred by owner (blocking visual defect identified during laptop testing). Preserved for future resumption targeting CoreGS 2.0.  
+**Workspace Root:** `C:\Antigravity\gt4-wt-082-render-skip`  
 **Branch:** `task/082-render-skip`  
 **Implementation Commit:** `8da7bff6d4b19dde6f0d7eb09683cb52102ddd89`  
 **Base:** `task/116-117-flare-perf` (merged at `0abe11f`)  
@@ -11,7 +12,7 @@
 
 ## 1. Executive Summary and Owner Decision
 
-On 2026-10-26, following owner hardware testing of the experimental portable build `rc7-test082`, the owner identified a blocking visual defect where old frames flashed repeatedly between newer frames during render-skipping under GPU load. Subsequent video review and recompiled EE disassembly analysis revealed that the guest engine's double-buffer flip unconditionally alternates display pointers to an unupdated framebuffer on skipped frames.
+On 2026-10-26, following owner hardware testing of experimental portable build `rc7-test082`, the owner identified a blocking visual defect where old frames flashed repeatedly between newer frames during render-skipping under GPU load. Subsequent video review and recompiled EE disassembly analysis revealed that the guest engine's double-buffer flip unconditionally alternates display pointers to an unupdated framebuffer on skipped frames.
 
 The owner decided to **defer further frame-skipping development** on the legacy GSdx external stream architecture, redirecting immediate engineering focus to **CoreGS 2.0** reaching GSdx-equivalent graphical accuracy, required features, and GPU performance/cost at the same settings.
 
@@ -25,7 +26,7 @@ TASK-082 is frozen in this documentation-only checkpoint. All experimental runti
 - **Device:** Laptop with Intel Core i5-7200U (2 cores / 4 threads, 15 W shared CPU/GPU power budget).
 - **GPU:** Intel HD Graphics 620 (integrated).
 - **Display Configuration:** 2x internal resolution upscale, windowed/borderless.
-- **Game Modes:** Tested in both B-Spec and A-Spec. The defect was confirmed identical in both modes.
+- **Game Modes:** Tested in both B-Spec and A-Spec. The defect was confirmed to occur in both modes.
 
 ### 2.2 Baseline Observations (Without Skip vs. With Skip)
 - **Without Render Skip (`GT4_NATIVE_FPS` unset):** The i5-7200U laptop ran at ~30–40 FPS under heavy rendering load (e.g. multi-car grids, complex tracks), resulting in severe game slowdown because physics and game clock slowed proportionally with rendering.
@@ -33,24 +34,24 @@ TASK-082 is frozen in this documentation-only checkpoint. All experimental runti
 
 ### 2.3 Verified Visual Evidence
 1. **Video 1 (`C:\Users\Alano\Desktop\20261026_043310.mp4`, Host VSync Enabled):**
-   - Captured at ~59.94 FPS via mobile recording.
+   - Captured at ~59.94 FPS via phone recording.
    - At ~7s: An older scene showing the red car with HUD Total Time `0:00.983` flashed between advancing frames (`0:06.433`, `0:06.466`, `0:06.500`, ...).
    - At ~10s: The exact same `0:00.983` view continued to recur between advancing frames (`0:09.983`, `0:10.016`, ...).
-   - Evidence contact sheets:
-     - `private/task082-owner-video-20261026/sequence.png`
-     - `private/task082-owner-video-20261026/sequence7.png`
-     - `private/task082-owner-video-20261026/sequence10.png`
+   - Evidence contact sheets (located in `C:\Antigravity\gt4-staticrecomp\private\task082-owner-video-20261026\`):
+     - `C:\Antigravity\gt4-staticrecomp\private\task082-owner-video-20261026\sequence.png`
+     - `C:\Antigravity\gt4-staticrecomp\private\task082-owner-video-20261026\sequence7.png`
+     - `C:\Antigravity\gt4-staticrecomp\private\task082-owner-video-20261026\sequence10.png`
 2. **Video 2 (`C:\Users\Alano\Desktop\20261026_051341.mp4`, Host VSync Disabled):**
-   - Host VSync was turned off (`VsyncEnable = false`).
-   - The defect persisted, now manifesting as horizontal tearing/strips between disparate camera views rather than full-screen alternating flips.
+   - Host VSync was turned off in `gt4-gs.ini` (`VsyncEnable = false`).
+   - The defect persisted, appearing as horizontal tearing strips between disparate camera views rather than full-screen alternating flips.
    - At ~5s: A horizontal strip showing the side of the red #22 car appeared sliced inside a different track camera view.
    - At ~8s: The primary upper view showed the car from the front, while a lower horizontal slice showed a different side/wheel perspective.
    - Strip boundaries shifted across frames due to host swapchain presentation unsynchronized with display scanout.
-   - **Conclusion:** Disabling host presentation VSync does not resolve the defect; the underlying display buffer being scanned out or swapped remains stale.
+   - **Rolling-Shutter and Exposure Caveat:** The phone camera operates at approximately 59.94 FPS with rolling shutter and variable exposure; optical row-by-row sensor scanout can blend or tear adjacent physical display refreshes. Therefore, the video recording alone does not prove exactly where the tearing or buffer mixing occurs (display scanout, swapchain blit, or optical sensor scanout), but it confirms that turning off host presentation VSync does not eliminate the stale content defect.
 
 ---
 
-## 3. Double-Buffer Mechanics and Root Cause Analysis
+## 3. Double-Buffer Mechanics and Analysis
 
 ### 3.1 Verified Code Facts (From Recompiled Assembly)
 1. **Main Loop Structure:** The GT4 main loop thread (`func_001016E8` in recompiled unit `unit_0000.cpp`) executes each frame:
@@ -73,24 +74,27 @@ TASK-082 is frozen in this documentation-only checkpoint. All experimental runti
 3. **Render Submission Target (`unit_0001.cpp` L1473–L1489):**
    - The render subsystem reads `cur` from `0x00618584` and targets `page[1 - cur]`.
    - Therefore: `cur` represents the **currently displayed page**, and `1 - cur` represents the **page currently being drawn to**.
-4. **The Gate Engagement Point:**
+4. **Gate Timing Logic:**
    - In `native/render_skip.cpp`, the gate requires 60 consecutive frames of rising `clock_f898` (+50 per frame) before skipping is permitted (`good_frames_ >= 60u`).
-   - Prior to frame 60, all frames rendered normally and toggled pages every frame.
-   - At 60 FPS, frame 59 corresponds exactly to:
-     $$\frac{59 \times 1000}{60} = 983.33\text{ ms} \quad (\text{Total Time } 0:00.983)$$
-   - Frame 59 rendered to **Page 1**.
+   - In `native/render_skip.hpp` (commit `8da7bff`), `main_render_functor` was bypassed on skipped frames, but `func_00107878` executed unconditionally.
 
-### 3.2 Runtime Observations (Commit `8da7bff`)
-- In commit `8da7bff`, `native/render_skip.hpp` bypassed `main_render_functor` (`0x00100F50`) and `main_idle_functor` (`0x00100FC0`) on skipped frames.
-- However, `func_00107878` (FLIP) ran unconditionally.
-- On Frame 60 (Rendered): Render drew to Page 0 (Total Time `0:01.000`). Flip toggled `cur = 0` and pointed `DISPFB2` to Page 0.
-- On Frame 61 (Skipped): Render was bypassed. Nothing drew to Page 1. Flip ran: toggled `cur = 1` and pointed `DISPFB2` to Page 1. Page 1 still held its last drawn contents from Frame 59 (`0:00.983`)!
-- On Frame 62 (Rendered): Render drew to `1 - cur = Page 0` (Total Time `0:01.033`). Flip toggled `cur = 0` and pointed `DISPFB2` to Page 0.
-- On Frame 63 (Skipped): Render bypassed. Flip toggled `cur = 1` and pointed `DISPFB2` back to Page 1 (`0:00.983`).
-- Every subsequent rendered frame updated Page 0. Every subsequent skipped frame displayed Page 1, which remained permanently frozen at `0:00.983`.
-- `on_privileged_write` posted alternating `DISPFB2` addresses every VBlank, causing `gt4-gs` to present the stale buffer every other frame.
+### 3.2 Observed Video Evidence
+- In `20261026_043310.mp4`, Total Time `0:00.983` flashes repeatedly during sustained skipping.
+- At 60 FPS nominal simulation, $59 \times 1000 / 60 \approx 983.33\text{ ms}$, matching frame 59.
 
-### 3.3 Remaining Hypotheses
+### 3.3 Explanatory Hypothesis: The Alternating Page Sequence
+> [!NOTE]
+> **Status: Explanatory Hypothesis (Awaiting correlated runtime trace)**  
+> The following sequence is an explanatory model that reconciles the verified code structure with the observed video timing:
+> - Prior to frame 60, all frames rendered normally and alternated double-buffer pages every frame.
+> - Under this hypothesis, Frame 59 rendered to Page 1, capturing the Total Time `0:00.983` image.
+> - At Frame 60, the gate opened (`good_frames_ == 60`). Frame 60 rendered to Page 0 (`0:01.000`), and flip pointed `DISPFB2` to Page 0.
+> - At Frame 61 (skipped), render was bypassed, but flip ran unconditionally, inverting `cur` and pointing `DISPFB2` back to Page 1 (still holding Frame 59).
+> - Under continued alternating skip, rendered frames drew into Page 0, while skipped frames directed `DISPFB2` to Page 1 without drawing anything, causing the display to revisit the stale `0:00.983` buffer repeatedly.
+> 
+> While this hypothesis matches the observed evidence, because an exact per-frame RAM address trace was not captured during the owner's laptop run, this sequence remains an explanatory hypothesis until confirmed by correlated runtime logging.
+
+### 3.4 Remaining Hypotheses
 - **Packet Double Buffering:** `func_001077F8` toggles `D_006184C0.cur` (RAM `0x006184CC`) and opens a DMA chain (`0x004A1A00` / `0x004A1BB0`). On skipped frames, the DMA chain is opened but receives no geometry packets, and `0x00107840` waits on idle DMA channels. Whether repeated multi-frame skips require explicit packet-buffer reset or whether idle waiting is completely leak-free over long runs remains to be verified under sustained multi-skip conditions.
 - **Split-Screen and Replay Cameras:** Replay cameras maintain a separate `keys[cur]` buffer (`func_0033B0E8`), and split-screen mode uses `RacePS2Base::render_world_split` (`0x0033FD88`). Their interaction with render skipping has not been exercised.
 
@@ -152,25 +156,26 @@ TASK-082 is frozen in this documentation-only checkpoint. All experimental runti
 
 | Component | Architecture | Reusable for CoreGS 2.0? | Notes |
 |---|---|---|---|
-| `SkipManager` debt policy (`render_skip.cpp`) | Game-side EE | **Yes (100%)** | Pacing accumulator and debt math are renderer-agnostic |
-| Monotonic clock gate (`clock_f898` +50) | Game-side EE | **Yes (100%)** | Validates stable race dynamics before skip engagement |
-| Flare queue draining (`clear_flare_queues`) | Game-side EE | **Yes (100%)** | Prevents flare buffer overflow when skipping passes |
-| Functor bypass (`0x00100F50`, `0x00100FC0`) | Game-side EE | **Yes (100%)** | Pure guest dispatch bypass |
-| Launcher toggle (`skip_slow_frames`) | Launcher | **Yes (100%)** | Exposes user option, guards GT4 v2.00 |
+| `SkipManager` debt policy (`render_skip.cpp`) | Game-side EE | **Reusable foundation, requiring integration validation** | Pacing accumulator and debt math are renderer-agnostic |
+| Monotonic clock gate (`clock_f898` +50) | Game-side EE | **Reusable foundation, requiring integration validation** | Validates stable race dynamics before skip engagement |
+| Flare queue draining (`clear_flare_queues`) | Game-side EE | **Reusable foundation, requiring integration validation** | Prevents flare buffer overflow when skipping passes |
+| Functor bypass (`0x00100F50`, `0x00100FC0`) | Game-side EE | **Reusable foundation, requiring integration validation** | Pure guest dispatch bypass |
+| Launcher toggle (`skip_slow_frames`) | Launcher | **Reusable foundation, requiring integration validation** | Exposes user option, guards GT4 v2.00 |
 | `kVsyncFlagSkipPresent` in `VsyncPayload` | GS Stream IPC | **No (GSdx only)** | Obsolete under in-process CoreGS 2.0 |
 | `frames_in_flight_limit` backpressure | GS Stream IPC | **No (GSdx only)** | IPC-specific flow control artifact |
 | `on_privileged_write` stream filtering | GS Stream IPC | **No (GSdx only)** | CoreGS 2.0 handles registers in-process |
 
 ---
 
-## 7. Future CoreGS 2.0 Integration Requirements
+## 7. CoreGS 2.0 Integration Requirements
 
 When TASK-082 is resumed targeting CoreGS 2.0:
 1. **Prerequisite Parity Gate:** CoreGS 2.0 must first achieve complete graphical equivalence with GSdx, implement all required render features, and match/exceed GPU performance/cost at identical settings.
-2. **In-Process Simplicity:** Because CoreGS 2.0 runs in-process with the game engine, there is no IPC serialization, no shared memory ring, and no `frames_in_flight_limit` backpressure.
-3. **Direct Presentation Bypass:** On a skipped cycle, CoreGS 2.0 simply refrains from calling `vkQueuePresentKHR` on its swapchain, holding the previous framebuffer image without stream protocol flags.
-4. **Framebuffer Retention:** CoreGS 2.0's internal texture cache will bind and display the last completed frame texture directly, avoiding guest VRAM page pointer mismatch.
-5. **No Premature Changes:** Do not modify CoreGS 2.0 implementation code during the interim.
+2. **In-Process Boundary vs. GPU Queues:** Running in-process removes external IPC serialization, shared-memory command rings, and IPC-specific `frames_in_flight_limit` stalls. **However, GPU command queues, queue synchronization, fence waits, and swapchain presentation backpressure still exist within the host Vulkan device.**
+3. **Guest Page Selection Is Not Automatic:** Guest page correctness and presentation policy still require explicit integration. They are **not** automatically solved by an in-process texture cache:
+   - The guest flip function (`func_00107878`) and privileged register writes (`DISPFB`) determine which VRAM buffer the engine designates for display. If the guest flip inverts `cur` to an unrendered page on a skipped cycle, CoreGS 2.0 would still be directed to present an unrendered buffer unless the guest flip/page-selection logic is explicitly corrected or intercepted.
+   - CoreGS 2.0 must have an explicit presentation interface with the frame scheduler to govern whether `vkQueuePresentKHR` is invoked or whether the previous swapchain image is held.
+4. **No Premature Changes:** Do not modify CoreGS 2.0 implementation code during the interim.
 
 ---
 
@@ -179,10 +184,13 @@ When TASK-082 is resumed targeting CoreGS 2.0:
 ### 8.1 Build Recipe
 - **Compiler:** `clang-cl` with Visual Studio 2022 x64 toolchain.
 - **CMake Configuration:** C++20, Windows x86-64.
-- **Build Directory:** `C:\Antigravity\gt4-wt-082-render-skip\build-p1`.
-- **Command:**
+- **Reference Documentation:** Normative build instructions in [`docs/BUILD.md`](file:///C:/Antigravity/gt4-wt-082-render-skip/docs/BUILD.md).
+- **Configure Command (from workspace root):**
   ```powershell
-  cd C:\Antigravity\gt4-wt-082-render-skip
+  cmake -B build-p1 -S . -G "Visual Studio 17 2022" -A x64 -T ClangCL
+  ```
+- **Build Command:**
+  ```powershell
   cmake --build build-p1 --config Release
   ```
 
@@ -198,18 +206,19 @@ When TASK-082 is resumed targeting CoreGS 2.0:
 
 ---
 
-## 9. Test Baseline and Known Failures
+## 9. Test Baseline and Test Failure Reconciliation
 
 ### 9.1 CTest Verification
 - Running `ctest --test-dir build-p1 --output-on-failure` yields:
   - **48 passed, 1 failed (Test 35: `python_native_contracts`).**
   - All 48 native C++ tests pass 100%, including `native_render_skip`, `native_fps_probe`, `native_gs_stream_client`, `native_mtvu_*`, and `vu_recomp_*`.
 
-### 9.2 Verification of Python Test 35 Baseline Origin
+### 9.2 Reconciliation of Python Test Failures
 - Test 35 runs `unittest discover` over `tests/python/`.
-- It reports 13 failures in `tests/python/test_gs_settings.py` (e.g. `test_reset_gives_the_exact_default_ini`).
-- **Baseline Audit:** These 13 failures are caused by `LoadTextureReplacementsAsync = true` being added to the default INI in the RC6 merge base (`task/116-117-flare-perf` at `0abe11f`), which differs from `LEGACY_DEFAULT`.
-- **Verdict:** The failures are verified to predate and be completely independent of TASK-082. TASK-082's dedicated test suites (`test_render_skip.py` [5/5 pass] and `test_fps_probe.py` [7/7 pass]) pass 100%.
+- It reports 13 failures in `tests/python/test_gs_settings.py` (e.g. `test_reset_gives_the_exact_default_ini`, `test_when_set_row_equal_to_its_default_is_not_written`).
+- **Failure Cause:** The failures in `test_gs_settings.py` are due to mismatches with `LEGACY_DEFAULT` strings after row additions and defaults changes (such as `LoadTextureReplacementsAsync = true` added in RC6, or TASK-118 TOML modifications).
+- **Status Relative to Baseline:** While these failures are known to stem from recent GS settings changes, they have **not** been independently verified against an untouched baseline build of `origin/task/116-117-flare-perf` within this worktree session. Therefore, they should be treated as unverified relative to baseline until a matched control test is executed.
+- In contrast, `test_gs_live.py` (capture stream contracts) and TASK-082's dedicated test files ([`tests/python/test_render_skip.py`](file:///C:/Antigravity/gt4-wt-082-render-skip/tests/python/test_render_skip.py) [5/5 pass] and [`tests/python/test_fps_probe.py`](file:///C:/Antigravity/gt4-wt-082-render-skip/tests/python/test_fps_probe.py) [7/7 pass]) pass completely.
 
 ---
 

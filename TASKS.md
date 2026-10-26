@@ -462,10 +462,10 @@ State (2026-10-21): ✅ Done. The owner tested the installer end to end and appr
 
 ### TASK-082 — Native variable frame rate
 
-State (2026-10-26): ⏸ Deferred by owner. Experimental implementation preserved on `task/082-render-skip` (commit `8da7bff`).
+State (2026-10-26): ⏸ Deferred by owner. Experimental implementation preserved as a reusable foundation on `task/082-render-skip` (commit `8da7bff`).
 Dedicated worktree `C:\Antigravity\gt4-wt-082-render-skip`, branch `task/082-render-skip`.
-Owner testing on laptop identified a blocking visual defect: the guest engine double-buffer flip unconditionally alternates display pointers to an unupdated framebuffer on skipped frames, causing older completed frames (such as Total Time 0:00.983) to recur between newer frames.
-Not approved for integration or release. PR #113 converted to draft. To be resumed later with CoreGS 2.0 (without assigning a release number) once CoreGS 2.0 achieves GSdx-equivalent graphical results, required features, and GPU performance/cost at the same settings.
+Owner testing on laptop identified a blocking visual defect: the guest engine double-buffer flip unconditionally alternates display pointers to an unupdated framebuffer on skipped frames, causing older completed frames (such as Total Time 0:00.983) to recur between newer frames (explanatory hypothesis awaiting correlated runtime trace).
+Not approved for integration or release. PR #113 converted to draft. To be resumed later with CoreGS 2.0 (without assigning a release number) once CoreGS 2.0 achieves GSdx-equivalent graphical results, required features, and GPU performance/cost at the same settings. CoreGS 2.0 integration will require explicit guest page and presentation policy integration.
 Resumption report: docs/TASK-082-RESUMPTION-REPORT.md.
 
 Owner request 2026-10-21: 30, 45, 120, 144 or unlocked FPS with game speed unchanged, real frames from the game rather
