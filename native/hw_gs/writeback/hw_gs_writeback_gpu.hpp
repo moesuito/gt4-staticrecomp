@@ -338,8 +338,9 @@ public:
     // As an opaque handle (the VkImage value): this header carries no Vulkan types.
     std::uint64_t DisplayImage() const;
     // Fixtures: the top-left width x height words of the display image, or of the FXAA image (submits and waits).
-    // Diagnostics (GT4_HW_TONE_DUMP): the top-left width x height words of a scaled image: 0 colour slot `slot`'s
-    // scaled image, 1 the saved tone source (scaled), 2 colour slot `slot`'s 1x image (submits and waits).
+    // Diagnostics (GT4_HW_TONE_DUMP, GT4_HW_DISPLAY_DUMP): the top-left width x height words of an image: 0 colour
+    // slot `slot`'s scaled image, 1 the saved tone source (scaled), 2 colour slot `slot`'s 1x image, 3 display shadow
+    // `slot`, 4 the composed display image (submits and waits).
     bool ReadImageDebug(std::uint32_t which, std::uint32_t slot, std::uint32_t width, std::uint32_t height,
                         std::vector<std::uint32_t> &words, std::string &error);
     bool ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words, std::string &error,

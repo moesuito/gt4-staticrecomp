@@ -167,6 +167,7 @@ struct GpuDrawer::Impl {
   // IN-381: scaled deinterlace (created on first use).
   bool create_deinterlace(std::string &error);
   Image deinterlaceHistory[kGpuDeinterlaceHistory];
+  std::uint32_t lastDeinterlaceCurrent = 0;  // IN-387: the merge image of the last scaled deinterlace (diagnostics)
   Image deinterlaceWoven;
   Image deinterlaceOutput;
   VkDescriptorSetLayout deinterlaceSetLayout = VK_NULL_HANDLE;
@@ -2603,6 +2604,37 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
   }
   if (!runnable && s.recording && !s.flush_run(error)) return false;
 
+  // Diagnostics (GT4_HW_DRAW_TRACE=<file>, GT4_HW_DRAW_TRACE_RECT=x0,y0,x1,y1 in native pixels): one line per chunk
+  // that touches the probe rectangle, with the texture path and the filter state (IN-387: which layer carries a
+  // per-native-pixel pattern, and why the forced-linear switch does not reach it).
+  if (const char *tracePath = std::getenv("GT4_HW_DRAW_TRACE")) {
+    static const char *rectText = std::getenv("GT4_HW_DRAW_TRACE_RECT");
+    static const int limit = [] {
+      const char *text = std::getenv("GT4_HW_DRAW_TRACE_LIMIT");
+      return text ? std::atoi(text) : 400;
+    }();
+    static int lines = 0;
+    std::int32_t px0 = 0, py0 = 0, px1 = 639, py1 = 447;
+    if (rectText) std::sscanf(rectText, "%d,%d,%d,%d", &px0, &py0, &px1, &py1);
+    const bool touches = chunk.rectX1 >= px0 && chunk.rectX0 <= px1 && chunk.rectY1 >= py0 && chunk.rectY0 <= py1;
+    if (touches && lines < limit) {
+      ++lines;
+      std::FILE *file = std::fopen(tracePath, "ab");
+      if (file) {
+        std::fprintf(file,
+                     "chunk target=%u depth=%u rect=%d,%d,%d,%d draws=%zu tex=%d slot=%d glm=%d scaled=%d "
+                     "tw=%u th=%u cw=%u ch=%u texlin=%u texfst=%u texon=%u psm=%u tpsm=%u tlog=%u,%u\n",
+                     chunk.colourSlot, chunk.depthSlot, chunk.rectX0, chunk.rectY0, chunk.rectX1, chunk.rectY1,
+                     chunk.draws.size(), chunk.hasTexture ? 1 : 0, chunk.textureSlot, chunk.glmTexture ? 1 : 0,
+                     scaledTextureCopy ? 1 : 0, chunk.texWidth, chunk.texHeight, copyWidth, copyHeight,
+                     chunk.state.fields[gpufield::TexLinear], chunk.state.fields[gpufield::TexFst],
+                     chunk.state.fields[gpufield::TexOn], chunk.state.fields[gpufield::Format], chunk.glmPsm,
+                     chunk.state.fields[gpufield::TexLog2W], chunk.state.fields[gpufield::TexLog2H]);
+        std::fclose(file);
+      }
+    }
+  }
+
   // Ring space this chunk needs (IN-342): the staging bytes of its uploads, its vertices and one uniform slot.
   const VkDeviceSize frameBytes = static_cast<VkDeviceSize>(words) * 4;
   const VkDeviceSize textureBytes = (chunk.hasTexture && !textureFromSlot && !textureFromGlm)
@@ -3543,6 +3575,7 @@ bool GpuDrawer::DeinterlaceScaled(const DeinterlaceStep &step, std::string &erro
                            VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     s.full_barrier();
   }
+  s.lastDeinterlaceCurrent = step.current;  // IN-387: which merge image a later diagnostic read returns
   s.mark(Impl::kTimeDownload);
   ++s.stats.scaledDeinterlaces;
   return true;
@@ -3611,6 +3644,11 @@ void GpuDrawer::SetScale(std::uint32_t scale, float scaleOffset) {
   impl_->ditherFine = dither == nullptr || std::strcmp(dither, "native") != 0;
   const char *refresh = std::getenv("GT4_HW_SCALED_REFRESH");
   impl_->scaledRefreshLinear = refresh != nullptr && std::strcmp(refresh, "linear") == 0;
+  // IN-387: one line so a diagnostic run can prove which switches reached the drawer (the three raw switches are not
+  // part of the option table and therefore never appear in the option dump).
+  std::fprintf(stderr, "[scale] scale=%u filter=%s refresh=%s dither=%s\n", impl_->scale,
+               impl_->scaledLinearFilter ? "linear" : "nearest",
+               impl_->scaledRefreshLinear ? "linear" : "nearest", impl_->ditherFine ? "fine" : "native");
 }
 
 std::uint32_t GpuDrawer::Scale() const { return impl_->scale; }
@@ -3620,11 +3658,20 @@ std::uint64_t GpuDrawer::DisplayImage() const { return reinterpret_cast<std::uin
 bool GpuDrawer::ReadImageDebug(std::uint32_t which, std::uint32_t slot, std::uint32_t width, std::uint32_t height,
                                std::vector<std::uint32_t> &words, std::string &error) {
   Impl &s = *impl_;
-  if (!s.scaled() || slot >= kGpuColourSlots || which > 2) {
+  // IN-387: 3 = a display shadow (IN-377), 4 = the composed display image and 5 = the last scaled deinterlace's
+  // merge image (before the algorithm), so one VBlank can be split into the slot's scaled image, the shadow copy,
+  // the merge and the composed frame (the owner's flat-menu artifact).
+  if (!s.scaled() || which > 5 || (which != 3 && slot >= kGpuColourSlots) ||
+      (which == 3 && slot >= kGpuDisplayShadows)) {
     error = "debug read outside the scaled images";
     return false;
   }
-  const VkImage source = which == 0 ? s.scaledFrames[slot].image : which == 1 ? s.toneScaled.image : s.frames[slot].image;
+  const VkImage source = which == 0   ? s.scaledFrames[slot].image
+                         : which == 1 ? s.toneScaled.image
+                         : which == 2 ? s.frames[slot].image
+                         : which == 3 ? s.scaledShadows[slot].image
+                         : which == 4 ? s.display.image
+                                      : s.deinterlaceHistory[s.lastDeinterlaceCurrent].image;
   return read_image(reinterpret_cast<std::uint64_t>(source), width, height, words, error);
 }
 

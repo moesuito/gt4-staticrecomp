@@ -2164,6 +2164,89 @@ public:
         DumpToneRun(slot.gpuIndex);
     }
 
+    // Diagnostics (GT4_HW_DISPLAY_DUMP=<folder>): the first GT4_HW_DISPLAY_DUMP_LIMIT composes (default 1) write the
+    // displayed circuits' source images and the composed frame as PPM files, so one VBlank can be split into the
+    // slot's scaled image, the shadow copy and the composed frame (IN-387, the owner's flat-menu artifact).
+    void DumpDisplayImages(const std::array<uint32_t, 2>& sources, uint32_t outWidth, uint32_t outHeight,
+                           const display::DisplayLayout& layout) {
+        static const char* folder = std::getenv("GT4_HW_DISPLAY_DUMP");
+        if (!folder || !*folder) return;
+        static const int limit = [] {
+            const char* text = std::getenv("GT4_HW_DISPLAY_DUMP_LIMIT");
+            return text ? std::atoi(text) : 1;
+        }();
+        static int written = 0;
+        if (written >= limit) return;
+        ++written;
+        const uint32_t scale = gpu_.Scale();
+        auto writePpm = [](const char* path, uint32_t width, uint32_t height, const std::vector<uint32_t>& words) {
+            std::FILE* file = std::fopen(path, "wb");
+            if (!file) return;
+            std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+            for (uint32_t word : words) {
+                const unsigned char rgb[3] = {static_cast<unsigned char>(word), static_cast<unsigned char>(word >> 8),
+                                              static_cast<unsigned char>(word >> 16)};
+                std::fwrite(rgb, 1, 3, file);
+            }
+            std::fclose(file);
+        };
+        for (std::size_t i = 0; i < 2; ++i) {
+            if (sources[i] == 0) continue;
+            const display::CircuitRect& circuit = layout.circuits[i];
+            const uint32_t width = circuit.read_width * scale;
+            const uint32_t height = circuit.read_height * scale;
+            std::vector<uint32_t> words;
+            std::string error;
+            const uint32_t which = sources[i] <= gpu::kGpuColourSlots ? 0u : 3u;
+            const uint32_t index = sources[i] <= gpu::kGpuColourSlots ? sources[i] - 1u : sources[i] - gpu::kGpuColourSlots - 1u;
+            char path[512];
+            std::snprintf(path, sizeof path, "%s\\circuit%zu-%s%u.ppm", folder, i,
+                          which == 0 ? "slot" : "shadow", index);
+            if (gpu_.ReadImageDebug(which, index, width, height, words, error)) writePpm(path, width, height, words);
+        }
+        std::vector<uint32_t> words;
+        std::string error;
+        if (gpu_.ReadImageDebug(4, 0, outWidth, outHeight, words, error)) {
+            char path[512];
+            std::snprintf(path, sizeof path, "%s\\composed.ppm", folder);
+            writePpm(path, outWidth, outHeight, words);
+        }
+        words.clear();
+        if (gpu_.ReadImageDebug(5, 0, outWidth, outHeight, words, error)) {  // IN-387: before the deinterlace
+            char path[512];
+            std::snprintf(path, sizeof path, "%s\\merge.ppm", folder);
+            writePpm(path, outWidth, outHeight, words);
+        }
+        // IN-387: the 1x words of the same slot, to tell a 6x draw from a magnification of 1x content.
+        for (std::size_t i = 0; i < 2; ++i) {
+            if (sources[i] == 0 || sources[i] > gpu::kGpuColourSlots) continue;
+            const display::CircuitRect& circuit = layout.circuits[i];
+            words.clear();
+            if (!gpu_.ReadImageDebug(2, sources[i] - 1u, circuit.read_width, circuit.read_height, words, error)) continue;
+            char path[512];
+            std::snprintf(path, sizeof path, "%s\\circuit%zu-1x.ppm", folder, i);
+            writePpm(path, circuit.read_width, circuit.read_height, words);
+        }
+        // IN-387: every colour slot's scaled image and 1x words, so the slot that holds a layer can be found.
+        for (std::uint32_t slot = 0; slot < gpu::kGpuColourSlots; ++slot) {
+            std::uint32_t width = 0, height = 0;
+            gpu_.ScaledExtent(false, slot, width, height);
+            if (width == 0 || height == 0) continue;
+            words.clear();
+            if (gpu_.ReadImageDebug(0, slot, width * scale, height * scale, words, error)) {
+                char path[512];
+                std::snprintf(path, sizeof path, "%s\\slot%u-scaled.ppm", folder, slot);
+                writePpm(path, width * scale, height * scale, words);
+            }
+            words.clear();
+            if (gpu_.ReadImageDebug(2, slot, width, height, words, error)) {
+                char path[512];
+                std::snprintf(path, sizeof path, "%s\\slot%u-1x.ppm", folder, slot);
+                writePpm(path, width, height, words);
+            }
+        }
+    }
+
     // Diagnostics (GT4_HW_TONE_DUMP=<folder>): the first three tone sequences write the saved scaled source, the
     // carried scaled image and the 1x result as PPM files.
     void DumpToneRun(uint32_t gpuSlot) {
@@ -3305,6 +3388,7 @@ bool Renderer::ComposeFrameGpu(GpuFrame& out) {
         const uint32_t scale = s.gpu_.Scale();
         uint32_t outWidth = size.width;
         uint32_t outHeight = size.height;
+        std::array<uint32_t, 2> sources{};  // IN-387: the source word of each displayed circuit (diagnostics only)
         bool composed = false;
         if (scale > 1) {
             // IN-372: the same block with a 13th word per circuit: the resident colour slot whose scaled image holds
@@ -3347,6 +3431,7 @@ bool Renderer::ComposeFrameGpu(GpuFrame& out) {
                     }
                 }
                 scaled[at + 12] = slotWord;
+                sources[i] = slotWord;
                 static const bool trace = std::getenv("GT4_HW_SCALE_TRACE") != nullptr;  // diagnostic only
                 if (trace) {
                     std::fprintf(stderr, "[scale] circuit %zu bp=%u bw=%u psm=%u read=%d,%d,%d,%d slot=%u\n", i,
@@ -3389,6 +3474,7 @@ bool Renderer::ComposeFrameGpu(GpuFrame& out) {
         if (plan.use_rc1 && plan.use_rc2 && !pmode.mmod) s.counters.mergeAlphaFromTexel++;  // V-01-12
         s.counters.presentationFrames++;
         s.counters.gpuComposedFrames++;
+        if (scale > 1) s.DumpDisplayImages(sources, outWidth, outHeight, layout);  // IN-387, diagnostic only
         s.lastPresented_.reset();  // a later KeepPrevious falls back to the CPU history (none: blank)
         out.valid = true;
         out.width = outWidth;

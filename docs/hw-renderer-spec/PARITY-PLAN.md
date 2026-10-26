@@ -554,3 +554,28 @@ HLE), 07 (CLUT, CLD modes), 04.9 (GLM); IN-347..IN-351, IN-370, IN-379, IN-382.
 - **The intro logo movie** stays 1x. Hypothesis: IPU video uploaded as 1x pixels, so 1x by nature.
 - **Scenes only the owner can check:** rain, rally/dirt, replays, photo mode, split screen, the in-car mirror view;
   also menus at scale and owner test 9 on candidate 272.
+
+- **The three-image split (IN-387, 2026-10-25).** `GT4_HW_DISPLAY_DUMP=<folder>` now writes, for the first compose of a
+  run, every displayed circuit's source (the slot's scaled image or the shadow), the composed frame, the deinterlace's
+  merge image (before the algorithm), the circuit's 1x words and every colour slot's scaled image and 1x words;
+  `GT4_HW_DRAW_TRACE=<file>` with `GT4_HW_DRAW_TRACE_RECT=x0,y0,x1,y1` writes one line per batch that touches a probe
+  rectangle with its target, texture path (1x atlas, GLM decode, scaled copy), texture slot, footprint, filter and size.
+  Measured on the GT Mode map + Info dialog at 6x:
+  - the display circuit is bp=0 bw=10 **PSM CT24**, read 0,0,639,223, served by a **resident slot** (not a shadow, not the
+    GLM); the display buffer itself is written by ten **untextured** draws plus transfers;
+  - the map background is a full-screen quad into a CT32 target with a **1024x1024 texture from the GLM at FST, nearest**;
+    the menu layer above it is a quad into a CT24 target whose texture is a **scaled copy of a resident slot**;
+  - the flat dialog grey is 138.33 in the 1x words and 137.3-137.7 in the slot's scaled image, in a cell of exactly one
+    native pixel: the amplitude is **one 8-bit level**, i.e. a sampling artifact (Q-GSDX-COMPARISON 12.4), created by the
+    6x pass and not present in the 1x content;
+  - `GT4_HW_SCALED_FILTER=linear` changes the CT24 layer target (21.8% of its pixels, mean 0.27 levels) and
+    `GT4_HW_SCALED_REFRESH=linear` changes nothing at all; the two slots the display reads and the composed frame are
+    **byte-identical** in both cases. The displayed content therefore arrives through the scaled texture copy, which is a
+    plain nearest image copy, and no sampler switch can reach it;
+  - the present blit is already bilinear (after the IN-375 2x2 box chain), so the present filter is not the difference.
+  The comparison team's section 14 answers what the reference does here: it samples the **scaled surface of a live
+  target** (as we do), preloads a recreated target with a **bilinear** blit but patches a surviving target's dirty
+  rectangle with **nearest**, and with FST it samples level 0 point at 6x exactly as at 1x. So the remaining difference is
+  the **preload filter** (IN-385 kept nearest for the 06.7 box-PSNR gate), not the sampler and not the present stage.
+  Open: the IN-387 dumps are from candidate 274, where the owner has not yet judged the IN-386 deinterlace, so the
+  residual one-level cell may not be visible at all in a window; the next step is his verdict before changing a default.
