@@ -220,6 +220,11 @@ struct GpuDrawer::Impl {
   // Default NEAREST: the 06.7 gate (box downsample against 1x, 25 dB on the synthetic capture) prefers the exact
   // block; GT4_HW_SCALED_REFRESH=linear turns the smoothing on for the owner's A/B.
   bool scaledRefreshLinear = false;
+  // IN-388: native alignment of the scaled pass (the reference's GT4 half-pixel mode). A primitive edge at a GS integer
+  // coordinate lands at the CENTRE of a native pixel's s x s block with the 06.3 shift, so a quad that covers one native
+  // pixel at 1x covers half of two blocks at scale and paints a half-native-pixel sliver at every edge (the owner's thin
+  // white lines at 6x). Snapping the vertex to the block grid makes each native pixel all-or-nothing, as at 1x.
+  bool scaledSnap = false;
   void record_scaled_draws(bool barrierBetween) {
     if (!scaled() || scaledDraws.empty()) return;
     if (scaledPaused) {
@@ -304,7 +309,8 @@ struct GpuDrawer::Impl {
       push[2] = FloatToBits(static_cast<float>(scale));
       push[3] = FloatToBits(scaleOffset);
       push[7] = (draw.scaledTexture ? scale : 1u) | (scaledLinearFilter ? 0x80000000u : 0u) |
-                (ditherFine ? 0x40000000u : 0u);  // IN-374 / IN-384: tex_scale, forced-linear and dither-fine bits
+                (ditherFine ? 0x40000000u : 0u) |
+                (scaledSnap ? 0x20000000u : 0u);  // IN-374/384/388: tex_scale, forced-linear, dither-fine, snap
       if (!pushed || std::memcmp(lastPush, push, sizeof(push)) != 0) {
         gt4_hwd_vkCmdPushConstants(cmd, pipelineLayout, kGraphicsPushStages, 0, kPushBytes, push);
         std::memcpy(lastPush, push, sizeof(push));
@@ -3644,11 +3650,17 @@ void GpuDrawer::SetScale(std::uint32_t scale, float scaleOffset) {
   impl_->ditherFine = dither == nullptr || std::strcmp(dither, "native") != 0;
   const char *refresh = std::getenv("GT4_HW_SCALED_REFRESH");
   impl_->scaledRefreshLinear = refresh != nullptr && std::strcmp(refresh, "linear") == 0;
+  const char *snap = std::getenv("GT4_HW_SCALED_SNAP");
+  // IN-388: default OFF. Measured on the GT Mode dialog at 6x against the 1x presentation of the same VBlank: the snap
+  // halves the strongest sliver (23.5 -> 11.9 levels) but splits it into two, shifts the whole picture by half a native
+  // pixel and costs 1.5 dB of box PSNR (23.06 against 24.52), so it is not the fix; it stays as a diagnostic switch.
+  impl_->scaledSnap = snap != nullptr && std::strcmp(snap, "native") == 0;
   // IN-387: one line so a diagnostic run can prove which switches reached the drawer (the three raw switches are not
   // part of the option table and therefore never appear in the option dump).
-  std::fprintf(stderr, "[scale] scale=%u filter=%s refresh=%s dither=%s\n", impl_->scale,
+  std::fprintf(stderr, "[scale] scale=%u filter=%s refresh=%s dither=%s snap=%s\n", impl_->scale,
                impl_->scaledLinearFilter ? "linear" : "nearest",
-               impl_->scaledRefreshLinear ? "linear" : "nearest", impl_->ditherFine ? "fine" : "native");
+               impl_->scaledRefreshLinear ? "linear" : "nearest", impl_->ditherFine ? "fine" : "native",
+               impl_->scaledSnap ? "native" : "off");
 }
 
 std::uint32_t GpuDrawer::Scale() const { return impl_->scale; }

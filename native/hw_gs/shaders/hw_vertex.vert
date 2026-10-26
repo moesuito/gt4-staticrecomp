@@ -48,6 +48,14 @@ void main() {
     vec2 native = vec2(xi - pc.offset_x, yi - pc.offset_y) / 16.0;
     const float bias = 1.0 / 320.0;
     vec2 gpu = pc.scale * native + vec2(0.5 * pc.scale_offset) - vec2(bias);
+    // IN-388: native alignment for the scaled pass (the reference's GT4 half-pixel mode). Bit 29 of the tex_scale push
+    // word asks for it. A primitive edge at a GS integer coordinate lands at the CENTRE of a native pixel's s x s block
+    // with the 06.3 shift, so a quad that covers one native pixel at 1x covers half of two blocks at scale and paints a
+    // half-native-pixel sliver at every edge (the owner's thin white lines). Snapping the vertex to the block grid
+    // (floor to a multiple of s) makes the coverage of every native pixel all-or-nothing, exactly as at 1x.
+    if ((pc.tex_scale & 0x20000000u) != 0u && pc.scale > 1.0) {
+        gpu = floor(gpu / pc.scale) * pc.scale;
+    }
 
     // Depth is only used for clipping (no depth attachment in M4); the format clamp is applied
     // per pixel, as the CPU reference does (IN-206).

@@ -229,7 +229,8 @@ void main() {
     // IN-384 follow-up: the top bit of the tex_scale push word requests the forced linear filter for 1x textures.
     g_force_linear = (pc.tex_scale & 0x80000000u) != 0u;
     g_dither_fine = (pc.tex_scale & 0x40000000u) != 0u;
-    g_tex_scale = pc.tex_scale & 0x3FFFFFFFu;
+    // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale.
+    g_tex_scale = pc.tex_scale & 0x1FFFFFFFu;
 
     HwPixelState s;
     s.format = state.format;
