@@ -579,3 +579,22 @@ HLE), 07 (CLUT, CLD modes), 04.9 (GLM); IN-347..IN-351, IN-370, IN-379, IN-382.
   the **preload filter** (IN-385 kept nearest for the 06.7 box-PSNR gate), not the sampler and not the present stage.
   Open: the IN-387 dumps are from candidate 274, where the owner has not yet judged the IN-386 deinterlace, so the
   residual one-level cell may not be visible at all in a window; the next step is his verdict before changing a default.
+
+- **The owner's thin white lines, located (2026-10-25, IN-387 follow-up).** Reproduced headless at 6x on the GT Mode map
+  (frame 6600) and compared with the 1x presentation of the same VBlank (same settings, `GT4_FORCE_WIDESCREEN=1`):
+  - the display circuit's scaled image carries a **three-output-row band** (exactly `scale / 2`) at a bright value (211
+    against 186) at the bottom of one native pixel, and the same pixel's 1x word is 186 everywhere: the 1x presentation
+    has no line at all there;
+  - the band is full width except where the opaque dialog covers it, and it is present with the deinterlace **off** too,
+    so it is raster coverage, not the deinterlacer and not the compose (the compose is a 1:1 read of the slot image, and
+    the slot image carries the band while the 1x words do not);
+  - the band's height and position are exactly the `h = scale / 2` half-pixel band of 06.3/IN-372: the sub-pixels
+    `[N*s, N*s + h)` of native pixel N belong to native pixel N-1, so a quad edge that lands mid-native-pixel covers the
+    **bottom half of one native pixel** at scale, while the 1x sample grid (one sample at the pixel centre) sees the pixel
+    as uncovered.
+  So the lines are **sub-native-pixel coverage at the edges of bright quads**: a faithful consequence of rasterising at
+  6x with sub-pixel coverage, where the 1x raster quantises coverage per native pixel. The reference does not show them
+  because its GT4 per-game entry selects the **native-alignment** half-pixel mode (Q-GSDX-COMPARISON 11.1: "the
+  native-alignment half-pixel mode" is one of the four GT4 database items), i.e. its scaled coverage is quantised to the
+  native sample grid. Next step: an A/B switch that snaps the scaled pass's vertex positions to the native pixel grid
+  (the reference's mode), then re-measure the band and the 06.3 box PSNR before making it the default.
