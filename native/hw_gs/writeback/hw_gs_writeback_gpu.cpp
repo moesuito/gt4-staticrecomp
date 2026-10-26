@@ -1826,7 +1826,7 @@ bool GpuDrawer::Impl::create_deinterlace(std::string &error) {
              "vkCreateDescriptorSetLayout", error)) {
     return false;
   }
-  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12 * sizeof(std::uint32_t)};
+  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 13 * sizeof(std::uint32_t)};
   VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   layoutInfo.setLayoutCount = 1;
   layoutInfo.pSetLayouts = &deinterlaceSetLayout;
@@ -3523,9 +3523,9 @@ bool GpuDrawer::DeinterlaceScaled(const DeinterlaceStep &step, std::string &erro
   s.boundComputePipeline = s.deinterlacePipeline;
   s.boundComputeSet = s.deinterlaceSet;
   auto dispatch = [&](std::uint32_t mode) {
-    const std::uint32_t push[12] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
+    const std::uint32_t push[13] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
                                     step.previousSame, step.previousOther, step.haveOutput ? 1u : 0u,
-                                    step.thresholdPermille, step.initWoven ? 1u : 0u};
+                                    step.thresholdPermille, step.initWoven ? 1u : 0u, step.rowStep};
     gt4_hwd_vkCmdPushConstants(s.cmd, s.deinterlaceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     s.recorded_work();
     gt4_hwd_vkCmdDispatch(s.cmd, (step.width + 7) / 8, (step.height + 7) / 8, 1);

@@ -40,6 +40,8 @@ layout(push_constant) uniform DeinterlaceParameters {
     uint have_output;     // previous_output holds the last adaptive output of this size
     uint threshold_permille;  // 13.4 threshold x 1000 (80 = 0.08)
     uint init;            // weave update: copy every row (first field)
+    uint row_step;        // IN-386: output rows per algorithm row: 1 = one output row (the reference), scale = one
+                          // native row (the IN-381 interpretation)
 } pc;
 
 uvec4 unpack_rgba(uint word) {
@@ -69,10 +71,10 @@ void main() {
         return;
     }
     ivec2 p = ivec2(gid);
-    int s = int(pc.scale);
-    uint native_row = gid.y / pc.scale;
-    uint native_rows = pc.height / pc.scale;
-    bool field_row = (native_row & 1u) == pc.row_parity;
+    const int s = int(pc.row_step);
+    const uint row = gid.y / pc.row_step;
+    const uint rows = pc.height / pc.row_step;
+    bool field_row = (row & 1u) == pc.row_parity;
 
     if (pc.mode == 1u) {
         if (pc.init != 0u || field_row) {
@@ -85,8 +87,8 @@ void main() {
         return;
     }
     if (pc.mode == 3u) {
-        int up = native_row == 0u ? p.y : p.y - s;
-        int down = native_row + 1u >= native_rows ? p.y : p.y + s;
+        int up = row == 0u ? p.y : p.y - s;
+        int down = row + 1u >= rows ? p.y : p.y + s;
         uvec4 a = unpack_rgba(imageLoad(woven, ivec2(p.x, up)).x);
         uvec4 b = unpack_rgba(imageLoad(woven, p).x);
         uvec4 c = unpack_rgba(imageLoad(woven, ivec2(p.x, down)).x);
@@ -101,7 +103,7 @@ void main() {
     }
     // mode 5: adaptive.
     uint here = load_history(pc.current, p);
-    bool edge_row = native_row == 0u || native_row + 1u == native_rows;
+    bool edge_row = row == 0u || row + 1u == rows;
     if (field_row || edge_row) {
         imageStore(display_out, p, uvec4(here, 0u, 0u, 0u));
         return;

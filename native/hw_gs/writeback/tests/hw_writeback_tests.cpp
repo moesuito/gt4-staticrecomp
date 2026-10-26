@@ -2840,6 +2840,10 @@ int TestToneHleExact(const gpu::VulkanHandles& handles) {
 //   - Detail: a sprite drawn into the field buffer must reach the scaled presentation as sub-pixel detail (mixed
 //     s x s blocks), which a 1x presentation (candidate 271 for every 480i frame) cannot have.
 int TestScaleInterlacedPresent(const gpu::VulkanHandles& handles) {
+    // IN-386: this fixture pins the IN-381 interpretation (one algorithm row = one NATIVE row, so a 1x-block image
+    // gives exactly the CPU deinterlacer's result blown up). The shipped default is now one OUTPUT row, the
+    // reference's behaviour; the fixture sets the old mode explicitly so both stay covered.
+    _putenv_s("GT4_HW_DEINTERLACE_ROWS", "native");
     constexpr uint32_t kWidth = 64;
     constexpr uint32_t kRows = 32;  // field buffer rows; the frame is 64 rows
     auto lineColour = [](uint32_t line, uint32_t x, uint32_t frame) {

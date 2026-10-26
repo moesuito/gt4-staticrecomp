@@ -2066,6 +2066,14 @@ public:
         step.height = height;
         step.rowParity = static_cast<uint32_t>(rowParity);
         step.field = static_cast<uint32_t>(vblankField & 1);
+        // IN-386: the reference deinterlaces the merged image with a "row" of ONE output row (a one-line field
+        // difference becomes a sub-native comb), while IN-381 used one native row (a full native-row ghost at scale,
+        // the owner's doubled menu lines). Default output rows; GT4_HW_DEINTERLACE_ROWS=native restores IN-381.
+        {
+            static const bool nativeRows = std::getenv("GT4_HW_DEINTERLACE_ROWS") != nullptr &&
+                                           std::strcmp(std::getenv("GT4_HW_DEINTERLACE_ROWS"), "native") == 0;
+            step.rowStep = nativeRows ? gpu_.Scale() : 1u;
+        }
         // The slot for this field: a free one, else the oldest (the CPU history keeps the last four fields).
         uint32_t current = gpu::kGpuDeinterlaceHistory;
         for (uint32_t i = 0; i < gpu::kGpuDeinterlaceHistory && current == gpu::kGpuDeinterlaceHistory; ++i) {

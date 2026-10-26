@@ -302,6 +302,10 @@ public:
         bool haveOutput = false;
         bool initWoven = false;
         std::uint32_t thresholdPermille = 80;
+        // IN-386: output rows per algorithm row. 1 = one output row, the reference's behaviour (a one-line field
+        // mismatch becomes a sub-native comb); scale = one native row, the IN-381 interpretation (a full native-row
+        // ghost at scale).
+        std::uint32_t rowStep = 1;
     };
     bool DeinterlaceScaled(const DeinterlaceStep &step, std::string &error);
     // IN-382: while paused, draws are not repeated into the scaled images and loads do not refresh them (the caller
