@@ -3,31 +3,38 @@
 Date: 2026-10-26  
 Branch: `task/133-rc7-ra-controls`  
 Worktree: `C:/Antigravity/gt4-wt-133-rc7-ra-controls`  
-HEAD Commit: `66d2793` (`docs(review): require complete rc7 baseline evidence before integration`)  
+HEAD Commit: `e7546fc` (`docs(review): flag native rc6 artifact mismatch before task133 integration`)  
 Program Baseline: `v1.3.0-rc6` (`58322229c0bd63a0652b0550c5ad2154bd907039`)  
 
 ---
 
 ## 1. Source, Pin, Toolchain, and Build References
 
-### Provenance and Inputs
-- **Base Repository State:** Branch `task/133-rc7-ra-controls` is created directly from tag `v1.3.0-rc6` (`5832222`). All program files match published rc6 byte-for-byte. The working directory is completely clean.
-- **RetroAchievements Source Reference:** Stable `v1.2.4` (`ad46df65c03894ed204beafbd02819a11e4037bc`), incorporating PR #96 and the reviewed account/WinHTTP cancellation fixes from PR #105.
-- **Controller Improvements Source Reference:** Commit `8b73fa06cd9947d597354502a858693779d3eb57` (PR #100 reviewed via PR #106) and published controller-only release `v1.2.5` (`5d7a669bdecf5e60c0782ca449f48aacac3c7a32`). Wheel code, DFP, and FFB bridges are strictly excluded.
-- **Deferred Work:** Frame skipping (TASK-082) is preserved on remote branch `task/082-render-skip` (`15b7bf3`) and is excluded from rc7.
-- **Native rc6 Build Under Test:**
-  - Build directory: `O:/gt4recomp-scratch/slice300-rc6-v200/build`
-  - Produced `gt4vulkan.exe` / `gt4.exe` matching pin `docs/inputs/slice303-pcsx2.json`:
-    - Size: 97,398,784 bytes
-    - SHA256: `6682777e1a6c141d3f32aa54265d609a4926a55f0c19c45d84c51a2e39970945`
-  - Spec II binary matching pin `docs/inputs/slice304-spec2.json`:
-    - Size: 104,634,368 bytes
-    - SHA256: `e841615236ec9107e0d0580d877ebc5ffa3afae9644aed1196f12a58f89df173`
-- **Toolchains:**
-  - C++ Compiler: Clang-cl (LLVM 19.x, C++20), Ninja 1.12.1, MSVC BuildTools 2022
-  - Rust: cargo 1.85+, locked dependencies, offline mode
-  - Python: `C:/Antigravity/gt4-staticrecomp/private/tooling-venv/Scripts/python.exe`
-  - SDL3 Development/Runtime Root: `C:/Antigravity/gt4-staticrecomp/private/tooling/sdl3-3.4.18`
+### Provenance and Artifact Hashes
+The program baseline of this task is the published release `v1.3.0-rc6` (`5832222`). All program files in the worktree equal the published tag byte-for-byte.
+
+The table below reconciles all tested and published binaries with their claimed pins:
+
+| Artifact Path | Purpose | Measured SHA256 | Pin Reference | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| `C:/Antigravity/gt4-staticrecomp/private/slice306-dist-130-rc6b/gt4.exe` | Published rc6 v2.00 distribution binary | `6682777e1a6c141d3f32aa54265d609a4926a55f0c19c45d84c51a2e39970945` | `docs/inputs/slice303-pcsx2.json` | **VERIFIED** (Exact match) |
+| `C:/Antigravity/gt4-staticrecomp/private/slice306-dist-130-rc6b/gt4-spec2.exe` | Published rc6 Spec II distribution binary | `e841615236ec9107e0d0580d877ebc5ffa3afae9644aed1196f12a58f89df173` | `docs/inputs/slice304-spec2.json` | **VERIFIED** (Exact match) |
+| `O:/gt4recomp-scratch/slice301-rc6-spec2/build/gt4vulkan-spec2.exe` | Spec II scratch build output | `e841615236ec9107e0d0580d877ebc5ffa3afae9644aed1196f12a58f89df173` | `docs/inputs/slice304-spec2.json` | **VERIFIED** (Exact match) |
+| `O:/gt4recomp-scratch/slice300-rc6-v200/build/gt4vulkan.exe` | Mutable v2.00 scratch build output tested in baseline | `3e15166ade27309b90f62be91477dcae532b2ffbde2eceb1b0591055f29e1503` | `docs/inputs/slice303-pcsx2.json` (`6682777e...`) | **MISMATCH** (Documented below) |
+
+### Native Build Provenance and Worktree Distinction
+- **Fixture Build Directory:** `O:/gt4recomp-scratch/slice300-rc6-v200/build` was configured from `CMAKE_HOME_DIRECTORY = C:/Antigravity/gt4-wt-116-117-perf` on 2026-10-25. That source worktree was clean on branch `task/116-117-flare-perf` (`5f0d3d6`), whose tracked files outside `docs/` and `TASKS.md` are identical to published rc6 (`5832222`).
+- **Build Drift Root Cause:** `.ninja_log` reveals that `O:/gt4recomp-scratch/slice300-rc6-v200/build` was an active, mutable development directory where `gs_stream_client.cpp` and `gt4vulkan.exe` were recompiled several times on the evening of 2026-10-25 (timestamps 81466178... through 81467771...). This resulted in a subsequent binary (`3e15166a...`) differing from the final immutable distribution artifact delivered to `slice306-dist-130-rc6b/gt4.exe` (`6682777e...`).
+- **CTest Environment Path:** Because CMake configured the build in `C:/Antigravity/gt4-wt-116-117-perf`, CTest's Test #33 (`python_native_contracts`) executes against test files located in `C:/Antigravity/gt4-wt-116-117-perf/tests/python`.
+- **Published Runtime Reference:** `C:/Antigravity/gt4-staticrecomp/private/slice306-dist-130-rc6b/gt4.exe` is the immutable, verified rc6 game binary matching pin `slice303`. The scratch binary in `slice300` is documented as a rebuilt scratch artifact, not the published release binary.
+
+### Toolchains (Actual Measured Versions)
+- **C/C++ Compiler:** Clang-cl version `22.1.3` (`C:/Program Files/LLVM/bin/clang-cl.exe`, LLVM git `e9846648fd6183ee6d8cbdb4502213fcf902a211`, Target: `x86_64-pc-windows-msvc`)
+- **Build System:** Ninja `1.13.2`
+- **CMake:** `4.3.1` (both active binary and recorded in `CMakeCache.txt`)
+- **Rust:** `cargo 1.99.0 (5f94df478 2026-08-27)`
+- **Python:** `Python 3.14.2` (`C:/Antigravity/gt4-staticrecomp/private/tooling-venv/Scripts/python.exe`)
+- **SDL3:** Version `3.4.18` located under `C:/Antigravity/gt4-staticrecomp/private/tooling/sdl3-3.4.18`
 
 ---
 
@@ -40,30 +47,53 @@ Program Baseline: `v1.3.0-rc6` (`58322229c0bd63a0652b0550c5ad2154bd907039`)
   cargo test --manifest-path C:\Antigravity\gt4-wt-133-rc7-ra-controls\launcher\Cargo.toml --workspace --locked --offline
   ```
 - **Overall Result:** **559 passed, 0 failed, 5 ignored**.
-- **Unit-Test Blocks (passed / failed / ignored):**
-  - `gt4controls`: 16 / 0 / 0
-  - `gt4l-core`: 213 / 0 / 0
-  - `gt4l-disc`: 6 / 0 / 0
-  - `gt4l-platform`: 47 / 0 / 2
-  - `GT4Recomp` (`gt4l-tauri`): 88 / 0 / 1
-  - `gt4saves`: 6 / 0 / 0
-- **Integration-Test Blocks:**
-  - `gt4controls/tests/docs_match.rs`: 4 / 0 / 0
-  - `gt4l-core/tests/launcher_version.rs`: 6 / 0 / 0
-  - `gt4l-core/tests/model.rs`: 11 / 0 / 0
-  - `gt4l-core/tests/portable_zip.rs`: 7 / 0 / 0
-  - `gt4l-core/tests/release_labels.rs`: 29 / 0 / 0
-  - `gt4l-core/tests/user_dirs.rs`: 14 / 0 / 0
-  - `gt4l-disc/tests/disc.rs`: 8 / 0 / 0
-  - `gt4saves/tests/card_owner.rs`: 6 / 0 / 0
-  - `gt4saves/tests/hostile_cards.rs`: 10 / 0 / 0
-  - `gt4saves/tests/library.rs`: 12 / 0 / 0
-  - `gt4saves/tests/migration.rs`: 7 / 0 / 0
-  - `gt4saves/tests/per_game.rs`: 5 / 0 / 0
-  - `gt4saves/tests/save_management.rs`: 9 / 0 / 0
-- **Independent Log Reference:**
+
+#### Complete Test Target Breakdown (All 28 Test Runs)
+
+| Crate | Test Target / Binary | Passed | Failed | Ignored | Total |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **gt4controls** | `unittests src\lib.rs` | 16 | 0 | 0 | 16 |
+| | `tests\docs_match.rs` | 4 | 0 | 0 | 4 |
+| | *Doc-tests gt4controls* | 0 | 0 | 0 | 0 |
+| **gt4l-core** | `unittests src\lib.rs` | 213 | 0 | 0 | 213 |
+| | `tests\config_migration.rs` | 16 | 0 | 0 | 16 |
+| | `tests\enabled_values.rs` | 3 | 0 | 0 | 3 |
+| | `tests\gs_golden.rs` | 5 | 0 | 0 | 5 |
+| | `tests\gs_release.rs` | 11 | 0 | 0 | 11 |
+| | `tests\launch_contract.rs` | 21 | 0 | 0 | 21 |
+| | `tests\multi_game.rs` | 5 | 0 | 0 | 5 |
+| | `tests\release_lists.rs` | 5 | 0 | 0 | 5 |
+| | `tests\relocate.rs` | 20 | 0 | 0 | 20 |
+| | `tests\settings_config.rs` | 9 | 0 | 0 | 9 |
+| | `tests\textures.rs` | 7 | 0 | 0 | 7 |
+| | *Doc-tests gt4l_core* | 0 | 0 | 0 | 0 |
+| **gt4l-disc** | `unittests src\lib.rs` | 6 | 0 | 0 | 6 |
+| | `tests\elf_rebuild.rs` | 3 | 0 | 0 | 3 |
+| | `tests\real_disc.rs` | 1 | 0 | 2 | 3 |
+| | `tests\setup_fake_iso.rs` | 12 | 0 | 0 | 12 |
+| | `tests\spec2_identify.rs` | 8 | 0 | 0 | 8 |
+| | *Doc-tests gt4l_disc* | 0 | 0 | 0 | 0 |
+| **gt4l-platform** | `unittests src\lib.rs` | 47 | 0 | 2 | 49 |
+| | `tests\job_breakaway.rs` | 4 | 0 | 0 | 4 |
+| | *Doc-tests gt4l_platform* | 0 | 0 | 0 | 0 |
+| **gt4l-tauri** | `unittests src\main.rs` (`GT4Recomp`) | 88 | 0 | 1 | 89 |
+| **gt4saves** | `unittests src\lib.rs` | 6 | 0 | 0 | 6 |
+| | `tests\card_owner.rs` | 6 | 0 | 0 | 6 |
+| | `tests\hostile_cards.rs` | 10 | 0 | 0 | 10 |
+| | `tests\library.rs` | 12 | 0 | 0 | 12 |
+| | `tests\migration.rs` | 7 | 0 | 0 | 7 |
+| | `tests\per_game.rs` | 5 | 0 | 0 | 5 |
+| | `tests\save_management.rs` | 9 | 0 | 0 | 9 |
+| | *Doc-tests gt4saves* | 0 | 0 | 0 | 0 |
+| **TOTALS** | **All 28 Test Blocks** | **559** | **0** | **5** | **564** |
+
+- **Unit Tests Subtotal:** 376 passed, 0 failed, 3 ignored.
+- **Integration Tests Subtotal:** 183 passed, 0 failed, 2 ignored.
+- **Log Reference:**
   - Path: `C:/Antigravity/gt4-staticrecomp/private/task133-orchestrator-review-20261026/cargo-baseline.log`
   - SHA256: `0c3b22ededd926b4e2c463212a1aedff43d41eae594952e8115bc47a0aaaee61`
+
+---
 
 ### B. CTest Native Suite
 - **Command:**
@@ -72,19 +102,23 @@ Program Baseline: `v1.3.0-rc6` (`58322229c0bd63a0652b0550c5ad2154bd907039`)
   ```
 - **Result:** **46 of 47 passed (98%), 1 failed** (Test #33 `python_native_contracts`).
   - Total real execution time: 226.64 s.
-  - All 46 native and recompilation tests passed:
-    - Vulkan tests (pixels, sync, baseline, extensions, async stress)
-    - Host I/O & controls (audio, controls, pad mapping, pacing, cursor autohide)
-    - Game display (quickfix, race display, widescreen, aspect)
-    - MTVU & Performance (accounting, probe, mtvu measure, ring, journal, vif batch, switches)
-    - GS Stream & IPC (client, stream ipc, readback probe)
-    - Shape capture & observation (observer, export, control)
-    - VU AOT & Differential (vu_recomp_core, differential, corpus [98s], vu1_aot_registry, vu0_emitter, vu0_aot_registry, vu0_aot_differential)
-    - System & Targets (memcard_store, license_guard, standalone, game_target, spec2_iop, spec2_hooks, flare_limits)
-  - Test #33 `python_native_contracts` failed solely because it invokes the Python test discovery suite, documented below.
+  - All 46 native and recompilation C++ test targets passed:
+    - Native Vulkan (#1-#5, #7-#9)
+    - FPU chop (#6)
+    - Audio, controls, and pad mapping (#10-#12)
+    - Pacing, quickfix, and display (#13-#18)
+    - Shape observation & performance accounting (#19-#21)
+    - MTVU runtime (#22-#27)
+    - GS Stream & IPC (#28-#30)
+    - Shape capture (#31-#32)
+    - VU AOT & Differential (#34-#40, including 98s corpus test)
+    - System & target hooks (#41-#47: memcard, license guard, standalone, game target, spec2 iop, spec2 hooks, flare limits)
+  - Test #33 `python_native_contracts` failed because it executes the Python test suite, whose pre-existing failures are detailed below.
 - **Log Reference:**
   - Path: `private/task133-baseline-logs/ctest-baseline.log`
   - SHA256: `095e3a03e723ef73db2fe11c8496a946af35fde206e9cad241fed5910488fe7f`
+
+---
 
 ### C. Full Python Test Suite
 - **Command:**
@@ -96,25 +130,26 @@ Program Baseline: `v1.3.0-rc6` (`58322229c0bd63a0652b0550c5ad2154bd907039`)
 - **Log Reference:**
   - Path: `private/task133-baseline-logs/python-baseline.log`
   - SHA256: `ab638172071273f1be430b8c423103306493dd3c540dd43b447dda4e29393d59`
-- **Failure Classification and Root Cause:**
-  All 13 failures are pre-existing baseline test expectation mismatches caused by TASK-118 (rc6 settings simplification):
-  1. `test_gs_live.ConfigTests.test_defaults_are_vulkan_3x_high_blending_automatic_deinterlace_16_9_vsync`:
-     - Fails because `LoadTextureReplacementsAsync = true` was added to `gt4-gs.ini` by default in rc6, while the test fixture expects the older default without this key.
-  2-13. `tests/python/test_gs_settings.py` (12 failures):
-     - `DefaultTests.test_cache_and_headless_sections_are_unchanged`
-     - `DefaultTests.test_default_file_bytes_match_the_main_writer`
-     - `DefaultTests.test_default_ini_is_main_default`
-     - `DefaultTests.test_probe_default_is_unchanged`
-     - `DefaultTests.test_run_text_with_data_root_and_eager_switch`
-     - `IniTests.test_user_settings_replace_defaults_and_add_when_set_rows`
-     - `OfferedTests.test_launcher_offers_only_settable_options`
-     - `OsdRowTests.test_overlay_rows_are_advanced_toggles_off_by_default`
-     - `PageLayoutTests.test_advanced_page_holds_the_rest_of_the_user_options`
-     - `ProhibitDynamicCodeTests.test_row_is_an_advanced_always_written_switch_defaulting_to_false`
-     - `ResetToDefaultsTests.test_reset_gives_the_exact_default_ini`
-     - `ResetToDefaultsTests.test_when_set_row_equal_to_its_default_is_not_written`
-     - *Cause:* In TASK-118, 35 settings rows were moved from `page = "advanced"` to `page = "hidden"`, the Advanced settings page was removed in favor of simplified Graphics settings, and `LoadTextureReplacementsAsync = true` was added to the default output. The tests in `test_gs_settings.py` assert against the pre-TASK-118 `LEGACY_DEFAULT` layout (e.g. asserting `len(advanced) == 40` when the simplified table has 5).
-  - No failures occurred in any other Python test module (memcards, widescreen, aspect patches, license guard, EE entries, Spec II, distribution, VU0/VU1 image).
+
+#### Detailed Classification of the 13 Failures
+These failures are **pre-existing technical debt** on the rc6 baseline caused by the TASK-118 graphics settings simplification, independently verified by Codex:
+1. `test_gs_live.ConfigTests.test_defaults_are_vulkan_3x_high_blending_automatic_deinterlace_16_9_vsync`:
+   - Fails because `LoadTextureReplacementsAsync = true` was added to `gt4-gs.ini` by default in rc6 (TASK-118), whereas the legacy assertion expects it omitted.
+2. `tests/python/test_gs_settings.py` (12 failures):
+   - `DefaultTests.test_cache_and_headless_sections_are_unchanged`
+   - `DefaultTests.test_default_file_bytes_match_the_main_writer`
+   - `DefaultTests.test_default_ini_is_main_default`
+   - `DefaultTests.test_probe_default_is_unchanged`
+   - `DefaultTests.test_run_text_with_data_root_and_eager_switch`
+   - `IniTests.test_user_settings_replace_defaults_and_add_when_set_rows`
+   - `OfferedTests.test_launcher_offers_only_settable_options`
+   - `OsdRowTests.test_overlay_rows_are_advanced_toggles_off_by_default`
+   - `PageLayoutTests.test_advanced_page_holds_the_rest_of_the_user_options` (expects 40 rows in `advanced`; simplified table only has 5 rows)
+   - `ProhibitDynamicCodeTests.test_row_is_an_advanced_always_written_switch_defaulting_to_false` (row moved to `hidden` in rc6)
+   - `ResetToDefaultsTests.test_reset_gives_the_exact_default_ini`
+   - `ResetToDefaultsTests.test_when_set_row_equal_to_its_default_is_not_written`
+- **Orchestrator Independent Verification:** Rerun by Codex at review time without code changes (`python-settings-baseline.log` and `python-live-baseline.log`), confirming identical failure counts.
+- **Other Modules:** 0 failures across memory card, display aspect, VU0/VU1 image, license guard, distribution, and Spec II tests.
 
 ---
 
@@ -179,10 +214,11 @@ Program Baseline: `v1.3.0-rc6` (`58322229c0bd63a0652b0550c5ad2154bd907039`)
 
 ---
 
-## 4. Stage 1 Completion Summary
+## 4. Stage 1 Final Status
 
-- Baseline checks completed across Rust (559/559), Native CTest (46/47 passing, 1 known python contract failure), and Python (655/710 passing, 13 known TASK-118 table drift failures).
-- Source provenance verified against published `v1.3.0-rc6` and pins `slice303-pcsx2.json` / `slice304-spec2.json`.
-- Corrections from the Stage 1 review incorporated into the proposed architecture contract.
-- No code or behavior changes applied to runtime or launcher.
-- **Stage 1 is complete. Standing by for orchestrator review before beginning Stage 2.**
+- Baseline checks completed and reconciled across Rust (559/559 across 28 test blocks), Native CTest (46/47 passing, 1 known python contract failure), and Python (655/710 passing, 13 recorded TASK-118 drift failures).
+- Build and artifact provenance resolved: published rc6 distribution binaries (`slice306-dist-130-rc6b`) verified against pins `slice303` and `slice304`; build-directory drift in mutable `slice300` documented with measured hashes and `.ninja_log` evidence.
+- Measured toolchain versions recorded accurately.
+- Proposed architecture and target contract fully specified.
+- No runtime, launcher, or pin files modified.
+- **Stage 1 is complete. Standing by for orchestrator review before Stage 2 release.**
