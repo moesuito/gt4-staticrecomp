@@ -652,7 +652,13 @@ struct Backend::Impl {
       // IN-375: halve with 2x2 box blits while the next level still covers the destination rectangle.
       std::uint32_t level = 0;
       std::uint32_t lw = upload.width, lh = upload.height;
-      while (level + 1 < upload.levels && (lw >> 1) >= dw && (lh >> 1) >= dh) {
+      // IN-390: halve with 2x2 box blits down to at least HALF the destination rectangle, then let the final bilinear
+      // blit do the rest. Before, the chain stopped as soon as a halved level would be smaller than the destination, so
+      // a 0.63x reduction (the owner's 3440x1369 window) was a single bilinear tap: that aliases a 6-pixel feature (a
+      // one-native-pixel line at 6x) into a broken, dashed line. The reference does box steps and then one linear blit
+      // (Q-GSDX-COMPARISON section 6), so a half-size box level followed by a 1.27x bilinear upscale is its behaviour
+      // and a box average cannot alias.
+      while (level + 1 < upload.levels && (lw >> 1) >= (dw + 1) / 2 && (lh >> 1) >= (dh + 1) / 2) {
         VkImageBlit half{};
         half.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
         half.srcOffsets[1] = {static_cast<std::int32_t>(lw), static_cast<std::int32_t>(lh), 1};
