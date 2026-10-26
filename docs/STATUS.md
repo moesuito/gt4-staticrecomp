@@ -1,28 +1,32 @@
 # Current Status
-## TASK-082 Phase P0 accepted criteria & verified in-game baseline (2026-10-25, Review Round 2 Remediation)
+## TASK-082 Phase P0 accepted criteria & verified in-game baseline (2026-10-25, Review Round 3 Remediation)
 
-Phase P0 remediated and fully verified on branch `task/082-render-skip` addressing all 8 items of orchestrator review `task082-p0-review-2.md`.
+Phase P0 remediated and fully verified on branch `task/082-render-skip` addressing all 4 items of orchestrator review `task082-p0-review-3.md`.
 All measurements are from real headless in-game runs in slice 310 (`O:\gt4recomp-scratch\slice310-run-*`) using candidate `build-p0\gt4vulkan.exe`
-(fixed SHA-256 `36fac75c0ebfd59fde1454a4e3e1cb66930ca2aecac747f06e7513d647a393d2`) built with runtime capsule `slice310-task082-fps-probe-runtime`
+(unified SHA-256 `bb54deb5cc9c512b0c896b233d1d17a67164de897c4b2b144b8b6b55a0541e91`) built with runtime capsule `slice310-task082-fps-probe-runtime`
 (pinned in `docs/inputs/slice310-task082-fps-probe-runtime.json`).
 
 Key Results & Verified Proofs:
-- **In-Game Bit-Identical Baseline Parity (Single Binary):**
+- **In-Game Bit-Identical Baseline Parity (Single Binary `bb54deb5...` across all 5 runs):**
   - Night race (`night`, 12,000 frames): `dumps.sha256` 100% bit-identical (`fc.exe /b` = 0 differences) between probe-off and probe-on. Stream hash: `records 19749878 hash ff7b453a2561a98e`.
   - Day race / El Capitan (`day`, 16,000 frames): `dumps.sha256` 100% bit-identical (`fc.exe /b` = 0 differences) between probe-off and probe-on. Stream hash: `records 32831823 hash 0c79dcf5208e5e4d`.
-- **Render Purity & Non-Circular Proof (Unattributed Words = 0 in both scenes):**
-  - Night race 3D live state: `clock_f898 = 109300`, `render_counter = 3940`, `hud_hist = 0xFF`, `course_ms = 52128`. Mutations: 157,599 (`render_counter: 3295`, `hud_hist: 11`, `cam_matrix: 2`, `flare: 151033`, `unattributed: 0`). Verdict: `clean (unattributed_words=0)`.
-  - Day race 3D live state: `clock_f898 = 352950`, `render_counter = 8311`, `hud_hist = 0xFF`, `course_ms = 122528`. Mutations: 331,138 (`render_counter: 7696`, `hud_hist: 13`, `cam_matrix: 2`, `flare: 315769`, `unattributed: 0`). Verdict: `clean (unattributed_words=0)`.
-  - Flare object separated from packet pointers: `race_obj + 0x0DA0` (header/samples), `race_obj + 0x0EA4` (2048B readback table), queues at `+0x17D0` and `+0x25E0`. Code watch `0x004A5178` eliminated.
-- **Measured In-Game Timings & Remainder:**
-  - All four phases non-zero and measured in-game:
-    - Night: `update_ms = 0.281`, `render_ms = 0.685`, `idle_ms = 0.004`, `flip_ms = 3.109`, `total_ms = 4.087`.
-    - Day: `update_ms = 0.746`, `render_ms = 0.766`, `idle_ms = 0.004`, `flip_ms = 3.383`, `total_ms = 4.909`.
-  - Diagnostic Run 5 (`slice310-run-night-diag-update-only`):
-    - **[Confirmed]**: Host EE update cost is ~0.28 - 0.75 ms.
-    - **[Confirmed]**: Host EE render cost saved per skipped frame is ~0.68 - 0.77 ms.
-    - **[Confirmed]**: Measured host update-only iteration cost is 4.18 ms (`update_ms = 0.315`, `flip_ms = 3.136`, `idle_ms = 0.006`), covering host thread synchronization, IOP audio/sound services, and VSync pacing.
-    - **[Hypothesis]**: 4.18 ms fits easily inside the 16.67 ms (60 Hz) virtual simulation window, enabling 100% real-time speed when skipping render passes below 60 FPS, pending P1 implementation of the host pacing mechanism and drop threshold.
+- **One-per-Frame Timings Reconciled with F8 (Item 2 Resolved):**
+  - Eliminated halved frame counting caused by `forEach(manager_list, main_update_functor)` visiting 2 managers per VSync. `seen_render_` ensures `on_frame_boundary()` fires exactly once per frame boundary.
+  - Night race (`night`, 12,000 frames): `frames=11997` (exact 12,000 VSyncs minus 3 boot frames), reporting intervals at 600, 1200, ..., 11400, 11997. Cumulative `total_ms = 7.220 ms`, reconciling directly with F8 `EE CPU 6.00 - 8.28 ms` and critical path 8.46 - 10.75 ms.
+  - Day race (`day`, 16,000 frames): `frames=15997` (exact 16,000 VSyncs minus 3 boot frames), reporting intervals at 600, ..., 15997. Cumulative `total_ms = 7.656 ms`, reconciling directly with F8 `EE CPU 8.28 - 10.42 ms` and critical path 8.61 - 11.54 ms.
+- **Real Diagnostic Update-Only Bypass & Evidence (Items 1 & 4 Resolved):**
+  - In `GT4_FPS_PROBE_DIAG_UPDATE_ONLY=1`, `on_dispatch` skips execution of `main_render_functor` and `main_idle_functor` during the race.
+  - Render counter frozen: guest RAM `RacePS2Base + 0xE32C` remains at 0 (never incremented by `render_world`).
+  - Render time: zero additional time accumulated in race (`render_ms` stays at cumulative 7,510 ms from menus, per-frame average dropping as frames advance).
+  - Dumps diff: `dumps.sha256` hash is `2dbe57b2d0036e94cf236b76f3f7ca186a38cd943003f85c81d3bcb94aa3211a`, differing completely from normal run `9e30cdfe...` (`fc.exe /b` confirms screen buffer frozen from frame 8100 onward).
+  - F8 per-frame EE time (**Experiment**): measured thread CPU drops to 0.125 - 0.219 ms/frame (EE CPU 0.12 - 0.22 ms/frame, critical path 0.42 - 0.44 ms/frame, down from 6.00 - 9.93 ms EE CPU in normal run). VU1 worker busy drops to 0.000 ms, wait drops to 0.000 ms.
+  - Active remaining systems during update-only frame: `forEach` Manager A `internal_update` (vehicle dynamics, clocks, AI), `controlFetch` (pad polling), debug pad combos, flip wait (`func_00107878` / VSync pacing), and background threads (VU1 worker idle, GS IPC idle, IOP emulator running audio/SIF).
+- **Flare Dependency Breakdown (Item 3 Resolved):**
+  - Base: `race_obj + 0x0DA0`. Queues filled in update pass (track light queue `0x003B7B70`, count at `+0x1848`, capacity 100 enforced at `0x003B7BA8` via `slti`; car light queue `0x003B8530`, count at `+0x0A34`, capacity 100 enforced at `0x003B8568` via `slti`).
+  - Drained & reset in render pass: `0x003B8214` resets car count to 0; `0x003B821C` resets track count to 0.
+  - Sample counter `+0x08`: written in render pass (`0x003B70D0`..`0x003B81FC`), read only in render pass (`0x003B8864`). Update never reads `+0x08`.
+  - GS Occlusion table (`+0x0EA4`, 2048B): written by render pass GS readback (`0x004A5178`), consumed by VU1 on next render. Update never reads occlusion table.
+  - Omission behavior: excess lights dropped at 100 cap without buffer overflow; next rendered frame flushes queues cleanly. Decoupled from simulation.
 - **Status:** Phase P0 complete. Stopped at P0 checkpoint for orchestrator review. Phase P1 has NOT started.
 
 ## rc5 Settings open at once, TASK-114 item 8 (2026-10-24, `task/101-multi-game`, 1.3.0-rc5)

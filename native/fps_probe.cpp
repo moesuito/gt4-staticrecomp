@@ -114,6 +114,7 @@ void Probe::reset() noexcept {
   active_race_obj_ = 0;
   active_camera_view_ = 0;
   active_dynamics_ = 0;
+  seen_render_ = true;
 
   stats_ = FrameStats{};
   watched_spans_.clear();
@@ -218,6 +219,7 @@ void Probe::on_update_enter(std::uint32_t obj_ptr, const std::uint8_t *ram, std:
     if (dynamics_ptr != 0) {
       stats_.race_clock_f898 = read_u32(ram, ram_size, dynamics_ptr + 0xF898u);
     }
+    stats_.render_frame_counter = read_u32(ram, ram_size, active_race_obj_ + 0xE32Cu);
   }
 }
 

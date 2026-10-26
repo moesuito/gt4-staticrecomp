@@ -6,10 +6,15 @@
 // a single branch predicts false, zero overhead.
 namespace {
 
-void fps_probe_dispatch_hook(Cpu &c, std::uint32_t pc) {
-  gt4::fps_probe::on_dispatch(c, pc, g_ram, kRamSize);
+bool fps_probe_dispatch_hook(Cpu &c, std::uint32_t pc) {
+  return gt4::fps_probe::on_dispatch(c, pc, g_ram, kRamSize);
 }
 
 }  // namespace
 //@section hook
-    if (gt4::fps_probe::Probe::shared().enabled()) [[unlikely]] fps_probe_dispatch_hook(c, pc);
+    if (gt4::fps_probe::Probe::shared().enabled()) [[unlikely]] {
+      if (fps_probe_dispatch_hook(c, pc)) {
+        c.pc = c.r[31].w[0];
+        return;
+      }
+    }

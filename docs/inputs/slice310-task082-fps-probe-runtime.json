@@ -9,15 +9,15 @@
   "license_guard_profile": "task017-guard-v2+task080-aspect-v2+task082-fps-probe-v1",
   "license_guard_overlay_sha256": "7765a1c79d5c4ef8846fd7b4d6a2c629453342bc552be78547c9be6fc5a6e79a",
   "display_aspect_overlay_sha256": "65992ad963a5b166cc960ab8f3366edafd048908769a79817651a18b50dde901",
-  "fps_probe_overlay_sha256": "075f3097447b03ba51f747bd93cc3db8eee9df7c45d455643e4b4d87904427eb",
+  "fps_probe_overlay_sha256": "2270281b5687a1f5b500f14cc29b8e2e2425cbc3d72be29f44e0a3ac768f109c",
   "halt_dump_overlay_sha256": "519027e1b425fa99d93c401868b29611001440d3df3b2b090d00b37c03af659c",
   "fsv_trace_overlay_sha256": "03579b77bb1ae26f040325157f7dcf91d32afd57e484b43b32bd1040dcbc59a0",
   "frame_counters_profile": "task084-frame-counters-v1",
   "source_sha256": {
     "cdvdfsv.cpp": "0074d14f838d303314cdc7601450993134702cacd59bef9e288ec74e87ffad1d",
-    "dispatch.cpp": "e2cbeaf5c90067ca60f41a8d9ee0fadac1e3347aefa8a7fb0db43de29803957d",
+    "dispatch.cpp": "7509ad2617d518a8bb926ec98f1448559c25829b5f29b0ff1e2eb9d0f5a8b8ff",
     "kernel.cpp": "9384da59e72fb056d6b52363f8d26d7bbf4793e8c47481f41304d741f00e5754"
   },
-  "receipt_sha256": "92953c067f6db9d0171fb7897ddecc690fa5918a43743f7c4b34350e51a339f4",
+  "receipt_sha256": "a3d2dc811f5ae9ce45dd84129e965dfd908ebb12b3e68efc311f997a9fc6553b",
   "build_variable": "GT4_LICENSE_GUARD_SOURCE"
 }

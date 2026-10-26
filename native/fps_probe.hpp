@@ -164,6 +164,9 @@ public:
   std::uint32_t active_race_object() const noexcept { return active_race_obj_; }
   const std::vector<MutationRecord> &recent_mutations() const noexcept { return recent_mutations_; }
 
+  bool seen_render() const noexcept { return seen_render_; }
+  void set_seen_render(bool val) noexcept { seen_render_ = val; }
+
   void observe_candidate_object(std::uint32_t obj_ptr, const std::uint8_t *ram, std::size_t ram_size) noexcept;
 
 private:
@@ -172,6 +175,7 @@ private:
 
   bool enabled_ = false;
   bool diag_update_only_ = false;
+  bool seen_render_ = true;
   ClockFn clock_us_ = nullptr;
 
   MainLoopPhase phase_ = MainLoopPhase::outside;
@@ -195,37 +199,58 @@ MutationBucket classify_mutation(std::uint32_t guest_addr, std::uint32_t race_ob
 
 // Helper to hook ps2::dispatch when enabled
 template <typename CpuType>
-inline void on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::size_t ram_size) {
+inline bool on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::size_t ram_size) {
   Probe &probe = Probe::shared();
-  if (!probe.enabled()) return;
+  if (!probe.enabled()) return false;
 
   const auto &hooks = ::gt4::target::active().hooks;
   const std::uint32_t ra = c.r[31].w[0];
+
+  // In diagnostic update-only mode, bypass render and idle functors once race object is active
+  if (probe.diag_update_only() && probe.active_race_object() != 0) {
+    if (hooks.main_render_functor && pc == hooks.main_render_functor) {
+      probe.set_seen_render(true);
+      if (probe.current_phase() != MainLoopPhase::flip_wait) {
+        if (probe.current_phase() == MainLoopPhase::update) {
+          probe.on_update_leave(ram, ram_size);
+        }
+        probe.on_flip_wait_enter();
+      }
+      return true; // Bypass render functor execution
+    }
+    if (hooks.main_idle_functor && pc == hooks.main_idle_functor) {
+      return true; // Bypass idle functor execution
+    }
+  }
 
   // 1. Functor entries and phase transitions
   if (hooks.main_update_functor && pc == hooks.main_update_functor) {
     if (c.r[4].w[0] != 0) {
       probe.observe_candidate_object(c.r[4].w[0], ram, ram_size);
     }
-    if (probe.current_phase() != MainLoopPhase::update) {
-      if (probe.current_phase() == MainLoopPhase::render) {
-        probe.on_render_leave(ram, ram_size);
-      }
-      if (probe.current_phase() == MainLoopPhase::idle) {
-        probe.on_idle_leave(ram, ram_size);
-      }
+    // Advance frame boundary when entering update after render/idle (or on frame 0)
+    if (probe.seen_render() || probe.stats().frame_count == 0) {
       if (probe.current_phase() == MainLoopPhase::flip_wait) {
         probe.on_flip_wait_leave();
       }
       probe.on_frame_boundary();
-      probe.on_update_enter(c.r[4].w[0], ram, ram_size);
+      probe.set_seen_render(false);
     }
+    if (probe.current_phase() == MainLoopPhase::render) {
+      probe.on_render_leave(ram, ram_size);
+    } else if (probe.current_phase() == MainLoopPhase::idle) {
+      probe.on_idle_leave(ram, ram_size);
+    }
+    probe.on_update_enter(c.r[4].w[0], ram, ram_size);
   } else if (hooks.main_render_functor && pc == hooks.main_render_functor) {
+    probe.set_seen_render(true);
     if (c.r[4].w[0] != 0) {
       probe.observe_candidate_object(c.r[4].w[0], ram, ram_size);
     }
     if (probe.current_phase() == MainLoopPhase::update) {
       probe.on_update_leave(ram, ram_size);
+    } else if (probe.current_phase() == MainLoopPhase::flip_wait) {
+      probe.on_flip_wait_leave();
     }
     if (probe.current_phase() != MainLoopPhase::render) {
       probe.on_render_enter(c.r[4].w[0], ram, ram_size);
@@ -233,12 +258,16 @@ inline void on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::si
   } else if (hooks.main_idle_functor && pc == hooks.main_idle_functor) {
     if (probe.current_phase() == MainLoopPhase::render) {
       probe.on_render_leave(ram, ram_size);
+    } else if (probe.current_phase() == MainLoopPhase::flip_wait) {
+      probe.on_flip_wait_leave();
     }
     if (probe.current_phase() != MainLoopPhase::idle) {
       probe.on_idle_enter(c.r[4].w[0], ram, ram_size);
     }
   } else if (hooks.main_flip_wait && pc == hooks.main_flip_wait) {
-    if (probe.current_phase() == MainLoopPhase::idle) {
+    if (probe.current_phase() == MainLoopPhase::render) {
+      probe.on_render_leave(ram, ram_size);
+    } else if (probe.current_phase() == MainLoopPhase::idle) {
       probe.on_idle_leave(ram, ram_size);
     }
     if (probe.current_phase() != MainLoopPhase::flip_wait) {
@@ -246,23 +275,17 @@ inline void on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::si
     }
   }
 
-  // 2. Idle exit and flip wait entry in real game main loop:
-  // In func_001016E8, after Manager B idle walk finishes, line 2479 calls the debug pad combo
-  // via indirect call with $ra = 0x001015E4u, which passes through dispatch.
-  if (probe.current_phase() == MainLoopPhase::idle && (ra == 0x001015E4u || pc == 0x001015E4u || pc == 0x001015B8u)) {
-    probe.on_idle_leave(ram, ram_size);
-    probe.on_flip_wait_enter();
-  }
-
-  // 3. Returns from functors and flip wait
+  // 2. Returns from functors and flip wait
   if (hooks.functor_return && (pc == hooks.functor_return || (ra == hooks.functor_return &&
       pc != hooks.main_update_functor && pc != hooks.main_render_functor && pc != hooks.main_idle_functor))) {
     if (probe.current_phase() == MainLoopPhase::update) {
       probe.on_update_leave(ram, ram_size);
     } else if (probe.current_phase() == MainLoopPhase::render) {
       probe.on_render_leave(ram, ram_size);
+      probe.on_flip_wait_enter();
     } else if (probe.current_phase() == MainLoopPhase::idle) {
       probe.on_idle_leave(ram, ram_size);
+      probe.on_flip_wait_enter();
     }
   }
 
@@ -270,9 +293,16 @@ inline void on_dispatch(CpuType &c, std::uint32_t pc, std::uint8_t *ram, std::si
       (ra == hooks.flip_wait_return && pc != hooks.main_flip_wait))) {
     if (probe.current_phase() == MainLoopPhase::flip_wait) {
       probe.on_flip_wait_leave();
-      probe.on_frame_boundary();
     }
   }
+
+  // Debug pad combo (ra == 0x001015E4u) transitions idle to flip wait
+  if (probe.current_phase() == MainLoopPhase::idle && (ra == 0x001015E4u || pc == 0x001015E4u || pc == 0x001015B8u)) {
+    probe.on_idle_leave(ram, ram_size);
+    probe.on_flip_wait_enter();
+  }
+
+  return false;
 }
 
 }  // namespace gt4::fps_probe

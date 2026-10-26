@@ -426,7 +426,7 @@ void test_dispatch_helper() {
   cpu.pc = 0x1000;
   cpu.r[31].w[0] = hooks.functor_return;
   gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
-  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::outside, "on_dispatch render left");
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::flip_wait, "on_dispatch render left into flip wait");
 
   // 5. Dispatch enters idle functor (0x00100FC0)
   cpu.pc = hooks.main_idle_functor;
@@ -438,7 +438,7 @@ void test_dispatch_helper() {
   cpu.pc = 0x1000;
   cpu.r[31].w[0] = hooks.functor_return;
   gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
-  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::outside, "on_dispatch idle left");
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::flip_wait, "on_dispatch idle left into flip wait");
 
   // 7. Dispatch enters flip wait (0x00107878)
   cpu.pc = hooks.main_flip_wait;
@@ -468,6 +468,77 @@ void test_dispatch_helper() {
   cpu.r[31].w[0] = 0x1000;
   gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
   require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::update, "next frame update functor entered");
+  require(probe.stats().frame_count == 2, "frame count advances exactly once per VSync iteration");
+
+  // 11. Manager B update within the same frame does NOT advance frame count
+  cpu.pc = 0x1000;
+  cpu.r[31].w[0] = hooks.functor_return;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+
+  cpu.pc = hooks.main_update_functor; // Manager B update
+  cpu.r[31].w[0] = 0x1000;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(probe.stats().frame_count == 2, "Manager B update must NOT advance frame count");
+}
+
+void test_diag_update_only_bypass() {
+  gt4::fps_probe::Probe &probe = gt4::fps_probe::Probe::shared();
+  probe.init("1", "1");
+  require(probe.enabled(), "probe enabled in diag mode");
+  require(probe.diag_update_only(), "diag update-only active");
+
+  std::vector<std::uint8_t> ram(32u << 20, 0);
+  const std::uint32_t race_obj = 0x20000;
+  const std::uint32_t free_run_vptr = 0x00680140u;
+  const std::uint32_t dyn = 0x25000;
+  std::memcpy(ram.data() + race_obj + 0x64u, &free_run_vptr, sizeof free_run_vptr);
+  std::memcpy(ram.data() + race_obj + 0x70u, &dyn, sizeof dyn);
+  probe.observe_candidate_object(race_obj, ram.data(), ram.size());
+  require(probe.active_race_object() == race_obj, "race object active");
+
+  MockCpu cpu;
+  cpu.r[4].w[0] = race_obj;
+  const auto &hooks = gt4::target::kV200Hooks;
+
+  // 1. Update functor is NOT bypassed (returns false)
+  cpu.pc = hooks.main_update_functor;
+  cpu.r[31].w[0] = 0x1000;
+  bool bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(!bypass, "update functor must not be bypassed");
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::update, "update phase entered");
+
+  // Return from update functor
+  cpu.pc = 0x1000;
+  cpu.r[31].w[0] = hooks.functor_return;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+
+  // 2. Render functor IS bypassed (returns true)
+  cpu.pc = hooks.main_render_functor;
+  cpu.r[31].w[0] = hooks.functor_return;
+  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(bypass, "render functor MUST be bypassed in diag update-only mode");
+
+  // 3. Idle functor IS bypassed (returns true)
+  cpu.pc = hooks.main_idle_functor;
+  cpu.r[31].w[0] = hooks.functor_return;
+  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(bypass, "idle functor MUST be bypassed in diag update-only mode");
+
+  // 4. Debug pad combo transitions to flip_wait
+  cpu.pc = 0x0055F000u;
+  cpu.r[31].w[0] = 0x001015E4u;
+  gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(probe.current_phase() == gt4::fps_probe::MainLoopPhase::flip_wait, "transitions to flip wait");
+
+  // 5. Next frame update starts
+  cpu.pc = hooks.main_update_functor;
+  cpu.r[31].w[0] = 0x1000;
+  bypass = gt4::fps_probe::on_dispatch(cpu, cpu.pc, ram.data(), ram.size());
+  require(!bypass, "next frame update not bypassed");
+  require(probe.stats().frame_count == 2, "frame count advanced on next frame boundary");
+
+  // Reset probe
+  probe.init(nullptr, nullptr);
 }
 
 void test_race_object_detection() {
@@ -516,6 +587,7 @@ int main() {
   test_render_purity_diff_attribution();
   test_report_formatting();
   test_dispatch_helper();
+  test_diag_update_only_bypass();
   test_race_object_detection();
 
   std::printf("fps_probe_fixture: ok\n");
