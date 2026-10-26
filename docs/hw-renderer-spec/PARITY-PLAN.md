@@ -598,3 +598,17 @@ HLE), 07 (CLUT, CLD modes), 04.9 (GLM); IN-347..IN-351, IN-370, IN-379, IN-382.
   native-alignment half-pixel mode" is one of the four GT4 database items), i.e. its scaled coverage is quantised to the
   native sample grid. Next step: an A/B switch that snaps the scaled pass's vertex positions to the native pixel grid
   (the reference's mode), then re-measure the band and the 06.3 box PSNR before making it the default.
+
+- **The sliver is not the half-pixel mode (measured 2026-10-25).** Three vertex mappings were compared on the same
+  VBlank against the 1x presentation: the shipped 06.3 native mode (`shift = 0.5 * s`), `GT4_HW_HALF_PIXEL=off`
+  (`shift = 0.5` output pixels, i.e. block-aligned edges) and the IN-388 snap (`floor(gpu / s) * s`). Box PSNR against
+  the 1x image: 24.52 / 24.54 / 23.06 dB; the bright sliver row stays at 7-9 levels in **all three** (it moves by one row
+  with the mapping). So the sliver is not a geometry/half-pixel artifact. It is a **point-sampled thin texture
+  feature**: the map layer is a 1024 x 256 (and a 1024 x 1024) texture on a 640 x 224 screen, so one texel is 0.625
+  native pixels; a one-texel bright line in that texture is aliased away by the 1x sample grid and resolved by the 6x
+  one, which is the "broken white line" at scale. The reference hides it with its sampler and, when the texture is
+  minified, with mipmaps (Q-GSDX-COMPARISON 14 question 3: mipmapping is active with MXL > 0 and a mipmap-range MMIN).
+  Our `GT4_HW_MIPMAP` option is parsed but not implemented, so every texture samples level 0; and the displayed layer
+  reaches the frame through nearest scaled texture copies, which no sampler switch reaches (IN-387). Next step:
+  implement the minification filter (mip level selection, or at least bilinear minification for the sampled footprint)
+  and make the scaled texture copy filter-aware, then re-measure the sliver row and the map's white lines.
