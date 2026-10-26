@@ -1639,7 +1639,8 @@ The owner will publish it as Latest after testing. Public publication and a sour
 part of this preparation. Dedicated branch `task/122-release-125`, worktree
 `C:\Antigravity\gt4-wt-122-release-125`, based on main `38e5167`.
 
-State: unlabeled final launcher and installer built and verified; private draft upload pending.
+State: private GitHub draft v1.2.5 uploaded and verified on2026-10-26; owner hardware test pending.
+Draft target b697d6e; installer and SHA256SUMS uploaded. No public publication or source merge.
 Release checks: Rust 391 passed (4 ignored), UI focus 114/114 and navigation 169/169;
 24 staged program files plus the WebView2 bootstrapper match their sources. Owner explicitly approved the legacy English-only interface
 with matching en-US and pt-BR short notes. Full and short notes exist before the build.

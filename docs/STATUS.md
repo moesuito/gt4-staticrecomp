@@ -1,6 +1,6 @@
 # Current Status
 
-## TASK-122 release 1.2.5 private draft preparation (2026-10-26)
+## TASK-122 release 1.2.5 private draft ready (2026-10-26)
 
 The owner requested an unlabeled 1.2.5 package as a private GitHub draft for wheel testing on
 another PC. The owner will decide publication after hardware acceptance; Latest stays 1.2.4.
@@ -8,7 +8,9 @@ Branch `task/122-release-125` starts at main38e5167, preserving the reviewed con
 Full and matching en-US/pt-BR short notes are written before the launcher build. English-only
 legacy UI is explicitly approved for this release. Final Rust 391 passed (4 ignored), UI focus
 114/114 and navigation 169/169 passed. Unlabeled launcher built with no local paths; installer
-extraction matches all 24 program files and the WebView2 bootstrapper. Draft upload pending.
+extraction matches all 24 program files and the WebView2 bootstrapper. Draft v1.2.5 uploaded,
+target b697d6e; remote asset sizes/digests match. Latest remains1.2.4. No source merge.
+Draft: https://github.com/moesuito/gt4-staticrecomp/releases/tag/untagged-01ba1179c3bf0d7861ba
 Reuse the immutable slice1210 game and pin unchanged, including inherited 1.2.4 Windows metadata;
 launcher/installer package version is 1.2.5. New distribution slice1220 and release-125-draft-out.
 Physical wheel, feedback and installer tests remain owner acceptance. Gemini owns ongoing rc7
