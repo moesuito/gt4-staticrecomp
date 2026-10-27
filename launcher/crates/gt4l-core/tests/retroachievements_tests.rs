@@ -6,8 +6,8 @@ use gt4l_core::language::Language;
 use gt4l_core::launch;
 use gt4l_core::log_export;
 use gt4l_core::paths::{DataDirs, UserDirs, UserRootSource};
-use gt4l_core::retroachievements::RaConfig;
-use gt4l_core::secret::SecretProtector;
+use gt4l_core::retroachievements::{RaConfig, TokenErrorKind};
+use gt4l_core::secret::{self, DpapiProtector, FakeProtector, SecretError, SecretProtector};
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("gt4-core-ra-test-{}-{name}", std::process::id()));
@@ -421,51 +421,51 @@ fn diagnostic_export_exclusions_comprehensive() {
 
 #[test]
 fn fake_protector_encrypt_decrypt_and_injected_failures() {
-    let protector = gt4l_core::secret::FakeProtector::default();
+    let protector = FakeProtector::default();
 
     // 1. Normal round-trip
     let plaintext = "secret_session_token_12345";
     let envelope = protector.protect_secret(plaintext).expect("protect succeeds");
-    assert!(envelope.starts_with(gt4l_core::secret::FAKE_V1_PREFIX));
+    assert!(envelope.starts_with(secret::FAKE_V1_PREFIX));
     let decrypted = protector.unprotect_secret(&envelope).expect("unprotect succeeds");
     assert_eq!(decrypted, plaintext);
 
     // 2. Injected protect failure
-    let fail_protect = gt4l_core::secret::FakeProtector { fail_protect: true, ..gt4l_core::secret::FakeProtector::default() };
+    let fail_protect = FakeProtector { fail_protect: true, ..FakeProtector::default() };
     let err = fail_protect.protect_secret(plaintext).unwrap_err();
-    assert!(matches!(err, gt4l_core::secret::SecretError::BackendUnavailable(_)));
+    assert!(matches!(err, SecretError::BackendUnavailable(_)));
 
     // 3. Injected unprotect failure (simulating NTE_BAD_KEYSET / wrong user)
-    let fail_unprotect = gt4l_core::secret::FakeProtector { fail_unprotect: true, wrong_user_code: 0x8009000B, ..gt4l_core::secret::FakeProtector::default() };
+    let fail_unprotect = FakeProtector { fail_unprotect: true, wrong_user_code: 0x8009000B, ..FakeProtector::default() };
     let err2 = fail_unprotect.unprotect_secret(&envelope).unwrap_err();
     match err2 {
-        gt4l_core::secret::SecretError::OsError { code, .. } => assert_eq!(code, 0x8009000B),
+        SecretError::OsError { code, .. } => assert_eq!(code, 0x8009000B),
         other => panic!("expected OsError, got {:?}", other),
     }
 
     // 4. Corrupted envelopes
     assert!(matches!(
         protector.unprotect_secret("wrong_prefix:v1:010203").unwrap_err(),
-        gt4l_core::secret::SecretError::CorruptData(_)
+        SecretError::CorruptData(_)
     ));
     assert!(matches!(
         protector.unprotect_secret("fake:v1:not_hex_xyz").unwrap_err(),
-        gt4l_core::secret::SecretError::CorruptData(_)
+        SecretError::CorruptData(_)
     ));
     assert!(matches!(
         protector.unprotect_secret("fake:v1:123").unwrap_err(),
-        gt4l_core::secret::SecretError::CorruptData(_)
+        SecretError::CorruptData(_)
     ));
 }
 
 #[test]
 fn real_windows_dpapi_roundtrip_tampered_blob_and_empty_handling() {
-    let protector = gt4l_core::secret::DpapiProtector;
+    let protector = DpapiProtector;
 
     // 1. Normal DPAPI roundtrip
     let token = "ra_prod_token_test_abc_888";
     let envelope = protector.protect_secret(token).expect("DPAPI protect succeeds");
-    assert!(envelope.starts_with(gt4l_core::secret::DPAPI_V1_PREFIX));
+    assert!(envelope.starts_with(secret::DPAPI_V1_PREFIX));
     let decrypted = protector.unprotect_secret(&envelope).expect("DPAPI unprotect succeeds");
     assert_eq!(decrypted, token);
 
@@ -474,29 +474,61 @@ fn real_windows_dpapi_roundtrip_tampered_blob_and_empty_handling() {
     assert_eq!(protector.unprotect_secret(&empty_env).expect("unprotect empty"), "");
 
     // 3. Tampered ciphertext rejection (verifying OS integrity check)
-    let hex_part = &envelope[gt4l_core::secret::DPAPI_V1_PREFIX.len()..];
-    let mut raw_bytes = gt4l_core::secret::hex_decode(hex_part).expect("hex decode");
+    let hex_part = &envelope[secret::DPAPI_V1_PREFIX.len()..];
+    let mut raw_bytes = secret::hex_decode(hex_part).expect("hex decode");
     if let Some(b) = raw_bytes.last_mut() {
         *b ^= 0xFF;
     }
-    let tampered_hex = gt4l_core::secret::hex_encode(&raw_bytes);
-    let tampered_env = format!("{}{}", gt4l_core::secret::DPAPI_V1_PREFIX, tampered_hex);
+    let tampered_hex = secret::hex_encode(&raw_bytes);
+    let tampered_env = format!("{}{}", secret::DPAPI_V1_PREFIX, tampered_hex);
     let tampered_res = protector.unprotect_secret(&tampered_env);
     assert!(tampered_res.is_err(), "Tampered ciphertext must be rejected by CryptUnprotectData");
     match tampered_res.unwrap_err() {
-        gt4l_core::secret::SecretError::OsError { .. } => {}
+        SecretError::OsError { .. } => {}
         other => panic!("expected OsError from tampered DPAPI blob, got {:?}", other),
     }
 
     // 4. Invalid envelope prefix and invalid hex
     assert!(matches!(
         protector.unprotect_secret("dpapi:v2:0102").unwrap_err(),
-        gt4l_core::secret::SecretError::CorruptData(_)
+        SecretError::CorruptData(_)
     ));
     assert!(matches!(
         protector.unprotect_secret("dpapi:v1:invalid_non_hex").unwrap_err(),
-        gt4l_core::secret::SecretError::CorruptData(_)
+        SecretError::CorruptData(_)
     ));
+}
+
+#[test]
+fn malformed_non_ascii_and_truncated_ciphertext_never_panics() {
+    let protector = DpapiProtector;
+    let fake_protector = FakeProtector::default();
+
+    // Multi-byte non-ASCII characters that would panic naive string-slicing
+    let non_ascii_inputs = [
+        "dpapi:v1:aéa",
+        "dpapi:v1:01020304a\u{00E9}a",
+        "dpapi:v1:\u{1F980}\u{1F980}",
+        "fake:v1:aéa",
+        "fake:v1:\u{00E9}\u{00E8}",
+        "fake:v1:\u{1F600}",
+        "dpapi:v1:odd_length_3",
+        "fake:v1:odd",
+        "dpapi:v1:",
+        "fake:v1:",
+        "dpapi:v1:   ",
+        "not_an_envelope_at_all",
+    ];
+
+    for input in non_ascii_inputs {
+        let res_dpapi = protector.unprotect_secret(input);
+        assert!(res_dpapi.is_err(), "Input '{input}' must return Err without panicking");
+        assert!(matches!(res_dpapi.unwrap_err(), SecretError::CorruptData(_)));
+
+        let res_fake = fake_protector.unprotect_secret(input);
+        assert!(res_fake.is_err(), "Input '{input}' must return Err without panicking");
+        assert!(matches!(res_fake.unwrap_err(), SecretError::CorruptData(_)));
+    }
 }
 
 #[test]
@@ -517,7 +549,7 @@ encore = false
 "#;
     fs::write(&cfg_path, legacy_toml).unwrap();
 
-    let protector = gt4l_core::secret::FakeProtector::default();
+    let protector = FakeProtector::default();
 
     // First load triggers automatic migration
     let loaded = RaConfig::load_with(&cfg_path, &protector);
@@ -525,7 +557,7 @@ encore = false
     assert_eq!(loaded.token, "tok_plaintext_legacy_999");
     assert!(loaded.is_signed_in());
     assert!(loaded.token_protected.is_some());
-    assert!(loaded.token_error.is_none());
+    assert_eq!(loaded.token_error, None);
 
     // Verify disk content: MUST NOT contain plaintext token, MUST contain protected envelope
     let disk_raw = fs::read_to_string(&cfg_path).unwrap();
@@ -548,20 +580,16 @@ fn failed_migration_leaves_original_plaintext_file_untouched() {
     let root = temp_dir("migration_fail");
     let cfg_path = root.join("retroachievements.toml");
 
-    let legacy_toml = r#"username = "SafeUser"
-token = "tok_legacy_do_not_destroy"
-enabled = true
-hardcore = false
-"#;
+    let legacy_toml = "username = \"SafeUser\"\ntoken = \"tok_legacy_do_not_destroy\"\nenabled = true\nhardcore = false\n";
     fs::write(&cfg_path, legacy_toml).unwrap();
 
     // Use a protector that fails during protection
-    let fail_protector = gt4l_core::secret::FakeProtector { fail_protect: true, ..gt4l_core::secret::FakeProtector::default() };
+    let fail_protector = FakeProtector { fail_protect: true, ..FakeProtector::default() };
     let loaded = RaConfig::load_with(&cfg_path, &fail_protector);
 
-    // In-memory state: migration failed, so token is not signed in
+    // In-memory state: migration failed, so token is not signed in and token_error is MigrationFailed
     assert!(!loaded.is_signed_in());
-    assert!(loaded.token_error.is_some());
+    assert_eq!(loaded.token_error, Some(TokenErrorKind::MigrationFailed));
 
     // Crucial check: Disk file MUST be 100% untouched!
     let disk_after = fs::read_to_string(&cfg_path).unwrap();
@@ -572,11 +600,44 @@ hardcore = false
 }
 
 #[test]
+fn migration_failure_prevents_option_updates_from_destroying_legacy_token() {
+    let root = temp_dir("migration_fail_save");
+    let cfg_path = root.join("retroachievements.toml");
+
+    let legacy_toml = "username = \"ImportantUser\"\ntoken = \"tok_crucial_legacy_credential\"\nenabled = true\nhardcore = false\n";
+    fs::write(&cfg_path, legacy_toml).unwrap();
+
+    let fail_protector = FakeProtector { fail_protect: true, ..FakeProtector::default() };
+
+    // 1. Initial load fails migration safely
+    let mut loaded = RaConfig::load_with(&cfg_path, &fail_protector);
+    assert_eq!(loaded.token_error, Some(TokenErrorKind::MigrationFailed));
+    assert!(!loaded.is_signed_in());
+
+    // 2. Unrelated option update (e.g. toggling hardcore) MUST NOT erase legacy token on disk
+    loaded.hardcore = true;
+    let save_err = loaded.save_with(&cfg_path, &fail_protector);
+    assert!(save_err.is_err(), "Saving options must return Err when legacy token cannot be protected");
+
+    let disk_content = fs::read_to_string(&cfg_path).unwrap();
+    assert_eq!(disk_content, legacy_toml, "Legacy config must be preserved untouched across option save attempt");
+
+    // 3. Explicit logout cleanly clears credentials
+    loaded.clear_credentials();
+    assert!(loaded.save_with(&cfg_path, &fail_protector).is_ok(), "Logout must succeed even with failed protector");
+    let disk_logged_out = fs::read_to_string(&cfg_path).unwrap();
+    assert!(!disk_logged_out.contains("tok_crucial_legacy_credential"));
+    assert!(!disk_logged_out.contains("token_protected"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn unprotectable_token_preserves_ciphertext_and_non_secret_settings() {
     let root = temp_dir("unprotectable_token");
     let cfg_path = root.join("retroachievements.toml");
 
-    let protector = gt4l_core::secret::FakeProtector::default();
+    let protector = FakeProtector::default();
 
     let mut cfg = RaConfig::default();
     cfg.username = "DriverMovingPC".to_string();
@@ -594,13 +655,13 @@ fn unprotectable_token_preserves_ciphertext_and_non_secret_settings() {
     assert!(disk_before.contains("token_protected = \"fake:v1:"));
 
     // Simulate moving portable folder to another Windows machine / user account
-    let wrong_user_protector = gt4l_core::secret::FakeProtector { fail_unprotect: true, wrong_user_code: 0x8009000B, ..gt4l_core::secret::FakeProtector::default() };
+    let wrong_user_protector = FakeProtector { fail_unprotect: true, wrong_user_code: 0x8009000B, ..FakeProtector::default() };
     let loaded = RaConfig::load_with(&cfg_path, &wrong_user_protector);
 
     // Account is not signed in, but non-secret fields and ciphertext are intact!
     assert!(!loaded.is_signed_in());
     assert_eq!(loaded.token, "");
-    assert!(loaded.token_error.is_some());
+    assert_eq!(loaded.token_error, Some(TokenErrorKind::Inaccessible));
     assert!(loaded.token_protected.is_some());
     assert_eq!(loaded.username, "DriverMovingPC");
     assert_eq!(loaded.display_name, "Driver Moving PC");
@@ -631,11 +692,7 @@ fn real_windows_dpapi_end_to_end_migration_and_persistence() {
     let root = temp_dir("dpapi_e2e");
     let cfg_path = root.join("retroachievements.toml");
 
-    let legacy_toml = r#"username = "WindowsUser99"
-token = "real_dpapi_test_tok_777"
-display_name = "WindowsUser99"
-score = 800
-"#;
+    let legacy_toml = "username = \"WindowsUser99\"\ntoken = \"real_dpapi_test_tok_777\"\ndisplay_name = \"WindowsUser99\"\nscore = 800\n";
     fs::write(&cfg_path, legacy_toml).unwrap();
 
     // 1. Load triggers real Windows DPAPI migration
@@ -644,6 +701,7 @@ score = 800
     assert_eq!(loaded.token, "real_dpapi_test_tok_777");
     assert!(loaded.is_signed_in());
     assert!(loaded.token_protected.is_some());
+    assert_eq!(loaded.token_error, None);
 
     // 2. Verify disk has dpapi envelope and no plaintext
     let raw = fs::read_to_string(&cfg_path).unwrap();
@@ -686,7 +744,7 @@ fn two_portable_profiles_and_installed_profile_independence() {
     let port_a_path = portable_a_dir.join("retroachievements.toml");
     let port_b_path = portable_b_dir.join("retroachievements.toml");
 
-    let protector = gt4l_core::secret::FakeProtector::default();
+    let protector = FakeProtector::default();
 
     // 1. Setup Installed Profile
     let mut cfg_inst = RaConfig::default();
@@ -735,6 +793,64 @@ fn two_portable_profiles_and_installed_profile_independence() {
     let check_b = RaConfig::load_with(&port_b_path, &protector);
     assert_eq!(check_inst.username, "InstPilot");
     assert_eq!(check_b.username, "PortPilotB");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn debug_and_serialization_paths_never_leak_plaintext_token() {
+    let mut cfg = RaConfig::default();
+    cfg.username = "SecretAuditUser".to_string();
+    cfg.token = "synthetic_super_secret_audit_token_99999".to_string();
+    cfg.token_protected = Some("dpapi:v1:010203040506".to_string());
+
+    // 1. Debug formatting must REDACT plaintext token
+    let debug_str = format!("{:?}", cfg);
+    assert!(!debug_str.contains("synthetic_super_secret_audit_token_99999"), "RaConfig Debug must NEVER contain plaintext token");
+    assert!(debug_str.contains("[REDACTED]"), "RaConfig Debug must print [REDACTED]");
+
+    // 2. Serde TOML serialization must NEVER include plaintext token
+    let toml_str = toml::to_string(&cfg).expect("serialize RaConfig");
+    assert!(!toml_str.contains("synthetic_super_secret_audit_token_99999"), "TOML serialization must NEVER output plaintext token");
+    assert!(!toml_str.contains("token ="), "TOML serialization must not have token field");
+    assert!(toml_str.contains("token_protected = \"dpapi:v1:010203040506\""));
+
+    // 3. RaAccountSession Debug must REDACT token
+    let session = gt4l_core::retroachievements::RaAccountSession {
+        username: "AuditUser".to_string(),
+        display_name: "Audit User".to_string(),
+        token: "session_secret_token_abc".to_string(),
+        score: 500,
+        score_softcore: 100,
+    };
+    let session_debug = format!("{:?}", session);
+    assert!(!session_debug.contains("session_secret_token_abc"), "RaAccountSession Debug must NEVER contain plaintext token");
+    assert!(session_debug.contains("[REDACTED]"));
+}
+
+#[test]
+fn interrupted_and_failed_atomic_writes_are_safe() {
+    let root = temp_dir("failed_write_safe");
+    let invalid_dir = root.join("non_existent_subdir").join("nested");
+    let target_file = invalid_dir.join("retroachievements.toml");
+
+    let protector = FakeProtector::default();
+    let mut cfg = RaConfig::default();
+    cfg.username = "WriteTester".to_string();
+    cfg.token = "tok_write_test".to_string();
+
+    // Normal save creates directories and succeeds
+    assert!(cfg.save_with(&target_file, &protector).is_ok());
+    assert!(target_file.exists());
+    assert!(!target_file.with_extension("toml.tmp").exists());
+
+    // Attempting to write where target is an existing read-only directory (triggering rename/write failure)
+    let bad_path = root.join("is_a_directory");
+    fs::create_dir_all(&bad_path).unwrap();
+    let err_save = cfg.save_with(&bad_path, &protector);
+    assert!(err_save.is_err(), "Saving to a directory path must fail cleanly");
+    // Ensure temporary file was cleaned up
+    assert!(!bad_path.with_extension("toml.tmp").exists(), "Temporary file must not remain on failure");
 
     let _ = fs::remove_dir_all(root);
 }

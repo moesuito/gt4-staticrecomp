@@ -1396,7 +1396,7 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
         assert_eq!(cfg_after_401_fail.score, 777);
     }
 
-    // 7. Unprotectable Token Envelope Surfaces relogin_required Without Network Call
+    // 7. Unprotectable Token Envelope Surfaces relogin_required with Inaccessible Error Without Network Call
     {
         let unprotectable_toml = r#"
 username = "PortableTraveler"
@@ -1413,6 +1413,7 @@ score = 3000
         let view = status_res.unwrap();
         assert!(!view.signed_in, "Unprotectable token must NOT report signed_in");
         assert!(view.relogin_required, "Unprotectable token MUST set relogin_required = true");
+        assert_eq!(view.token_error_kind, Some(gt4l_core::retroachievements::TokenErrorKind::Inaccessible));
         assert_eq!(view.username, "PortableTraveler");
         assert_eq!(view.display_name, "Portable Traveler");
         assert_eq!(view.score, 3000);
@@ -1420,6 +1421,36 @@ score = 3000
 
         let disk_current = fs::read_to_string(&ra_path).unwrap();
         assert!(disk_current.contains("token_protected"), "Ciphertext must be preserved on disk");
+    }
+
+    // 8. Migration Failure Preserves Legacy Plaintext Config Across Unrelated Option Updates
+    {
+        let legacy_toml = r#"username = "PreservedUser"
+token = "tok_do_not_erase_me"
+enabled = true
+hardcore = false
+"#;
+        fs::write(&ra_path, legacy_toml).unwrap();
+
+        let fail_protector = gt4l_core::secret::FakeProtector { fail_protect: true, ..gt4l_core::secret::FakeProtector::default() };
+        let mut loaded = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, &fail_protector);
+        assert_eq!(loaded.token_error, Some(gt4l_core::retroachievements::TokenErrorKind::MigrationFailed));
+        assert!(!loaded.is_signed_in());
+
+        // An option toggle attempt MUST fail save and preserve the legacy file intact
+        loaded.hardcore = true;
+        let save_res = loaded.save_with(&ra_path, &fail_protector);
+        assert!(save_res.is_err(), "Saving options while migration failed must return Err and not destroy the legacy file");
+
+        let disk_after_save_attempt = fs::read_to_string(&ra_path).unwrap();
+        assert_eq!(disk_after_save_attempt, legacy_toml, "Legacy file must be 100% untouched after failed option save");
+
+        // Explicit logout succeeds and cleanly removes credentials
+        loaded.clear_credentials();
+        assert!(loaded.save_with(&ra_path, &fail_protector).is_ok(), "Explicit logout must succeed even if protector is unavailable");
+        let disk_after_logout = fs::read_to_string(&ra_path).unwrap();
+        assert!(!disk_after_logout.contains("tok_do_not_erase_me"));
+        assert!(!disk_after_logout.contains("token_protected"));
     }
 
     stop.store(true, Ordering::Relaxed);

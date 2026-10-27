@@ -53,19 +53,31 @@ pub fn hex_encode(data: &[u8]) -> String {
     s
 }
 
+fn hex_val(b: u8) -> Result<u8, SecretError> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(SecretError::CorruptData("invalid non-hexadecimal character in ciphertext envelope".into())),
+    }
+}
+
 /// Decodes hexadecimal ASCII into binary data.
+///
+/// Operates strictly on byte slices to guarantee safe handling of arbitrary malformed,
+/// multi-byte UTF-8, or truncated inputs without slicing panics or secret leakage.
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, SecretError> {
-    let s = s.trim();
-    if s.len() % 2 != 0 {
+    let bytes = s.trim().as_bytes();
+    if bytes.len() % 2 != 0 {
         return Err(SecretError::CorruptData("hexadecimal length must be an even number".into()));
     }
-    let mut bytes = Vec::with_capacity(s.len() / 2);
-    for i in (0..s.len()).step_by(2) {
-        let byte = u8::from_str_radix(&s[i..i + 2], 16)
-            .map_err(|e| SecretError::CorruptData(format!("invalid hex digit at byte {}: {e}", i / 2)))?;
-        bytes.push(byte);
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        let high = hex_val(chunk[0])?;
+        let low = hex_val(chunk[1])?;
+        out.push((high << 4) | low);
     }
-    Ok(bytes)
+    Ok(out)
 }
 
 /// Real Windows DPAPI secret protector using `CryptProtectData` and `CryptUnprotectData`.
@@ -94,7 +106,13 @@ impl SecretProtector for DpapiProtector {
             )));
         }
         let hex_payload = &trimmed[DPAPI_V1_PREFIX.len()..];
+        if hex_payload.is_empty() {
+            return Err(SecretError::CorruptData("secret envelope contains empty payload".into()));
+        }
         let ciphertext = hex_decode(hex_payload)?;
+        if ciphertext.is_empty() {
+            return Err(SecretError::CorruptData("secret envelope contains empty payload".into()));
+        }
 
         #[cfg(windows)]
         {
@@ -161,7 +179,13 @@ impl SecretProtector for FakeProtector {
             )));
         }
         let hex_payload = &trimmed[FAKE_V1_PREFIX.len()..];
+        if hex_payload.is_empty() {
+            return Err(SecretError::CorruptData("fake secret envelope contains empty payload".into()));
+        }
         let xored = hex_decode(hex_payload)?;
+        if xored.is_empty() {
+            return Err(SecretError::CorruptData("fake secret envelope contains empty payload".into()));
+        }
         let mut plaintext = Vec::with_capacity(xored.len());
         for b in xored {
             plaintext.push(b ^ self.key);
@@ -211,12 +235,14 @@ mod dpapi {
     }
 
     pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
-        if plaintext.is_empty() {
-            return Ok(Vec::new());
-        }
+        let dummy = 0u8;
         let in_blob = DataBlob {
             cb_data: plaintext.len() as u32,
-            pb_data: plaintext.as_ptr() as *mut u8,
+            pb_data: if plaintext.is_empty() {
+                &dummy as *const u8 as *mut u8
+            } else {
+                plaintext.as_ptr() as *mut u8
+            },
         };
         let mut out_blob = DataBlob {
             cb_data: 0,
@@ -253,7 +279,7 @@ mod dpapi {
 
     pub fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, SecretError> {
         if ciphertext.is_empty() {
-            return Ok(Vec::new());
+            return Err(SecretError::CorruptData("ciphertext blob is empty".into()));
         }
         let in_blob = DataBlob {
             cb_data: ciphertext.len() as u32,

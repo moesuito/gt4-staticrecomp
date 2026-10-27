@@ -576,6 +576,10 @@
   "ra.score_val": "{score} pts Hardcore  ·  {scoreSoftcore} pts Softcore",
   "ra.status": "Status",
   "ra.not_signed_in": "Não conectado",
+  "ra.relogin_required": "Reconexão necessária",
+  "ra.relogin_notice": "Aviso",
+  "ra.relogin_required_desc": "Sua sessão salva não pode ser desbloqueada nesta conta ou PC Windows. Entre novamente para reconectar sua conta.",
+  "ra.migration_failed_desc": "Não foi possível proteger suas credenciais salvas neste computador. Entre novamente para salvar uma sessão protegida.",
   "ra.section_options": "Opções da Sessão",
   "ra.opt_enabled": "Ativar RetroAchievements",
   "ra.opt_enabled_help": "Inicia uma sessão do RetroAchievements quando o jogo abre, avalia gatilhos na memória do PS2 a cada quadro, exibe avisos na tela e envia desbloqueios para retroachievements.org.",
@@ -602,8 +606,5 @@
   "ra.pill_locked": "Bloqueada",
   "ra.pts": "{pts} pts",
   "ra.unsupported_title": "O RetroAchievements não está disponível para o Gran Turismo 4 Spec II",
-  "ra.unsupported_desc": "As conquistas são suportadas apenas na versão original de Gran Turismo 4 (v2.00). Você pode alternar para o Gran Turismo 4 no menu Jogos para visualizar e desbloquear conquistas.",
-  "ra.relogin_required": "Reconexão necessária",
-  "ra.relogin_notice": "Aviso",
-  "ra.relogin_required_desc": "Sua sessão salva não pode ser desbloqueada nesta conta ou PC Windows. Entre novamente para reconectar sua conta."
-}
+  "ra.unsupported_desc": "As conquistas são suportadas apenas na versão original de Gran Turismo 4 (v2.00). Você pode alternar para o Gran Turismo 4 no menu Jogos para visualizar e desbloquear conquistas."
+}

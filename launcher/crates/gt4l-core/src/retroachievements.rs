@@ -56,31 +56,77 @@ fn default_true() -> bool {
 
 
 
+/// Category of token error to distinguish migration/storage failures from inaccessible sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TokenErrorKind {
+    /// An encrypted token envelope exists on disk but could not be decrypted (e.g. wrong user, wrong machine, corrupt).
+    Inaccessible,
+    /// A legacy plaintext token exists on disk but could not be protected and migrated.
+    MigrationFailed,
+    /// Saving or protecting updated credentials failed.
+    SaveFailed,
+}
+
 /// Persistent RetroAchievements configuration saved in `retroachievements.toml`.
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RaConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+
     #[serde(default)]
     pub hardcore: bool,
+
     #[serde(default)]
     pub encore: bool,
+
     #[serde(default)]
     pub username: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+
+    #[serde(default, skip_serializing)]
     pub token: String,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_protected: Option<String>,
+
     #[serde(default)]
     pub display_name: String,
+
     #[serde(default)]
     pub score: u32,
+
     #[serde(default)]
     pub score_softcore: u32,
+
     #[serde(skip)]
-    pub token_error: Option<String>,
+    pub token_error: Option<TokenErrorKind>,
+
+    #[serde(skip)]
+    pub unmigrated_plaintext: Option<String>,
+}
+
+impl std::fmt::Debug for RaConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RaConfig")
+            .field("enabled", &self.enabled)
+            .field("hardcore", &self.hardcore)
+            .field("encore", &self.encore)
+            .field("username", &self.username)
+            .field("token", if self.token.is_empty() { &"[EMPTY]" } else { &"[REDACTED]" })
+            .field("token_protected", &self.token_protected.as_ref().map(|s| {
+                if let Some(prefix_end) = s.find(':').and_then(|p| s[p + 1..].find(':').map(|p2| p + 1 + p2 + 1)) {
+                    format!("{}[{} chars]", &s[..prefix_end], s.len() - prefix_end)
+                } else {
+                    "[PROTECTED]".to_string()
+                }
+            }))
+            .field("display_name", &self.display_name)
+            .field("score", &self.score)
+            .field("score_softcore", &self.score_softcore)
+            .field("token_error", &self.token_error)
+            .field("unmigrated_plaintext", if self.unmigrated_plaintext.is_some() { &"[PRESENT]" } else { &"[NONE]" })
+            .finish()
+    }
 }
 
 impl Default for RaConfig {
@@ -96,6 +142,7 @@ impl Default for RaConfig {
             score: 0,
             score_softcore: 0,
             token_error: None,
+            unmigrated_plaintext: None,
         }
     }
 }
@@ -125,10 +172,12 @@ impl RaConfig {
                     Ok(unprotected) => {
                         cfg.token = unprotected;
                         cfg.token_error = None;
+                        cfg.unmigrated_plaintext = None;
                     }
-                    Err(err) => {
+                    Err(_) => {
                         cfg.token = String::new();
-                        cfg.token_error = Some(err.to_string());
+                        cfg.token_error = Some(TokenErrorKind::Inaccessible);
+                        cfg.unmigrated_plaintext = None;
                     }
                 }
                 return cfg;
@@ -145,28 +194,30 @@ impl RaConfig {
                             cfg.token_protected = Some(envelope);
                             let mut disk_cfg = cfg.clone();
                             disk_cfg.token = String::new();
-                            if let Err(err) = disk_cfg.write_disk_atomically(path) {
+                            disk_cfg.unmigrated_plaintext = None;
+                            if let Err(_) = disk_cfg.write_disk_atomically(path) {
                                 cfg.token = String::new();
                                 cfg.token_protected = None;
-                                cfg.token_error = Some(format!("failed to save migrated configuration: {err}"));
+                                cfg.token_error = Some(TokenErrorKind::MigrationFailed);
+                                cfg.unmigrated_plaintext = Some(plaintext);
+                            } else {
+                                cfg.token_error = None;
+                                cfg.unmigrated_plaintext = None;
                             }
                         }
-                        Ok(_) => {
+                        _ => {
                             cfg.token = String::new();
                             cfg.token_protected = None;
-                            cfg.token_error = Some("roundtrip verification of protected token failed: mismatch".to_string());
-                        }
-                        Err(verify_err) => {
-                            cfg.token = String::new();
-                            cfg.token_protected = None;
-                            cfg.token_error = Some(format!("roundtrip verification of protected token failed: {verify_err}"));
+                            cfg.token_error = Some(TokenErrorKind::MigrationFailed);
+                            cfg.unmigrated_plaintext = Some(plaintext);
                         }
                     }
                 }
-                Err(protect_err) => {
+                Err(_) => {
                     cfg.token = String::new();
                     cfg.token_protected = None;
-                    cfg.token_error = Some(format!("failed to protect legacy token: {protect_err}"));
+                    cfg.token_error = Some(TokenErrorKind::MigrationFailed);
+                    cfg.unmigrated_plaintext = Some(plaintext);
                 }
             }
         }
@@ -198,6 +249,28 @@ impl RaConfig {
         let mut disk_cfg = self.clone();
         disk_cfg.token = String::new();
 
+        // If an unmigrated legacy plaintext token previously failed protection:
+        if let Some(ref legacy) = self.unmigrated_plaintext {
+            if self.token.trim().is_empty() {
+                match protector.protect_secret(legacy) {
+                    Ok(envelope) => {
+                        match protector.unprotect_secret(&envelope) {
+                            Ok(verified) if verified == *legacy => {
+                                disk_cfg.token_protected = Some(envelope);
+                                disk_cfg.unmigrated_plaintext = None;
+                            }
+                            _ => {
+                                return Err("cannot save settings: existing legacy credentials could not be protected, preserving original configuration file".into());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("cannot save settings: existing legacy credentials could not be protected ({e}), preserving original configuration file"));
+                    }
+                }
+            }
+        }
+
         if !self.token.trim().is_empty() {
             let envelope = protector.protect_secret(self.token.trim())
                 .map_err(|e| format!("cannot protect RetroAchievements token: {e}"))?;
@@ -207,7 +280,8 @@ impl RaConfig {
                 return Err("roundtrip verification of protected RetroAchievements token failed".into());
             }
             disk_cfg.token_protected = Some(envelope);
-        } else if self.token_protected.is_none() {
+            disk_cfg.unmigrated_plaintext = None;
+        } else if self.token_protected.is_none() && self.unmigrated_plaintext.is_none() {
             disk_cfg.token_protected = None;
         }
 
@@ -225,10 +299,12 @@ impl RaConfig {
         self.token.clear();
         self.token_protected = None;
         self.token_error = None;
+        self.unmigrated_plaintext = None;
         self.display_name.clear();
         self.score = 0;
         self.score_softcore = 0;
     }
+
 
 
     /// Environment variables passed to `gt4vulkan.exe` when RetroAchievements is enabled and signed in.
@@ -351,20 +427,25 @@ pub struct RaGameOverview {
 
 /// Account details returned by `r=login2`.
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-
+#[derive(Clone, PartialEq, Eq)]
 pub struct RaAccountSession {
-
     pub username: String,
-
     pub display_name: String,
-
     pub token: String,
-
     pub score: u32,
-
     pub score_softcore: u32,
+}
 
+impl std::fmt::Debug for RaAccountSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RaAccountSession")
+            .field("username", &self.username)
+            .field("display_name", &self.display_name)
+            .field("token", if self.token.is_empty() { &"[EMPTY]" } else { &"[REDACTED]" })
+            .field("score", &self.score)
+            .field("score_softcore", &self.score_softcore)
+            .finish()
+    }
 }
 
 
@@ -944,28 +1025,51 @@ mod tests {
         assert!(!raw_disk.contains("tok_secret_123"), "plaintext token must not be written to disk");
         assert!(raw_disk.contains("token_protected = \"dpapi:v1:"));
 
+
+
         let env_vars = loaded.launch_environment(Path::new("C:\\GT4\\data\\runtime\\ra_cache"), crate::language::Language::fallback());
+
         assert!(env_vars.contains(&("GT4_RA_ENABLED".to_string(), OsString::from("1"))));
+
         assert!(env_vars.contains(&("GT4_RA_HARDCORE".to_string(), OsString::from("1"))));
+
         assert!(env_vars.contains(&("GT4_RA_ENCORE".to_string(), OsString::from("1"))));
+
         assert!(env_vars.contains(&("GT4_RA_USERNAME".to_string(), OsString::from("DriverOne"))));
+
         assert!(env_vars.contains(&("GT4_RA_TOKEN".to_string(), OsString::from("tok_secret_123"))));
+
         assert!(env_vars.contains(&("GT4_RA_HASH".to_string(), OsString::from(GT4_NTSC_U_RA_HASH))));
+
         assert!(env_vars.contains(&("GT4_RA_LANGUAGE".to_string(), OsString::from("en-US"))));
 
+
+
         let pt_lang = crate::language::Language::from_tag("pt-BR").unwrap();
+
         let pt_vars = loaded.launch_environment(Path::new("C:\\GT4\\data\\runtime\\ra_cache"), pt_lang);
+
         assert!(pt_vars.contains(&("GT4_RA_LANGUAGE".to_string(), OsString::from("pt-BR"))));
 
+
+
         let mut cleared = loaded;
+
         cleared.clear_credentials();
+
         assert!(!cleared.is_signed_in());
-        assert!(cleared.token_protected.is_none());
+
         assert!(cleared.hardcore, "mode toggles stay intact on sign-out");
+
         assert!(cleared.launch_environment(Path::new("C:\\cache"), crate::language::Language::fallback()).is_empty());
 
+
+
         let _ = fs::remove_dir_all(file.parent().unwrap());
+
     }
+
+
 
     #[test]
 

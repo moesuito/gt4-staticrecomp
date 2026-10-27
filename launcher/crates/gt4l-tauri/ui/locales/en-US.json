@@ -576,6 +576,10 @@
   "ra.score_val": "{score} pts Hardcore  ·  {scoreSoftcore} pts Softcore",
   "ra.status": "Status",
   "ra.not_signed_in": "Not signed in",
+  "ra.relogin_required": "Re-login required",
+  "ra.relogin_notice": "Notice",
+  "ra.relogin_required_desc": "Your saved session cannot be unlocked on this Windows account or PC. Sign in again to reconnect your account.",
+  "ra.migration_failed_desc": "Your saved credentials could not be protected on this PC. Sign in again to save a protected session.",
   "ra.section_options": "Session Options",
   "ra.opt_enabled": "Enable RetroAchievements",
   "ra.opt_enabled_help": "Starts a RetroAchievements session when the game launches, evaluates PS2 memory triggers each frame, shows on-screen achievement popups, and submits unlocks to retroachievements.org.",
@@ -602,8 +606,5 @@
   "ra.pill_locked": "Locked",
   "ra.pts": "{pts} pts",
   "ra.unsupported_title": "RetroAchievements is not available for Gran Turismo 4 Spec II",
-  "ra.unsupported_desc": "Achievements are supported only on the original Gran Turismo 4 (v2.00) release. You can switch to Gran Turismo 4 in the Games menu to view and unlock achievements.",
-  "ra.relogin_required": "Re-login required",
-  "ra.relogin_notice": "Notice",
-  "ra.relogin_required_desc": "Your saved session cannot be unlocked on this Windows account or PC. Sign in again to reconnect your account."
-}
+  "ra.unsupported_desc": "Achievements are supported only on the original Gran Turismo 4 (v2.00) release. You can switch to Gran Turismo 4 in the Games menu to view and unlock achievements."
+}

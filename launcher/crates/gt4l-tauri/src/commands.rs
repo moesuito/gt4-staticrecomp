@@ -1549,6 +1549,7 @@ pub struct RaStatusView {
     pub selected_game: String,
     pub supported: bool,
     pub relogin_required: bool,
+    pub token_error_kind: Option<gt4l_core::retroachievements::TokenErrorKind>,
 }
 
 fn ra_base_url() -> String {
@@ -1567,6 +1568,13 @@ fn build_ra_status_view(
     let supported = selected.id == games::GT4.id;
     let relogin_required = cfg.token_error.is_some()
         || (!cfg.username.is_empty() && cfg.token.is_empty() && cfg.token_protected.is_some());
+    let token_error_kind = cfg.token_error.or_else(|| {
+        if !cfg.username.is_empty() && cfg.token.is_empty() && cfg.token_protected.is_some() {
+            Some(gt4l_core::retroachievements::TokenErrorKind::Inaccessible)
+        } else {
+            None
+        }
+    });
     RaStatusView {
         enabled: cfg.enabled,
         hardcore: cfg.hardcore,
@@ -1584,6 +1592,7 @@ fn build_ra_status_view(
         selected_game: selected.id.to_string(),
         supported,
         relogin_required,
+        token_error_kind,
     }
 }
 

@@ -84,7 +84,8 @@
       game: null,
       selectedGame: "gt4",
       supported: true,
-      reloginRequired: false
+      reloginRequired: false,
+      tokenErrorKind: null
     };
 
     var container = h("div", { class: "ra-page" });
@@ -109,6 +110,7 @@
         state.selectedGame = next.selectedGame || "gt4";
         state.supported = next.supported !== false && state.selectedGame === "gt4";
         state.reloginRequired = !!next.reloginRequired;
+        state.tokenErrorKind = next.tokenErrorKind || null;
         if (state.supported && next.game !== undefined && next.game !== null) {
           state.game = next.game;
         } else {
@@ -317,10 +319,13 @@
           ])
         ]));
         if (state.reloginRequired) {
+          var descKey = state.tokenErrorKind === "migrationFailed"
+            ? "ra.migration_failed_desc"
+            : "ra.relogin_required_desc";
           accountSection.appendChild(h("div", { class: "row" }, [
             h("div", { class: "k" }, [h("span", { text: t("ra.relogin_notice") })]),
             h("div", { class: "ctl wide" }, [
-              h("p", { class: "ra-unsupported-desc", text: t("ra.relogin_required_desc") })
+              h("p", { class: "ra-unsupported-desc", text: t(descKey) })
             ])
           ]));
         }
