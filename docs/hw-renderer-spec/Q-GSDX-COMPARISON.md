@@ -1108,3 +1108,52 @@ Answers of the TASK-026 team, behaviour only. All Confirmed unless labelled.
 - **Moving:** the average of the current rows above and below, when those two agree within the threshold and the woven row differs from them at least 0.9 times as much; otherwise the woven row.
 - The top and bottom rows are always woven.
 - Our earlier rule never tested whether the woven field itself moved (IN-396).
+
+## 19. Rendering at scale only: readbacks, textures from targets, uploads (2026-10-27, TASK-026 team, prose)
+
+**No 1x copy.**
+- The reference keeps no 1x copy. A render target is authoritative at its scale.
+
+**When it writes GS memory.** Only on these triggers:
+- **Local-to-host transfer.** Every overlapping target, depth first. Only the area drawn since that target's last
+  read, intersected with the transfer rectangle (whole pages when formats differ). Skipped when the EE uploaded the
+  same rectangle since the last draw.
+- **Local-to-local move the GPU cannot do.** The move is first tried target to target at scale.
+- **Texture formats the GPU cannot convert:** a 4-bit read of a target, or 8H from a 16-bit target. These are read
+  back and decoded on the CPU.
+- **Reset or savestate.**
+
+Not triggers: end of frame, display, target ageing or deletion, an EE upload, or a CLUT load from drawn memory (the
+CLUT is read from memory as it is).
+
+**How a scaled pixel becomes a word.**
+- Native pixel N takes scaled pixel floor((N + 0.5) * s): one sub-pixel, nearest, no average.
+- Depth uses the same point sample with a raw 32/16-bit conversion.
+- A read clears only the drawn-since-read rectangle. It never dirties or reloads the target.
+
+**Textures from targets.**
+- 24/32-bit with each other, or 16 with 16, at the same base: sampled at scale directly, no copy.
+- A 16-bit read of a 32-bit target: a GPU texture shuffle at scale.
+- T8 from a 32/16-bit target: a GPU point reduction to 1x, then the palette.
+- Depth: sampled at scale through conversion shaders.
+- A refused target is decoded from memory as it is, with no forced readback.
+
+**EE uploads.**
+- Same base, format and width: a dirty rectangle on the target.
+- Another base or format: dirty pages.
+- The target is deleted when its whole valid area is dirty.
+- Dirty data is stretched in on next use: nearest for partial patches, bilinear for depth or a preload.
+- A new target is preloaded only where recent EE uploads land. Older overlapping targets are copied in on the GPU at
+  scale.
+
+**GT4.**
+- **Race colour filter.** A per-game hook replaces the T8 sequence with one at-scale draw: the scaled frame through
+  the current palette, RGB channel fetch, RGB mask, in place. The alpha variant splits into three page-offset targets.
+  Nothing happens at 1x and memory is not touched.
+- **Flares.** Auto-flush 1 draws sampling sprites primitive by primitive, at scale. A transfer to the EE, if any, sees
+  point-sampled values.
+- **CT32 to CT16 display conversion.** A normal draw at scale.
+- **Depth as texture.** At scale.
+
+**Consequence.** With scale-only rendering a target must never be refreshed from words we downloaded ourselves. Only
+real EE uploads enter a target.
