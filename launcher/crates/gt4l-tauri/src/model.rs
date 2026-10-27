@@ -375,6 +375,10 @@ fn trigger_row(trigger: &str, controls: &Controls, field: &str) -> Value {
                 { "value": "linear", "label": "Linear" },
                 { "value": "quadratic", "label": "Quadratic" },
                 { "value": "cubic", "label": "Cubic" },
+                { "value": "s_curve", "label": "S-Curve" },
+                { "value": "smooth_power", "label": "Smooth Power (x^1.5)" },
+                { "value": "sublinear", "label": "Sublinear (sqrt)" },
+                { "value": "logarithmic", "label": "Logarithmic" },
             ],
             "default": "linear",
             "current": tuning.curve.as_str(),
@@ -585,7 +589,7 @@ pub struct TriggerDto {
     pub id: String,
     /// Deadzone in percent of travel, 0-100.
     pub deadzone: f32,
-    /// `linear`, `quadratic` or `cubic`.
+    /// `linear`, `quadratic`, `cubic`, `s_curve`, `smooth_power`, `sublinear` or `logarithmic`.
     pub curve: String,
 }
 
@@ -609,6 +613,10 @@ pub fn curve_from_name(name: &str) -> Option<Curve> {
         "linear" => Some(Curve::Linear),
         "quadratic" => Some(Curve::Quadratic),
         "cubic" => Some(Curve::Cubic),
+        "s_curve" | "scurve" | "s-curve" => Some(Curve::SCurve),
+        "smooth_power" | "smooth" => Some(Curve::SmoothPower),
+        "sublinear" | "root" => Some(Curve::Sublinear),
+        "logarithmic" | "log" => Some(Curve::Logarithmic),
         _ => None,
     }
 }
@@ -705,6 +713,27 @@ mod tests {
         let rows = trigger_rows(&Controls::default());
         assert_eq!(rows[0].id, "l2");
         assert!((rows[0].deadzone - 11.8).abs() < 0.05, "default 30 of 255 is 11.8 percent");
+    }
+
+    #[test]
+    fn all_seven_curves_parse_and_serialize_in_tauri_model() {
+        let expected = [
+            ("linear", Curve::Linear),
+            ("quadratic", Curve::Quadratic),
+            ("cubic", Curve::Cubic),
+            ("s_curve", Curve::SCurve),
+            ("smooth_power", Curve::SmoothPower),
+            ("sublinear", Curve::Sublinear),
+            ("logarithmic", Curve::Logarithmic),
+        ];
+        for (name, curve) in expected {
+            let tuning = trigger_tuning(15.0, name).unwrap();
+            assert_eq!(tuning.curve, curve);
+            let mut controls = Controls::default();
+            controls.set_trigger_tuning("l2", tuning).unwrap();
+            let rows = trigger_rows(&controls);
+            assert_eq!(rows[0].curve, curve.as_str());
+        }
     }
 
     #[test]

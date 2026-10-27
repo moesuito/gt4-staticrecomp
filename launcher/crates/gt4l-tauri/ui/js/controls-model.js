@@ -115,8 +115,21 @@
       return Math.floor(((v - d) * 255) / (255 - d)) / 255;
     }
     var n = (v - d) / (255 - d);
-    var shaped = curve === "cubic" ? n * n * n : n * n;
-    return Math.floor(Math.min(1, shaped) * 255) / 255;
+    var shaped = n;
+    if (curve === "quadratic") {
+      shaped = n * n;
+    } else if (curve === "cubic") {
+      shaped = n * n * n;
+    } else if (curve === "s_curve" || curve === "scurve" || curve === "s-curve") {
+      shaped = n * n * (3 - 2 * n);
+    } else if (curve === "smooth_power" || curve === "smooth") {
+      shaped = n * Math.sqrt(n);
+    } else if (curve === "sublinear" || curve === "root") {
+      shaped = Math.sqrt(n);
+    } else if (curve === "logarithmic" || curve === "log") {
+      shaped = Math.log(1 + 9 * n) / Math.log(10);
+    }
+    return Math.floor(Math.min(1, Math.max(0, shaped)) * 255) / 255;
   }
 
   // Dev mock only: {"xinput:A": 1, "xinput:LT": 0.6, ...} for every standard button of a Gamepad-like object.

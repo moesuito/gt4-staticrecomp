@@ -375,18 +375,26 @@
   }
 
   function analogDefaults() {
-    var curve = [{ value: "linear", label: "Linear" }, { value: "quadratic", label: "Quadratic" }, { value: "cubic", label: "Cubic" }];
+    var curve = [
+      { value: "linear", label: "Linear" },
+      { value: "s_curve", label: "S-Curve" },
+      { value: "smooth_power", label: "Smooth Power" },
+      { value: "quadratic", label: "Quadratic" },
+      { value: "cubic", label: "Cubic" },
+      { value: "sublinear", label: "Sublinear" },
+      { value: "logarithmic", label: "Logarithmic" }
+    ];
     function slider(id, label, def) {
       return { id: id, label: label, help: "How far it must travel before it counts, in percent of its travel.",
         page: "basic", group: "controls", control: "slider", values: { min: 0, max: 95, step: 1, unit: "%" },
         default: def, current: def };
     }
-    function dropdown(id, label) {
+    function dropdown(id, label, values) {
       return { id: id, label: label, help: "How the pressure grows with the trigger travel.", page: "basic",
-        group: "controls", control: "dropdown", values: curve, default: "linear", current: "linear" };
+        group: "controls", control: "dropdown", values: values || curve, default: (values || curve)[0].value, current: (values || curve)[0].value };
     }
-    return [slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve"),
-      slider("r2_deadzone", "R2 deadzone", 11.8), dropdown("r2_curve", "R2 curve"),
+    return [slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
+      slider("r2_deadzone", "R2 deadzone", 11.8), dropdown("r2_curve", "R2 curve", curve),
       slider("lstick_deadzone", "Left stick deadzone", 24), slider("rstick_deadzone", "Right stick deadzone", 26.5)];
   }
   var analog = analogDefaults();

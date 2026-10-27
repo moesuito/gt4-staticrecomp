@@ -168,6 +168,36 @@ void check_trigger_readings() {
   const auto middle = read_trigger(quadratic, 142).pressure;
   require(middle >= 62 && middle <= 64, "quadratic curve: half travel near quarter pressure");
 
+  // S-Curve, smooth power, sublinear and logarithmic curves
+  const Binding scurve = only_binding(
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=s_curve\"]\n"), "l2");
+  const auto scurve_mid = read_trigger(scurve, 142).pressure;
+  require(scurve_mid >= 125 && scurve_mid <= 128, "s-curve at half travel is near half pressure");
+
+  const Binding sublinear = only_binding(
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sublinear\"]\n"), "l2");
+  const auto sublinear_mid = read_trigger(sublinear, 142).pressure;
+  require(sublinear_mid >= 175 && sublinear_mid <= 185, "sublinear curve at half travel is near 70% pressure");
+
+  // Exact byte vectors also used by the browser preview checks: raw 128, zero deadzone.
+  const struct { const char *name; std::uint8_t middle; } curves[] = {
+      {"linear", 128}, {"quadratic", 64}, {"cubic", 32}, {"s_curve", 128},
+      {"smooth_power", 90}, {"sublinear", 180}, {"logarithmic", 189}};
+  for (const auto &curve : curves) {
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0 curve=") +
+                                    curve.name + "\"]\n");
+    const auto &binding = only_binding(controls, "l2");
+    require(read_trigger(binding, 0).pressure == 0, "every curve rests at zero");
+    require(read_trigger(binding, 128).pressure == curve.middle, "quantized curve middle vector");
+    require(read_trigger(binding, 255).pressure == 255, "every curve reaches full pressure");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto pressure = read_trigger(binding, static_cast<std::uint8_t>(raw)).pressure;
+      require(pressure >= prior, "all curve pressure bytes are monotone");
+      prior = pressure;
+    }
+  }
+
   // Scale 0.5 halves full travel; scale 2 is clamped at full pressure.
   const Binding half_scale = only_binding(
       parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=0.5\"]\n"), "r2");
@@ -253,6 +283,10 @@ void check_invalid_files() {
                       3, "scale above two");
   expect_config_error("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=exp\"]\n",
                       "curve must be", 3, "unknown curve");
+  expect_config_error("schema = 1\n[bindings]\nl2 = [\"xinput:LT | mode=dualsense\"]\n",
+                      "unknown option 'mode'", 3, "unimplemented raw trigger mode on trigger");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | mode=dualsense\"]\n",
+                      "unknown option 'mode'", 3, "unimplemented raw trigger mode on stick");
   expect_config_error("schema = 1\n[bindings]\nl2 = [\"xinput:LT | invert=true\"]\n",
                       "invert applies to stick axes", 3, "invert on a trigger");
   expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | invert=yes\"]\n",

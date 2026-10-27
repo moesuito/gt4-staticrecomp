@@ -370,6 +370,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 let curve = match curve {
                     1 => Curve::Quadratic,
                     2 => Curve::Cubic,
+                    3 => Curve::SCurve,
+                    4 => Curve::SmoothPower,
+                    5 => Curve::Sublinear,
+                    6 => Curve::Logarithmic,
                     _ => Curve::Linear,
                 };
                 match state.controls.set_trigger_tuning(input, TriggerTuning { deadzone, curve }) {
@@ -601,6 +605,10 @@ fn curve_index(curve: Curve) -> i32 {
         Curve::Linear => 0,
         Curve::Quadratic => 1,
         Curve::Cubic => 2,
+        Curve::SCurve => 3,
+        Curve::SmoothPower => 4,
+        Curve::Sublinear => 5,
+        Curve::Logarithmic => 6,
     }
 }
 

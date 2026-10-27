@@ -228,6 +228,11 @@ function startNavTest(root) {
   same("trigger output: at the deadzone it is 0", CM.triggerOutput(30 / 255, 30 / 255, "linear"), 0);
   same("trigger output: the integer formula of native/controls.cpp", CM.triggerOutput(128 / 255, 30 / 255, "linear"), Math.floor((98 * 255) / 225) / 255);
   same("trigger output: cubic at half travel", Math.round(CM.triggerOutput(0.5, 0, "cubic") * 1000), 125);
+  // Half travel rounds to raw byte 128; native/controls.cpp floors the shaped pressure byte.
+  same("trigger output: s-curve quantized half travel", CM.triggerOutput(0.5, 0, "s_curve"), 128 / 255);
+  same("trigger output: smooth power quantized half travel", CM.triggerOutput(0.5, 0, "smooth_power"), 90 / 255);
+  same("trigger output: sublinear quantized half travel", CM.triggerOutput(0.5, 0, "sublinear"), 180 / 255);
+  same("trigger output: logarithmic quantized half travel", CM.triggerOutput(0.5, 0, "logarithmic"), 189 / 255);
 
   same("KeyZ is Z", CM.keyFromEvent({ code: "KeyZ", key: "z" }), { name: "Z" });
   same("Digit1 is 1", CM.keyFromEvent({ code: "Digit1", key: "1" }), { name: "1" });
