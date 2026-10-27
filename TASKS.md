@@ -1710,6 +1710,7 @@ Related: existing window/input tasks TASK-038 and TASK-076. No compatibility fix
 State: recorded, not planned (2026-10-26).
 Issue: https://github.com/moesuito/gt4-staticrecomp/issues/99
 Report: repeated flashing and random crashes in 1.2.2, 1.2.3 and rc5, for both games; logs attached.
+Related owner evidence: `docs/RC7-WINDOW-HANG-FLASH-2026-10-27.md` records intermittent desktop flashes and window unresponsiveness, including focus/minimize/restore and reports on the owner desktop and RTX 3060 laptop. Investigate as potentially related; a shared cause with issue #99 is unconfirmed. Issue #99 reporter subsequently said Spec II fullscreen appeared to work on rc6, pending texture testing.
 Priority: high, candidate for an upcoming 1.3.0 rc before final.
 Related: TASK-105 and TASK-124 remain separate until evidence confirms the same cause.
 
