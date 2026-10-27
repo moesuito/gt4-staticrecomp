@@ -229,8 +229,10 @@ void main() {
     // IN-384 follow-up: the top bit of the tex_scale push word requests the forced linear filter for 1x textures.
     g_force_linear = (pc.tex_scale & 0x80000000u) != 0u;
     g_dither_fine = (pc.tex_scale & 0x40000000u) != 0u;
-    // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale.
-    g_tex_scale = pc.tex_scale & 0x1FFFFFFFu;
+    // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale; IN-392: bit 28 asks for the
+    // position depth below.
+    g_tex_scale = pc.tex_scale & 0x01FFFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    const bool depth_from_position = (pc.tex_scale & 0x10000000u) != 0u;
 
     HwPixelState s;
     s.format = state.format;
@@ -239,14 +241,14 @@ void main() {
     s.dither = state.dither;
     s.dimx_lo = state.dimx_lo;
     s.dimx_hi = state.dimx_hi;
-    s.ate = state.ate;
+    s.ate = ((pc.tex_scale & 0x08000000u) != 0u && state.afail == 0u && state.atst != 0u) ? 0u : state.ate;
     s.atst = state.atst;
     s.afail = state.afail;
     s.aref = state.aref;
     s.date_on = state.date_on;
     s.datm = state.datm;
     s.ztest = state.ztest;
-    s.ztst = state.ztst;
+    s.ztst = (pc.tex_scale & 0x02000000u) != 0u && state.ztst >= 2u ? 1u : state.ztst;  // diagnostic: GT4_HW_SCALED_DIAG=noz
     s.zmsk = state.zmsk;
     s.zformat = state.zformat;
     s.blend_on = state.blend_on;
@@ -277,6 +279,7 @@ void main() {
             uvt = to_texel_104((in_st.y / q) * scale_t);
         }
         ivec4 texel = g_tex_scale > 1u ? sample_texture_scaled(uvs, uvt, int(g_tex_scale)) : sample_texture(uvs, uvt);
+        if ((pc.tex_scale & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
         colour = hw_texture_function(state.tfx, state.tcc != 0u, texel, frag);
     }
     if (state.fog_on != 0u) {
@@ -294,7 +297,11 @@ void main() {
     f.x = g_dither_fine ? uint(pixel.x) : uint(pixel.x) / pixel_scale;
     f.y = g_dither_fine ? uint(pixel.y) : uint(pixel.y) / pixel_scale;
     f.colour = colour;
-    f.z = uint(clamp(in_z, 0.0, 4294967040.0));
+    // IN-392: at scale, the rasteriser's depth (the vertex stage writes Z * 2^-32, clamped to the format maximum)
+    // floored to an integer, as the reference does: identical vertices give bit-identical depth in every pass
+    // (position invariance), so a GEQUAL tie between passes holds at every sub-pixel. 1x keeps the varying.
+    f.z = depth_from_position ? uint(min(floor(gl_FragCoord.z * 4294967296.0), 4294967040.0))
+                              : uint(clamp(in_z, 0.0, 4294967040.0));
 
 #if HWR_INTERLOCK
     beginInvocationInterlockARB();

@@ -2257,6 +2257,31 @@ public:
                 writePpm(path, width, height, words);
             }
         }
+        // Every depth slot's scaled image and 1x words as raw little-endian 32-bit words (width x height in the
+        // file name), so a depth test at scale can be compared with the 1x one.
+        auto writeRaw = [](const char* path, const std::vector<uint32_t>& words) {
+            if (std::FILE* file = std::fopen(path, "wb")) {
+                std::fwrite(words.data(), sizeof(uint32_t), words.size(), file);
+                std::fclose(file);
+            }
+        };
+        for (std::uint32_t slot = 0; slot < gpu::kGpuDepthSlots; ++slot) {
+            std::uint32_t width = 0, height = 0;
+            gpu_.ScaledExtent(true, slot, width, height);
+            if (width == 0 || height == 0) continue;
+            char path[512];
+            words.clear();
+            if (gpu_.ReadImageDebug(6, slot, width * scale, height * scale, words, error)) {
+                std::snprintf(path, sizeof path, "%s\\depth%u-scaled-%ux%u.bin", folder, slot, width * scale,
+                              height * scale);
+                writeRaw(path, words);
+            }
+            words.clear();
+            if (gpu_.ReadImageDebug(7, slot, width, height, words, error)) {
+                std::snprintf(path, sizeof path, "%s\\depth%u-1x-%ux%u.bin", folder, slot, width, height);
+                writeRaw(path, words);
+            }
+        }
     }
 
     // Diagnostics (GT4_HW_TONE_DUMP=<folder>): the first three tone sequences write the saved scaled source, the
@@ -3018,6 +3043,13 @@ void Renderer::Flush() {
     s.frameTimings_ = PassTimings{};
     ++s.timedFrames_;
     ++s.vblanks_;  // the next compose computes this VBlank's display layout (13.2)
+    // Diagnostics: GT4_HW_TRACE_FROM_VBLANK=N keeps the draw and scaled traces silent before VBlank N, so a trace of a
+    // late scene (the GT Mode map at 9600) does not slow the whole run down.
+    static const long traceFrom = [] {
+        const char* text = std::getenv("GT4_HW_TRACE_FROM_VBLANK");
+        return text ? std::atol(text) : 0L;
+    }();
+    if (traceFrom > 0) s.gpu_.ArmTrace(static_cast<long>(s.vblanks_) >= traceFrom);
     if (s.displayRegs_.smode2 & 1u) {  // SMODE2.INT: which video mode the guest ran this VBlank
         ++s.counters.vblanksInterlaced;
     } else {

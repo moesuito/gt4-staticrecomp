@@ -312,6 +312,9 @@ public:
     // rebuilds or refreshes every scaled image the paused work touched). RefreshScaledSlot refreshes a slot's
     // scaled image over a native rectangle (inclusive) from its 1x words.
     void PauseScaled(bool paused);
+    // Diagnostics: GT4_HW_DRAW_TRACE / GT4_HW_SCALED_TRACE write only while armed (the renderer arms them from the
+    // VBlank named by GT4_HW_TRACE_FROM_VBLANK; armed from the start without it).
+    void ArmTrace(bool armed);
     bool RefreshScaledSlot(bool depthSlot, std::uint32_t slot, std::int32_t x0, std::int32_t y0, std::int32_t x1,
                            std::int32_t y1, std::string &error);
     // IN-383 (parity plan item 2, chapter 09.4 variant A): the eight decal T8 strip sprites that write one frame

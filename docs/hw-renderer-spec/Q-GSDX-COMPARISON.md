@@ -1033,3 +1033,64 @@ bilinear magnification of our 1x image", which is the symptom of a 1x intermedia
    corners while the inner edge does not.
 3. Whether the thin map line is a texel of the 1024x1024 background or its own draw (settles 15.4).
 4. Whether the car's notch lies on a chunk boundary of the write-back path or on a primitive junction (settles 15.3).
+
+---
+
+## 16. Ring slivers on the GT Mode event icons at 6x (IN-392)
+
+Answers of the TASK-026 team, behaviour only.
+
+- **Depth (Confirmed).** The reference clamps the vertex Z (format maximum for flat-Z primitives, 0xFFFFFFFF otherwise),
+  converts it to float times 2^-32 into the position's depth, so the rasteriser interpolates it screen-linearly, and
+  writes it into a 32-bit float depth attachment for Z24 and Z32 alike. When Z varies across a primitive that writes
+  depth, the fragment depth is floored to an integer times 2^-32. GEQUAL and GREATER are the native compare operations.
+  No depth bias, no tolerance, no depth option at any scale, nothing GT4-specific; identical vertices in two passes give
+  bit-identical depth and the later pass wins a tie.
+- **GT4's half-pixel mode ("align to native", Confirmed).** One affine mapping, no snap: gpu = s * (P - 1/320) + s/2
+  with P the native position (12.4 value minus the offset, divided by 16). The 1/320 bias is in native pixels. It
+  applies to every draw at scale above 1 except texture-shuffle draws; texture coordinates, colour, fog and Z are
+  untouched. Points and lines keep their native width at scale. Side rules: region clamp of a texture sampled from a
+  scaled target uses (1 + 0.1 s) / 0.1 texel offsets; a reduction to 1x clamps away the first s rows and columns.
+- **Nothing hides slivers (Confirmed).** No conservative rasterisation, no native-resolution depth pass (the
+  native-scaling option is off and GT4 does not set it), AA1 edge expansion off by default.
+- **Measured on our side:** the slivers are in the mesh itself (exact simulation, IN-392), so they are expected in the
+  reference too; to be confirmed with a black-box gt4-gs.exe frame at 6x.
+
+## 17. Fractional internal scale up to 12x, and the texture replacement identity
+
+Answers of the TASK-026 team, behaviour only. All Confirmed unless labelled.
+
+- **One float factor s**, the same on both axes; no integer assumption anywhere.
+- **Target size:** ceil(unscaled x s) per axis; a resize keeps ceil(valid x s) of old content.
+- **Native rectangle to scaled pixels:** uploads draw the native rectangle times s as an unrounded float quad and let
+  pixel-centre coverage decide (adjacent rectangles share the edge k x s, no gap and no overlap): output pixel j belongs
+  to native pixel floor((j + 0.5) / s). Readbacks stretch nearest: native N reads scaled pixel floor((N + 0.5) x s). A
+  texture read from a target samples the target directly with normalised coordinates times a reduction factor (2^TW
+  over the target's unscaled width); a copy, when needed, is min(ceil(unscaled x s), target size). An 8-bit index read
+  of a target is reduced to 1x first. For integer s these rules equal the s x s block rule.
+- **Vertices at fractional s:** the viewport is the whole scaled surface, so the effective factor per axis is
+  ceil(W x s) / W; gpu = s_eff (P - 1/320) + s_eff / 2; nothing is rounded except the GPU's sub-pixel snap.
+- **Scissor:** the native inclusive scissor made exclusive, times s as floats, truncated, clipped to the surface, and
+  intersected with the draw's bounding box (vertex extremes +- 1 native pixel, times s). There is **no +s/2 term**: in
+  the align-to-native mode native pixel N owns [sN, sN + s). Our record_scaled_draws adds h = s/2 (and the tone carry's
+  "drawn" pixel uses the same shift), which the team flags as half a native pixel off (High confidence for ours).
+- **Sampling a scaled target:** normalised coordinates times the reduction factor; point = floor(u x scaled width),
+  linear = hardware bilinear (four taps at half a scaled texel for 24-bit targets). REPEAT/CLAMP in hardware;
+  REGION_CLAMP in normalised space; REGION_REPEAT in integer native texels, then back. The scale never enters the wrap.
+- **Present:** each circuit's native rectangle times the float scale is stretched into the merge, deinterlaced in
+  output rows, presented with box steps plus one bilinear blit. Dither indexes the output coordinate by default.
+- **Limits:** max factor = max(1, floor(max image dimension / 1280)) (16384 -> 12), clamped with a warning. The
+  reference's UI lists whole numbers; fractional values work when configured. Non-1x special cases are all binary (1x
+  or not); nothing is disabled for fractional values.
+- **Texture replacement identity (pack compatibility):** XXH3-64 seed 0 over the base level (and further mip levels
+  into the same state when mipmapping is active). The raw path hashes 256-byte blocks in block-raster order unless the
+  texture is smaller than a block, the format's bit mask is not all 32 bits, an X region exists or the Y region starts
+  above 0; otherwise the expanded path hashes rows of one-byte indices (palette formats) or 32-bit RGBA with TEXA, with
+  the byte-offset quirk for non-palette formats. CLUT hash: XXH3-64 seed 0 over the effective palette (16 or 256 32-bit
+  entries; CSA applied, CSM1 unswizzled, 16-bit expanded with TEXA), 0 for non-palette formats. Bits word: PSM 0-5,
+  TW 6-9, TH 10-13, bit 14 = 0, TA0 15-22, AEM 23, TA1 24-31 (TEXA only for 24/16-bit non-palette formats). File names
+  in lowercase hex without zero padding for the hashes: `<tex>-<bits:08x>`, `<tex>-<clut>-<bits:08x>`,
+  `<tex>-r<W>x<H>-<bits:08x>`, `<tex>-<clut>-r<W>x<H>-<bits:08x>`, plus the old `-r<64-bit hex>-` form, `.png` or
+  `.dds`; dumps of mip k add `-mip<k>`. Folders: `<textures>/<SERIAL>/replacements/` recursively plus
+  `<textures>/<SERIAL>.zip` (by file name), dumps in `<textures>/<SERIAL>/dumps/`, serial SCUS-97328 for GT4. Our
+  `native/hw_gs/replace/` already follows this contract.

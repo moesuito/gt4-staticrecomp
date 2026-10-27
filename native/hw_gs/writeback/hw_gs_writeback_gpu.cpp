@@ -211,6 +211,7 @@ struct GpuDrawer::Impl {
   // scissor times s. Draws into the write-back mode's scratch colour slot are not repeated (nothing presents it).
   // `barrierBetween`: storage-image barriers between draws (the per-primitive path without pixel interlock).
   bool scaledPaused = false;  // IN-382
+  bool traceArmed = true;     // diagnostics only (ArmTrace)
   // IN-384 follow-up (owner test 11): GT4_HW_SCALED_FILTER=linear samples the 1x texel atlas bilinearly in the scaled
   // pass, which smooths the source's 6-pixel steps the way the reference renderer's upscaling filter does.
   bool scaledLinearFilter = false;
@@ -226,6 +227,15 @@ struct GpuDrawer::Impl {
   // pixel at 1x covers half of two blocks at scale and paints a half-native-pixel sliver at every edge (the owner's thin
   // white lines at 6x). Snapping the vertex to the block grid makes each native pixel all-or-nothing, as at 1x.
   bool scaledSnap = false;
+  // IN-392: at scale the fragment's Z comes from the rasteriser's position depth (Z * 2^-32 in gl_Position.z), floored
+  // to an integer, as the reference does; the float varying it replaces rounds differently at the non-centred sample
+  // points of a scaled pixel, so a second pass over the same vertices failed its GEQUAL tie at scattered sub-pixels
+  // (the dark notches in the white rings of the GT Mode event icons and on the wheels). GT4_HW_SCALED_DEPTH=varying
+  // restores the varying for an A/B. 1x draws always use the varying (their words are the exact-memory authority).
+  bool scaledDepthFromPosition = true;
+  // Diagnostics only (GT4_HW_SCALED_DIAG): 0x08000000 skips a KEEP alpha test, 0x04000000 replaces the texel by a
+  // neutral grey, both in the scaled pass only.
+  std::uint32_t scaledDiagBits = 0;
   void record_scaled_draws(bool barrierBetween) {
     if (!scaled() || scaledDraws.empty()) return;
     if (scaledPaused) {
@@ -235,7 +245,7 @@ struct GpuDrawer::Impl {
     }
     // IN-389: GT4_HW_SCALED_TRACE=<file> writes one line per scaled pass with the per-colour-slot draw histogram and
     // the number of slot-copy-textured draws, so a layer that never reaches the sampler at scale can be identified.
-    if (const char *tracePath = std::getenv("GT4_HW_SCALED_TRACE")) {
+    if (const char *tracePath = traceArmed ? std::getenv("GT4_HW_SCALED_TRACE") : nullptr) {
       std::uint32_t perSlot[kGpuColourSlots] = {};
       std::uint32_t texSlot[kGpuColourSlots] = {};
       std::uint32_t copyTextured = 0;
@@ -332,7 +342,9 @@ struct GpuDrawer::Impl {
       push[3] = FloatToBits(scaleOffset);
       push[7] = (draw.scaledTexture ? scale : 1u) | (scaledLinearFilter ? 0x80000000u : 0u) |
                 (ditherFine ? 0x40000000u : 0u) |
-                (scaledSnap ? 0x20000000u : 0u);  // IN-374/384/388: tex_scale, forced-linear, dither-fine, snap
+                (scaledSnap ? 0x20000000u : 0u) |  // IN-374/384/388: tex_scale, forced-linear, dither-fine, snap
+                (scaledDepthFromPosition ? 0x10000000u : 0u) |  // IN-392: Z from the position depth
+                scaledDiagBits;  // diagnostics: GT4_HW_SCALED_DIAG=noalpha / notex
       if (!pushed || std::memcmp(lastPush, push, sizeof(push)) != 0) {
         gt4_hwd_vkCmdPushConstants(cmd, pipelineLayout, kGraphicsPushStages, 0, kPushBytes, push);
         std::memcpy(lastPush, push, sizeof(push));
@@ -370,7 +382,7 @@ struct GpuDrawer::Impl {
     if (x1 < x0 || y1 < y0) return;
     // IN-389: with GT4_HW_SCALED_TRACE the refresh is logged with the filter it actually pushes, so a 1x -> 6x
     // magnification that ignores GT4_HW_SCALED_REFRESH can be told from one that never runs.
-    if (const char *tracePath = std::getenv("GT4_HW_SCALED_TRACE")) {
+    if (const char *tracePath = traceArmed ? std::getenv("GT4_HW_SCALED_TRACE") : nullptr) {
       if (std::FILE *file = std::fopen(tracePath, "ab")) {
         std::fprintf(file, "refresh depth=%u slot=%u linear=%u rect=%d,%d,%d,%d\n", depthSlot ? 1u : 0u, slot,
                      depthSlot ? 0u : (scaledRefreshLinear ? 1u : 0u), x0, y0, x1, y1);
@@ -2645,7 +2657,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
   // Diagnostics (GT4_HW_DRAW_TRACE=<file>, GT4_HW_DRAW_TRACE_RECT=x0,y0,x1,y1 in native pixels): one line per chunk
   // that touches the probe rectangle, with the texture path and the filter state (IN-387: which layer carries a
   // per-native-pixel pattern, and why the forced-linear switch does not reach it).
-  if (const char *tracePath = std::getenv("GT4_HW_DRAW_TRACE")) {
+  if (const char *tracePath = s.traceArmed ? std::getenv("GT4_HW_DRAW_TRACE") : nullptr) {
     static const char *rectText = std::getenv("GT4_HW_DRAW_TRACE_RECT");
     static const int limit = [] {
       const char *text = std::getenv("GT4_HW_DRAW_TRACE_LIMIT");
@@ -2661,13 +2673,27 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
       if (file) {
         std::fprintf(file,
                      "chunk target=%u depth=%u rect=%d,%d,%d,%d draws=%zu tex=%d slot=%d glm=%d scaled=%d "
-                     "tw=%u th=%u cw=%u ch=%u texlin=%u texfst=%u texon=%u psm=%u tpsm=%u tlog=%u,%u\n",
+                     "tw=%u th=%u cw=%u ch=%u texlin=%u texfst=%u texon=%u psm=%u tpsm=%u tlog=%u,%u "
+                     "zte=%u ztst=%u zmsk=%u zfmt=%u fbmsk=%08x ate=%u atst=%u afail=%u\n",
                      chunk.colourSlot, chunk.depthSlot, chunk.rectX0, chunk.rectY0, chunk.rectX1, chunk.rectY1,
                      chunk.draws.size(), chunk.hasTexture ? 1 : 0, chunk.textureSlot, chunk.glmTexture ? 1 : 0,
                      scaledTextureCopy ? 1 : 0, chunk.texWidth, chunk.texHeight, copyWidth, copyHeight,
                      chunk.state.fields[gpufield::TexLinear], chunk.state.fields[gpufield::TexFst],
                      chunk.state.fields[gpufield::TexOn], chunk.state.fields[gpufield::Format], chunk.glmPsm,
-                     chunk.state.fields[gpufield::TexLog2W], chunk.state.fields[gpufield::TexLog2H]);
+                     chunk.state.fields[gpufield::TexLog2W], chunk.state.fields[gpufield::TexLog2H],
+                     chunk.state.fields[gpufield::Ztest], chunk.state.fields[gpufield::Ztst],
+                     chunk.state.fields[gpufield::Zmsk], chunk.state.fields[gpufield::Zformat],
+                     chunk.state.fields[gpufield::Fbmsk], chunk.state.fields[gpufield::Ate],
+                     chunk.state.fields[gpufield::Atst], chunk.state.fields[gpufield::Afail]);
+        // GT4_HW_DRAW_TRACE_VERTS=N: the vertices (12.4 X/Y, Z, colour) of every traced chunk with at least N draws.
+        static const char *vertsText = std::getenv("GT4_HW_DRAW_TRACE_VERTS");
+        if (vertsText && chunk.draws.size() >= static_cast<std::size_t>(std::atoi(vertsText))) {
+          const GpuVertex *vertex = chunk.VertexData();
+          for (std::size_t i = 0; i < chunk.VertexCount(); ++i) {
+            std::fprintf(file, "v %zu x=%u y=%u z=%u rgba=%u,%u,%u,%u\n", i, vertex[i].x, vertex[i].y, vertex[i].z,
+                         vertex[i].rgba[0], vertex[i].rgba[1], vertex[i].rgba[2], vertex[i].rgba[3]);
+          }
+        }
         std::fclose(file);
       }
     }
@@ -3504,6 +3530,8 @@ bool GpuDrawer::CarryTone(std::uint32_t slot, std::int32_t x0, std::int32_t y0, 
 
 void GpuDrawer::PauseScaled(bool paused) { impl_->scaledPaused = paused; }
 
+void GpuDrawer::ArmTrace(bool armed) { impl_->traceArmed = armed; }
+
 void GpuDrawer::ScaledExtent(bool depthSlot, std::uint32_t slot, std::uint32_t &width, std::uint32_t &height) const {
   const Impl &s = *impl_;
   width = 0;
@@ -3689,12 +3717,18 @@ void GpuDrawer::SetScale(std::uint32_t scale, float scaleOffset) {
   // halves the strongest sliver (23.5 -> 11.9 levels) but splits it into two, shifts the whole picture by half a native
   // pixel and costs 1.5 dB of box PSNR (23.06 against 24.52), so it is not the fix; it stays as a diagnostic switch.
   impl_->scaledSnap = snap != nullptr && std::strcmp(snap, "native") == 0;
+  const char *depth = std::getenv("GT4_HW_SCALED_DEPTH");
+  impl_->scaledDepthFromPosition = depth == nullptr || std::strcmp(depth, "varying") != 0;  // IN-392
+  const char *diag = std::getenv("GT4_HW_SCALED_DIAG");
+  impl_->scaledDiagBits = (diag && std::strstr(diag, "noalpha") ? 0x08000000u : 0u) |
+                          (diag && std::strstr(diag, "notex") ? 0x04000000u : 0u) |
+                          (diag && std::strstr(diag, "noz") ? 0x02000000u : 0u);
   // IN-387: one line so a diagnostic run can prove which switches reached the drawer (the three raw switches are not
   // part of the option table and therefore never appear in the option dump).
-  std::fprintf(stderr, "[scale] scale=%u filter=%s refresh=%s dither=%s snap=%s\n", impl_->scale,
+  std::fprintf(stderr, "[scale] scale=%u filter=%s refresh=%s dither=%s snap=%s depth=%s\n", impl_->scale,
                impl_->scaledLinearFilter ? "linear" : "nearest",
                impl_->scaledRefreshLinear ? "linear" : "nearest", impl_->ditherFine ? "fine" : "native",
-               impl_->scaledSnap ? "native" : "off");
+               impl_->scaledSnap ? "native" : "off", impl_->scaledDepthFromPosition ? "position" : "varying");
 }
 
 std::uint32_t GpuDrawer::Scale() const { return impl_->scale; }
@@ -3707,8 +3741,9 @@ bool GpuDrawer::ReadImageDebug(std::uint32_t which, std::uint32_t slot, std::uin
   // IN-387: 3 = a display shadow (IN-377), 4 = the composed display image and 5 = the last scaled deinterlace's
   // merge image (before the algorithm), so one VBlank can be split into the slot's scaled image, the shadow copy,
   // the merge and the composed frame (the owner's flat-menu artifact).
-  if (!s.scaled() || which > 5 || (which != 3 && slot >= kGpuColourSlots) ||
-      (which == 3 && slot >= kGpuDisplayShadows)) {
+  // 6 = a depth slot's scaled image and 7 = its 1x words (the notched 3D rings at scale).
+  if (!s.scaled() || which > 7 || (which != 3 && which < 6 && slot >= kGpuColourSlots) ||
+      (which == 3 && slot >= kGpuDisplayShadows) || (which >= 6 && slot >= kGpuDepthSlots)) {
     error = "debug read outside the scaled images";
     return false;
   }
@@ -3717,6 +3752,8 @@ bool GpuDrawer::ReadImageDebug(std::uint32_t which, std::uint32_t slot, std::uin
                          : which == 2 ? s.frames[slot].image
                          : which == 3 ? s.scaledShadows[slot].image
                          : which == 4 ? s.display.image
+                         : which == 6 ? s.scaledDepths[slot].image
+                         : which == 7 ? s.depths[slot].image
                                       : s.deinterlaceHistory[s.lastDeinterlaceCurrent].image;
   return read_image(reinterpret_cast<std::uint64_t>(source), width, height, words, error);
 }
