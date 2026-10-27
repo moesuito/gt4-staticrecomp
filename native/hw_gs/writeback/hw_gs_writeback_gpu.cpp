@@ -236,6 +236,7 @@ struct GpuDrawer::Impl {
   // Diagnostics only (GT4_HW_SCALED_DIAG): 0x08000000 skips a KEEP alpha test, 0x04000000 replaces the texel by a
   // neutral grey, both in the scaled pass only.
   std::uint32_t scaledDiagBits = 0;
+  bool scaledScissorShifted = false;  // IN-393: GT4_HW_SCALED_SCISSOR=shifted
   void record_scaled_draws(bool barrierBetween) {
     if (!scaled() || scaledDraws.empty()) return;
     if (scaledPaused) {
@@ -293,9 +294,12 @@ struct GpuDrawer::Impl {
       const std::int32_t depthHeight = static_cast<std::int32_t>(scaledDepthExtent[depth].height) * s;
       if (imageWidth <= 0 || imageHeight <= 0) continue;
       // The GS scissor applies to the native sample points. In the 06.3 native mode native pixel N's sample point
-      // is the centre of sub-pixel block N, and a sub-pixel belongs to native pixel floor((j - h) / s) with
-      // h = floor(s/2) (the half-pixel band of IN-372), so the scaled scissor is the native one times s, moved by h.
-      const std::int32_t h = s / 2;
+      // (native position N) lands at gpu s*N + s/2, the centre of sub-pixel block [s*N, s*N + s), and sub-pixel j
+      // samples native (j + 0.5 - s/2) / s, whose nearest native sample point is floor((j + 0.5) / s): block N owns
+      // native pixel N, so the scaled scissor is the native one times s (the reference's rule, Q-GSDX-COMPARISON 17).
+      // IN-393: the IN-372 scissor moved it by h = s/2, half a native pixel right and down;
+      // GT4_HW_SCALED_SCISSOR=shifted restores that for an A/B.
+      const std::int32_t h = scaledScissorShifted ? s / 2 : 0;
       const std::int32_t x0 = draw.scissor.offset.x * s + h;
       const std::int32_t y0 = draw.scissor.offset.y * s + h;
       if (x0 >= imageWidth || y0 >= imageHeight) continue;  // outside the scaled image: 1x words only
@@ -3719,6 +3723,8 @@ void GpuDrawer::SetScale(std::uint32_t scale, float scaleOffset) {
   impl_->scaledSnap = snap != nullptr && std::strcmp(snap, "native") == 0;
   const char *depth = std::getenv("GT4_HW_SCALED_DEPTH");
   impl_->scaledDepthFromPosition = depth == nullptr || std::strcmp(depth, "varying") != 0;  // IN-392
+  const char *scissor = std::getenv("GT4_HW_SCALED_SCISSOR");
+  impl_->scaledScissorShifted = scissor != nullptr && std::strcmp(scissor, "shifted") == 0;  // IN-393
   const char *diag = std::getenv("GT4_HW_SCALED_DIAG");
   impl_->scaledDiagBits = (diag && std::strstr(diag, "noalpha") ? 0x08000000u : 0u) |
                           (diag && std::strstr(diag, "notex") ? 0x04000000u : 0u) |
