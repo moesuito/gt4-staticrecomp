@@ -1,5 +1,9 @@
 # Current Status
 
+## TASK-115 rc7 Discord Rich Presence review corrections (2026-10-27)
+
+Reviewed Discord IPC lifecycle corrected on branch `task/133-rc7-ra-controls`: bounded overlapped I/O, handshake/frame ack validation, heartbeat, generation fencing, non-blocking stop, and deterministic tests (6 Discord + flow_audit + UI checks). Live Discord still pending owner authorization. Game Bar/GPU recognition remains future scope.
+
 ## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)
 
 Owner requested mapping only: published rc6 is the fixed program baseline, with RetroAchievements

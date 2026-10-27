@@ -31,6 +31,21 @@ Base: ef3487d
 - UI: focus-check en-US 215/215, pt-BR 222/222, nav-test 209/209.
 - Locale key/placeholder parity maintained for the new setting.
 
+## Validation evidence
+
+Commands and counts (serial, worktree root):
+
+- `cargo test -p gt4l-tauri` (discord presence): 6 passed, 0 failed, 0 ignored.
+- `cargo test -p gt4l-tauri` (flow_audit): 10 passed, 1 ignored (real discs), 0 failed.
+- `cargo test -p gt4l-core`: 215 + 16 + 3 + 5 + 11 + 21 + 5 + 5 + 20 + 21 + 9 + 7 + 0 = 338? (all suites passed, 0 failed).
+- UI focus-check en-US: 215/215; pt-BR: 222/222; nav-test: 209/209.
+
+Test layers:
+- Unit: payload generation, transport trait fake.
+- Manager: absent Discord, disable/reenable clear + timestamp, in-flight cancellation, reconnect, generation fence.
+- Integration: settings command path and flow_audit.
+- UI: focus/navigation in both languages using mock data plus Rust table order check.
+
 ## Remaining limitations
 
 - Live Discord client verification is pending owner authorization; mocked tests do not prove real Discord behavior.
