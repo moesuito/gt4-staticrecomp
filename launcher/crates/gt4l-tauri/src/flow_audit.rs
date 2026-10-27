@@ -861,7 +861,7 @@ fn retroachievements_options_and_launch_environment() {
     let play_gt4 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for GT4");
     assert_eq!(play_gt4.game.id, "gt4");
 
-    let extra_map: std::collections::HashMap<_, _> = play_gt4.extra.into_iter().collect();
+    let extra_map: std::collections::HashMap<_, _> = play_gt4.extra.clone().into_iter().collect();
     assert_eq!(extra_map.get("GT4_RA_ENABLED").map(|s| s.as_str()), Some("1"));
     assert_eq!(extra_map.get("GT4_RA_HARDCORE").map(|s| s.as_str()), Some("1"));
     assert_eq!(extra_map.get("GT4_RA_ENCORE").map(|s| s.as_str()), Some("0"));
@@ -877,13 +877,80 @@ fn retroachievements_options_and_launch_environment() {
     let play_spec2 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for Spec II");
     assert_eq!(play_spec2.game.id, "spec2");
 
-    let spec2_extra: std::collections::HashMap<_, _> = play_spec2.extra.into_iter().collect();
+    let spec2_extra: std::collections::HashMap<_, _> = play_spec2.extra.clone().into_iter().collect();
     assert_eq!(spec2_extra.get("GT4_RA_ENABLED").map(|s| s.as_str()), Some("0"), "Spec II must force GT4_RA_ENABLED=0");
     assert!(!spec2_extra.contains_key("GT4_RA_USERNAME"), "Spec II must NOT receive RA username");
     assert!(!spec2_extra.contains_key("GT4_RA_TOKEN"), "Spec II must NOT receive RA token");
     assert!(!spec2_extra.contains_key("GT4_RA_HASH"), "Spec II must NOT receive original game RA hash");
     assert!(!spec2_extra.contains_key("GT4_RA_HARDCORE"), "Spec II must NOT receive RA hardcore");
     assert!(!spec2_extra.contains_key("GT4_RA_ENCORE"), "Spec II must NOT receive RA encore");
+
+    // 8. End-to-end launch plan composition with hostile inherited variables (including case variations on Windows)
+    let hostile_inherited = vec![
+        "gt4_ra_token".to_string(),
+        "GT4_RA_TOKEN".to_string(),
+        "Gt4_Ra_Token".to_string(),
+        "gt4_ra_password".to_string(),
+        "GT4_RA_PASSWORD".to_string(),
+        "Gt4_Ra_Password".to_string(),
+        "gt4_ra_enabled".to_string(),
+        "GT4_RA_ENABLED".to_string(),
+        "Gt4_Ra_Enabled".to_string(),
+        "gt4_ra_hash".to_string(),
+        "GT4_RA_HASH".to_string(),
+        "ps2_disc".to_string(),
+        "PS2_DISC".to_string(),
+    ];
+
+    // GT4 full launch plan
+    let session_gt4 = dirs.session("plan-test-gt4");
+    let card_gt4 = dirs.runtime_card();
+    let launch_inputs_gt4 = launch::LaunchInputs {
+        game_executable: &play_gt4.executable,
+        elf: &play_gt4.elf,
+        disc: &play_gt4.disc,
+        card: &card_gt4,
+        session_dir: &session_gt4,
+    };
+    let textures = lock(&shared).dirs.textures();
+    let paths_gt4 = launch::Pcsx2Paths::for_session(&play_gt4.pcsx2, &dirs.root().join("gs"), &session_gt4, &textures);
+    let mut plan_gt4 = launch::plan_pcsx2_launch(&launch_inputs_gt4, &play_gt4.settings, &paths_gt4, play_gt4.display.as_ref(), &hostile_inherited);
+    plan_gt4.environment.extend(play_gt4.extra);
+
+    for hostile in &hostile_inherited {
+        assert!(plan_gt4.removed_inherited.contains(hostile), "Hostile var {hostile} must be in removed_inherited for GT4");
+        assert!(!plan_gt4.environment.iter().any(|(k, _)| k == hostile && (k.ends_with("password") || k.ends_with("PASSWORD"))),
+            "Hostile password must not remain in environment");
+    }
+    assert!(plan_gt4.environment.iter().any(|(k, v)| k == "GT4_RA_ENABLED" && v == "1"));
+    assert!(plan_gt4.environment.iter().any(|(k, v)| k == "GT4_RA_USERNAME" && v == "Driver99"));
+    assert!(plan_gt4.environment.iter().any(|(k, v)| k == "GT4_RA_TOKEN" && v == "tok_test_123"));
+    assert!(plan_gt4.environment.iter().any(|(k, v)| k == "GT4_RA_LANGUAGE" && v == "en-US"));
+
+    let plan_gt4_debug = format!("{:?}", plan_gt4);
+    assert!(plan_gt4_debug.contains("[REDACTED]"), "Debug output of LaunchPlan must redact token");
+    assert!(!plan_gt4_debug.contains("tok_test_123"), "Debug output of LaunchPlan must NEVER print secret token!");
+
+    // Spec II full launch plan
+    let session_spec2 = dirs.session("plan-test-spec2");
+    let card_spec2 = dirs.runtime_card();
+    let launch_inputs_spec2 = launch::LaunchInputs {
+        game_executable: &play_spec2.executable,
+        elf: &play_spec2.elf,
+        disc: &play_spec2.disc,
+        card: &card_spec2,
+        session_dir: &session_spec2,
+    };
+    let paths_spec2 = launch::Pcsx2Paths::for_session(&play_spec2.pcsx2, &dirs.root().join("gs"), &session_spec2, &textures);
+    let mut plan_spec2 = launch::plan_pcsx2_launch(&launch_inputs_spec2, &play_spec2.settings, &paths_spec2, play_spec2.display.as_ref(), &hostile_inherited);
+    plan_spec2.environment.extend(play_spec2.extra);
+
+    for hostile in &hostile_inherited {
+        assert!(plan_spec2.removed_inherited.contains(hostile), "Hostile var {hostile} must be in removed_inherited for Spec II");
+    }
+    assert!(plan_spec2.environment.iter().any(|(k, v)| k == "GT4_RA_ENABLED" && v == "0"), "Spec II plan must force GT4_RA_ENABLED=0");
+    assert!(!plan_spec2.environment.iter().any(|(k, _)| k == "GT4_RA_USERNAME" || k == "GT4_RA_TOKEN" || k == "GT4_RA_HASH" || k.ends_with("PASSWORD")),
+        "Spec II plan must NEVER contain RA credentials, token, password, or hash");
 
     let _ = fs::remove_dir_all(&root);
 }

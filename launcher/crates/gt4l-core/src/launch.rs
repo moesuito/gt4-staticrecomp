@@ -60,7 +60,7 @@ pub struct LaunchInputs<'a> {
 }
 
 /// The planned launch. `removed_inherited` lists variables to remove from the child environment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LaunchPlan {
     pub program: PathBuf,
     pub arguments: Vec<String>,
@@ -69,6 +69,34 @@ pub struct LaunchPlan {
     pub working_directory: PathBuf,
     pub log_path: PathBuf,
     pub misses_path: PathBuf,
+}
+
+impl std::fmt::Debug for LaunchPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let safe_env: Vec<(String, String)> = self
+            .environment
+            .iter()
+            .map(|(k, v)| {
+                if k.eq_ignore_ascii_case("GT4_RA_TOKEN")
+                    || k.to_ascii_uppercase().ends_with("_TOKEN")
+                    || k.to_ascii_uppercase().ends_with("_PASSWORD")
+                {
+                    (k.clone(), "[REDACTED]".to_string())
+                } else {
+                    (k.clone(), v.clone())
+                }
+            })
+            .collect();
+        f.debug_struct("LaunchPlan")
+            .field("program", &self.program)
+            .field("arguments", &self.arguments)
+            .field("environment", &safe_env)
+            .field("removed_inherited", &self.removed_inherited)
+            .field("working_directory", &self.working_directory)
+            .field("log_path", &self.log_path)
+            .field("misses_path", &self.misses_path)
+            .finish()
+    }
 }
 
 /// The files and pins of the PCSX2 GS process for one session.
@@ -320,7 +348,9 @@ pub const PASSED_THROUGH: &[&str] = &["GT4_ASPECT_FOV_EXTRA"];
 
 /// Whether an inherited variable must be removed for the game process.
 pub fn is_scrubbed(name: &str) -> bool {
-    !PASSED_THROUGH.contains(&name) && SCRUBBED_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+    let upper = name.to_ascii_uppercase();
+    !PASSED_THROUGH.iter().any(|p| p.eq_ignore_ascii_case(name))
+        && SCRUBBED_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
 
 /// Plans one PCSX2 GS launch. Pure: the caller writes `paths.config` (see [`gs_config_text`]) before starting.
@@ -331,7 +361,7 @@ pub fn plan_pcsx2_launch(
     display: Option<&DisplayTarget>,
     inherited_names: &[String],
 ) -> LaunchPlan {
-    let mut environment = pcsx2_environment(settings, paths);
+    let environment = pcsx2_environment(settings, paths);
     plan_with(inputs, with_display(environment, display), inherited_names)
 }
 
