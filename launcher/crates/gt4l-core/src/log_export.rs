@@ -31,6 +31,9 @@ pub fn zip_name(time: &LocalTime) -> String {
 pub fn is_forbidden(path: &str) -> bool {
     let lower = path.to_ascii_lowercase().replace('\\', "/");
     let name = lower.rsplit('/').next().unwrap_or("");
+    if name == "retroachievements.toml" || name.starts_with("retroachievements.toml.") {
+        return true;
+    }
     const EXTENSIONS: &[&str] = &[
         ".ps2", ".mcd", ".mc2", ".psu", ".bin", ".iso", ".img", ".elf", ".exe", ".dll", ".gt4", ".zip", ".7z", ".sav",
     ];

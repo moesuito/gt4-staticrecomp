@@ -25,6 +25,7 @@
     { id: "games", key: "tab.games" },
     { id: "saves", key: "tab.saves" },
     { id: "replays", key: "tab.replays" },
+    { id: "achievements", key: "tab.achievements" },
     { id: "mods", key: "tab.mods" },
     { id: "about", key: "tab.about" }
   ];

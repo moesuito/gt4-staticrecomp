@@ -625,8 +625,11 @@ fn two_games_install_side_by_side_and_never_mix() {
     // The right disc installs Gran Turismo 4; the stored choice (the game played last) does not change.
     let right = setup::choose_disc_path_for(&shared, &gt4_disc, Some("gt4")).unwrap();
     assert!(!right.mismatch && right.game == "gt4");
-    run_setup(&shared, &Recorder::default(), fake_renderer());
-    assert_eq!(screen(&shared)["setup"]["state"], "done");
+    let seen = run_setup(&shared, &Recorder::default(), fake_renderer());
+    let s = screen(&shared);
+    println!("SPEC2 SETUP SEEN: {:?}", seen);
+    println!("SPEC2 SETUP VIEW: {:?}", s["setup"]);
+    assert_eq!(s["setup"]["state"], "done");
     assert!(data.join("games/gt4/disc/SCUS-97328.iso").is_file());
     assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file(), "installing one game leaves the other alone");
     assert_eq!(lock(&shared).config.selected_game.as_deref(), Some("spec2"));
@@ -785,5 +788,170 @@ fn a_1_2_x_install_moves_into_games_gt4_at_the_first_start() {
     assert!(!data.join("disc").exists() && !data.join("prepared").exists() && !data.join("runtime").exists());
     assert_eq!(setup_state(&shared), "done", "Play is available again after the move");
     assert!(lock(&shared).dirs.disc_folder().to_string_lossy().contains("games"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn retroachievements_options_and_launch_environment() {
+    let root = scratch("ra-options");
+    let data = root.join("data");
+    let dirs = DataDirs::new(&data);
+    let game = synthetic_game(0x0010_0000, 0x0010_0008, b"synthetic guest code, not game data, 0123456789abcdef");
+    let gt4_image = build_iso(
+        "GT4 USA",
+        &[
+            ("SYSTEM.CNF;1", system_cnf("SCUS_973.28", "2.00", "NTSC")),
+            ("CORE.GT4;1", game.core.clone()),
+            ("SCUS_973.28;1", vec![0xA5; 3000]),
+        ],
+    );
+    let pins = pins_for(&gt4_image, &game, "SCUS-97328", "2.00");
+    let (executable, spec2_pins) = synthetic_spec2();
+    let spec2_image = build_iso(
+        "GRANTURISMO4",
+        &[("SYSTEM.CNF;1", system_cnf("SCUS_974.36", "1.00", "NTSC")), ("SCUS_974.36;1", executable)],
+    );
+    let gt4_disc = root.join("gt4.iso");
+    let spec2_disc = root.join("spec2.iso");
+    fs::write(&gt4_disc, &gt4_image).unwrap();
+    fs::write(&spec2_disc, &spec2_image).unwrap();
+
+    let shared = launch(&dirs, &pins);
+    use_spec2_pins(&shared, &spec2_pins);
+
+    // 1. Install Spec II first
+    let info = setup::choose_disc_path(&shared, &spec2_disc).expect("a Spec II disc is accepted");
+    assert_eq!((info.game.as_str(), info.mismatch), ("spec2", false));
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    assert_eq!(screen(&shared)["setup"]["state"], "done");
+
+    // 2. Install Gran Turismo 4 second
+    commands::select_game_of("gt4".into(), &shared).unwrap();
+    let right = setup::choose_disc_path_for(&shared, &gt4_disc, Some("gt4")).unwrap();
+    assert!(!right.mismatch && right.game == "gt4");
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    let s2 = screen(&shared);
+    if s2["setup"]["state"] != "done" {
+        panic!("GT4 setup failed! state: {:?}, outcome: {:?}", s2["setup"]["state"], s2["setup"]["outcome"]);
+    }
+
+    // 3. Stand-in executables for both
+    let program = stand_in_programs(&root, &["gt4.exe", "gt4-spec2.exe"]);
+
+    // 4. Stand-in GSdx installation so prepare_play succeeds
+    let gs_dir = data.join("gs");
+    let gs_v1 = gs_dir.join("1.2.1");
+    fs::create_dir_all(&gs_v1).unwrap();
+    fs::write(gs_dir.join("current.txt"), "1.2.1\n").unwrap();
+    fs::write(gs_v1.join("gt4-gs.exe"), b"gsdx-stand-in").unwrap();
+    fs::write(gs_v1.join("sha256.txt"), "a2b9ce769077cd9e191ec914dd772351d9c2eaa05122592038996809c2f5169c\n").unwrap();
+
+    // 5. Configure RA in user config
+    let ra_file = lock(&shared).user_dirs.retroachievements_file();
+    let mut cfg = gt4l_core::retroachievements::RaConfig::default();
+    cfg.enabled = true;
+    cfg.hardcore = true;
+    cfg.encore = false;
+    cfg.username = "Driver99".to_string();
+    cfg.token = "tok_test_123".to_string();
+    cfg.save(&ra_file).unwrap();
+
+    // 6. Prepare play for GT4
+    commands::select_game_of("gt4".to_string(), &shared).unwrap();
+    let play_gt4 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for GT4");
+    assert_eq!(play_gt4.game.id, "gt4");
+
+    let extra_map: std::collections::HashMap<_, _> = play_gt4.extra.into_iter().collect();
+    assert_eq!(extra_map.get("GT4_RA_ENABLED").map(|s| s.as_str()), Some("1"));
+    assert_eq!(extra_map.get("GT4_RA_HARDCORE").map(|s| s.as_str()), Some("1"));
+    assert_eq!(extra_map.get("GT4_RA_ENCORE").map(|s| s.as_str()), Some("0"));
+    assert_eq!(extra_map.get("GT4_RA_USERNAME").map(|s| s.as_str()), Some("Driver99"));
+    assert_eq!(extra_map.get("GT4_RA_TOKEN").map(|s| s.as_str()), Some("tok_test_123"));
+    assert_eq!(extra_map.get("GT4_RA_HASH").map(|s| s.as_str()), Some("b7e2e47572f4163a216ea85eed3c6c63"));
+    assert_eq!(extra_map.get("GT4_RA_LANGUAGE").map(|s| s.as_str()), Some("en-US"));
+    assert!(extra_map.get("GT4_RA_CACHE_DIR").unwrap().contains("games"));
+    assert!(extra_map.get("GT4_RA_CACHE_DIR").unwrap().contains("ra_cache"));
+
+    // 7. Switch to Spec II and prepare play: verify RA is disabled, credentials and hash are NOT sent
+    commands::select_game_of("spec2".to_string(), &shared).unwrap();
+    let play_spec2 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for Spec II");
+    assert_eq!(play_spec2.game.id, "spec2");
+
+    let spec2_extra: std::collections::HashMap<_, _> = play_spec2.extra.into_iter().collect();
+    assert_eq!(spec2_extra.get("GT4_RA_ENABLED").map(|s| s.as_str()), Some("0"), "Spec II must force GT4_RA_ENABLED=0");
+    assert!(!spec2_extra.contains_key("GT4_RA_USERNAME"), "Spec II must NOT receive RA username");
+    assert!(!spec2_extra.contains_key("GT4_RA_TOKEN"), "Spec II must NOT receive RA token");
+    assert!(!spec2_extra.contains_key("GT4_RA_HASH"), "Spec II must NOT receive original game RA hash");
+    assert!(!spec2_extra.contains_key("GT4_RA_HARDCORE"), "Spec II must NOT receive RA hardcore");
+    assert!(!spec2_extra.contains_key("GT4_RA_ENCORE"), "Spec II must NOT receive RA encore");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn retroachievements_stale_response_and_target_switch_races() {
+    let root = scratch("ra-races");
+    let data = root.join("data");
+    let dirs = DataDirs::new(&data);
+    let shared = launch(&dirs, &Pins::embedded().unwrap());
+
+    // 1. Initial login
+    let ra_file = lock(&shared).user_dirs.retroachievements_file();
+    let mut cfg = gt4l_core::retroachievements::RaConfig::default();
+    cfg.username = "Racer1".to_string();
+    cfg.token = "tok_initial".to_string();
+    cfg.save(&ra_file).unwrap();
+
+    // 2. Race 1: While status refresh is in flight, target switches to Spec II
+    let status_view = commands::ra_status_with(&shared, |_, _| {
+        // While background network runs, UI/user selects Spec II
+        commands::select_game_of("spec2".to_string(), &shared).unwrap();
+        (
+            Some(gt4l_core::retroachievements::RaAccountSession {
+                username: "Racer1".to_string(),
+                token: "tok_initial".to_string(),
+                display_name: "Racer One".to_string(),
+                score: 500,
+                score_softcore: 100,
+            }),
+            Some(gt4l_core::retroachievements::RaGameOverview {
+                game_id: 3843,
+                title: "Gran Turismo 4".to_string(),
+                total_achievements: 75,
+                unlocked_achievements: 10,
+                total_points: 600,
+                unlocked_points: 80,
+                achievements: Vec::new(),
+            }),
+        )
+    }).expect("ra_status_with succeeds");
+
+    // Because state.selected changed to Spec II and revision bumped, stale overview is discarded
+    assert_eq!(status_view.selected_game, "spec2");
+    assert!(!status_view.supported, "Spec II must report supported: false");
+    assert!(status_view.game.is_none(), "Stale GT4 overview must be dropped when Spec II is active");
+
+    // 3. Race 2: While status refresh is in flight, user logs out
+    commands::select_game_of("gt4".to_string(), &shared).unwrap();
+    let status_after_logout = commands::ra_status_with(&shared, |_, _| {
+        // User clicks Sign Out while network response is delayed
+        commands::ra_logout_of(&shared).unwrap();
+        (
+            Some(gt4l_core::retroachievements::RaAccountSession {
+                username: "Racer1".to_string(),
+                token: "tok_initial".to_string(),
+                display_name: "Racer One".to_string(),
+                score: 500,
+                score_softcore: 100,
+            }),
+            None,
+        )
+    }).expect("ra_status_with succeeds");
+
+    // Account remains signed out, stale session is dropped
+    assert!(!status_after_logout.signed_in);
+    assert_eq!(status_after_logout.username, "");
+    assert_eq!(status_after_logout.score, 0);
+
     let _ = fs::remove_dir_all(&root);
 }

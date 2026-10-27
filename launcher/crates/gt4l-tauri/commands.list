@@ -50,3 +50,7 @@ skip_update
 confirm_close
 ui_ready
 ui_log
+ra_status
+ra_login
+ra_logout
+ra_set_options

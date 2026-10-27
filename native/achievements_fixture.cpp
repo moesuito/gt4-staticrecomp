@@ -388,6 +388,82 @@ int test_overlay_toast_animation() {
     return 0;
 }
 
+int test_language_catalog_and_fallback() {
+    using gt4::achievements::Language;
+    using gt4::achievements::resolve_language;
+    using gt4::achievements::language_tag;
+
+    // 1. Language parser resolution & fallback
+    CHECK(resolve_language("pt-BR") == Language::PtBr, "pt-BR should resolve to PtBr");
+    CHECK(std::string(language_tag(Language::PtBr)) == "pt-BR", "PtBr tag should be pt-BR");
+
+    CHECK(resolve_language("en-US") == Language::EnUs, "en-US should resolve to EnUs");
+    CHECK(std::string(language_tag(Language::EnUs)) == "en-US", "EnUs tag should be en-US");
+
+    CHECK(resolve_language("") == Language::EnUs, "empty string should fall back to EnUs");
+    CHECK(resolve_language("es-ES") == Language::EnUs, "unknown locale should fall back to EnUs");
+    CHECK(resolve_language("pt") == Language::EnUs, "partial locale should fall back to EnUs");
+    CHECK(resolve_language("invalid_locale_xyz") == Language::EnUs, "garbage should fall back to EnUs");
+
+    // 2. parse_config integration
+    {
+        std::unordered_map<std::string, std::string> env{
+            {"GT4_RA_ENABLED", "1"},
+            {"GT4_RA_USERNAME", "Player"},
+            {"GT4_RA_TOKEN", "tok"},
+            {"GT4_RA_LANGUAGE", "pt-BR"},
+        };
+        auto cfg = gt4::achievements::parse_config([&](const char* key) -> std::string {
+            auto it = env.find(key);
+            return it != env.end() ? it->second : "";
+        });
+        CHECK(cfg.language == Language::PtBr, "GT4_RA_LANGUAGE=pt-BR should configure PtBr");
+    }
+    {
+        std::unordered_map<std::string, std::string> env{
+            {"GT4_RA_ENABLED", "1"},
+            {"GT4_RA_USERNAME", "Player"},
+            {"GT4_RA_TOKEN", "tok"},
+            {"GT4_RA_LANGUAGE", "fr-FR"},
+        };
+        auto cfg = gt4::achievements::parse_config([&](const char* key) -> std::string {
+            auto it = env.find(key);
+            return it != env.end() ? it->second : "";
+        });
+        CHECK(cfg.language == Language::EnUs, "unknown GT4_RA_LANGUAGE should fall back to EnUs");
+    }
+
+    // 3. String catalog: en-US
+    CHECK(std::string(gt4::achievements::toast_sign_in_failed_title(Language::EnUs)) == "Sign-in failed", "en-US sign in failed title");
+    CHECK(std::string(gt4::achievements::toast_signed_in_title(Language::EnUs)) == "Signed in", "en-US signed in title");
+    CHECK(std::string(gt4::achievements::toast_load_game_failed_title(Language::EnUs)) == "Could not load achievement set", "en-US load game failed title");
+    CHECK(std::string(gt4::achievements::toast_achievement_unlocked_header(Language::EnUs, true)) == "HARDCORE ACHIEVEMENT UNLOCKED", "en-US ach unlocked hc");
+    CHECK(std::string(gt4::achievements::toast_achievement_unlocked_header(Language::EnUs, false)) == "ACHIEVEMENT UNLOCKED", "en-US ach unlocked soft");
+    CHECK(std::string(gt4::achievements::toast_game_mastered_header(Language::EnUs, true)) == "GAME MASTERED · HARDCORE", "en-US mastered hc");
+    CHECK(gt4::achievements::toast_game_loaded_summary(Language::EnUs, 5, 20, 50, 200) == "Unlocked 5 of 20 (50/200 pts)", "en-US game loaded summary");
+    CHECK(gt4::achievements::toast_game_mastered_summary(Language::EnUs, 20, 200) == "All 20 achievements unlocked (200 pts)!", "en-US game mastered summary");
+    CHECK(std::string(gt4::achievements::toast_leaderboard_started_header(Language::EnUs)) == "LEADERBOARD STARTED", "en-US lb started");
+    CHECK(std::string(gt4::achievements::toast_leaderboard_canceled_subtitle(Language::EnUs)) == "Attempt canceled.", "en-US lb canceled");
+    CHECK(std::string(gt4::achievements::toast_disconnected_title(Language::EnUs)) == "Server connection interrupted", "en-US disconnected title");
+    CHECK(std::string(gt4::achievements::toast_reconnected_title(Language::EnUs)) == "Reconnected to server", "en-US reconnected title");
+
+    // 4. String catalog: pt-BR
+    CHECK(std::string(gt4::achievements::toast_sign_in_failed_title(Language::PtBr)) == "Falha ao iniciar sessão", "pt-BR sign in failed title");
+    CHECK(std::string(gt4::achievements::toast_signed_in_title(Language::PtBr)) == "Sessão iniciada", "pt-BR signed in title");
+    CHECK(std::string(gt4::achievements::toast_load_game_failed_title(Language::PtBr)) == "Não foi possível carregar as conquistas", "pt-BR load game failed title");
+    CHECK(std::string(gt4::achievements::toast_achievement_unlocked_header(Language::PtBr, true)) == "CONQUISTA HARDCORE DESBLOQUEADA", "pt-BR ach unlocked hc");
+    CHECK(std::string(gt4::achievements::toast_achievement_unlocked_header(Language::PtBr, false)) == "CONQUISTA DESBLOQUEADA", "pt-BR ach unlocked soft");
+    CHECK(std::string(gt4::achievements::toast_game_mastered_header(Language::PtBr, true)) == "JOGO DOMINADO · HARDCORE", "pt-BR mastered hc");
+    CHECK(gt4::achievements::toast_game_loaded_summary(Language::PtBr, 5, 20, 50, 200) == "5 de 20 desbloqueadas (50/200 pts)", "pt-BR game loaded summary");
+    CHECK(gt4::achievements::toast_game_mastered_summary(Language::PtBr, 20, 200) == "Todas as 20 conquistas desbloqueadas (200 pts)!", "pt-BR game mastered summary");
+    CHECK(std::string(gt4::achievements::toast_leaderboard_started_header(Language::PtBr)) == "PLACAR INICIADO", "pt-BR lb started");
+    CHECK(std::string(gt4::achievements::toast_leaderboard_canceled_subtitle(Language::PtBr)) == "Tentativa cancelada.", "pt-BR lb canceled");
+    CHECK(std::string(gt4::achievements::toast_disconnected_title(Language::PtBr)) == "Conexão com o servidor interrompida", "pt-BR disconnected title");
+    CHECK(std::string(gt4::achievements::toast_reconnected_title(Language::PtBr)) == "Reconectado ao servidor", "pt-BR reconnected title");
+
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -398,6 +474,7 @@ int main() {
     if (int rc = test_ps2_memory_mapping(); rc != 0) return rc;
     if (int rc = test_rcheevos_session_and_unlock(); rc != 0) return rc;
     if (int rc = test_overlay_toast_animation(); rc != 0) return rc;
+    if (int rc = test_language_catalog_and_fallback(); rc != 0) return rc;
     std::printf("achievements_fixture: all tests passed.\n");
     return 0;
 }

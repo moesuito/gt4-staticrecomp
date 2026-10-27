@@ -53,6 +53,10 @@
     "allow-skip-update",
     "allow-confirm-close",
     "allow-ui-ready",
-    "allow-ui-log"
+    "allow-ui-log",
+    "allow-ra-status",
+    "allow-ra-login",
+    "allow-ra-logout",
+    "allow-ra-set-options"
   ]
 }

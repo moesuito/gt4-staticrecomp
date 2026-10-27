@@ -188,6 +188,11 @@ impl DataDirs {
     }
 
     /// Where setup writes the prepared files (always the root's `games\<id>`).
+    /// RetroAchievements runtime cache directory under `data/games/gt4/runtime/ra_cache` (TASK-133).
+    pub fn retroachievements_cache(&self) -> PathBuf {
+        DataDirs::game_folder_in(&self.root, &crate::games::GT4).join("runtime").join("ra_cache")
+    }
+
     pub fn setup_prepared(&self) -> PathBuf {
         self.game_root().join("prepared")
     }
@@ -410,6 +415,11 @@ impl UserDirs {
 
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
+    }
+
+    /// RetroAchievements user config file under `config/retroachievements.toml` (TASK-133).
+    pub fn retroachievements_file(&self) -> PathBuf {
+        self.config_dir.join("retroachievements.toml")
     }
 
     pub fn config_file(&self) -> PathBuf {

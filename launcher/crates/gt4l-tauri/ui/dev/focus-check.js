@@ -19,7 +19,7 @@
 (function (root) {
   "use strict";
   var GT4 = root.GT4;
-  var TABS = ["graphics", "controls", "games", "saves", "replays", "about"];
+  var TABS = ["graphics", "controls", "games", "saves", "replays", "achievements", "about"];
   var lines = [];
   var failures = 0;
 
@@ -570,6 +570,72 @@
   // Two games (TASK-101): the version switch under Play (the name between two arrows, an endless loop; owner, 2026-10-23),
   // Play or Install, Settings > Games and the game on the Saves title. The mock starts with Gran Turismo 4 installed and
   // Spec II not (?games=gt4).
+  async function achievementsChecks() {
+    await setHash("#/settings/achievements");
+    await wait(100);
+    var page = document.querySelector(".ra-page");
+    check("Achievements has a signed-out account state", !!page && page.textContent.indexOf(T("ra.not_signed_in")) >= 0, "no signed-out state");
+    var signIn = page.querySelector("button.primary");
+    check("Achievements has a Sign in button", !!signIn, "no sign-in button");
+    signIn.click();
+    await wait(60);
+    var modal = document.querySelector(".modal");
+    check("Achievements opens the account login dialog", !!modal && !!modal.querySelector("input[type=password]"), "no password field");
+    modal.querySelector("input[type=text]").value = "TestDriver";
+    modal.querySelector("input[type=password]").value = "test-only-password";
+    modal.querySelector("button.primary").click();
+    await wait(150);
+    page = document.querySelector(".ra-page");
+    check("Achievements paints the signed-in account", page.textContent.indexOf("TestDriver") >= 0, "no account name");
+    check("Achievements paints the synthetic progress list", page.querySelectorAll(".ra-ach-row").length === 3, "missing sample rows");
+    var hcBtn = page.querySelector("button[aria-label=\"" + T("ra.opt_hardcore") + "\"]");
+    if (hcBtn) {
+      hcBtn.click();
+      await wait(100);
+      var saved = await GT4.backend.call("ra_status", {});
+      check("Achievements saves the Hardcore toggle", saved.hardcore === true, "option was not saved");
+    }
+
+    // Hold an old signed-in status response while a real UI logout completes.
+    var originalCall = GT4.backend.call;
+    var release = null;
+    var deferStatus = true;
+    var currentSaved = await originalCall("ra_status", {});
+    GT4.backend.call = function (command, args) {
+      if (command === "ra_status" && deferStatus) {
+        deferStatus = false;
+        return new Promise(function (resolve) { release = function () { resolve(currentSaved); }; });
+      }
+      return originalCall(command, args);
+    };
+    try {
+      page.querySelector("button.danger").click();
+      await wait(40);
+      document.querySelector(".modal button.danger").click();
+      await wait(100);
+      check("Achievements logout clears the account", !(await originalCall("ra_status", {})).signedIn, "mock still signed in");
+      if (release) release();
+      await wait(100);
+      check("a late status response cannot undo UI logout", document.querySelector(".ra-page").textContent.indexOf(T("ra.not_signed_in")) >= 0, "old account reappeared");
+    } finally {
+      GT4.backend.call = originalCall;
+    }
+
+    // Target isolation check: when Spec II is selected, achievement set is NOT shown and unsupported banner is present
+    await setHash("#/settings/games");
+    await GT4.games.select("spec2");
+    await wait(100);
+    await setHash("#/settings/achievements");
+    await wait(150);
+    page = document.querySelector(".ra-page");
+    check("Spec II shows unsupported banner", !!page && !!page.querySelector(".ra-unsupported-banner"), "no unsupported banner");
+    check("Spec II does not show GT4 achievements list", page.querySelectorAll(".ra-ach-row").length === 0, "achievements list shown on Spec II");
+
+    // Restore GT4 target
+    await GT4.games.select("gt4");
+    await wait(100);
+  }
+
   async function gamesChecks() {
     await setHash("#/home");
     await wait(500);
@@ -883,7 +949,7 @@
     var order = Array.prototype.map.call(document.querySelectorAll(".content .row"), function (row) {
       return row.getAttribute("data-row");
     });
-    check("General lists Language, Channel and Version in that order", order.join(",") === "language,update_channel,launcher_version", order.join(","));
+    check("General lists Language, Channel and Version in that order", order.join(",") === "language,update_channel,launcher_version" || order.join(",") === "language,update_channel,launcher_version,launcher_gpu", order.join(","));
     var channelSelect = document.querySelector("[data-setting=\"update_channel\"]");
     check("the Channel row shows Stable", !!channelSelect && channelSelect.textContent.indexOf(T("choice.update_channel.stable")) === 0,
       channelSelect ? channelSelect.textContent : "no row");
@@ -1158,6 +1224,7 @@
       await advancedSectionChecks();
       await controlsChecks();
       await gamesChecks();
+      await achievementsChecks();
       await setupChecks();
       await introChecks();
       await versionChecks();

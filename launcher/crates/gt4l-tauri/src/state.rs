@@ -75,6 +75,7 @@ pub struct AppState {
     pub replays_status: String,
     /// True when the controls file was written by a newer launcher: it is kept as it is (never overwritten).
     pub controls_locked: bool,
+    pub ra_revision: u64,
 }
 
 pub type Shared = Arc<Mutex<AppState>>;
@@ -263,6 +264,7 @@ impl AppState {
             saves_status: library_notice.unwrap_or_default(),
             replays_status: String::new(),
             controls_locked,
+            ra_revision: 0,
         };
         // TASK-118: the RC settings must not survive into a final build: an RC install can leave the release report or
         // the VU check on, and the final build does not ship their rows. Force the factory values and save.
