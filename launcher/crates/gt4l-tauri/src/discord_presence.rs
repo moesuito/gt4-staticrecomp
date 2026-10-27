@@ -38,12 +38,16 @@ pub trait PresenceTransport: Send {
 #[cfg(windows)]
 pub struct DiscordIpcTransport {
     handle: Option<isize>,
+    pipe_override: Option<String>,
 }
 
 #[cfg(windows)]
 impl DiscordIpcTransport {
     pub fn new() -> Self {
-        Self { handle: None }
+        Self { handle: None, pipe_override: None }
+    }
+    pub fn new_with_pipe(pipe: String) -> Self {
+        Self { handle: None, pipe_override: Some(pipe) }
     }
 }
 
@@ -55,6 +59,33 @@ impl PresenceTransport for DiscordIpcTransport {
         use windows::core::PCWSTR;
         self.close();
         let deadline = Instant::now() + timeout;
+        if let Some(pipe) = &self.pipe_override {
+            let wide: Vec<u16> = pipe.encode_utf16().chain(std::iter::once(0)).collect();
+            use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+            use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_NONE, OPEN_EXISTING};
+            use windows::core::PCWSTR;
+            while Instant::now() < deadline {
+                let handle = unsafe {
+                    CreateFileW(
+                        PCWSTR(wide.as_ptr()),
+                        (GENERIC_READ | GENERIC_WRITE).0,
+                        FILE_SHARE_NONE,
+                        None,
+                        OPEN_EXISTING,
+                        windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0x40000000), // FILE_FLAG_OVERLAPPED
+                        None,
+                    )
+                };
+                match handle {
+                    Ok(h) if h != INVALID_HANDLE_VALUE => {
+                        self.handle = Some(h.0 as isize);
+                        return Ok(());
+                    }
+                    _ => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            return Err("discord ipc connect timed out".to_string());
+        }
         for index in 0..10 {
             if Instant::now() >= deadline {
                 return Err("discord ipc connect timed out".to_string());
@@ -68,7 +99,7 @@ impl PresenceTransport for DiscordIpcTransport {
                     FILE_SHARE_NONE,
                     None,
                     OPEN_EXISTING,
-                    Default::default(),
+                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0x40000000),
                     None,
                 )
             };
@@ -703,6 +734,149 @@ mod tests {
         let frames = sent.lock().unwrap();
         assert!(frames.iter().any(|(_, p)| p.contains("\"details\":\"Gran Turismo 4 Spec II\"") && p.contains("\"start\":9999")));
         presence.on_game_end();
+    }
+
+    #[cfg(windows)]
+    mod windows_pipe {
+        use super::*;
+        use std::io::Write as _;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+
+        fn spawn_server(pipe: String, handler: impl Fn(HANDLE) + Send + 'static) -> std::thread::JoinHandle<()> {
+            std::thread::spawn(move || {
+                use windows::Win32::System::Pipes::CreateNamedPipeW;
+                use windows::core::PCWSTR;
+                let wide: Vec<u16> = pipe.encode_utf16().chain(std::iter::once(0)).collect();
+                let handle = unsafe {
+                    CreateNamedPipeW(
+                        PCWSTR(wide.as_ptr()),
+                        windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX,
+                        windows::Win32::System::Pipes::PIPE_TYPE_BYTE
+                            | windows::Win32::System::Pipes::PIPE_READMODE_BYTE
+                            | windows::Win32::System::Pipes::PIPE_WAIT,
+                        1,
+                        65536,
+                        65536,
+                        0,
+                        None,
+                    )
+                };
+                unsafe {
+                    let _ = windows::Win32::System::Pipes::ConnectNamedPipe(handle, None);
+                }
+                handler(handle);
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                }
+            })
+        }
+
+        fn read_exact_server(handle: HANDLE, buf: &mut [u8]) {
+            let mut done = 0usize;
+            while done < buf.len() {
+                let mut read: u32 = 0;
+                let ok = unsafe {
+                    ReadFile(handle, Some(&mut buf[done..]), Some(&mut read), None)
+                };
+                if !ok.is_ok() || read == 0 {
+                    break;
+                }
+                done += read as usize;
+            }
+        }
+
+        fn write_all_server(handle: HANDLE, data: &[u8]) {
+            let mut done = 0usize;
+            while done < data.len() {
+                let mut written: u32 = 0;
+                let ok = unsafe {
+                    WriteFile(handle, Some(&data[done..]), Some(&mut written), None)
+                };
+                if !ok.is_ok() || written == 0 {
+                    break;
+                }
+                done += written as usize;
+            }
+        }
+
+        #[test]
+        fn windows_pipe_roundtrip() {
+            let pipe = format!("\\\\.\\pipe\\gt4recomp-discord-test-{}-1", std::process::id());
+            let server_pipe = pipe.clone();
+            let server = spawn_server(server_pipe, move |handle| {
+                // read handshake (8 + payload)
+                let mut hdr = [0u8; 8];
+                read_exact_server(handle, &mut hdr);
+                let len = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+                let mut payload = vec![0u8; len];
+                if len > 0 {
+                    read_exact_server(handle, &mut payload);
+                }
+                // send ack
+                let ack = b"{\"evt\":\"READY\"}";
+                let mut frame = Vec::new();
+                frame.extend_from_slice(&1u32.to_le_bytes());
+                frame.extend_from_slice(&(ack.len() as u32).to_le_bytes());
+                frame.extend_from_slice(ack);
+                write_all_server(handle, &frame);
+                // read activity
+                let mut hdr2 = [0u8; 8];
+                read_exact_server(handle, &mut hdr2);
+                let len2 = u32::from_le_bytes([hdr2[4], hdr2[5], hdr2[6], hdr2[7]]) as usize;
+                let mut payload2 = vec![0u8; len2];
+                if len2 > 0 {
+                    read_exact_server(handle, &mut payload2);
+                }
+                let text = String::from_utf8_lossy(&payload2);
+                assert!(text.contains("SET_ACTIVITY"));
+                // send ack
+                let ack2 = b"{\"evt\":\"OK\"}";
+                let mut frame2 = Vec::new();
+                frame2.extend_from_slice(&1u32.to_le_bytes());
+                frame2.extend_from_slice(&(ack2.len() as u32).to_le_bytes());
+                frame2.extend_from_slice(ack2);
+                write_all_server(handle, &frame2);
+            });
+            thread::sleep(Duration::from_millis(100));
+            let mut transport = DiscordIpcTransport::new_with_pipe(pipe);
+            assert!(transport.connect(Duration::from_secs(2)).is_ok());
+            assert!(transport.write_frame(0, &handshake_payload(), Duration::from_secs(2)).is_ok());
+            let (op, text) = transport.read_frame(Duration::from_secs(2)).unwrap();
+            assert_eq!(op, 1);
+            assert!(text.contains("READY"));
+            assert!(transport.write_frame(1, &build_activity_payload("Gran Turismo 4", 1, 2, "n"), Duration::from_secs(2)).is_ok());
+            let (op2, text2) = transport.read_frame(Duration::from_secs(2)).unwrap();
+            assert_eq!(op2, 1);
+            assert!(text2.contains("OK"));
+            transport.close();
+            let _ = server.join();
+        }
+
+        #[test]
+        fn windows_pipe_read_timeout() {
+            let pipe = format!("\\\\.\\pipe\\gt4recomp-discord-test-{}-2", std::process::id());
+            let server_pipe = pipe.clone();
+            let server = spawn_server(server_pipe, move |handle| {
+                // accept but never reply
+                let mut buf = [0u8; 8];
+                let mut read: u32 = 0;
+                unsafe {
+                    let _ = ReadFile(handle, Some(&mut buf), Some(&mut read), None);
+                }
+                thread::sleep(Duration::from_secs(5));
+            });
+            thread::sleep(Duration::from_millis(100));
+            let mut transport = DiscordIpcTransport::new_with_pipe(pipe);
+            assert!(transport.connect(Duration::from_secs(2)).is_ok());
+            let start = Instant::now();
+            let res = transport.read_frame(Duration::from_millis(200));
+            let elapsed = start.elapsed();
+            assert!(res.is_err());
+            assert!(elapsed < Duration::from_secs(2));
+            transport.close();
+            let _ = server.join();
+        }
     }
 
     #[test]

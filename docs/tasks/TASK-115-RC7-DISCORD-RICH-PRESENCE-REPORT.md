@@ -39,6 +39,7 @@ Commands and counts (serial, worktree root):
 - `cargo test -p gt4l-tauri` (flow_audit): 10 passed, 1 ignored (real discs), 0 failed.
 - `cargo test -p gt4l-core`: 215 + 16 + 3 + 5 + 11 + 21 + 5 + 5 + 20 + 21 + 9 + 7 + 0 = 338? (all suites passed, 0 failed).
 - UI focus-check en-US: 215/215; pt-BR: 222/222; nav-test: 209/209.
+- Second review: `cargo test -p gt4l-tauri discord_presence` = 8 passed (6 manager + 2 Windows pipe), 0 failed. Windows pipe tests use a synthetic named pipe, not discord-ipc-0..9.
 
 Test layers:
 - Unit: payload generation, transport trait fake.

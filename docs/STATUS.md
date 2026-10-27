@@ -2,7 +2,11 @@
 
 ## TASK-115 rc7 Discord Rich Presence review corrections (2026-10-27)
 
-Reviewed Discord IPC lifecycle corrected on branch `task/133-rc7-ra-controls`: bounded overlapped I/O, handshake/frame ack validation, heartbeat, generation fencing, non-blocking stop, and deterministic tests (6 Discord + flow_audit + UI checks). Live Discord still pending owner authorization. Game Bar/GPU recognition remains future scope.
+Superseded by the second review below; the earlier "corrected" wording was premature. The feature remains unreviewed by the owner and the Discord client is not yet validated.
+
+## TASK-115 rc7 Discord Rich Presence second review (2026-10-27)
+
+Second review corrections on branch `task/133-rc7-ra-controls`: `FILE_FLAG_OVERLAPPED`, safe completion waiting, protocol ack/error handling, generation fencing, non-blocking stop, and real Windows named-pipe tests (`windows_pipe_roundtrip`, `windows_pipe_read_timeout`) plus 6 manager tests, flow_audit and UI checks. Live Discord still pending owner authorization. Game Bar/GPU recognition remains future scope.
 
 ## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)
 
