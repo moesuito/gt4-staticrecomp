@@ -31,7 +31,8 @@ pub fn zip_name(time: &LocalTime) -> String {
 pub fn is_forbidden(path: &str) -> bool {
     let lower = path.to_ascii_lowercase().replace('\\', "/");
     let name = lower.rsplit('/').next().unwrap_or("");
-    if name == "retroachievements.toml" || name.starts_with("retroachievements.toml.") {
+    let trimmed = name.strip_prefix('.').unwrap_or(name);
+    if trimmed == "retroachievements.toml" || trimmed.starts_with("retroachievements.toml.") {
         return true;
     }
     const EXTENSIONS: &[&str] = &[
@@ -274,6 +275,10 @@ mod tests {
             "Replays/BASCUS-97328R0001/data",
             "backups/card.mcd",
             "sessions/session-1/gt4-gs.ps2",
+            "retroachievements.toml",
+            ".retroachievements.toml.tmp-1234-1-1",
+            ".RETROACHIEVEMENTS.TOML.TMP-9999-5",
+            "config/.retroachievements.toml.tmp-555-1",
         ] {
             assert!(is_forbidden(path), "{path} must be refused");
         }

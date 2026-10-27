@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use gt4l_core::games::{GT4, SPEC2};
 use gt4l_core::language::Language;
@@ -838,46 +839,86 @@ fn interrupted_and_failed_atomic_writes_are_safe() {
     cfg.username = "WriteTester".to_string();
     cfg.token = "tok_write_test".to_string();
 
-    // 1. Pre-existing unrelated files must NOT be touched or deleted on failure
+    // 1. Pre-existing unrelated files and sentinel colliding candidate file
     let unrelated_tmp = root.join("unrelated_prior.tmp");
     let static_toml_tmp = root.join("retroachievements.toml.tmp");
     fs::write(&unrelated_tmp, b"unrelated temp data").unwrap();
     fs::write(&static_toml_tmp, b"pre-existing static tmp data").unwrap();
 
-    // 2. Failure before write (e.g. permission denied) cleans up and preserves unrelated files
-    let ops_before_fail = MockAtomicFileOps { fail_before_write: true, ..Default::default() };
-    let res_before = cfg.save_with_custom(&target_file, &protector, &ops_before_fail);
-    assert!(res_before.is_err(), "fail_before_write must return Err");
-    assert!(!target_file.exists(), "Target file must not be created");
-    assert!(unrelated_tmp.exists(), "Pre-existing unrelated.tmp must NOT be deleted");
-    assert!(static_toml_tmp.exists(), "Pre-existing static tmp must NOT be deleted");
+    // Deterministic pre-existing sentinel candidate matching the upcoming counter
+    let next_counter = gt4l_core::retroachievements::next_temp_counter_for_test();
+    let sentinel_candidate = root.join(format!(".retroachievements.toml.tmp-{}-{}", std::process::id(), next_counter));
+    let sentinel_content = b"SENTINEL PRE-EXISTING DATA MUST NEVER BE OVERWRITTEN OR DELETED";
+    fs::write(&sentinel_candidate, sentinel_content).unwrap();
 
-    // 3. Failure during write (simulating partial write / disk full) immediately cleans up unique temp file
-    let ops_partial = MockAtomicFileOps { fail_during_write: Some(15), ..Default::default() };
-    let res_partial = cfg.save_with_custom(&target_file, &protector, &ops_partial);
-    assert!(res_partial.is_err(), "Partial write must return Err");
-    assert!(!target_file.exists(), "Target file must not be written on partial write failure");
-    // Verify no orphaned temporary files created by this operation remain in root
-    let temp_files_after_partial: Vec<_> = fs::read_dir(&root).unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-"))
-        .collect();
-    assert_eq!(temp_files_after_partial.len(), 0, "Partial temporary files must be cleaned up by RAII guard");
+    // 2. Deterministic OS collision retry with pre-existing candidate file
+    // StdAtomicFileOps uses OpenOptions::create_new(true), which fails on the pre-existing sentinel.
+    // The retry loop catches AlreadyExists, increments the counter, and succeeds on the next candidate.
+    let res_coll = cfg.save_with(&target_file, &protector);
+    assert!(res_coll.is_ok(), "save_with must succeed after retrying on collision: {:?}", res_coll.err());
+    assert!(target_file.exists(), "Target file must be created after retry");
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content, "Pre-existing colliding file must remain byte-for-byte intact");
+    assert!(unrelated_tmp.exists(), "Unrelated file must remain untouched");
+    assert!(static_toml_tmp.exists(), "Static tmp file must remain untouched");
+    let _ = fs::remove_file(&target_file);
+
+    // 3. Multi-attempt collision handling via MockAtomicFileOps (3 collisions then success)
+    let ops_multi_coll = MockAtomicFileOps::with_collisions(3);
+    let res_multi = cfg.save_with_custom(&target_file, &protector, &ops_multi_coll);
+    assert!(res_multi.is_ok(), "save_with_custom must succeed after 3 retries");
+    assert_eq!(ops_multi_coll.collision_retries_reached.load(Ordering::SeqCst), 3);
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content);
+    let _ = fs::remove_file(&target_file);
+
+    // 4. Exhausted collision retry limit (10 consecutive collisions abort cleanly)
+    let ops_exhausted = MockAtomicFileOps::with_collisions(10);
+    let res_exh = cfg.save_with_custom(&target_file, &protector, &ops_exhausted);
+    assert!(res_exh.is_err(), "Exhausted collision retries must return Err");
+    assert!(res_exh.unwrap_err().contains("after 10 attempts"));
+    assert!(!target_file.exists(), "Target file must not be written when collisions exhaust retries");
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content);
+
+    // 5. Pre-open failure (e.g. permission denied) with pre-existing candidate:
+    // Guard is not armed, so pre-existing sentinel file is NOT deleted.
+    let ops_open_fail = MockAtomicFileOps { fail_open: true, ..Default::default() };
+    let res_open = cfg.save_with_custom(&target_file, &protector, &ops_open_fail);
+    assert!(res_open.is_err(), "fail_open must return Err");
+    assert!(!target_file.exists(), "Target file must not be created");
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content, "Pre-existing sentinel MUST NOT be removed when open fails");
     assert!(unrelated_tmp.exists());
     assert!(static_toml_tmp.exists());
 
-    // 4. Failure during flush
+    // 6. Failure during write (simulating partial write / disk full):
+    // Verifies partial write seam is reached, guard cleans up only the newly created partial file,
+    // and sentinel remains intact.
+    let ops_partial = MockAtomicFileOps { fail_during_write: Some(15), ..Default::default() };
+    let res_partial = cfg.save_with_custom(&target_file, &protector, &ops_partial);
+    assert!(res_partial.is_err(), "Partial write must return Err");
+    assert!(ops_partial.partial_write_reached.load(Ordering::SeqCst), "Filesystem seam must prove partial write was reached");
+    assert!(!target_file.exists(), "Target file must not be written on partial write failure");
+    // Verify no temporary files other than sentinel_candidate remain
+    let temp_files_after_partial: Vec<_> = fs::read_dir(&root).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-") && e.path() != sentinel_candidate)
+        .collect();
+    assert_eq!(temp_files_after_partial.len(), 0, "Partial temporary files must be cleaned up by RAII guard");
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content);
+    assert!(unrelated_tmp.exists());
+    assert!(static_toml_tmp.exists());
+
+    // 7. Failure during flush
     let ops_flush = MockAtomicFileOps { fail_flush: true, ..Default::default() };
     let res_flush = cfg.save_with_custom(&target_file, &protector, &ops_flush);
     assert!(res_flush.is_err(), "Flush failure must return Err");
     assert!(!target_file.exists());
     let temp_files_after_flush: Vec<_> = fs::read_dir(&root).unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-") && e.path() != sentinel_candidate)
         .collect();
     assert_eq!(temp_files_after_flush.len(), 0);
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content);
 
-    // 5. Failure during rename / replace (e.g. target path is a directory or destination locked)
+    // 8. Failure during rename / replace (e.g. target path is a directory or destination locked)
     let bad_path = root.join("is_a_directory");
     fs::create_dir_all(&bad_path).unwrap();
     let res_replace = cfg.save_with(&bad_path, &protector);
@@ -888,14 +929,22 @@ fn interrupted_and_failed_atomic_writes_are_safe() {
         .collect();
     assert_eq!(temp_files_after_replace.len(), 0, "Temporary file must be removed on replace failure");
 
-    // 6. Normal successful atomic save
+    // 9. Failure during rename via mock seam
+    let ops_rename = MockAtomicFileOps { fail_replace: true, ..Default::default() };
+    let res_rename = cfg.save_with_custom(&target_file, &protector, &ops_rename);
+    assert!(res_rename.is_err(), "fail_replace must return Err");
+    assert!(!target_file.exists());
+    assert_eq!(fs::read(&sentinel_candidate).unwrap(), sentinel_content);
+
+    // 10. Normal successful atomic save
     assert!(cfg.save_with(&target_file, &protector).is_ok());
     assert!(target_file.exists(), "Target file must exist after successful save");
 
-    // 7. Process interruption simulation (forced crash / power outage / SIGKILL):
-    // Simulate an externally terminated process that left an orphaned temp file before rename occurred
+    // 11. Process interruption simulation (synthetic orphan from abrupt external termination / SIGKILL):
+    // Note: In an un-mocked process kill or power outage, Rust Drop guards do not execute.
+    // This synthetic orphan test verifies that if an orphan temp file was left on disk before rename,
+    // it contains NO plaintext secrets, and RaConfig::load safely ignores it.
     let orphaned_crash_tmp = root.join(".retroachievements.toml.tmp-99999-1");
-    // In write_disk_atomically, disk_cfg has token cleared and token_protected set
     let mut interrupted_disk_cfg = cfg.clone();
     interrupted_disk_cfg.token = String::new();
     interrupted_disk_cfg.token_protected = Some("fake:v1:01020304".to_string());
@@ -920,7 +969,9 @@ fn interrupted_and_failed_atomic_writes_are_safe() {
     assert_eq!(loaded_retry.score, 999);
     assert_eq!(loaded_retry.token, "tok_write_test");
 
-    // 8. Instance concurrency: two configs saving to the same folder generate distinct temporary paths
+    // 12. Instance concurrency boundaries:
+    // Unique temporary files ensure two instances saving simultaneously do not collide on temp files.
+    // Note that filesystem rename semantics are last-write-wins; application-level locking is not provided.
     let cfg1 = cfg.clone();
     let cfg2 = cfg.clone();
     let target1 = root.join("inst1.toml");

@@ -15,7 +15,8 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 
 use std::fs;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use std::path::Path;
 
@@ -150,14 +151,33 @@ impl Default for RaConfig {
 
 static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Internal helper for tests to inspect the upcoming temporary file counter.
+#[doc(hidden)]
+pub fn next_temp_counter_for_test() -> u64 {
+    TMP_FILE_COUNTER.load(Ordering::Relaxed)
+}
+
 struct TempFileGuard<'a> {
     path: &'a Path,
-    persisted: bool,
+    disarmed: bool,
+}
+
+impl<'a> TempFileGuard<'a> {
+    fn arm(path: &'a Path) -> Self {
+        Self {
+            path,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
 }
 
 impl<'a> Drop for TempFileGuard<'a> {
     fn drop(&mut self) {
-        if !self.persisted {
+        if !self.disarmed {
             let _ = fs::remove_file(self.path);
         }
     }
@@ -165,7 +185,11 @@ impl<'a> Drop for TempFileGuard<'a> {
 
 /// Injectable filesystem seam for atomic file writes and replacements.
 pub trait AtomicFileOps: Send + Sync {
-    fn write_temp(&self, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error>;
+    /// Opens/creates a temporary file exclusively (fails if file already exists).
+    fn open_exclusive(&self, temp_path: &Path) -> Result<fs::File, std::io::Error>;
+    /// Writes content and flushes/syncs the temporary file. Closes the file handle before returning.
+    fn write_and_flush(&self, file: fs::File, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error>;
+    /// Replaces the target file with the temporary file atomically.
     fn rename_replace(&self, temp_path: &Path, target: &Path) -> Result<(), std::io::Error>;
 }
 
@@ -174,11 +198,18 @@ pub trait AtomicFileOps: Send + Sync {
 pub struct StdAtomicFileOps;
 
 impl AtomicFileOps for StdAtomicFileOps {
-    fn write_temp(&self, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+    fn open_exclusive(&self, temp_path: &Path) -> Result<fs::File, std::io::Error> {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temp_path)
+    }
+
+    fn write_and_flush(&self, mut file: fs::File, _temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
         use std::io::Write;
-        let mut file = fs::File::create(temp_path)?;
         file.write_all(content)?;
         file.sync_all()?;
+        drop(file);
         Ok(())
     }
 
@@ -190,37 +221,73 @@ impl AtomicFileOps for StdAtomicFileOps {
 /// Mock implementation of [`AtomicFileOps`] for deterministic failure injection in tests.
 #[derive(Clone, Debug, Default)]
 pub struct MockAtomicFileOps {
-    pub fail_before_write: bool,
+    pub fail_open: bool,
+    pub collision_remaining: Arc<AtomicUsize>,
     pub fail_during_write: Option<usize>,
     pub fail_flush: bool,
     pub fail_replace: bool,
+    pub partial_write_reached: Arc<AtomicBool>,
+    pub collision_retries_reached: Arc<AtomicUsize>,
+}
+
+impl MockAtomicFileOps {
+    pub fn with_collisions(collisions: usize) -> Self {
+        Self {
+            collision_remaining: Arc::new(AtomicUsize::new(collisions)),
+            ..Default::default()
+        }
+    }
 }
 
 impl AtomicFileOps for MockAtomicFileOps {
-    fn write_temp(&self, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
-        if self.fail_before_write {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected fail_before_write"));
+    fn open_exclusive(&self, temp_path: &Path) -> Result<fs::File, std::io::Error> {
+        if self.collision_remaining.load(Ordering::SeqCst) > 0 {
+            self.collision_remaining.fetch_sub(1, Ordering::SeqCst);
+            self.collision_retries_reached.fetch_add(1, Ordering::SeqCst);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "simulated name collision in open_exclusive",
+            ));
         }
+        if self.fail_open {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected fail_open",
+            ));
+        }
+        StdAtomicFileOps.open_exclusive(temp_path)
+    }
+
+    fn write_and_flush(&self, mut file: fs::File, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+        use std::io::Write;
         if let Some(partial_len) = self.fail_during_write {
-            use std::io::Write;
-            let mut file = fs::File::create(temp_path)?;
+            self.partial_write_reached.store(true, Ordering::SeqCst);
             let slice = &content[..partial_len.min(content.len())];
             file.write_all(slice)?;
             file.flush()?;
-            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "injected partial write failure"));
+            drop(file);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "injected partial write failure",
+            ));
         }
         if self.fail_flush {
-            use std::io::Write;
-            let mut file = fs::File::create(temp_path)?;
             file.write_all(content)?;
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "injected flush failure"));
+            drop(file);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "injected flush failure",
+            ));
         }
-        StdAtomicFileOps.write_temp(temp_path, content)
+        StdAtomicFileOps.write_and_flush(file, temp_path, content)
     }
 
     fn rename_replace(&self, temp_path: &Path, target: &Path) -> Result<(), std::io::Error> {
         if self.fail_replace {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected fail_replace"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected fail_replace",
+            ));
         }
         StdAtomicFileOps.rename_replace(temp_path, target)
     }
@@ -317,35 +384,69 @@ impl RaConfig {
         self.write_disk_atomically_with(path, &StdAtomicFileOps)
     }
 
-    /// Writes `retroachievements.toml` atomically with unique temporary file naming, RAII cleanup guard,
-    /// and injectable filesystem seam.
+    /// Writes `retroachievements.toml` atomically with exclusive temporary file creation,
+    /// RAII cleanup guard armed strictly on owned temporary files, and injectable filesystem seam.
+    ///
+    /// ## Concurrency Notice
+    /// Unique temporary files prevent collisions and ensure that one process never overwrites or
+    /// deletes another process's in-progress write. However, separate running launcher instances
+    /// mutating the same configuration file are serialized at the file-system replacement boundary
+    /// under last-write-wins semantics.
     pub fn write_disk_atomically_with(&self, path: &Path, ops: &dyn AtomicFileOps) -> Result<(), String> {
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|e| format!("cannot create config folder: {e}"))?;
 
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("retroachievements.toml");
-        let tmp_name = format!(
-            ".{}.tmp-{}-{}",
-            file_name,
-            std::process::id(),
-            TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let tmp = parent.join(tmp_name);
-
         let body = toml::to_string_pretty(self).map_err(|e| format!("cannot format retroachievements.toml: {e}"))?;
 
-        let mut guard = TempFileGuard {
-            path: &tmp,
-            persisted: false,
+        const MAX_TEMP_ATTEMPTS: usize = 10;
+        let mut last_collision_err = None;
+
+        let (file, tmp) = {
+            let mut chosen = None;
+            for _ in 0..MAX_TEMP_ATTEMPTS {
+                let tmp_name = format!(
+                    ".{}.tmp-{}-{}",
+                    file_name,
+                    std::process::id(),
+                    TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let cand = parent.join(tmp_name);
+                match ops.open_exclusive(&cand) {
+                    Ok(f) => {
+                        chosen = Some((f, cand));
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        last_collision_err = Some(e);
+                        continue;
+                    }
+                    Err(e) => return Err(format!("cannot create temporary file {}: {e}", cand.display())),
+                }
+            }
+            match chosen {
+                Some(pair) => pair,
+                None => {
+                    return Err(format!(
+                        "cannot allocate unique temporary file in {} after {MAX_TEMP_ATTEMPTS} attempts: {}",
+                        parent.display(),
+                        last_collision_err.map(|e| e.to_string()).unwrap_or_else(|| "collision".to_string())
+                    ));
+                }
+            }
         };
 
-        ops.write_temp(&tmp, body.as_bytes())
+        // Guard is armed ONLY AFTER exclusive creation of `tmp` succeeds.
+        // It ensures only the file created by this attempt is cleaned up if writing fails.
+        let mut guard = TempFileGuard::arm(&tmp);
+
+        ops.write_and_flush(file, &tmp, body.as_bytes())
             .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
 
         ops.rename_replace(&tmp, path)
             .map_err(|e| format!("cannot save {}: {e}", path.display()))?;
 
-        guard.persisted = true;
+        guard.disarm();
         Ok(())
     }
 

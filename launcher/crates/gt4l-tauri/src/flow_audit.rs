@@ -1451,12 +1451,38 @@ hardcore = false
         assert_eq!(fs::read_to_string(&ra_path).unwrap(), legacy_toml, "Legacy config must be preserved intact after option toggle failure");
 
         // 8C. Command boundary with injected atomic partial write failure
-        let partial_write_ops = gt4l_core::retroachievements::MockAtomicFileOps { fail_during_write: Some(10), ..Default::default() };
-        let write_fail_res = commands::ra_set_options_with_custom(true, true, false, &shared, &fail_protector, &partial_write_ops);
+        // Uses a working protector so secret protection succeeds and the partial-write filesystem seam is reached.
+        let working_protector = gt4l_core::secret::FakeProtector::default();
+        let partial_write_ops = gt4l_core::retroachievements::MockAtomicFileOps {
+            fail_during_write: Some(10),
+            ..Default::default()
+        };
+        let write_fail_res = commands::ra_set_options_with_custom(true, true, false, &shared, &working_protector, &partial_write_ops);
         assert!(write_fail_res.is_err(), "ra_set_options_with_custom must return Err on write failure");
-        assert_eq!(fs::read_to_string(&ra_path).unwrap(), legacy_toml, "Legacy config must be preserved intact after partial write failure");
+        let write_err = write_fail_res.unwrap_err();
+        assert!(
+            write_err.contains("cannot write") || write_err.contains("injected partial write failure"),
+            "Error must report write failure, not protection failure: {write_err}"
+        );
+        assert!(
+            partial_write_ops.partial_write_reached.load(Ordering::SeqCst),
+            "Filesystem seam must prove partial write was actually reached"
+        );
+        assert_eq!(
+            fs::read_to_string(&ra_path).unwrap(),
+            legacy_toml,
+            "Legacy config must be preserved intact byte-for-byte after partial write failure"
+        );
+        // Verify owned temp cleanup occurred and no temporary files remain in folder
+        let temp_files_in_folder: Vec<_> = fs::read_dir(ra_path.parent().unwrap()).unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-"))
+            .collect();
+        assert_eq!(temp_files_in_folder.len(), 0, "Owned temporary files must be cleaned up on write failure");
 
-        // 8D. Competing / stale network reply: delayed response does not overwrite state after revision bump
+        // 8D. Competing launcher action at command boundary while network reply is pending:
+        // Instead of manual revision increments, an actual competing launcher command (ra_logout_with)
+        // is executed while the server gate holds an in-flight login request.
         let (arrived_tx, arrived_rx) = channel();
         let (release_tx, release_rx) = channel();
         *gate.lock().unwrap() = Some(SyncGate {
@@ -1467,30 +1493,39 @@ hardcore = false
 
         let shared_stale = shared.clone();
         let url_stale = base_url.clone();
-        let fail_protector_clone = fail_protector.clone();
+        let working_protector_clone = working_protector.clone();
         let stale_login_task = thread::spawn(move || {
-            commands::ra_login_at_with(&url_stale, "StaleCandidate", "pass_wait", &shared_stale, &fail_protector_clone)
+            commands::ra_login_at_with(&url_stale, "StaleCandidate", "pass_wait", &shared_stale, &working_protector_clone)
         });
 
         arrived_rx.recv_timeout(Duration::from_secs(3)).expect("StaleCandidate request arrived at server");
 
-        // Bump revision in foreground while request is in flight
-        {
-            let mut state = lock(&shared);
-            state.ra_revision = state.ra_revision.wrapping_add(1);
-        }
+        // Execute a REAL competing launcher command at the boundary while StaleCandidate is in flight:
+        let logout_competing_res = commands::ra_logout_with(&shared, &working_protector);
+        assert!(logout_competing_res.is_ok(), "Competing ra_logout_with must succeed");
+        let logout_mid_view = logout_competing_res.unwrap();
+        assert!(!logout_mid_view.signed_in);
+        assert_eq!(logout_mid_view.username, "");
 
+        // Verify disk is immediately updated to logged out state by the competing command
+        let disk_mid = fs::read_to_string(&ra_path).unwrap();
+        assert!(!disk_mid.contains("PreservedUser"));
+        assert!(!disk_mid.contains("tok_do_not_erase_me"));
+
+        // Release delayed server response for StaleCandidate
         release_tx.send(()).expect("release gate");
         let stale_res = stale_login_task.join().unwrap().expect("stale login completes without panic");
-        assert_ne!(stale_res.username, "StaleCandidate", "Stale reply must not apply StaleCandidate");
 
-        // Verify disk still has legacy toml and StaleCandidate was NOT written
-        let disk_mid = fs::read_to_string(&ra_path).unwrap();
-        assert_eq!(disk_mid, legacy_toml, "Stale reply must not overwrite legacy config");
-        assert!(!disk_mid.contains("StaleCandidate"));
+        // The late response must NOT apply StaleCandidate and must NOT resurrect the old legacy token
+        assert_ne!(stale_res.username, "StaleCandidate", "Late reply must NOT apply StaleCandidate");
+        assert!(!stale_res.signed_in, "Late reply must NOT report signed_in after competing logout");
+
+        // Verify disk still preserves the result of the competing command: no StaleCandidate, no legacy token
+        let disk_after_stale = fs::read_to_string(&ra_path).unwrap();
+        assert!(!disk_after_stale.contains("StaleCandidate"), "Late reply must NOT write to disk");
+        assert!(!disk_after_stale.contains("tok_do_not_erase_me"), "Late reply must NOT resurrect legacy credentials");
 
         // 8E. Replacement login via commands::ra_login_at_with succeeds and cleanly replaces legacy credentials
-        let working_protector = gt4l_core::secret::FakeProtector::default();
         let login_res = commands::ra_login_at_with(&base_url, "FreshUser", "goodpass", &shared, &working_protector);
         assert!(login_res.is_ok(), "Replacement login must succeed");
         let login_view = login_res.unwrap();
