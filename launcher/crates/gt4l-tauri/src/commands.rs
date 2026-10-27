@@ -1593,11 +1593,14 @@ pub async fn ra_status(shared: State<'_, Shared>) -> Result<RaStatusView, String
 }
 
 pub fn ra_status_of(shared: &Shared) -> Result<RaStatusView, String> {
+    ra_status_at(&ra_base_url(), shared)
+}
+
+pub fn ra_status_at(base_url: &str, shared: &Shared) -> Result<RaStatusView, String> {
     ra_status_with(shared, |cfg, game_id| {
-        let base_url = ra_base_url();
-        let session = gt4l_core::retroachievements::login_with_token(&base_url, &cfg.username, &cfg.token).ok();
+        let session = gt4l_core::retroachievements::login_with_token(base_url, &cfg.username, &cfg.token).ok();
         let game = if game_id == games::GT4.id {
-            gt4l_core::retroachievements::fetch_game_overview(&base_url, &cfg.username, &cfg.token).ok()
+            gt4l_core::retroachievements::fetch_game_overview(base_url, &cfg.username, &cfg.token).ok()
         } else {
             None
         };
@@ -1624,7 +1627,7 @@ pub(crate) fn ra_status_with(
 
     let (session, game) = refresh(&snapshot, selected.id);
 
-    let mut state = lock(shared);
+    let state = lock(shared);
     let path = state.user_dirs.retroachievements_file();
     let mut current = gt4l_core::retroachievements::RaConfig::load(&path);
 
@@ -1652,17 +1655,20 @@ pub async fn ra_login(username: String, password: String, shared: State<'_, Shar
 }
 
 pub fn ra_login_of(username: &str, password: &str, shared: &Shared) -> Result<RaStatusView, String> {
+    ra_login_at(&ra_base_url(), username, password, shared)
+}
+
+pub fn ra_login_at(base_url: &str, username: &str, password: &str, shared: &Shared) -> Result<RaStatusView, String> {
     let (revision, selected) = {
         let mut state = lock(shared);
         state.ra_revision = state.ra_revision.wrapping_add(1);
         (state.ra_revision, state.selected)
     };
 
-    let base_url = ra_base_url();
-    let session = gt4l_core::retroachievements::login_with_password(&base_url, username, password)?;
+    let session = gt4l_core::retroachievements::login_with_password(base_url, username, password)?;
 
     let (ra_path, dirs) = {
-        let mut state = lock(shared);
+        let state = lock(shared);
         let ra_path = state.user_dirs.retroachievements_file();
         let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
         if state.ra_revision != revision {

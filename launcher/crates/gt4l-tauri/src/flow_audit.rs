@@ -491,7 +491,7 @@ fn real_flow_end_to_end() {
             Ok(plan) => {
                 note(format!("play program: {}", plan.program.display()));
                 note(format!("play arguments: {:?}", plan.arguments));
-                note(format!("play environment: {:?}", plan.environment));
+                note(format!("play environment: {:?}", plan.safe_environment()));
                 note(format!("play removes inherited: {:?}", plan.removed_inherited));
             }
             Err(message) => note(format!("play plan refused: {message}")),
@@ -1020,5 +1020,240 @@ fn retroachievements_stale_response_and_target_switch_races() {
     assert_eq!(status_after_logout.username, "");
     assert_eq!(status_after_logout.score, 0);
 
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn retroachievements_network_race_tests_with_real_tcp_server() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://127.0.0.1:{}", addr.port());
+    listener.set_nonblocking(true).unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = stop.clone();
+
+    let server_thread = thread::spawn(move || {
+        while !stop_srv.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    thread::spawn(move || {
+                        let mut buf = [0u8; 4096];
+                        let mut read_bytes = 0;
+                        while read_bytes < buf.len() {
+                            match stream.read(&mut buf[read_bytes..]) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    read_bytes += n;
+                                    let text = String::from_utf8_lossy(&buf[..read_bytes]);
+                                    if let Some(pos) = text.find("\r\n\r\n") {
+                                        let cl = text.lines()
+                                            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                                            .and_then(|l| l.split(':').nth(1))
+                                            .and_then(|s| s.trim().parse::<usize>().ok())
+                                            .unwrap_or(0);
+                                        if read_bytes >= pos + 4 + cl {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        let req = String::from_utf8_lossy(&buf[..read_bytes]);
+
+                        if req.contains("mode_delay_login") || req.contains("mode_delay_refresh") {
+                            thread::sleep(std::time::Duration::from_millis(80));
+                        }
+
+                        if req.contains("mode_abort") || req.starts_with("POST /abort") {
+                            drop(stream);
+                            return;
+                        }
+
+                        if req.contains("mode_fail") {
+                            let body = r#"{"Success":false,"Error":"Invalid user or password."}"#;
+                            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                            let _ = stream.write_all(resp.as_bytes());
+                            let _ = stream.flush();
+                            let _ = stream.shutdown(std::net::Shutdown::Write);
+                            thread::sleep(std::time::Duration::from_millis(15));
+                            return;
+                        }
+
+                        if req.contains("r=gameoverview") {
+                            let body = r#"{"Success":true,"GameID":20580,"GameTitle":"Gran Turismo 4","NumAchievements":2,"NumAwarded":1,"Score":25,"MaxScore":50,"Achievements":{"101":{"ID":101,"Title":"First Win","Description":"Win race","Points":25,"TrueRatio":25,"Author":"GT","DateCreated":"2020","DateModified":"2020","BadgeName":"123","DisplayOrder":1,"MemAddr":""}}}"#;
+                            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                            let _ = stream.write_all(resp.as_bytes());
+                            let _ = stream.flush();
+                            let _ = stream.shutdown(std::net::Shutdown::Write);
+                            thread::sleep(std::time::Duration::from_millis(15));
+                            return;
+                        }
+
+                        let user = if req.contains("UserOld") {
+                            "UserOld"
+                        } else if req.contains("UserNew") {
+                            "UserNew"
+                        } else if req.contains("UserA") {
+                            "UserA"
+                        } else {
+                            "TestRacer"
+                        };
+                        let body = format!(
+                            r#"{{"Success":true,"User":"{}","Token":"tok_{}","Score":2500,"SoftcoreScore":500}}"#,
+                            user, user
+                        );
+                        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.flush();
+                        let _ = stream.shutdown(std::net::Shutdown::Write);
+                        thread::sleep(std::time::Duration::from_millis(15));
+                    });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let root = scratch("ra-net-races");
+    let data = root.join("data");
+    let dirs = DataDirs::new(&data);
+    let shared = launch(&dirs, &Pins::embedded().unwrap());
+    let ra_path = lock(&shared).user_dirs.retroachievements_file();
+
+    // 1. Delayed Login vs Logout Race
+    let shared1 = shared.clone();
+    let url1 = base_url.clone();
+    let login_thread1 = thread::spawn(move || {
+        commands::ra_login_at(&url1, "UserA", "pass_mode_delay_login", &shared1)
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    commands::ra_logout_of(&shared).expect("logout succeeds");
+
+    let res1 = login_thread1.join().unwrap().expect("login call completes");
+    assert!(!res1.signed_in, "Delayed login must not sign in after concurrent logout");
+    let cfg1 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    assert!(!cfg1.is_signed_in(), "Disk config must remain signed out after concurrent logout");
+    assert_eq!(cfg1.username, "");
+
+    // 2. Delayed Login vs Newer Login Race (Login A vs Login B)
+    let shared2a = shared.clone();
+    let url2a = base_url.clone();
+    let login_old = thread::spawn(move || {
+        commands::ra_login_at(&url2a, "UserOld", "pass_mode_delay_login", &shared2a)
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    let res_new = commands::ra_login_at(&base_url, "UserNew", "pass_fast", &shared)
+        .expect("newer login succeeds");
+    assert!(res_new.signed_in);
+    assert_eq!(res_new.username, "UserNew");
+
+    let res_old = login_old.join().unwrap().expect("old login completes without panic");
+    assert_ne!(res_old.username, "UserOld", "Stale login result must never apply UserOld");
+
+    let cfg2 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    assert_eq!(cfg2.username, "UserNew", "Disk config must retain UserNew and not be overwritten by UserOld");
+    assert_eq!(cfg2.token, "tok_UserNew");
+
+    // 3. Delayed Refresh vs Logout Race
+    let shared3 = shared.clone();
+    let refresh_thread = thread::spawn(move || {
+        commands::ra_status_with(&shared3, |cfg, _game_id| {
+            thread::sleep(std::time::Duration::from_millis(60));
+            let session = Some(gt4l_core::retroachievements::RaAccountSession {
+                username: cfg.username.clone(),
+                token: cfg.token.clone(),
+                display_name: cfg.username.clone(),
+                score: 9999,
+                score_softcore: 1111,
+            });
+            let game = None;
+            (session, game)
+        })
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    commands::ra_logout_of(&shared).expect("logout succeeds");
+
+    let res3 = refresh_thread.join().unwrap().expect("refresh completes");
+    assert!(!res3.signed_in, "Delayed refresh must not restore signed-in state after logout");
+    let cfg3 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    assert!(!cfg3.is_signed_in());
+
+    // 4. Delayed Refresh vs Selected Game Switch Race
+    let mut cfg_switch = gt4l_core::retroachievements::RaConfig::default();
+    cfg_switch.username = "SwitchUser".to_string();
+    cfg_switch.token = "tok_switch_123".to_string();
+    cfg_switch.save(&ra_path).unwrap();
+    assert_eq!(lock(&shared).selected.id, "gt4");
+
+    let shared4 = shared.clone();
+    let refresh_switch = thread::spawn(move || {
+        commands::ra_status_with(&shared4, |cfg, game_id| {
+            thread::sleep(std::time::Duration::from_millis(60));
+            let session = Some(gt4l_core::retroachievements::RaAccountSession {
+                username: cfg.username.clone(),
+                token: cfg.token.clone(),
+                display_name: cfg.username.clone(),
+                score: 5555,
+                score_softcore: 555,
+            });
+            let game = if game_id == "gt4" {
+                Some(gt4l_core::retroachievements::RaGameOverview {
+                    game_id: 20387,
+                    title: "Gran Turismo 4".to_string(),
+                    total_achievements: 10,
+                    unlocked_achievements: 2,
+                    total_points: 100,
+                    unlocked_points: 20,
+                    achievements: vec![],
+                })
+            } else {
+                None
+            };
+            (session, game)
+        })
+    });
+    thread::sleep(std::time::Duration::from_millis(20));
+    commands::select_game_of("spec2".to_string(), &shared).expect("select spec2 succeeds");
+    assert_eq!(lock(&shared).selected.id, "spec2");
+
+    let res_switch = refresh_switch.join().unwrap().expect("delayed refresh completes");
+    assert_eq!(res_switch.selected_game, "spec2");
+    assert!(!res_switch.supported, "Spec II must be marked unsupported");
+    assert!(res_switch.game.is_none(), "Stale GT4 game overview must be discarded when game changed to spec2");
+
+    // Restore GT4 target
+    commands::select_game_of("gt4".to_string(), &shared).expect("restore gt4 succeeds");
+
+    // 5. Failed / Aborted Network Preserves Account State
+    let mut cfg4 = gt4l_core::retroachievements::RaConfig::default();
+    cfg4.username = "StableUser".to_string();
+    cfg4.token = "tok_stable_123".to_string();
+    cfg4.score = 777;
+    cfg4.save(&ra_path).unwrap();
+
+    let _ = commands::ra_status_at(&format!("{}/abort", base_url), &shared);
+    let cfg_after_abort = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    assert_eq!(cfg_after_abort.username, "StableUser");
+    assert_eq!(cfg_after_abort.token, "tok_stable_123");
+    assert_eq!(cfg_after_abort.score, 777);
+
+    // 6. Failed Login Preserves Account State
+    let res_fail = commands::ra_login_at(&base_url, "StableUser", "badpass_mode_fail", &shared);
+    assert!(res_fail.is_err(), "Invalid credentials must return Err");
+    assert!(res_fail.unwrap_err().contains("Invalid user or password"));
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = server_thread.join();
     let _ = fs::remove_dir_all(&root);
 }

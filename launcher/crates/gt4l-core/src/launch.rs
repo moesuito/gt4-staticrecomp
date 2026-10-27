@@ -71,22 +71,30 @@ pub struct LaunchPlan {
     pub misses_path: PathBuf,
 }
 
-impl std::fmt::Debug for LaunchPlan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let safe_env: Vec<(String, String)> = self
-            .environment
+impl LaunchPlan {
+    /// Safe environment view with sensitive values (_TOKEN, _PASSWORD) masked as `[REDACTED]`.
+    pub fn safe_environment(&self) -> Vec<(String, String)> {
+        self.environment
             .iter()
             .map(|(k, v)| {
-                if k.eq_ignore_ascii_case("GT4_RA_TOKEN")
-                    || k.to_ascii_uppercase().ends_with("_TOKEN")
-                    || k.to_ascii_uppercase().ends_with("_PASSWORD")
+                let upper = k.to_ascii_uppercase();
+                if upper.ends_with("_TOKEN")
+                    || upper.ends_with("_PASSWORD")
+                    || upper == "GT4_RA_TOKEN"
+                    || upper == "GT4_RA_PASSWORD"
                 {
                     (k.clone(), "[REDACTED]".to_string())
                 } else {
                     (k.clone(), v.clone())
                 }
             })
-            .collect();
+            .collect()
+    }
+}
+
+impl std::fmt::Debug for LaunchPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let safe_env = self.safe_environment();
         f.debug_struct("LaunchPlan")
             .field("program", &self.program)
             .field("arguments", &self.arguments)
