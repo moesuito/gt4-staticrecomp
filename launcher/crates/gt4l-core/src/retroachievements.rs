@@ -61,145 +61,174 @@ fn default_true() -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 
 pub struct RaConfig {
-
     #[serde(default = "default_true")]
-
     pub enabled: bool,
-
     #[serde(default)]
-
     pub hardcore: bool,
-
     #[serde(default)]
-
     pub encore: bool,
-
     #[serde(default)]
-
     pub username: String,
-
-    #[serde(default)]
-
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
-
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_protected: Option<String>,
     #[serde(default)]
-
     pub display_name: String,
-
     #[serde(default)]
-
     pub score: u32,
-
     #[serde(default)]
-
     pub score_softcore: u32,
-
+    #[serde(skip)]
+    pub token_error: Option<String>,
 }
-
-
 
 impl Default for RaConfig {
-
     fn default() -> Self {
-
         Self {
-
             enabled: true,
-
             hardcore: false,
-
             encore: false,
-
             username: String::new(),
-
             token: String::new(),
-
+            token_protected: None,
             display_name: String::new(),
-
             score: 0,
-
             score_softcore: 0,
-
+            token_error: None,
         }
-
     }
-
 }
 
-
-
 impl RaConfig {
-
-    /// Loads `retroachievements.toml` from disk, returning [`RaConfig::default`] when missing or invalid.
-
+    /// Loads `retroachievements.toml` from disk using the default system secret protector (DPAPI on Windows).
     pub fn load(path: &Path) -> Self {
+        Self::load_with(path, &crate::secret::default_protector())
+    }
 
+    /// Loads `retroachievements.toml` from disk, unprotecting tokens or migrating legacy plaintext configurations
+    /// using the provided [`crate::secret::SecretProtector`].
+    pub fn load_with(path: &Path, protector: &dyn crate::secret::SecretProtector) -> Self {
         let Ok(contents) = fs::read_to_string(path) else {
-
             return Self::default();
-
         };
 
-        toml::from_str::<RaConfig>(&contents).unwrap_or_default()
+        let mut cfg: RaConfig = match toml::from_str(&contents) {
+            Ok(c) => c,
+            Err(_) => return Self::default(),
+        };
 
-    }
-
-
-
-    /// Writes `retroachievements.toml` atomically via a temporary sibling file.
-
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-
-        if let Some(parent) = path.parent() {
-
-            fs::create_dir_all(parent).map_err(|e| format!("cannot create config folder: {e}"))?;
-
+        // 1. Protected token envelope exists on disk
+        if let Some(ref envelope) = cfg.token_protected {
+            if !envelope.trim().is_empty() {
+                match protector.unprotect_secret(envelope) {
+                    Ok(unprotected) => {
+                        cfg.token = unprotected;
+                        cfg.token_error = None;
+                    }
+                    Err(err) => {
+                        cfg.token = String::new();
+                        cfg.token_error = Some(err.to_string());
+                    }
+                }
+                return cfg;
+            }
         }
 
-        let body = toml::to_string_pretty(self).map_err(|e| format!("cannot format retroachievements.toml: {e}"))?;
+        // 2. Legacy plaintext token exists on disk (migration from 1.2.4/1.2.5/rc7)
+        if !cfg.token.trim().is_empty() {
+            let plaintext = cfg.token.trim().to_string();
+            match protector.protect_secret(&plaintext) {
+                Ok(envelope) => {
+                    match protector.unprotect_secret(&envelope) {
+                        Ok(verified) if verified == plaintext => {
+                            cfg.token_protected = Some(envelope);
+                            let mut disk_cfg = cfg.clone();
+                            disk_cfg.token = String::new();
+                            if let Err(err) = disk_cfg.write_disk_atomically(path) {
+                                cfg.token = String::new();
+                                cfg.token_protected = None;
+                                cfg.token_error = Some(format!("failed to save migrated configuration: {err}"));
+                            }
+                        }
+                        Ok(_) => {
+                            cfg.token = String::new();
+                            cfg.token_protected = None;
+                            cfg.token_error = Some("roundtrip verification of protected token failed: mismatch".to_string());
+                        }
+                        Err(verify_err) => {
+                            cfg.token = String::new();
+                            cfg.token_protected = None;
+                            cfg.token_error = Some(format!("roundtrip verification of protected token failed: {verify_err}"));
+                        }
+                    }
+                }
+                Err(protect_err) => {
+                    cfg.token = String::new();
+                    cfg.token_protected = None;
+                    cfg.token_error = Some(format!("failed to protect legacy token: {protect_err}"));
+                }
+            }
+        }
 
-        let tmp = path.with_extension("toml.tmp");
-
-        fs::write(&tmp, body.as_bytes()).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-
-        fs::rename(&tmp, path).map_err(|e| {
-
-            let _ = fs::remove_file(&tmp);
-
-            format!("cannot save {}: {e}", path.display())
-
-        })
-
+        cfg
     }
 
+    fn write_disk_atomically(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("cannot create config folder: {e}"))?;
+        }
+        let body = toml::to_string_pretty(self).map_err(|e| format!("cannot format retroachievements.toml: {e}"))?;
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, body.as_bytes()).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+        fs::rename(&tmp, path).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("cannot save {}: {e}", path.display())
+        })
+    }
 
+    /// Writes `retroachievements.toml` atomically using the default system secret protector (DPAPI on Windows).
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.save_with(path, &crate::secret::default_protector())
+    }
+
+    /// Writes `retroachievements.toml` atomically, protecting any non-empty in-memory token using
+    /// the provided [`crate::secret::SecretProtector`].
+    pub fn save_with(&self, path: &Path, protector: &dyn crate::secret::SecretProtector) -> Result<(), String> {
+        let mut disk_cfg = self.clone();
+        disk_cfg.token = String::new();
+
+        if !self.token.trim().is_empty() {
+            let envelope = protector.protect_secret(self.token.trim())
+                .map_err(|e| format!("cannot protect RetroAchievements token: {e}"))?;
+            let roundtrip = protector.unprotect_secret(&envelope)
+                .map_err(|e| format!("cannot verify protected RetroAchievements token: {e}"))?;
+            if roundtrip != self.token.trim() {
+                return Err("roundtrip verification of protected RetroAchievements token failed".into());
+            }
+            disk_cfg.token_protected = Some(envelope);
+        } else if self.token_protected.is_none() {
+            disk_cfg.token_protected = None;
+        }
+
+        disk_cfg.write_disk_atomically(path)
+    }
 
     /// Whether an authenticated username and API token are stored.
-
     pub fn is_signed_in(&self) -> bool {
-
-        !self.username.trim().is_empty() && !self.token.trim().is_empty()
-
+        !self.username.trim().is_empty() && !self.token.trim().is_empty() && self.token_error.is_none()
     }
-
-
 
     /// Clears stored credentials while preserving the user's mode toggles.
-
     pub fn clear_credentials(&mut self) {
-
         self.username.clear();
-
         self.token.clear();
-
+        self.token_protected = None;
+        self.token_error = None;
         self.display_name.clear();
-
         self.score = 0;
-
         self.score_softcore = 0;
-
     }
-
 
 
     /// Environment variables passed to `gt4vulkan.exe` when RetroAchievements is enabled and signed in.
@@ -885,88 +914,58 @@ mod tests {
 
 
     #[test]
-
     fn config_round_trips_and_clears_credentials_cleanly() {
-
         let file = scratch_file("roundtrip");
-
         let mut cfg = RaConfig::default();
-
         assert!(cfg.enabled);
-
         assert!(!cfg.is_signed_in());
 
-
-
         cfg.username = "DriverOne".to_string();
-
         cfg.display_name = "DriverOne".to_string();
-
         cfg.token = "tok_secret_123".to_string();
-
         cfg.hardcore = true;
-
         cfg.encore = true;
-
         cfg.score = 1500;
-
         cfg.score_softcore = 300;
-
         cfg.save(&file).unwrap();
 
-
-
         let loaded = RaConfig::load(&file);
-
-        assert_eq!(loaded, cfg);
-
+        assert_eq!(loaded.username, cfg.username);
+        assert_eq!(loaded.token, cfg.token);
+        assert_eq!(loaded.display_name, cfg.display_name);
+        assert_eq!(loaded.score, cfg.score);
+        assert_eq!(loaded.score_softcore, cfg.score_softcore);
+        assert_eq!(loaded.hardcore, cfg.hardcore);
+        assert_eq!(loaded.encore, cfg.encore);
+        assert!(loaded.token_protected.is_some());
         assert!(loaded.is_signed_in());
 
-
+        let raw_disk = fs::read_to_string(&file).unwrap();
+        assert!(!raw_disk.contains("tok_secret_123"), "plaintext token must not be written to disk");
+        assert!(raw_disk.contains("token_protected = \"dpapi:v1:"));
 
         let env_vars = loaded.launch_environment(Path::new("C:\\GT4\\data\\runtime\\ra_cache"), crate::language::Language::fallback());
-
         assert!(env_vars.contains(&("GT4_RA_ENABLED".to_string(), OsString::from("1"))));
-
         assert!(env_vars.contains(&("GT4_RA_HARDCORE".to_string(), OsString::from("1"))));
-
         assert!(env_vars.contains(&("GT4_RA_ENCORE".to_string(), OsString::from("1"))));
-
         assert!(env_vars.contains(&("GT4_RA_USERNAME".to_string(), OsString::from("DriverOne"))));
-
         assert!(env_vars.contains(&("GT4_RA_TOKEN".to_string(), OsString::from("tok_secret_123"))));
-
         assert!(env_vars.contains(&("GT4_RA_HASH".to_string(), OsString::from(GT4_NTSC_U_RA_HASH))));
-
         assert!(env_vars.contains(&("GT4_RA_LANGUAGE".to_string(), OsString::from("en-US"))));
 
-
-
         let pt_lang = crate::language::Language::from_tag("pt-BR").unwrap();
-
         let pt_vars = loaded.launch_environment(Path::new("C:\\GT4\\data\\runtime\\ra_cache"), pt_lang);
-
         assert!(pt_vars.contains(&("GT4_RA_LANGUAGE".to_string(), OsString::from("pt-BR"))));
 
-
-
         let mut cleared = loaded;
-
         cleared.clear_credentials();
-
         assert!(!cleared.is_signed_in());
-
+        assert!(cleared.token_protected.is_none());
         assert!(cleared.hardcore, "mode toggles stay intact on sign-out");
-
         assert!(cleared.launch_environment(Path::new("C:\\cache"), crate::language::Language::fallback()).is_empty());
 
-
-
         let _ = fs::remove_dir_all(file.parent().unwrap());
-
     }
-
-
 
     #[test]
 

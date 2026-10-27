@@ -584,7 +584,7 @@
   "ra.opt_encore": "Modo Encore",
   "ra.opt_encore_help": "Permite que conquistas já desbloqueadas sejam disparadas novamente nesta sessão.",
   "ra.modal_title": "Entrar no RetroAchievements",
-  "ra.modal_text": "Sua senha é enviada uma única vez por HTTPS para retroachievements.org para obter um token de API. Apenas seu nome de usuário e token ficam salvos.",
+  "ra.modal_text": "Sua senha é enviada uma única vez por HTTPS para retroachievements.org para obter um token de API. Apenas seu nome de usuário e token protegido ficam salvos neste computador.",
   "ra.username": "Usuário",
   "ra.password": "Senha",
   "ra.err_username": "Digite seu nome de usuário do RetroAchievements.",
@@ -602,5 +602,8 @@
   "ra.pill_locked": "Bloqueada",
   "ra.pts": "{pts} pts",
   "ra.unsupported_title": "O RetroAchievements não está disponível para o Gran Turismo 4 Spec II",
-  "ra.unsupported_desc": "As conquistas são suportadas apenas na versão original de Gran Turismo 4 (v2.00). Você pode alternar para o Gran Turismo 4 no menu Jogos para visualizar e desbloquear conquistas."
-}
+  "ra.unsupported_desc": "As conquistas são suportadas apenas na versão original de Gran Turismo 4 (v2.00). Você pode alternar para o Gran Turismo 4 no menu Jogos para visualizar e desbloquear conquistas.",
+  "ra.relogin_required": "Reconexão necessária",
+  "ra.relogin_notice": "Aviso",
+  "ra.relogin_required_desc": "Sua sessão salva não pode ser desbloqueada nesta conta ou PC Windows. Entre novamente para reconectar sua conta."
+}

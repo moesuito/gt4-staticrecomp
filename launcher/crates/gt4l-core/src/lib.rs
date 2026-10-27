@@ -24,6 +24,7 @@ pub mod portable_update;
 pub mod releases;
 pub mod relocate;
 pub mod retroachievements;
+pub mod secret;
 pub mod settings;
 pub mod system_check;
 pub mod textures;

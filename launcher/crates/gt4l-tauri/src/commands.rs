@@ -1548,6 +1548,7 @@ pub struct RaStatusView {
     pub game: Option<gt4l_core::retroachievements::RaGameOverview>,
     pub selected_game: String,
     pub supported: bool,
+    pub relogin_required: bool,
 }
 
 fn ra_base_url() -> String {
@@ -1564,6 +1565,8 @@ fn build_ra_status_view(
     selected: &games::Game,
 ) -> RaStatusView {
     let supported = selected.id == games::GT4.id;
+    let relogin_required = cfg.token_error.is_some()
+        || (!cfg.username.is_empty() && cfg.token.is_empty() && cfg.token_protected.is_some());
     RaStatusView {
         enabled: cfg.enabled,
         hardcore: cfg.hardcore,
@@ -1580,6 +1583,7 @@ fn build_ra_status_view(
         game: if supported { game } else { None },
         selected_game: selected.id.to_string(),
         supported,
+        relogin_required,
     }
 }
 

@@ -1396,6 +1396,32 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
         assert_eq!(cfg_after_401_fail.score, 777);
     }
 
+    // 7. Unprotectable Token Envelope Surfaces relogin_required Without Network Call
+    {
+        let unprotectable_toml = r#"
+username = "PortableTraveler"
+display_name = "Portable Traveler"
+token_protected = "dpapi:v1:01000000d08c9ddf0115d1118c7a00c04fc297eb01000000ffffffffffffffff"
+enabled = true
+hardcore = true
+score = 3000
+"#;
+        fs::write(&ra_path, unprotectable_toml).unwrap();
+
+        let status_res = commands::ra_status_at(&base_url, &shared);
+        assert!(status_res.is_ok(), "ra_status_at must succeed without panicking");
+        let view = status_res.unwrap();
+        assert!(!view.signed_in, "Unprotectable token must NOT report signed_in");
+        assert!(view.relogin_required, "Unprotectable token MUST set relogin_required = true");
+        assert_eq!(view.username, "PortableTraveler");
+        assert_eq!(view.display_name, "Portable Traveler");
+        assert_eq!(view.score, 3000);
+        assert!(view.hardcore);
+
+        let disk_current = fs::read_to_string(&ra_path).unwrap();
+        assert!(disk_current.contains("token_protected"), "Ciphertext must be preserved on disk");
+    }
+
     stop.store(true, Ordering::Relaxed);
     let _ = server_thread.join();
     let _ = fs::remove_dir_all(&root);

@@ -584,7 +584,7 @@
   "ra.opt_encore": "Encore mode",
   "ra.opt_encore_help": "Allows achievements you have already unlocked to trigger again during this session.",
   "ra.modal_title": "Sign in to RetroAchievements",
-  "ra.modal_text": "Your password is sent once over HTTPS to retroachievements.org to obtain an API token. Only your username and token are stored.",
+  "ra.modal_text": "Your password is sent once over HTTPS to retroachievements.org to obtain an API token. Only your username and protected token are stored on this PC.",
   "ra.username": "Username",
   "ra.password": "Password",
   "ra.err_username": "Enter your RetroAchievements username.",
@@ -602,5 +602,8 @@
   "ra.pill_locked": "Locked",
   "ra.pts": "{pts} pts",
   "ra.unsupported_title": "RetroAchievements is not available for Gran Turismo 4 Spec II",
-  "ra.unsupported_desc": "Achievements are supported only on the original Gran Turismo 4 (v2.00) release. You can switch to Gran Turismo 4 in the Games menu to view and unlock achievements."
-}
+  "ra.unsupported_desc": "Achievements are supported only on the original Gran Turismo 4 (v2.00) release. You can switch to Gran Turismo 4 in the Games menu to view and unlock achievements.",
+  "ra.relogin_required": "Re-login required",
+  "ra.relogin_notice": "Notice",
+  "ra.relogin_required_desc": "Your saved session cannot be unlocked on this Windows account or PC. Sign in again to reconnect your account."
+}

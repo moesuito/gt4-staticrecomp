@@ -83,7 +83,8 @@
       scoreSoftcore: 0,
       game: null,
       selectedGame: "gt4",
-      supported: true
+      supported: true,
+      reloginRequired: false
     };
 
     var container = h("div", { class: "ra-page" });
@@ -107,6 +108,7 @@
         state.scoreSoftcore = Number(next.scoreSoftcore || 0);
         state.selectedGame = next.selectedGame || "gt4";
         state.supported = next.supported !== false && state.selectedGame === "gt4";
+        state.reloginRequired = !!next.reloginRequired;
         if (state.supported && next.game !== undefined && next.game !== null) {
           state.game = next.game;
         } else {
@@ -308,9 +310,20 @@
         accountSection.appendChild(h("div", { class: "row" }, [
           h("div", { class: "k" }, [h("span", { text: t("ra.status") })]),
           h("div", { class: "ctl wide" }, [
-            h("span", { class: "val", text: t("ra.not_signed_in") })
+            h("span", {
+              class: "val" + (state.reloginRequired ? " is-warn" : ""),
+              text: state.reloginRequired ? t("ra.relogin_required") : t("ra.not_signed_in")
+            })
           ])
         ]));
+        if (state.reloginRequired) {
+          accountSection.appendChild(h("div", { class: "row" }, [
+            h("div", { class: "k" }, [h("span", { text: t("ra.relogin_notice") })]),
+            h("div", { class: "ctl wide" }, [
+              h("p", { class: "ra-unsupported-desc", text: t("ra.relogin_required_desc") })
+            ])
+          ]));
+        }
       }
       container.appendChild(accountSection);
 
