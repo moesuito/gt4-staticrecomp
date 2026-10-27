@@ -1423,7 +1423,7 @@ score = 3000
         assert!(disk_current.contains("token_protected"), "Ciphertext must be preserved on disk");
     }
 
-    // 8. Migration Failure Preserves Legacy Plaintext Config Across Unrelated Option Updates
+    // 8. Migration & Write Failure at Launcher Command Boundary
     {
         let legacy_toml = r#"username = "PreservedUser"
 token = "tok_do_not_erase_me"
@@ -1433,24 +1433,84 @@ hardcore = false
         fs::write(&ra_path, legacy_toml).unwrap();
 
         let fail_protector = gt4l_core::secret::FakeProtector { fail_protect: true, ..gt4l_core::secret::FakeProtector::default() };
-        let mut loaded = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, &fail_protector);
-        assert_eq!(loaded.token_error, Some(gt4l_core::retroachievements::TokenErrorKind::MigrationFailed));
-        assert!(!loaded.is_signed_in());
 
-        // An option toggle attempt MUST fail save and preserve the legacy file intact
-        loaded.hardcore = true;
-        let save_res = loaded.save_with(&ra_path, &fail_protector);
-        assert!(save_res.is_err(), "Saving options while migration failed must return Err and not destroy the legacy file");
+        // 8A. Initial status query via commands::ra_status_at_with detects migration failure without crashing
+        let status_res = commands::ra_status_at_with(&base_url, &shared, &fail_protector);
+        assert!(status_res.is_ok(), "ra_status_at_with must succeed on migration failure");
+        let view = status_res.unwrap();
+        assert!(!view.signed_in);
+        assert!(view.relogin_required);
+        assert_eq!(view.token_error_kind, Some(gt4l_core::retroachievements::TokenErrorKind::MigrationFailed));
+        assert_eq!(fs::read_to_string(&ra_path).unwrap(), legacy_toml, "Legacy file must be 100% untouched after status check");
 
-        let disk_after_save_attempt = fs::read_to_string(&ra_path).unwrap();
-        assert_eq!(disk_after_save_attempt, legacy_toml, "Legacy file must be 100% untouched after failed option save");
+        // 8B. Command boundary: ra_set_options_with fails save and preserves original legacy file 100% untouched
+        let opt_res = commands::ra_set_options_with(true, true, false, &shared, &fail_protector);
+        assert!(opt_res.is_err(), "ra_set_options_with must return Err when migration protection fails");
+        let opt_err = opt_res.unwrap_err();
+        assert!(opt_err.contains("legacy credentials could not be protected"), "Error message must explain migration safety abort: {opt_err}");
+        assert_eq!(fs::read_to_string(&ra_path).unwrap(), legacy_toml, "Legacy config must be preserved intact after option toggle failure");
 
-        // Explicit logout succeeds and cleanly removes credentials
-        loaded.clear_credentials();
-        assert!(loaded.save_with(&ra_path, &fail_protector).is_ok(), "Explicit logout must succeed even if protector is unavailable");
+        // 8C. Command boundary with injected atomic partial write failure
+        let partial_write_ops = gt4l_core::retroachievements::MockAtomicFileOps { fail_during_write: Some(10), ..Default::default() };
+        let write_fail_res = commands::ra_set_options_with_custom(true, true, false, &shared, &fail_protector, &partial_write_ops);
+        assert!(write_fail_res.is_err(), "ra_set_options_with_custom must return Err on write failure");
+        assert_eq!(fs::read_to_string(&ra_path).unwrap(), legacy_toml, "Legacy config must be preserved intact after partial write failure");
+
+        // 8D. Competing / stale network reply: delayed response does not overwrite state after revision bump
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        *gate.lock().unwrap() = Some(SyncGate {
+            trigger: "StaleCandidate".to_string(),
+            arrived_tx,
+            release_rx,
+        });
+
+        let shared_stale = shared.clone();
+        let url_stale = base_url.clone();
+        let fail_protector_clone = fail_protector.clone();
+        let stale_login_task = thread::spawn(move || {
+            commands::ra_login_at_with(&url_stale, "StaleCandidate", "pass_wait", &shared_stale, &fail_protector_clone)
+        });
+
+        arrived_rx.recv_timeout(Duration::from_secs(3)).expect("StaleCandidate request arrived at server");
+
+        // Bump revision in foreground while request is in flight
+        {
+            let mut state = lock(&shared);
+            state.ra_revision = state.ra_revision.wrapping_add(1);
+        }
+
+        release_tx.send(()).expect("release gate");
+        let stale_res = stale_login_task.join().unwrap().expect("stale login completes without panic");
+        assert_ne!(stale_res.username, "StaleCandidate", "Stale reply must not apply StaleCandidate");
+
+        // Verify disk still has legacy toml and StaleCandidate was NOT written
+        let disk_mid = fs::read_to_string(&ra_path).unwrap();
+        assert_eq!(disk_mid, legacy_toml, "Stale reply must not overwrite legacy config");
+        assert!(!disk_mid.contains("StaleCandidate"));
+
+        // 8E. Replacement login via commands::ra_login_at_with succeeds and cleanly replaces legacy credentials
+        let working_protector = gt4l_core::secret::FakeProtector::default();
+        let login_res = commands::ra_login_at_with(&base_url, "FreshUser", "goodpass", &shared, &working_protector);
+        assert!(login_res.is_ok(), "Replacement login must succeed");
+        let login_view = login_res.unwrap();
+        assert!(login_view.signed_in);
+        assert_eq!(login_view.username, "FreshUser");
+        assert_eq!(login_view.token_error_kind, None);
+        let disk_after_login = fs::read_to_string(&ra_path).unwrap();
+        assert!(!disk_after_login.contains("tok_do_not_erase_me"), "Old plaintext token must be gone");
+        assert!(disk_after_login.contains("token_protected"), "New credentials must be saved as protected envelope");
+
+        // 8F. Explicit logout via commands::ra_logout_with cleanly removes credentials
+        let logout_res = commands::ra_logout_with(&shared, &working_protector);
+        assert!(logout_res.is_ok(), "Explicit logout must succeed");
+        let logout_view = logout_res.unwrap();
+        assert!(!logout_view.signed_in);
+        assert_eq!(logout_view.username, "");
         let disk_after_logout = fs::read_to_string(&ra_path).unwrap();
-        assert!(!disk_after_logout.contains("tok_do_not_erase_me"));
+        assert!(!disk_after_logout.contains("FreshUser"));
         assert!(!disk_after_logout.contains("token_protected"));
+        assert!(!disk_after_logout.contains("tok_do_not_erase_me"));
     }
 
     stop.store(true, Ordering::Relaxed);

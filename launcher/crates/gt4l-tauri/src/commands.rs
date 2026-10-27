@@ -1610,7 +1610,15 @@ pub fn ra_status_of(shared: &Shared) -> Result<RaStatusView, String> {
 }
 
 pub fn ra_status_at(base_url: &str, shared: &Shared) -> Result<RaStatusView, String> {
-    ra_status_with(shared, |cfg, game_id| {
+    ra_status_at_with(base_url, shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_status_at_with(
+    base_url: &str,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
+    ra_status_with_protector(shared, protector, |cfg, game_id| {
         let session = gt4l_core::retroachievements::login_with_token(base_url, &cfg.username, &cfg.token).ok();
         let game = if game_id == games::GT4.id {
             gt4l_core::retroachievements::fetch_game_overview(base_url, &cfg.username, &cfg.token).ok()
@@ -1628,9 +1636,20 @@ pub(crate) fn ra_status_with(
         Option<gt4l_core::retroachievements::RaGameOverview>,
     ),
 ) -> Result<RaStatusView, String> {
+    ra_status_with_protector(shared, &gt4l_core::secret::default_protector(), refresh)
+}
+
+pub(crate) fn ra_status_with_protector(
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+    refresh: impl FnOnce(&gt4l_core::retroachievements::RaConfig, &'static str) -> (
+        Option<gt4l_core::retroachievements::RaAccountSession>,
+        Option<gt4l_core::retroachievements::RaGameOverview>,
+    ),
+) -> Result<RaStatusView, String> {
     let (snapshot, revision, selected) = {
         let state = lock(shared);
-        let cfg = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
+        let cfg = gt4l_core::retroachievements::RaConfig::load_with(&state.user_dirs.retroachievements_file(), protector);
         (cfg, state.ra_revision, state.selected)
     };
 
@@ -1642,7 +1661,7 @@ pub(crate) fn ra_status_with(
 
     let state = lock(shared);
     let path = state.user_dirs.retroachievements_file();
-    let mut current = gt4l_core::retroachievements::RaConfig::load(&path);
+    let mut current = gt4l_core::retroachievements::RaConfig::load_with(&path, protector);
 
     if state.ra_revision != revision || state.selected.id != selected.id || current.username != snapshot.username || current.token != snapshot.token {
         return Ok(build_ra_status_view(&current, None, state.selected));
@@ -1652,7 +1671,7 @@ pub(crate) fn ra_status_with(
         current.display_name = sess.display_name;
         current.score = sess.score;
         current.score_softcore = sess.score_softcore;
-        let _ = current.save(&path);
+        let _ = current.save_with(&path, protector);
     }
 
     Ok(build_ra_status_view(&current, game, state.selected))
@@ -1672,6 +1691,16 @@ pub fn ra_login_of(username: &str, password: &str, shared: &Shared) -> Result<Ra
 }
 
 pub fn ra_login_at(base_url: &str, username: &str, password: &str, shared: &Shared) -> Result<RaStatusView, String> {
+    ra_login_at_with(base_url, username, password, shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_login_at_with(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
     let (revision, selected) = {
         let mut state = lock(shared);
         state.ra_revision = state.ra_revision.wrapping_add(1);
@@ -1683,7 +1712,7 @@ pub fn ra_login_at(base_url: &str, username: &str, password: &str, shared: &Shar
     let (ra_path, dirs) = {
         let state = lock(shared);
         let ra_path = state.user_dirs.retroachievements_file();
-        let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        let mut cfg = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, protector);
         if state.ra_revision != revision {
             return Ok(build_ra_status_view(&cfg, None, state.selected));
         }
@@ -1692,21 +1721,21 @@ pub fn ra_login_at(base_url: &str, username: &str, password: &str, shared: &Shar
         cfg.display_name = session.display_name;
         cfg.score = session.score;
         cfg.score_softcore = session.score_softcore;
-        cfg.save(&ra_path)?;
+        cfg.save_with(&ra_path, protector)?;
         (ra_path, state.dirs.clone())
     };
 
     state::log(&dirs, &format!("retroachievements: signed in as {}", username.trim()));
 
     let game = if selected.id == games::GT4.id {
-        let cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        let cfg = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, protector);
         gt4l_core::retroachievements::fetch_game_overview(&base_url, &cfg.username, &cfg.token).ok()
     } else {
         None
     };
 
     let state = lock(shared);
-    let current = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
+    let current = gt4l_core::retroachievements::RaConfig::load_with(&state.user_dirs.retroachievements_file(), protector);
     let valid_game = if state.ra_revision == revision && state.selected.id == selected.id {
         game
     } else {
@@ -1722,11 +1751,18 @@ pub fn ra_logout(shared: State<'_, Shared>) -> Result<RaStatusView, String> {
 }
 
 pub fn ra_logout_of(shared: &Shared) -> Result<RaStatusView, String> {
+    ra_logout_with(shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_logout_with(
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
     let mut state = lock(shared);
     let ra_path = state.user_dirs.retroachievements_file();
-    let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    let mut cfg = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, protector);
     cfg.clear_credentials();
-    cfg.save(&ra_path)?;
+    cfg.save_with(&ra_path, protector)?;
     state.ra_revision = state.ra_revision.wrapping_add(1);
     state::log(&state.dirs, "retroachievements: signed out");
     Ok(build_ra_status_view(&cfg, None, state.selected))
@@ -1749,13 +1785,34 @@ pub fn ra_set_options_of(
     encore: bool,
     shared: &Shared,
 ) -> Result<RaStatusView, String> {
+    ra_set_options_with(enabled, hardcore, encore, shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_set_options_with(
+    enabled: bool,
+    hardcore: bool,
+    encore: bool,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
+    ra_set_options_with_custom(enabled, hardcore, encore, shared, protector, &gt4l_core::retroachievements::StdAtomicFileOps)
+}
+
+pub fn ra_set_options_with_custom(
+    enabled: bool,
+    hardcore: bool,
+    encore: bool,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+    ops: &dyn gt4l_core::retroachievements::AtomicFileOps,
+) -> Result<RaStatusView, String> {
     let mut state = lock(shared);
     let ra_path = state.user_dirs.retroachievements_file();
-    let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    let mut cfg = gt4l_core::retroachievements::RaConfig::load_with_custom(&ra_path, protector, ops);
     cfg.enabled = enabled;
     cfg.hardcore = hardcore;
     cfg.encore = encore;
-    cfg.save(&ra_path)?;
+    cfg.save_with_custom(&ra_path, protector, ops)?;
     state.ra_revision = state.ra_revision.wrapping_add(1);
     Ok(build_ra_status_view(&cfg, None, state.selected))
 }

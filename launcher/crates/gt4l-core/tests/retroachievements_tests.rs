@@ -6,7 +6,7 @@ use gt4l_core::language::Language;
 use gt4l_core::launch;
 use gt4l_core::log_export;
 use gt4l_core::paths::{DataDirs, UserDirs, UserRootSource};
-use gt4l_core::retroachievements::{RaConfig, TokenErrorKind};
+use gt4l_core::retroachievements::{RaConfig, TokenErrorKind, MockAtomicFileOps};
 use gt4l_core::secret::{self, DpapiProtector, FakeProtector, SecretError, SecretProtector};
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -831,26 +831,104 @@ fn debug_and_serialization_paths_never_leak_plaintext_token() {
 #[test]
 fn interrupted_and_failed_atomic_writes_are_safe() {
     let root = temp_dir("failed_write_safe");
-    let invalid_dir = root.join("non_existent_subdir").join("nested");
-    let target_file = invalid_dir.join("retroachievements.toml");
+    let target_file = root.join("retroachievements.toml");
 
     let protector = FakeProtector::default();
     let mut cfg = RaConfig::default();
     cfg.username = "WriteTester".to_string();
     cfg.token = "tok_write_test".to_string();
 
-    // Normal save creates directories and succeeds
-    assert!(cfg.save_with(&target_file, &protector).is_ok());
-    assert!(target_file.exists());
-    assert!(!target_file.with_extension("toml.tmp").exists());
+    // 1. Pre-existing unrelated files must NOT be touched or deleted on failure
+    let unrelated_tmp = root.join("unrelated_prior.tmp");
+    let static_toml_tmp = root.join("retroachievements.toml.tmp");
+    fs::write(&unrelated_tmp, b"unrelated temp data").unwrap();
+    fs::write(&static_toml_tmp, b"pre-existing static tmp data").unwrap();
 
-    // Attempting to write where target is an existing read-only directory (triggering rename/write failure)
+    // 2. Failure before write (e.g. permission denied) cleans up and preserves unrelated files
+    let ops_before_fail = MockAtomicFileOps { fail_before_write: true, ..Default::default() };
+    let res_before = cfg.save_with_custom(&target_file, &protector, &ops_before_fail);
+    assert!(res_before.is_err(), "fail_before_write must return Err");
+    assert!(!target_file.exists(), "Target file must not be created");
+    assert!(unrelated_tmp.exists(), "Pre-existing unrelated.tmp must NOT be deleted");
+    assert!(static_toml_tmp.exists(), "Pre-existing static tmp must NOT be deleted");
+
+    // 3. Failure during write (simulating partial write / disk full) immediately cleans up unique temp file
+    let ops_partial = MockAtomicFileOps { fail_during_write: Some(15), ..Default::default() };
+    let res_partial = cfg.save_with_custom(&target_file, &protector, &ops_partial);
+    assert!(res_partial.is_err(), "Partial write must return Err");
+    assert!(!target_file.exists(), "Target file must not be written on partial write failure");
+    // Verify no orphaned temporary files created by this operation remain in root
+    let temp_files_after_partial: Vec<_> = fs::read_dir(&root).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-"))
+        .collect();
+    assert_eq!(temp_files_after_partial.len(), 0, "Partial temporary files must be cleaned up by RAII guard");
+    assert!(unrelated_tmp.exists());
+    assert!(static_toml_tmp.exists());
+
+    // 4. Failure during flush
+    let ops_flush = MockAtomicFileOps { fail_flush: true, ..Default::default() };
+    let res_flush = cfg.save_with_custom(&target_file, &protector, &ops_flush);
+    assert!(res_flush.is_err(), "Flush failure must return Err");
+    assert!(!target_file.exists());
+    let temp_files_after_flush: Vec<_> = fs::read_dir(&root).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".retroachievements.toml.tmp-"))
+        .collect();
+    assert_eq!(temp_files_after_flush.len(), 0);
+
+    // 5. Failure during rename / replace (e.g. target path is a directory or destination locked)
     let bad_path = root.join("is_a_directory");
     fs::create_dir_all(&bad_path).unwrap();
-    let err_save = cfg.save_with(&bad_path, &protector);
-    assert!(err_save.is_err(), "Saving to a directory path must fail cleanly");
-    // Ensure temporary file was cleaned up
-    assert!(!bad_path.with_extension("toml.tmp").exists(), "Temporary file must not remain on failure");
+    let res_replace = cfg.save_with(&bad_path, &protector);
+    assert!(res_replace.is_err(), "Saving to a directory path must fail cleanly");
+    let temp_files_after_replace: Vec<_> = fs::read_dir(&root).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".is_a_directory.tmp-"))
+        .collect();
+    assert_eq!(temp_files_after_replace.len(), 0, "Temporary file must be removed on replace failure");
+
+    // 6. Normal successful atomic save
+    assert!(cfg.save_with(&target_file, &protector).is_ok());
+    assert!(target_file.exists(), "Target file must exist after successful save");
+
+    // 7. Process interruption simulation (forced crash / power outage / SIGKILL):
+    // Simulate an externally terminated process that left an orphaned temp file before rename occurred
+    let orphaned_crash_tmp = root.join(".retroachievements.toml.tmp-99999-1");
+    // In write_disk_atomically, disk_cfg has token cleared and token_protected set
+    let mut interrupted_disk_cfg = cfg.clone();
+    interrupted_disk_cfg.token = String::new();
+    interrupted_disk_cfg.token_protected = Some("fake:v1:01020304".to_string());
+    let body = toml::to_string_pretty(&interrupted_disk_cfg).unwrap();
+    fs::write(&orphaned_crash_tmp, body.as_bytes()).unwrap();
+
+    // Verify orphaned file contains NO plaintext secret
+    let orphaned_content = fs::read_to_string(&orphaned_crash_tmp).unwrap();
+    assert!(!orphaned_content.contains("tok_write_test"), "Temporary file must NEVER contain plaintext secrets");
+    assert!(orphaned_content.contains("token_protected"));
+
+    // Verify RaConfig::load ignores the orphaned file and safely loads the real config
+    let loaded = RaConfig::load_with(&target_file, &protector);
+    assert_eq!(loaded.username, "WriteTester");
+    assert_eq!(loaded.token, "tok_write_test");
+
+    // Verify subsequent retry successfully updates config without failure or data loss
+    let mut retry_cfg = loaded.clone();
+    retry_cfg.score = 999;
+    assert!(retry_cfg.save_with(&target_file, &protector).is_ok());
+    let loaded_retry = RaConfig::load_with(&target_file, &protector);
+    assert_eq!(loaded_retry.score, 999);
+    assert_eq!(loaded_retry.token, "tok_write_test");
+
+    // 8. Instance concurrency: two configs saving to the same folder generate distinct temporary paths
+    let cfg1 = cfg.clone();
+    let cfg2 = cfg.clone();
+    let target1 = root.join("inst1.toml");
+    let target2 = root.join("inst2.toml");
+    assert!(cfg1.save_with(&target1, &protector).is_ok());
+    assert!(cfg2.save_with(&target2, &protector).is_ok());
+    assert!(target1.exists());
+    assert!(target2.exists());
 
     let _ = fs::remove_dir_all(root);
 }

@@ -4,73 +4,64 @@ Date: 2026-10-27.
 Branch: `task/133-rc7-ra-controls`  
 Worktree: `C:/Antigravity/gt4-wt-133-rc7-ra-controls`  
 Starting Base: `adfd5132b775d354d4a5bb33152fb23fb542b85e`  
-Review Base: `c3c9959`  
+Review 1 Base: `c3c9959`  
+Review 2 Base: `25c5070`  
 Author: João Alano <57041838+moesuito@users.noreply.github.com>
 
 ---
 
 ## 1. Executive Summary & Design Overview
 
-This work implements secure protection at rest for RetroAchievements authentication tokens on Windows for both installed and portable launcher layouts, addressing all requirements of `TASK-133-RA-TOKEN-PROTECTION.md` and the findings of `TASK-133-RA-TOKEN-PROTECTION-REVIEW.md`.
+This work implements secure protection at rest for RetroAchievements authentication tokens on Windows for both installed and portable launcher layouts, addressing all requirements of `TASK-133-RA-TOKEN-PROTECTION.md` and resolving the findings in `TASK-133-RA-TOKEN-PROTECTION-REVIEW.md` and `TASK-133-RA-TOKEN-PROTECTION-REVIEW-2.md`.
 
 ### Core Design Principles
 1. **Windows DPAPI Standard:** Uses Win32 Data Protection API (`CryptProtectData` and `CryptUnprotectData` via `crypt32.dll` and `kernel32.dll`) bound strictly to the current Windows user (`dwFlags = CRYPTPROTECT_UI_FORBIDDEN`, no machine-wide scope `CRYPTPROTECT_LOCAL_MACHINE`). No custom cryptography or bundled symmetric keys.
 2. **Platform-Neutral Abstraction:** Introduced a clean `SecretProtector` trait and `SecretError` enum in `launcher/crates/gt4l-core/src/secret.rs`. Non-Windows platforms return explicit `UnsupportedPlatform` errors without silently persisting plaintext or falling back to fake implementations.
-3. **Deterministic Testability:** Implemented `FakeProtector` for unit and concurrency tests, with configurable key XOR and injected failure hooks (`fail_protect`, `fail_unprotect` simulating `NTE_BAD_KEYSET` / user mismatch, and corrupted envelope detection).
+3. **Deterministic Testability & Seams:** Implemented `FakeProtector` for unit/concurrency tests and `AtomicFileOps` trait (`StdAtomicFileOps`, `MockAtomicFileOps`) for deterministic filesystem failure injection.
 4. **Zero Plaintext at Rest & Serde Serialization Guard:** In `RaConfig`, `token` is annotated with `#[serde(default, skip_serializing)]`, ensuring that the TOML serializer can never write plaintext tokens to disk under any condition. `token_protected` stores the versioned envelope `dpapi:v1:<hex>`.
-5. **Safe, Atomic Migration with Legacy File Preservation:** Existing legacy plaintext `retroachievements.toml` files are migrated automatically on first load. The token is encrypted and round-trip verified in memory before atomically replacing the original configuration via a sibling `.toml.tmp` file. If encryption or writing fails, the original legacy plaintext file is left 100% untouched. Crucially, if protection fails during migration, `unmigrated_plaintext` is preserved in memory such that subsequent unrelated option changes (e.g. toggling hardcore/enabled) will abort save rather than overwriting disk with an unauthenticated config that erases the user's old token.
-6. **Typed Token Error Categories & Localized Guidance:** Distinguishes between `TokenErrorKind::Inaccessible` (an already-encrypted session that cannot be unlocked on this PC/user), `TokenErrorKind::MigrationFailed` (an old plaintext token that could not be protected/written), and `TokenErrorKind::SaveFailed`. The launcher surfaces distinct, localized banners in English (`en-US`) and Brazilian Portuguese (`pt-BR`).
-7. **Byte-Safe Hex Decoding:** Operates strictly on byte chunks (`as_bytes().chunks_exact(2)` with `hex_val`), preventing slice panics on arbitrary malformed multi-byte UTF-8, odd length, bad characters, or empty/truncated inputs.
-8. **Audit Debug & Serialization Paths:** Implemented custom `fmt::Debug` implementations for `RaConfig` and `RaAccountSession` that redact `token` to `[REDACTED]`. Synthetic regression tests verify that `format!("{cfg:?}")`, `format!("{session:?}")`, `toml::to_string(&cfg)`, and diagnostic export files never emit token secrets.
-9. **Strict Spec II Isolation:** Gran Turismo 4 Spec II mod playthroughs remain completely isolated: RA launch environment is omitted, `GT4_RA_ENABLED=0` is explicitly set, and no credentials or envelopes are forwarded.
+5. **Robust Atomic Writing & Unique Temporary Path Isolation:** Temporary files are named uniquely per write attempt (`.{filename}.tmp-{pid}-{counter}`) in the same directory (guaranteeing volume-local atomic rename). Independent launcher instances or processes never collide on predictable temporary file names, and unrelated pre-existing files are never touched or deleted.
+6. **RAII Failure Cleanup & Process Interruption Distinction:**
+   - **Normal Error Cleanup:** An internal `TempFileGuard` RAII structure ensures that if writing fails before write, mid-write, during flush, or during rename/replace, the temporary file created by this attempt is immediately removed from disk.
+   - **Process Interruption (Forced Crash / Power Loss):** If the process is terminated externally before rename, the destination `retroachievements.toml` remains completely unmodified (preserving prior bytes). The orphaned temporary file contains only encrypted ciphertext (never plaintext). On retry, the launcher safely loads the valid configuration and completes the atomic save without data loss.
+7. **Safe, Atomic Migration with Legacy File Preservation:** Existing legacy plaintext `retroachievements.toml` files are migrated automatically on first load. If protection fails during migration, `unmigrated_plaintext` is preserved in memory such that subsequent unrelated option changes (e.g. toggling hardcore/enabled) abort save rather than overwriting disk with an unauthenticated config that erases the user's old token.
+8. **Command Boundary Safety:** Launcher commands (`ra_status_at_with`, `ra_set_options_with`, `ra_set_options_with_custom`, `ra_login_at_with`, `ra_logout_with`) provide injectable seams for deterministic integration testing of migration/write failures, option updates, replacement logins, intentional logouts, and competing/stale network responses.
+9. **Typed Error Categories & Localized UI Strings:** Distinguishes `TokenErrorKind::Inaccessible`, `TokenErrorKind::MigrationFailed`, and `TokenErrorKind::SaveFailed`. In `en-US.json` and `pt-BR.json`, distinct banners and error toasts are provided with 100% key and placeholder parity.
+10. **Strict Spec II Isolation:** Gran Turismo 4 Spec II mod playthroughs remain completely isolated: RA launch environment is omitted, `GT4_RA_ENABLED=0` is explicitly set, and no credentials or envelopes are forwarded.
 
 ---
 
-## 2. Review Findings & Implemented Fixes
+## 2. Review 2 Findings & Implemented Corrections
 
-### Finding 1: Migration Failure Safety Across Option Updates
-- **Problem:** When migration failed on load, `token` was cleared in memory. If the user or launcher then updated an unrelated setting (such as toggling hardcore or enabled), `save_with` serialized the config with no token and no `token_protected`, overwriting the disk and permanently erasing the user's old token.
-- **Fix:** Added `unmigrated_plaintext: Option<String>` (`#[serde(skip)]`) to `RaConfig`. When migration fails on load, the legacy plaintext is retained in `unmigrated_plaintext`. In `save_with`, if `unmigrated_plaintext` is present and protection still fails, `save_with` refuses to overwrite the configuration file, returning `Err("cannot save settings: existing legacy credentials could not be protected, preserving original configuration file")`. If explicit logout is performed (`clear_credentials()`), `unmigrated_plaintext` is cleared, allowing intentional credential removal.
-- **Evidence:** Tested deterministically in unit test `migration_failure_prevents_option_updates_from_destroying_legacy_token` and launcher integration flow test `flow_audit.rs` (Step 8).
-
-### Finding 2: Safe Hex Parsing Without Panics on Non-ASCII / UTF-8
-- **Problem:** `secret::hex_decode` previously used `&s[i..i+2]`, which panicked when slicing across multi-byte UTF-8 boundaries (e.g. `dpapi:v1:aéa`).
-- **Fix:** Rewrote `hex_decode` to operate strictly on byte slices via `s.trim().as_bytes()`, verifying even length and parsing byte pairs using `chunks_exact(2)` with a dedicated `hex_val(b: u8) -> Result<u8, SecretError>` helper. Non-ASCII characters, odd lengths, bad hex characters, and empty payloads are handled cleanly, returning `Err(SecretError::CorruptData(...))` without panics or memory corruption.
-- **Evidence:** Tested in `malformed_non_ascii_and_truncated_ciphertext_never_panics` covering multi-byte accented characters (`aéa`, `\\u{00E9}`), emoji byte sequences (`\\u{1F980}`, `\\u{1F600}`), odd lengths, empty envelopes (`dpapi:v1:`, `fake:v1:`), and invalid prefixes.
-
-### Finding 3: Typed Error Categories and Distinct UI Guidance
-- **Problem:** All token errors produced the identical "cannot be unlocked on this Windows account or PC" banner, failing to distinguish between migration failure and an unprotectable encrypted token.
+### Finding 1: Robust Temporary-File Handling & Filesystem Seams
+- **Problem:** `write_disk_atomically` previously used a fixed static name `retroachievements.toml.tmp` and returned directly on `fs::write` error without cleaning up partial temporary files. Injected rename failure by making destination a directory did not exercise partial writes or process interruption, and shared static names could cause race collisions between independent instances.
 - **Fix:**
-  - Added `pub enum TokenErrorKind { Inaccessible, MigrationFailed, SaveFailed }` to `gt4l_core::retroachievements`.
-  - Added `token_error_kind: Option<TokenErrorKind>` to `RaStatusView`.
-  - Added localized strings in `en-US.json` and `pt-BR.json` for `ra.migration_failed_desc`:
-    - `en-US`: `"Your saved session credentials could not be protected on this PC. Sign in again to restore achievement tracking."`
-    - `pt-BR`: `"Não foi possível proteger suas credenciais salvas neste PC. Entre novamente para restaurar o rastreamento de conquistas."`
-  - In `achievements.js`, the UI dynamically chooses between `ra.relogin_required_desc` (for `Inaccessible`) and `ra.migration_failed_desc` (for `MigrationFailed`).
-- **Evidence:** 100% key and placeholder parity verified between `en-US.json` and `pt-BR.json`. Playwright focus checks pass (215/215 en-US, 222/222 pt-BR).
+  - Introduced `AtomicFileOps` trait in `gt4l_core::retroachievements` with `StdAtomicFileOps` and `MockAtomicFileOps` (supporting `fail_before_write`, `fail_during_write`, `fail_flush`, `fail_replace`).
+  - Implemented dynamic unique temporary naming using process ID and an atomic counter: `.{filename}.tmp-{pid}-{counter}`.
+  - Implemented `TempFileGuard` RAII cleanup: automatically unlinks the specific temporary file on any error before `persisted = true` is set upon successful rename. Unrelated pre-existing files (e.g. `retroachievements.toml.tmp` or other files) are untouched.
+  - Clarified and tested process interruption: forced crash leaves only ciphertext in `.tmp`, never plaintext; on restart, `RaConfig::load` ignores orphaned `.tmp` files and subsequent retry succeeds cleanly.
+- **Evidence:** Tested in `retroachievements_tests::interrupted_and_failed_atomic_writes_are_safe` covering unrelated file preservation, pre-write failure, partial write failure (15 bytes), flush failure, rename failure, process interruption simulation, retry recovery, and instance concurrency.
 
-### Finding 4: Debug and Serialization Audit for Plaintext Leakage
-- **Problem:** `RaConfig` derived `Debug` and had `skip_serializing_if = "String::is_empty"`, meaning a non-empty token could theoretically be formatted by debug loggers or serialized if set.
+### Finding 2: Launcher Command Boundary Coverage
+- **Problem:** Previous flow audit called `loaded.save_with` directly rather than exercising the launcher command boundary (`commands::ra_set_options`, `ra_login`, `ra_logout`) with injected migration/write failures and competing network replies.
 - **Fix:**
-  - Replaced `#[derive(Debug)]` with custom `fmt::Debug` implementations for `RaConfig` and `RaAccountSession`, explicitly printing `token: "[REDACTED]"`.
-  - Changed serde attribute on `RaConfig::token` to `#[serde(default, skip_serializing)]`. This allows deserializing legacy plaintext tokens from disk on load, but makes it impossible for `serde` to serialize `token` back to disk, even if present in memory.
-  - Verified diagnostic export exclusions (`diagnostic_export_forbids_retroachievements_file` and `diagnostic_export_exclusions_comprehensive`).
-- **Evidence:** Tested in `debug_and_serialization_paths_never_leak_plaintext_token`.
+  - Exposed `ra_status_at_with`, `ra_set_options_with`, `ra_set_options_with_custom`, `ra_login_at_with`, `ra_logout_with` in `gt4l-tauri::commands` accepting injectable protectors and `AtomicFileOps`.
+  - In `flow_audit.rs` Step 8:
+    - Step 8A: `commands::ra_status_at_with` with `fail_protector` surfaces `relogin_required` and `TokenErrorKind::MigrationFailed`, keeping legacy file untouched.
+    - Step 8B: `commands::ra_set_options_with` aborts with `Err` explaining migration safety, keeping legacy file 100% untouched.
+    - Step 8C: `commands::ra_set_options_with_custom` with partial write failure aborts with `Err`, leaving legacy file intact and cleaning up temporary files.
+    - Step 8D: Stale network reply test using TCP server `SyncGate`: an in-flight login response delayed at the server is safely fenced off when `ra_revision` is bumped; stale credentials do not overwrite disk or resurrect tokens.
+    - Step 8E: Replacement login via `commands::ra_login_at_with` cleanly replaces legacy credentials with protected ciphertext envelope.
+    - Step 8F: Explicit logout via `commands::ra_logout_with` cleanly removes credentials and protected envelope.
+- **Evidence:** Tested in `flow_audit::retroachievements_network_race_tests_with_real_tcp_server` (finished in 0.21s, passed).
 
-### Finding 5: Concurrency, Race, Write Failure & Profile Isolation Tests
-- **Problem:** Need deterministic validation of write interruptions, profile isolation, and multi-game switching.
+### Finding 3: Reconciled UI Error Categories and Accurate Reports
+- **Problem:** Need accurate localized error handling for save errors and migration errors (not just a fabricated status value), accurate report of the 589/5 workspace test count, and clear distinction between unaffected native binaries and launcher tests.
 - **Fix:**
-  - `interrupted_and_failed_atomic_writes_are_safe`: verifies atomic `.toml.tmp` cleanup and directory collision failure handling.
-  - `two_portable_profiles_and_installed_profile_independence`: verifies 2 portable profiles and 1 installed profile operate completely independently with separate keys and configs.
-  - `switching_games_preserves_shared_retroachievements_file`: verifies switching between GT4 and Spec II preserves credentials and isolation.
-- **Evidence:** All tests pass in `retroachievements_tests.rs`.
-
-### Finding 6: Resolution of Line-Ending Churn
-- **Problem:** Commit `c3c9959` had full-file line ending churn across multiple files due to unintended CRLF writes to LF repository files.
-- **Fix:** Rebuilt all touched files using exact byte stream writes matching original repository blob conventions:
-  - LF files: `lib.rs`, `retroachievements.rs`, `secret.rs`, `retroachievements_tests.rs`, `achievements.js`, `en-US.json`, `pt-BR.json`, `1.3.0-rc7.md`, `launcher/1.3.0*.md`.
-  - CRLF files: `commands.rs`, `flow_audit.rs`.
-- **Evidence:** `git diff adfd513 --stat` shows 16 files changed, 1,235 insertions(+), 94 deletions(-) with zero line-ending churn.
+  - Added `ra.save_failed_desc`, `ra.err_save_migration`, `ra.err_save_failed` to `en-US.json` and `pt-BR.json` with 100% parity.
+  - In `achievements.js`: mapped option save errors to localized error toasts (`ra.err_save_migration` / `ra.err_save_failed`) and refreshed status on error.
+  - Reconciled workspace test suite: **34 test blocks, 589 passed, 0 failed, 5 ignored**.
+  - Documented that native binaries (`slice335`, `slice336`) are unaffected and retain logs from Stage 4.
+- **Evidence:** Playwright checks passed (215/215 en-US, 222/222 pt-BR, 209/209 spatial nav). Full workspace tests captured in `docs/tasks/evidence/ra-token-logs/cargo-test-workspace.log`.
 
 ---
 
@@ -100,25 +91,25 @@ All tests were executed serially from the workspace root `C:/Antigravity/gt4-wt-
   ```
 - **Result:** **21 passed, 0 failed, 0 ignored** (finished in 0.14s)
   - `diagnostic_export_forbids_retroachievements_file` ... ok
-  - `launch_environment_includes_language_tag` ... ok
   - `diagnostic_export_exclusions_comprehensive` ... ok
-  - `fake_protector_encrypt_decrypt_and_injected_failures` ... ok
-  - `debug_and_serialization_paths_never_leak_plaintext_token` ... ok
   - `malformed_non_ascii_and_truncated_ciphertext_never_panics` ... ok
+  - `launch_environment_includes_language_tag` ... ok
+  - `debug_and_serialization_paths_never_leak_plaintext_token` ... ok
+  - `fake_protector_encrypt_decrypt_and_injected_failures` ... ok
   - `real_windows_dpapi_roundtrip_tampered_blob_and_empty_handling` ... ok
   - `retroachievements_cache_explicitly_resolves_under_gt4_in_modern_layout` ... ok
-  - `switching_games_preserves_shared_retroachievements_file` ... ok
-  - `failed_migration_leaves_original_plaintext_file_untouched` ... ok
   - `hostile_inherited_retroachievements_environment_is_scrubbed` ... ok
+  - `failed_migration_leaves_original_plaintext_file_untouched` ... ok
   - `hostile_inherited_retroachievements_environment_with_case_variations_is_scrubbed_and_redacted` ... ok
+  - `switching_games_preserves_shared_retroachievements_file` ... ok
   - `legacy_plaintext_migration_from_124_125_config_and_clean_disk_replacement` ... ok
   - `migration_failure_prevents_option_updates_from_destroying_legacy_token` ... ok
   - `unprotectable_token_preserves_ciphertext_and_non_secret_settings` ... ok
-  - `interrupted_and_failed_atomic_writes_are_safe` ... ok
   - `retroachievements_config_125_compatibility_and_malformed_handling` ... ok
   - `real_windows_dpapi_end_to_end_migration_and_persistence` ... ok
   - `two_portable_profiles_and_installed_profile_independence` ... ok
   - `retroachievements_config_roundtrips_in_installed_and_portable_layouts` ... ok
+  - `interrupted_and_failed_atomic_writes_are_safe` ... ok
   - `fake_server_http_login_refresh_and_failure_scenarios` ... ok
 
 ### 4.2 Full Rust Workspace Test Suite Reconciliation
@@ -133,7 +124,6 @@ All tests were executed serially from the workspace root `C:/Antigravity/gt4-wt-
   - Total tests passed: **589**
   - Total tests failed: **0**
   - Total tests ignored: **5** (2 in `real_disc.rs`, 2 in `gt4l_platform`, 1 in `gt4l-tauri`)
-  - *Explanation of baseline difference:* The earlier Stage 4 baseline recorded 578 passed / 5 ignored. With the expansion of `retroachievements_tests` from 10 to 21 tests (+11 tests), the total count is exactly 578 + 11 = **589 passed**.
 - **Complete Suite Breakdown:**
   1. `gt4controls` (lib): 18 passed, 0 failed, 0 ignored
   2. `gt4controls` (docs_match): 4 passed, 0 failed, 0 ignored
@@ -184,7 +174,7 @@ All tests were executed serially from the workspace root `C:/Antigravity/gt4-wt-
   - `ctest-full-v200.log`: 49/50 passed; 1 baseline failure in `python_native_contracts` (710 tests, 13 known GS settings failures, 42 skipped).
   - `ctest-full-spec2.log`: 49/50 passed; 1 baseline failure in `python_native_contracts` (710 tests, 13 known GS settings failures, 55 skipped).
   - `curve-parity.log`: 8,960 / 8,960 bit-accurate matches (100.0000%).
-- No new native runs are falsely claimed without new logs or timestamps.
+- Unaffected native binaries are not falsely presented as newly executed.
 
 ---
 
@@ -192,19 +182,12 @@ All tests were executed serially from the workspace root `C:/Antigravity/gt4-wt-
 
 - **Worktree:** Strictly on `C:/Antigravity/gt4-wt-133-rc7-ra-controls`.
 - **Branch:** `task/133-rc7-ra-controls`.
-- **Files Staged:**
-  - `docs/release-notes/1.3.0-rc7.md`
-  - `docs/release-notes/launcher/1.3.0.md`
-  - `docs/release-notes/launcher/1.3.0-rc7.md`
-  - `docs/release-notes/launcher/pt-BR/1.3.0.md`
-  - `docs/release-notes/launcher/pt-BR/1.3.0-rc7.md`
+- **Files Staged & Committed:**
   - `docs/tasks/TASK-133-RA-TOKEN-PROTECTION-REPORT.md`
-  - `docs/tasks/TASK-133-RA-TOKEN-PROTECTION-REVIEW.md`
+  - `docs/tasks/TASK-133-RA-TOKEN-PROTECTION-REVIEW-2.md`
   - `docs/tasks/evidence/ra-token-logs/cargo-test-workspace.log`
   - `docs/tasks/evidence/ra-token-logs/ui-checks.log`
-  - `launcher/crates/gt4l-core/src/lib.rs`
   - `launcher/crates/gt4l-core/src/retroachievements.rs`
-  - `launcher/crates/gt4l-core/src/secret.rs`
   - `launcher/crates/gt4l-core/tests/retroachievements_tests.rs`
   - `launcher/crates/gt4l-tauri/src/commands.rs`
   - `launcher/crates/gt4l-tauri/src/flow_audit.rs`

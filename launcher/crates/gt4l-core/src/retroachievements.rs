@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::path::Path;
 
@@ -147,15 +148,102 @@ impl Default for RaConfig {
     }
 }
 
+static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+struct TempFileGuard<'a> {
+    path: &'a Path,
+    persisted: bool,
+}
+
+impl<'a> Drop for TempFileGuard<'a> {
+    fn drop(&mut self) {
+        if !self.persisted {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
+
+/// Injectable filesystem seam for atomic file writes and replacements.
+pub trait AtomicFileOps: Send + Sync {
+    fn write_temp(&self, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error>;
+    fn rename_replace(&self, temp_path: &Path, target: &Path) -> Result<(), std::io::Error>;
+}
+
+/// Standard production implementation of [`AtomicFileOps`] using `std::fs`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StdAtomicFileOps;
+
+impl AtomicFileOps for StdAtomicFileOps {
+    fn write_temp(&self, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+        use std::io::Write;
+        let mut file = fs::File::create(temp_path)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    fn rename_replace(&self, temp_path: &Path, target: &Path) -> Result<(), std::io::Error> {
+        fs::rename(temp_path, target)
+    }
+}
+
+/// Mock implementation of [`AtomicFileOps`] for deterministic failure injection in tests.
+#[derive(Clone, Debug, Default)]
+pub struct MockAtomicFileOps {
+    pub fail_before_write: bool,
+    pub fail_during_write: Option<usize>,
+    pub fail_flush: bool,
+    pub fail_replace: bool,
+}
+
+impl AtomicFileOps for MockAtomicFileOps {
+    fn write_temp(&self, temp_path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+        if self.fail_before_write {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected fail_before_write"));
+        }
+        if let Some(partial_len) = self.fail_during_write {
+            use std::io::Write;
+            let mut file = fs::File::create(temp_path)?;
+            let slice = &content[..partial_len.min(content.len())];
+            file.write_all(slice)?;
+            file.flush()?;
+            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "injected partial write failure"));
+        }
+        if self.fail_flush {
+            use std::io::Write;
+            let mut file = fs::File::create(temp_path)?;
+            file.write_all(content)?;
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "injected flush failure"));
+        }
+        StdAtomicFileOps.write_temp(temp_path, content)
+    }
+
+    fn rename_replace(&self, temp_path: &Path, target: &Path) -> Result<(), std::io::Error> {
+        if self.fail_replace {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected fail_replace"));
+        }
+        StdAtomicFileOps.rename_replace(temp_path, target)
+    }
+}
+
 impl RaConfig {
     /// Loads `retroachievements.toml` from disk using the default system secret protector (DPAPI on Windows).
     pub fn load(path: &Path) -> Self {
-        Self::load_with(path, &crate::secret::default_protector())
+        Self::load_with_custom(path, &crate::secret::default_protector(), &StdAtomicFileOps)
     }
 
     /// Loads `retroachievements.toml` from disk, unprotecting tokens or migrating legacy plaintext configurations
     /// using the provided [`crate::secret::SecretProtector`].
     pub fn load_with(path: &Path, protector: &dyn crate::secret::SecretProtector) -> Self {
+        Self::load_with_custom(path, protector, &StdAtomicFileOps)
+    }
+
+    /// Loads `retroachievements.toml` from disk with custom protector and filesystem seam for deterministic tests.
+    pub fn load_with_custom(
+        path: &Path,
+        protector: &dyn crate::secret::SecretProtector,
+        ops: &dyn AtomicFileOps,
+    ) -> Self {
         let Ok(contents) = fs::read_to_string(path) else {
             return Self::default();
         };
@@ -195,7 +283,7 @@ impl RaConfig {
                             let mut disk_cfg = cfg.clone();
                             disk_cfg.token = String::new();
                             disk_cfg.unmigrated_plaintext = None;
-                            if let Err(_) = disk_cfg.write_disk_atomically(path) {
+                            if let Err(_) = disk_cfg.write_disk_atomically_with(path, ops) {
                                 cfg.token = String::new();
                                 cfg.token_protected = None;
                                 cfg.token_error = Some(TokenErrorKind::MigrationFailed);
@@ -225,27 +313,60 @@ impl RaConfig {
         cfg
     }
 
-    fn write_disk_atomically(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("cannot create config folder: {e}"))?;
-        }
+    pub fn write_disk_atomically(&self, path: &Path) -> Result<(), String> {
+        self.write_disk_atomically_with(path, &StdAtomicFileOps)
+    }
+
+    /// Writes `retroachievements.toml` atomically with unique temporary file naming, RAII cleanup guard,
+    /// and injectable filesystem seam.
+    pub fn write_disk_atomically_with(&self, path: &Path, ops: &dyn AtomicFileOps) -> Result<(), String> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).map_err(|e| format!("cannot create config folder: {e}"))?;
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("retroachievements.toml");
+        let tmp_name = format!(
+            ".{}.tmp-{}-{}",
+            file_name,
+            std::process::id(),
+            TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let tmp = parent.join(tmp_name);
+
         let body = toml::to_string_pretty(self).map_err(|e| format!("cannot format retroachievements.toml: {e}"))?;
-        let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, body.as_bytes()).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-        fs::rename(&tmp, path).map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("cannot save {}: {e}", path.display())
-        })
+
+        let mut guard = TempFileGuard {
+            path: &tmp,
+            persisted: false,
+        };
+
+        ops.write_temp(&tmp, body.as_bytes())
+            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+
+        ops.rename_replace(&tmp, path)
+            .map_err(|e| format!("cannot save {}: {e}", path.display()))?;
+
+        guard.persisted = true;
+        Ok(())
     }
 
     /// Writes `retroachievements.toml` atomically using the default system secret protector (DPAPI on Windows).
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        self.save_with(path, &crate::secret::default_protector())
+        self.save_with_custom(path, &crate::secret::default_protector(), &StdAtomicFileOps)
     }
 
     /// Writes `retroachievements.toml` atomically, protecting any non-empty in-memory token using
     /// the provided [`crate::secret::SecretProtector`].
     pub fn save_with(&self, path: &Path, protector: &dyn crate::secret::SecretProtector) -> Result<(), String> {
+        self.save_with_custom(path, protector, &StdAtomicFileOps)
+    }
+
+    /// Writes `retroachievements.toml` atomically with custom secret protector and filesystem seam.
+    pub fn save_with_custom(
+        &self,
+        path: &Path,
+        protector: &dyn crate::secret::SecretProtector,
+        ops: &dyn AtomicFileOps,
+    ) -> Result<(), String> {
         let mut disk_cfg = self.clone();
         disk_cfg.token = String::new();
 
@@ -285,7 +406,7 @@ impl RaConfig {
             disk_cfg.token_protected = None;
         }
 
-        disk_cfg.write_disk_atomically(path)
+        disk_cfg.write_disk_atomically_with(path, ops)
     }
 
     /// Whether an authenticated username and API token are stored.

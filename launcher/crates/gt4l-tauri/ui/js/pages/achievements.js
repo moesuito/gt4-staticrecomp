@@ -135,7 +135,12 @@
         }
         applyState(res, "", requestId);
       }, function (err) {
-        showError(err, requestId);
+        var errStr = GT4.errorText(err) || "";
+        var msg = errStr.indexOf("legacy credentials could not be protected") >= 0
+          ? t("ra.err_save_migration")
+          : t("ra.err_save_failed");
+        GT4.ui.toast(msg, true);
+        refreshStatus();
       });
     }
 
@@ -321,7 +326,9 @@
         if (state.reloginRequired) {
           var descKey = state.tokenErrorKind === "migrationFailed"
             ? "ra.migration_failed_desc"
-            : "ra.relogin_required_desc";
+            : (state.tokenErrorKind === "saveFailed"
+              ? "ra.save_failed_desc"
+              : "ra.relogin_required_desc");
           accountSection.appendChild(h("div", { class: "row" }, [
             h("div", { class: "k" }, [h("span", { text: t("ra.relogin_notice") })]),
             h("div", { class: "ctl wide" }, [
