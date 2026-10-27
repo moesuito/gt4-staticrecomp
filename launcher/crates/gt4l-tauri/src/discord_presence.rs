@@ -324,6 +324,7 @@ struct Session {
 pub struct DiscordPresence {
     factory: Arc<dyn Fn() -> Box<dyn PresenceTransport> + Send + Sync>,
     current_generation: Arc<AtomicU64>,
+    worker_gate: Arc<Mutex<()>>,
     inner: Mutex<Inner>,
 }
 
@@ -341,6 +342,7 @@ impl DiscordPresence {
         Self {
             factory: Arc::new(factory),
             current_generation: Arc::new(AtomicU64::new(0)),
+            worker_gate: Arc::new(Mutex::new(())),
             inner: Mutex::new(Inner {
                 context: None,
                 session: None,
@@ -371,6 +373,7 @@ impl DiscordPresence {
             inner.session.take()
         };
         if let Some(session) = session {
+            session.stop.store(true, Ordering::SeqCst);
             thread::spawn(move || stop_session_detached(session));
         }
     }
@@ -380,6 +383,7 @@ impl DiscordPresence {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(s) = inner.session.take() {
+                s.stop.store(true, Ordering::SeqCst);
                 sessions.push(s);
             }
             sessions.extend(inner.retired.drain(..).map(|h| {
@@ -407,6 +411,7 @@ impl DiscordPresence {
                 start_session_locked(self, &mut inner);
             }
         } else if let Some(session) = inner.session.take() {
+            session.stop.store(true, Ordering::SeqCst);
             drop(inner);
             thread::spawn(move || stop_session_detached(session));
         }
@@ -436,8 +441,11 @@ fn start_session_locked(presence: &DiscordPresence, inner: &mut Inner) {
     let gen_clone = generation;
     let current_gen = presence.current_generation.clone();
     let factory = presence.factory.clone();
+    let worker_gate = presence.worker_gate.clone();
     let (done_tx, done_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
+        // Serialize teardown before a later session publishes its activity.
+        let _guard = worker_gate.lock().unwrap_or_else(|p| p.into_inner());
         run_session(factory, context, gen_clone, current_gen, stop_clone, done_tx);
     });
     inner.session = Some(Session {
@@ -512,11 +520,20 @@ fn run_session(
                                         &format!("n{}", nonce_counter),
                                     );
                                     if t.write_frame(1, &payload, IO_TIMEOUT).is_ok() {
-                                        // read ack
-                                        let _ = t.read_frame(IO_TIMEOUT);
-                                        transport = Some(t);
-                                        connected = true;
-                                        attempts = 0;
+                                        let ack = t.read_frame(IO_TIMEOUT);
+                                        let accepted = ack.ok().and_then(|(op, text)| {
+                                            let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+                                            Some(op == 1 && value["cmd"] == "SET_ACTIVITY"
+                                                && value["nonce"] == format!("n{}", nonce_counter)
+                                                && value["evt"] != "ERROR")
+                                        }).unwrap_or(false);
+                                        if accepted {
+                                            transport = Some(t);
+                                            connected = true;
+                                            attempts = 0;
+                                        } else {
+                                            t.close();
+                                        }
                                     } else {
                                         t.close();
                                     }
@@ -565,10 +582,18 @@ fn run_session(
                             }
                             break;
                         }
-                        // pong or other: ignore
+                        if op == 3 && t.write_frame(4, &text, IO_TIMEOUT).is_err() {
+                            connected = false;
+                            if let Some(mut t) = transport.take() { t.close(); }
+                            break;
+                        }
                     }
-                    Err(_) => {
-                        // timeout or no data: ok
+                    Err(error) => {
+                        if !error.contains("timed out") {
+                            connected = false;
+                            if let Some(mut t) = transport.take() { t.close(); }
+                            break;
+                        }
                     }
                 }
             }
@@ -645,8 +670,14 @@ mod tests {
             }
         }
         fn read_frame(&mut self, _timeout: Duration) -> Result<(u32, String), String> {
-            // Simulate handshake ack and activity ack.
-            Ok((1, r#"{"evt":"OK"}"#.to_string()))
+            let sent = self.sent.lock().unwrap();
+            let (op, payload) = sent.last().expect("frame precedes response");
+            if *op == 0 {
+                Ok((1, r#"{"cmd":"DISPATCH","evt":"READY"}"#.to_string()))
+            } else {
+                let sent: serde_json::Value = serde_json::from_str(payload).unwrap();
+                Ok((1, serde_json::json!({"cmd": "SET_ACTIVITY", "nonce": sent["nonce"], "evt": null}).to_string()))
+            }
         }
         fn close(&mut self) {}
     }

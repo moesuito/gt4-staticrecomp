@@ -1,5 +1,9 @@
 # Current Status
 
+## Local rc7 owner test candidate (2026-10-27)
+
+Codex built an unpublished installer including the current Discord changes and verified extracted game and launcher hashes. Automated Rust tests passed; real Discord and gameplay remain untested. Important lifecycle and transport edge-case validation remains open; see docs/tasks/TASK-115-CODEX-LOCAL-KIT.md. This supersedes any earlier readiness claim.
+
 ## TASK-115 rc7 Discord Rich Presence review corrections (2026-10-27)
 
 Superseded by the second review below; the earlier "corrected" wording was premature. The feature remains unreviewed by the owner and the Discord client is not yet validated.
