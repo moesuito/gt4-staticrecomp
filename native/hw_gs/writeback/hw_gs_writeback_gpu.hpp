@@ -136,7 +136,7 @@ struct GpuChunk {
 // M12 (chapter 06, IN-371): the scaled images of the target slots cover the native rectangle (0, 0) to
 // (kGpuScaledExtent - 1, kGpuScaledExtent - 1) of each slot; draws and loads outside it reach only the 1x words.
 constexpr std::int32_t kGpuScaledExtent = 1024;
-constexpr std::uint32_t kGpuMaxScale = 8;  // GT4_HW_SCALE range (06.1)
+constexpr std::uint32_t kGpuMaxScale = 12;  // GT4_HW_SCALE range (06.1; owner 2026-10-27: up to 12x, 8K)
 // Owner test 6 (IN-377): scaled copies of finished display buffers whose target slot was dropped (GT4 reuses the
 // memory of the buffer it shows next as a read-only depth buffer, which drops the colour slot one frame before the
 // buffer is displayed). Each shadow keeps the native rectangle (0, 0) to (kGpuScaledExtent - 1,

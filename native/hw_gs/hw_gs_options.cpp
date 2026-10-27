@@ -226,7 +226,7 @@ Options parse_options(const EnvironmentLookup &lookup) {
   Options o;
   std::string v;
 
-  if (read_value(lookup, "GT4_HW_SCALE", v)) o.scale = parse_integer("GT4_HW_SCALE", v, 1, 8);
+  if (read_value(lookup, "GT4_HW_SCALE", v)) o.scale = parse_integer("GT4_HW_SCALE", v, 1, 12);  // owner 2026-10-27: up to 12x (8K)
   if (read_value(lookup, "GT4_HW_HALF_PIXEL", v)) o.half_pixel = parse_token("GT4_HW_HALF_PIXEL", v, half_pixel_tokens);
   if (read_value(lookup, "GT4_HW_SPRITE_FIX", v)) o.sprite_fix = parse_bit_list("GT4_HW_SPRITE_FIX", v, sprite_fix_tokens);
   if (read_value(lookup, "GT4_HW_NATIVE_POSTFX", v)) o.native_postfx = parse_token("GT4_HW_NATIVE_POSTFX", v, postfx_native_tokens);

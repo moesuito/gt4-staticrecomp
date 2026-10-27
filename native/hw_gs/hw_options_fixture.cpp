@@ -157,7 +157,7 @@ int main() {
 
   // Invalid values abort (throw), one per kind.
   expect(rejected("GT4_HW_SCALE", "0"), "scale 0 rejected");
-  expect(rejected("GT4_HW_SCALE", "9"), "scale 9 rejected");
+  expect(rejected("GT4_HW_SCALE", "13"), "scale 13 rejected");
   expect(rejected("GT4_HW_SCALE", "2x"), "scale with suffix rejected");
   expect(rejected("GT4_HW_SCALE", "-1"), "negative scale rejected");
   expect(rejected("GT4_HW_HALF_PIXEL", "half"), "unknown half pixel rejected");

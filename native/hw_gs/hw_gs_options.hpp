@@ -69,7 +69,7 @@ struct Deinterlace {
 };
 
 struct Options {
-  std::uint32_t scale = 1;                       // GT4_HW_SCALE 1..8
+  std::uint32_t scale = 1;                       // GT4_HW_SCALE 1..12
   HalfPixel half_pixel = HalfPixel::native;      // GT4_HW_HALF_PIXEL
   std::uint32_t sprite_fix = 0;                  // GT4_HW_SPRITE_FIX bits
   NativePostfx native_postfx = NativePostfx::off;
