@@ -1094,3 +1094,17 @@ Answers of the TASK-026 team, behaviour only. All Confirmed unless labelled.
   `.dds`; dumps of mip k add `-mip<k>`. Folders: `<textures>/<SERIAL>/replacements/` recursively plus
   `<textures>/<SERIAL>.zip` (by file name), dumps in `<textures>/<SERIAL>/dumps/`, serial SCUS-97328 for GT4. Our
   `native/hw_gs/replace/` already follows this contract.
+
+## 18. Automatic and motion-adaptive deinterlace (2026-10-27, TASK-026 team, prose)
+
+- Automatic picks the motion-adaptive mode when FFMD is set, when exactly one circuit changed its DBY since the previous VBlank, or under the scan-mask rule; otherwise it does not deinterlace. Our resolve_auto_deinterlace matches.
+- At an internal scale every algorithm works on output rows of the merged image. With FFMD set, the field offset of one native row (scale output rows) is applied in the merge, before the deinterlace.
+- The motion-adaptive history keeps the last four fields: the current one, one back (opposite parity), two back (same parity) and three back (opposite parity). Each field is stored on its own rows only.
+- For a row the current field does not hold, the reference compares:
+  - the current field against two back on the rows above and below;
+  - one back against three back on the row itself.
+  Any channel above 0.08 counts as motion.
+- **Static:** the row of one back (woven).
+- **Moving:** the average of the current rows above and below, when those two agree within the threshold and the woven row differs from them at least 0.9 times as much; otherwise the woven row.
+- The top and bottom rows are always woven.
+- Our earlier rule never tested whether the woven field itself moved (IN-396).

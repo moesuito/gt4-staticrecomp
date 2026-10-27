@@ -14,9 +14,11 @@
 //   1 weave update: woven rows of the field's parity take the current merge image (all rows when `init`).
 //   2 weave output: the woven image.        3 blend output: vertical 1/4, 1/2, 1/4 of the woven image.
 //   4 bob: the merge image shifted down by s * (1 - field) rows.
-//   5 adaptive: field rows and edge rows pass; a missing row is the previous opposite-parity field's row when the
-//     current and previous same-parity fields agree on the row above, the row and the row below (no channel moves
-//     by more than the threshold), else the average of the rows above and below.
+//   5 adaptive (IN-396, the reference's motion test): field rows pass; a missing row is the previous opposite-parity
+//     field's row (one back, "woven") when the current and previous same-parity fields (two back) agree on the rows
+//     above and below and the woven field agrees with the older field of its parity (three back) on the row itself
+//     (no channel moves by more than the threshold). Moving: the average of the rows above and below when they agree
+//     and the woven row differs from them at least as much, else the woven row. The edge rows are always woven.
 
 #version 450
 
@@ -42,6 +44,7 @@ layout(push_constant) uniform DeinterlaceParameters {
     uint init;            // weave update: copy every row (first field)
     uint row_step;        // IN-386: output rows per algorithm row: 1 = one output row (the reference), scale = one
                           // native row (the IN-381 interpretation)
+    uint older_other;     // IN-396: history index of the opposite-parity field three back, or 4 when there is none
 } pc;
 
 uvec4 unpack_rgba(uint word) {
@@ -56,13 +59,13 @@ uint load_history(uint index, ivec2 p) {
     return imageLoad(history[index], p).x;
 }
 
-// |a - b| / 255 > threshold on R, G or B.
-bool moved(uint a, uint b) {
-    uvec4 x = unpack_rgba(a);
-    uvec4 y = unpack_rgba(b);
-    uvec3 d = uvec3(abs(ivec3(x.rgb) - ivec3(y.rgb)));
-    uint limit = pc.threshold_permille * 255u;
-    return d.r * 1000u > limit || d.g * 1000u > limit || d.b * 1000u > limit;
+// IN-396: how far the largest R, G or B difference lies above the threshold, in 1/255000 units (difference * 1000 -
+// threshold_permille * 255): positive = moved. The same integers as display::channel_excess.
+int channel_excess(uint a, uint b) {
+    ivec3 x = ivec3(unpack_rgba(a).rgb);
+    ivec3 y = ivec3(unpack_rgba(b).rgb);
+    ivec3 d = abs(x - y);
+    return max(d.r, max(d.g, d.b)) * 1000 - int(pc.threshold_permille) * 255;
 }
 
 void main() {
@@ -101,30 +104,37 @@ void main() {
         imageStore(display_out, p, uvec4(load_history(pc.current, ivec2(p.x, row)), 0u, 0u, 0u));
         return;
     }
-    // mode 5: adaptive.
+    // mode 5: adaptive (display::Deinterlacer::adaptive in GPU form).
     uint here = load_history(pc.current, p);
-    bool edge_row = row == 0u || row + 1u == rows;
-    if (field_row || edge_row) {
+    if (field_row) {
         imageStore(display_out, p, uvec4(here, 0u, 0u, 0u));
+        return;
+    }
+    bool have_woven = pc.previous_other < 4u || pc.have_output != 0u;
+    uint woven_word = pc.previous_other < 4u ? load_history(pc.previous_other, p)
+                      : pc.have_output != 0u ? imageLoad(previous_output, p).x
+                                             : here;
+    bool edge_row = row == 0u || row + 1u == rows;
+    if (edge_row) {
+        imageStore(display_out, p, uvec4(woven_word, 0u, 0u, 0u));
         return;
     }
     uint up = load_history(pc.current, ivec2(p.x, p.y - s));
     uint down = load_history(pc.current, ivec2(p.x, p.y + s));
     uvec4 bob4 = (unpack_rgba(up) + unpack_rgba(down) + 1u) / 2u;
     uint bob = pack_rgba(bob4);
-    bool motion = true;
-    if (pc.previous_same < 4u) {
-        motion = moved(up, load_history(pc.previous_same, ivec2(p.x, p.y - s))) ||
-                 moved(here, load_history(pc.previous_same, p)) ||
-                 moved(down, load_history(pc.previous_same, ivec2(p.x, p.y + s)));
-    }
-    uint result = bob;
+    bool motion = pc.previous_same >= 4u || pc.previous_other >= 4u || pc.older_other >= 4u;
     if (!motion) {
-        if (pc.previous_other < 4u) {
-            result = load_history(pc.previous_other, p);
-        } else if (pc.have_output != 0u) {
-            result = imageLoad(previous_output, p).x;
-        }
+        motion = channel_excess(up, load_history(pc.previous_same, ivec2(p.x, p.y - s))) > 0 ||
+                 channel_excess(down, load_history(pc.previous_same, ivec2(p.x, p.y + s))) > 0 ||
+                 channel_excess(woven_word, load_history(pc.older_other, p)) > 0;
+    }
+    uint result = woven_word;
+    if (motion) {
+        int up_down = channel_excess(up, down);
+        int up_woven = channel_excess(up, woven_word);
+        bool interpolate = !have_woven || (up_down < 0 && 10 * up_woven >= 9 * up_down);
+        result = interpolate ? bob : woven_word;
     }
     imageStore(display_out, p, uvec4(result, 0u, 0u, 0u));
 }

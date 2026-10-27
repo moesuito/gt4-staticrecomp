@@ -299,6 +299,7 @@ public:
         std::uint32_t current = 0;
         std::uint32_t previousSame = kGpuDeinterlaceHistory;
         std::uint32_t previousOther = kGpuDeinterlaceHistory;
+        std::uint32_t olderOther = kGpuDeinterlaceHistory;  // IN-396: the opposite-parity field three back
         bool haveOutput = false;
         bool initWoven = false;
         std::uint32_t thresholdPermille = 80;

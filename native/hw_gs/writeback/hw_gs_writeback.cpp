@@ -2097,8 +2097,9 @@ public:
                 if (h.age[i] < h.age[current]) current = i;
             }
         }
-        // Previous same- and opposite-parity fields: the most recent older entries (IN-39, IN-337).
-        uint64_t sameAge = 0, otherAge = 0;
+        // Previous same- and opposite-parity fields: the most recent older entries (IN-39, IN-337), and IN-396 the
+        // older opposite-parity field (the reference's motion test compares the woven field with it).
+        uint64_t sameAge = 0, otherAge = 0, olderAge = 0;
         for (uint32_t i = 0; i < gpu::kGpuDeinterlaceHistory; ++i) {
             if (i == current || !h.valid[i]) continue;
             if (h.parity[i] == rowParity) {
@@ -2107,8 +2108,13 @@ public:
                     sameAge = h.age[i];
                 }
             } else if (step.previousOther == gpu::kGpuDeinterlaceHistory || h.age[i] > otherAge) {
+                step.olderOther = step.previousOther;
+                olderAge = otherAge;
                 step.previousOther = i;
                 otherAge = h.age[i];
+            } else if (step.olderOther == gpu::kGpuDeinterlaceHistory || h.age[i] > olderAge) {
+                step.olderOther = i;
+                olderAge = h.age[i];
             }
         }
         step.current = current;
@@ -3382,6 +3388,19 @@ bool Renderer::ComposeFrameGpu(GpuFrame& out) {
         const int32_t offsetNativeRows =
             interlaced ? display::interlace_offset_rows(true, layout.ffmd, effective, 1, fieldPhase) : 0;
         const bool deinterlace = interlaced && effective != display::DeinterlaceMode::Off;
+        {
+            // IN-396 diagnostics: one line whenever the GPU compose's deinterlace decision or its inputs change.
+            static int lastKey = -1;
+            const int key = static_cast<int>(effective) | (layout.ffmd ? 16 : 0) | (interlaced ? 32 : 0) |
+                            (layout.one_circuit_dby_changed ? 64 : 0) | (s.displayRegs_.scanmsk_active ? 128 : 0);
+            if (key != lastKey) {
+                lastKey = key;
+                std::fprintf(stderr, "[hw] deinterlace vblank=%llu effective=%d ffmd=%d interlaced=%d dby_xor=%d scanmsk=%d\n",
+                             static_cast<unsigned long long>(s.vblanks_), static_cast<int>(effective),
+                             layout.ffmd ? 1 : 0, interlaced ? 1 : 0, layout.one_circuit_dby_changed ? 1 : 0,
+                             s.displayRegs_.scanmsk_active ? 1 : 0);
+            }
+        }
         if (interlaced && (size.width > gpu::kGpuDeinterlaceWidth || size.height > gpu::kGpuDeinterlaceRows)) {
             ++s.counters.gpuComposeSkips[2];
             return false;  // larger than the deinterlace images: the CPU presentation at 1x

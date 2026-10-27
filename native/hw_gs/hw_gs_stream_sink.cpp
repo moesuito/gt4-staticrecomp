@@ -46,6 +46,7 @@ std::chrono::steady_clock::time_point g_profile_wall;
 // buffer decode of chapter 12.9 stays with the CPU reference tool, which owns that oracle (IN-325).
 std::string g_dump_dir;
 std::uint32_t g_dump_every = 0;
+std::uint64_t g_dump_from = 0;  // GT4_HW_DUMP_FROM=<vblank>: no dumps before it (consecutive frames of one scene)
 std::uint64_t g_dumps = 0;
 std::uint64_t g_dumps_without_image = 0;
 
@@ -58,8 +59,9 @@ void read_dump_options() {
       const long value = std::strtol(every, nullptr, 10);
       g_dump_every = value > 0 ? static_cast<std::uint32_t>(value) : 100u;
     }
-    std::fprintf(stderr, "[hw] frame dumps: %s every %u VBlanks (composed scanout image)\n", g_dump_dir.c_str(),
-                 g_dump_every);
+    if (const char *from = std::getenv("GT4_HW_DUMP_FROM")) g_dump_from = std::strtoull(from, nullptr, 10);
+    std::fprintf(stderr, "[hw] frame dumps: %s every %u VBlanks from %llu (composed scanout image)\n",
+                 g_dump_dir.c_str(), g_dump_every, static_cast<unsigned long long>(g_dump_from));
   }
 }
 
@@ -85,7 +87,7 @@ bool write_dump(Backend &hw, std::uint64_t index) {
 
 void maybe_dump(Backend &hw) {
   if (g_dump_every == 0) return;
-  if (g_vsyncs % g_dump_every != 0) return;
+  if (g_vsyncs < g_dump_from || g_vsyncs % g_dump_every != 0) return;
   if (write_dump(hw, g_vsyncs)) {
     ++g_dumps;
   } else {

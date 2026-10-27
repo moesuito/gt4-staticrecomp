@@ -577,6 +577,27 @@ void test_deinterlace_adaptive() {
     CHECK_EQ(moving.history_size(), 0);
     out = moving.process(after, 1, DeinterlaceMode::Adaptive, false, 1);
     CHECK_EQ(out.at(1, 2).r, 0);  // field 1 writes odd rows; row 2 is missing and bobbed from 1 and 3
+
+    // IN-396 (the owner's combed GT Mode ticker): the current field and the field two back agree, but the field that
+    // would be woven in (one back) changed against its own previous sample (three back). The reference treats that
+    // as motion and interpolates; weaving it put a second position of the text on every other row.
+    Deinterlacer ticker;
+    const Image dark = solid(1, 6, 0);
+    const Image bright = solid(1, 6, 200);
+    ticker.process(dark, 0, DeinterlaceMode::Adaptive, false, 1);
+    ticker.process(dark, 1, DeinterlaceMode::Adaptive, false, 1);    // three back, opposite parity
+    ticker.process(dark, 0, DeinterlaceMode::Adaptive, false, 1);    // two back, same parity
+    ticker.process(bright, 1, DeinterlaceMode::Adaptive, false, 1);  // one back: the woven field moved
+    out = ticker.process(dark, 0, DeinterlaceMode::Adaptive, false, 1);
+    CHECK_EQ(out.at(0, 3).r, 0);  // interpolated from rows 2 and 4, not the woven 200
+    // The same cadence with a static woven field weaves it.
+    Deinterlacer still;
+    still.process(dark, 0, DeinterlaceMode::Adaptive, false, 1);
+    still.process(bright, 1, DeinterlaceMode::Adaptive, false, 1);
+    still.process(dark, 0, DeinterlaceMode::Adaptive, false, 1);
+    still.process(bright, 1, DeinterlaceMode::Adaptive, false, 1);
+    out = still.process(dark, 0, DeinterlaceMode::Adaptive, false, 1);
+    CHECK_EQ(out.at(0, 3).r, 200);
 }
 
 void test_auto_deinterlace() {

@@ -56,12 +56,15 @@ std::uint32_t psm_family(std::uint32_t psm) {
     }
 }
 
-// Sample of an RGB difference against the 0.08-style threshold (normalised to 0..1).
-bool exceeds_threshold(const Rgba8& a, const Rgba8& b, double threshold) {
+// IN-396: how far the largest R, G or B difference of two pixels lies above the 13.4 threshold, in 1/255000 units
+// (difference * 1000 - threshold_permille * 255): positive = moved, zero or negative = within the threshold. Integer
+// arithmetic, the same formula as hw_deinterlace_scaled.comp, so the CPU and GPU deinterlacers decide alike.
+std::int64_t channel_excess(const Rgba8& a, const Rgba8& b, std::int64_t threshold_permille) {
     const auto delta = [](std::uint8_t x, std::uint8_t y) {
-        return std::fabs(static_cast<double>(x) - static_cast<double>(y)) / 255.0;
+        return std::abs(static_cast<std::int64_t>(x) - static_cast<std::int64_t>(y));
     };
-    return delta(a.r, b.r) > threshold || delta(a.g, b.g) > threshold || delta(a.b, b.b) > threshold;
+    const std::int64_t largest = std::max({delta(a.r, b.r), delta(a.g, b.g), delta(a.b, b.b)});
+    return largest * 1000 - threshold_permille * 255;
 }
 
 // Integer division truncating toward zero (C++ semantics), made explicit for readers.
@@ -545,11 +548,12 @@ Image Deinterlacer::adaptive(const Image& merged, int row_parity, double thresho
         history_.pop_front();
     }
 
-    // Previous same-parity field: the most recent older entry with this row parity (IN-39), and the
-    // previous field: the most recent older entry with the other parity, whose rows are exactly the lines
-    // this field is missing (IN-337).
+    // Previous same-parity field: the most recent older entry with this row parity (IN-39, two fields back), the
+    // previous field: the most recent older entry with the other parity, whose rows are exactly the lines this field
+    // is missing (IN-337, one back), and IN-396 the older field of that parity (three back).
     const FieldRecord* previous_same = nullptr;
     const FieldRecord* previous_other = nullptr;
+    const FieldRecord* older_other = nullptr;
     for (std::size_t index = history_.size() - 1u; index-- > 0u;) {
         const FieldRecord& record = history_[index];
         if (!record.image.same_size(merged)) continue;
@@ -557,8 +561,11 @@ Image Deinterlacer::adaptive(const Image& merged, int row_parity, double thresho
             if (previous_same == nullptr) previous_same = &record;
         } else if (previous_other == nullptr) {
             previous_other = &record;
+        } else if (older_other == nullptr) {
+            older_other = &record;
         }
     }
+    const std::int64_t threshold_permille = std::llround(threshold * 1000.0);
     const bool have_output = has_previous_output_ && previous_output_.same_size(merged);
 
     Image out(merged.width, merged.height);
@@ -566,8 +573,17 @@ Image Deinterlacer::adaptive(const Image& merged, int row_parity, double thresho
         const bool current_row = (static_cast<int>(y) & 1) == row_parity;
         const bool edge_row = y == 0u || y + 1u == merged.height;
         for (std::uint32_t x = 0; x < merged.width; ++x) {
-            if (current_row || edge_row) {
-                out.at(x, y) = merged.at(x, y);  // rows of the field and the edges pass through
+            if (current_row) {
+                out.at(x, y) = merged.at(x, y);  // rows of the field pass through
+                continue;
+            }
+            // The woven value of a missing line: the previous field's line (IN-337), else the last output.
+            const bool have_woven = previous_other != nullptr || have_output;
+            const Rgba8 woven = previous_other != nullptr ? previous_other->image.at(x, y)
+                                : have_output             ? previous_output_.at(x, y)
+                                                          : merged.at(x, y);
+            if (edge_row) {
+                out.at(x, y) = woven;  // IN-396: the first and last rows are always woven (the reference's rule)
                 continue;
             }
             // A missing line: the lines above and below are in the current field (IN-39).
@@ -575,24 +591,27 @@ Image Deinterlacer::adaptive(const Image& merged, int row_parity, double thresho
             const Rgba8 down = merged.at(x, y + 1u);
             const Rgba8 bob{average_byte(up.r, down.r), average_byte(up.g, down.g),
                             average_byte(up.b, down.b), average_byte(up.a, down.a)};
-            // 13.4: compare the current and the previous same-parity field at the same position on the
-            // line above, the line itself and the line below (IN-337: "the line itself" is the merged row y
-            // of both fields, not an interpolation, so sharp static detail is not mistaken for motion).
-            bool motion = true;
-            if (previous_same != nullptr) {
-                motion = exceeds_threshold(up, previous_same->image.at(x, y - 1u), threshold) ||
-                         exceeds_threshold(merged.at(x, y), previous_same->image.at(x, y), threshold) ||
-                         exceeds_threshold(down, previous_same->image.at(x, y + 1u), threshold);
+            // 13.4 / IN-396 (the reference's motion test): the current field against the previous same-parity field
+            // on the line above and the line below, and the field that would be woven in (one back) against the
+            // older field of its parity (three back) on the line itself. IN-337's test of the current image's own
+            // row y against two back was a second current-field test; it never noticed that the woven field had
+            // moved, so a scrolling text was woven from two positions (the owner's combed GT Mode ticker).
+            bool motion = previous_same == nullptr || older_other == nullptr || previous_other == nullptr;
+            if (!motion) {
+                motion = channel_excess(up, previous_same->image.at(x, y - 1u), threshold_permille) > 0 ||
+                         channel_excess(down, previous_same->image.at(x, y + 1u), threshold_permille) > 0 ||
+                         channel_excess(woven, older_other->image.at(x, y), threshold_permille) > 0;
             }
-            if (motion) {
-                out.at(x, y) = bob;
-            } else if (previous_other != nullptr) {
-                out.at(x, y) = previous_other->image.at(x, y);  // weave: the previous field's line
-            } else if (have_output) {
-                out.at(x, y) = previous_output_.at(x, y);  // no field of the other parity yet
-            } else {
-                out.at(x, y) = bob;
+            if (!motion) {
+                out.at(x, y) = woven;
+                continue;
             }
+            // Moving: the average of the lines above and below when they agree and the woven line differs from them
+            // at least as much (the reference's rule), else the woven line; with nothing to weave, the average.
+            const std::int64_t up_down = channel_excess(up, down, threshold_permille);
+            const std::int64_t up_woven = channel_excess(up, woven, threshold_permille);
+            const bool interpolate = !have_woven || (up_down < 0 && 10 * up_woven >= 9 * up_down);
+            out.at(x, y) = interpolate ? bob : woven;
         }
     }
     previous_output_ = out;
