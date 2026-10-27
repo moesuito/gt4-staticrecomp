@@ -555,13 +555,22 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
         // the rasteriser's coverage: the last pixel row/column of every primitive is cut away. Invisible at 1x, a
         // one-native-pixel notch at scale - the owner's bitten wheel rims, the dialog border notches and the same cut on
         // the car in a race. One native pixel of slack per side restores the reference's rule.
-        PixelRect prim = record.rect;
-        prim.x0 -= 1;
-        prim.y0 -= 1;
-        prim.x1 += 1;
-        prim.y1 += 1;
-        const Clip clip = Intersect(Intersect(ToClip(prim), scissor), surface);
+        // IN-397: the slack belongs to the SCALED pass only. The front end's rectangle is the exact 1x coverage (the
+        // first and last pixel inside [min, max)), so the 1x draw and the drawn/dirty rectangle keep it; at scale the
+        // 06.3 shift puts up to half a native pixel of real sub-pixel coverage past it, which the scaled scissor must
+        // not cut. IN-391 widened the drawn rectangle too: GT4's per-frame colour filter draws exact 32-row pages, the
+        // extra row reached the next page row, the temporary page overlapped the frame and every race frame lost its
+        // scaled image (the owner's 1x races from candidate 276). GT4_HW_PRIM_SLACK=<n> sets the scaled slack (A/B).
+        static const int32_t slack =
+            std::getenv("GT4_HW_PRIM_SLACK") != nullptr ? std::atoi(std::getenv("GT4_HW_PRIM_SLACK")) : 1;
+        const Clip clip = Intersect(Intersect(ToClip(record.rect), scissor), surface);
         if (Empty(clip)) continue;
+        PixelRect widened = record.rect;
+        widened.x0 -= slack;
+        widened.y0 -= slack;
+        widened.x1 += slack;
+        widened.y1 += slack;
+        const Clip scaledClip = Intersect(Intersect(ToClip(widened), scissor), surface);
         const Vertex* v = &batch.vertices[record.first];
         const uint32_t firstVertex = static_cast<uint32_t>(out.vertices.size());
         gpu::GpuDraw draw;
@@ -569,6 +578,10 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
         draw.y0 = clip.y0;
         draw.x1 = clip.x1;
         draw.y1 = clip.y1;
+        draw.scaledX0 = scaledClip.x0;
+        draw.scaledY0 = scaledClip.y0;
+        draw.scaledX1 = scaledClip.x1;
+        draw.scaledY1 = scaledClip.y1;
         draw.first = firstVertex;
         switch (record.type) {
             case PrimType::Point: {

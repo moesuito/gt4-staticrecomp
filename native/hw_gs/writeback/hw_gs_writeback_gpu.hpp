@@ -52,6 +52,10 @@ struct GpuDraw {
     std::uint32_t count = 0;     // vertices of this primitive
     std::int32_t x0 = 0, y0 = 0; // inclusive scissor rectangle in GS pixels
     std::int32_t x1 = 0, y1 = 0;
+    // IN-397: the scissor of the scaled pass in native pixels (inclusive), the 1x one widened by the IN-391 slack and
+    // clipped to the GS scissor. Empty (the default) = the 1x rectangle.
+    std::int32_t scaledX0 = 0, scaledY0 = 0;
+    std::int32_t scaledX1 = -1, scaledY1 = -1;
 };
 
 // Pixel-stage state, the uniform block of hw_pixel_uber.frag (std140, all 4-byte fields).

@@ -50,6 +50,23 @@ constexpr std::uint32_t kPushBytes = 32;  // hw_vertex.vert PushConstants (IN-37
 // IN-371: the pixel shader reads the scale from the same block (native dither cells, 06.5).
 constexpr VkShaderStageFlags kGraphicsPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
+// IN-397: the union of the scaled-pass scissors of some draws (native pixels, clamped to the surface); a draw without
+// its own scaled rectangle contributes its 1x one.
+struct ScaledBounds {
+  std::int32_t x0 = kGpuSurface, y0 = kGpuSurface, x1 = -1, y1 = -1;
+  void add(const GpuDraw &draw) {
+    const bool own = draw.scaledX1 >= draw.scaledX0 && draw.scaledY1 >= draw.scaledY0;
+    x0 = std::min(x0, std::max<std::int32_t>(0, own ? draw.scaledX0 : draw.x0));
+    y0 = std::min(y0, std::max<std::int32_t>(0, own ? draw.scaledY0 : draw.y0));
+    x1 = std::max(x1, std::min<std::int32_t>(kGpuSurface - 1, own ? draw.scaledX1 : draw.x1));
+    y1 = std::max(y1, std::min<std::int32_t>(kGpuSurface - 1, own ? draw.scaledY1 : draw.y1));
+  }
+  VkRect2D rect() const {
+    if (x1 < x0 || y1 < y0) return VkRect2D{{0, 0}, {0, 0}};
+    return VkRect2D{{x0, y0}, {static_cast<std::uint32_t>(x1 - x0 + 1), static_cast<std::uint32_t>(y1 - y0 + 1)}};
+  }
+};
+
 const char *result_text(VkResult result) {
   switch (result) {
   case VK_SUCCESS: return "VK_SUCCESS";
@@ -471,6 +488,7 @@ struct GpuDrawer::Impl {
     std::uint32_t push[8] = {};
     VkDeviceSize vertexOffsetBytes = 0;
     VkRect2D scissor{};
+    VkRect2D scaledScissor{};  // IN-397: native pixels, widened by the IN-391 slack
     std::uint32_t firstVertex = 0;
     std::uint32_t vertexCount = 0;
   };
@@ -2317,7 +2335,7 @@ bool GpuDrawer::Impl::flush_run(std::string &error) {
       scaledDraw.descriptorSet = draw.descriptorSet;
       scaledDraw.uniformOffset = draw.uniformOffset;
       scaledDraw.push = draw.push;
-      scaledDraw.scissor = draw.scissor;
+      scaledDraw.scissor = draw.scaledScissor;
       scaledDraw.firstVertex = static_cast<std::uint32_t>(draw.vertexOffsetBytes / sizeof(GpuVertex)) + draw.firstVertex;
       scaledDraw.vertexCount = draw.vertexCount;
       scaledDraw.pipeline = interlockTriangles;
@@ -2844,6 +2862,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
     }
     if (chunk.hasTexture && !decodeReused) s.mark(textureFromGlm ? Impl::kTimeDecode : Impl::kTimeUpload);
     std::int32_t x0 = kGpuSurface, y0 = kGpuSurface, x1 = -1, y1 = -1;
+    ScaledBounds scaledBounds;
     std::uint32_t firstVertex = UINT32_MAX, endVertex = 0;
     for (const GpuDraw &draw : chunk.draws) {
       if (draw.count == 0 || draw.first + draw.count > chunk.VertexCount()) continue;
@@ -2851,11 +2870,13 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
       y0 = std::min(y0, std::max<std::int32_t>(0, draw.y0));
       x1 = std::max(x1, std::min<std::int32_t>(kGpuSurface - 1, draw.x1));
       y1 = std::max(y1, std::min<std::int32_t>(kGpuSurface - 1, draw.y1));
+      scaledBounds.add(draw);
       firstVertex = std::min(firstVertex, draw.first);
       endVertex = std::max(endVertex, draw.first + draw.count);
     }
     if (x1 >= x0 && y1 >= y0 && endVertex > firstVertex) {
       Impl::PendingDraw pending;
+      pending.scaledScissor = scaledBounds.rect();
       pending.descriptorSet = chunk.colourSlot * kGpuDepthSlots + chunk.depthSlot;
       pending.uniformOffset = uniformOffset;
       std::memcpy(pending.push, pushWords, sizeof(pushWords));
@@ -2982,6 +3003,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
       // as the per-primitive barriers did. A triangle never covers a pixel outside its own coverage rectangle,
       // so the union of the per-primitive scissors clips exactly what they clipped.
       std::int32_t x0 = kGpuSurface, y0 = kGpuSurface, x1 = -1, y1 = -1;
+      ScaledBounds scaledBounds;
       std::uint32_t firstVertex = UINT32_MAX, endVertex = 0;
       for (const GpuDraw &draw : chunk.draws) {
         if (draw.count == 0 || draw.first + draw.count > chunk.VertexCount()) continue;
@@ -2989,6 +3011,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
         y0 = std::min(y0, std::max<std::int32_t>(0, draw.y0));
         x1 = std::max(x1, std::min<std::int32_t>(kGpuSurface - 1, draw.x1));
         y1 = std::max(y1, std::min<std::int32_t>(kGpuSurface - 1, draw.y1));
+        scaledBounds.add(draw);
         firstVertex = std::min(firstVertex, draw.first);
         endVertex = std::max(endVertex, draw.first + draw.count);
       }
@@ -3004,7 +3027,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
           scaledDraw.descriptorSet = chunk.colourSlot * kGpuDepthSlots + chunk.depthSlot;
           scaledDraw.uniformOffset = uniformOffset;
           scaledDraw.push = pushWords;
-          scaledDraw.scissor = scissor;
+          scaledDraw.scissor = scaledBounds.rect();
           scaledDraw.firstVertex = static_cast<std::uint32_t>(vertexOffsetBytes / sizeof(GpuVertex)) + firstVertex;
           scaledDraw.vertexCount = endVertex - firstVertex;
           scaledDraw.pipeline = s.interlockTriangles;
@@ -3047,7 +3070,9 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
         scaledDraw.descriptorSet = chunk.colourSlot * kGpuDepthSlots + chunk.depthSlot;
         scaledDraw.uniformOffset = uniformOffset;
         scaledDraw.push = pushWords;
-        scaledDraw.scissor = scissor;
+        ScaledBounds one;
+        one.add(draw);
+        scaledDraw.scissor = one.rect();
         scaledDraw.firstVertex = static_cast<std::uint32_t>(vertexOffsetBytes / sizeof(GpuVertex)) + draw.first;
         scaledDraw.vertexCount = draw.count;
         scaledDraw.pipeline = s.pipelines[pipelineIndex];
