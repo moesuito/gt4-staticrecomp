@@ -153,7 +153,10 @@ impl PresenceTransport for DiscordIpcTransport {
             use windows::Win32::System::IO::CancelIoEx;
             unsafe {
                 let _ = CancelIoEx(HANDLE(handle as _), Some(&overlapped));
-                let _ = WaitForSingleObject(event, 1000);
+                // Cancellation is asynchronous: keep the OVERLAPPED and buffer alive
+                // until the kernel reports completion, including ERROR_OPERATION_ABORTED.
+                let mut completed = 0u32;
+                let _ = GetOverlappedResult(HANDLE(handle as _), &overlapped, &mut completed, true);
                 let _ = windows::Win32::Foundation::CloseHandle(event);
             }
             return Err("discord ipc write timed out".to_string());
@@ -235,7 +238,10 @@ fn read_exact(handle: isize, buf: &mut [u8], timeout: Duration) -> Result<(), St
             use windows::Win32::System::IO::CancelIoEx;
             unsafe {
                 let _ = CancelIoEx(HANDLE(handle as _), Some(&overlapped));
-                let _ = WaitForSingleObject(event, 1000);
+                // Cancellation is asynchronous: keep the OVERLAPPED and buffer alive
+                // until the kernel reports completion, including ERROR_OPERATION_ABORTED.
+                let mut completed = 0u32;
+                let _ = GetOverlappedResult(HANDLE(handle as _), &overlapped, &mut completed, true);
                 let _ = windows::Win32::Foundation::CloseHandle(event);
             }
             return Err("discord ipc read timed out".to_string());
