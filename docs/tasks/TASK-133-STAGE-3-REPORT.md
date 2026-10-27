@@ -3,25 +3,29 @@
 **Date:** 2026-10-27  
 **Workspace:** `C:\Antigravity\gt4-wt-133-rc7-ra-controls`  
 **Branch:** `task/133-rc7-ra-controls`  
-**Review Base:** `72a19b6`  
+**Review Base:** `9ef35d1`  
 **Reviewer:** Codex Orchestrator  
-**Status:** Stage 3 Review 2 Corrections Complete — Paused for Codex Review  
+**Status:** Stage 3 Review 3 Adjustments Complete — Paused for Codex Review  
 
 ---
 
 ## 1. Executive Summary & Review Scope Disposition
 
-This report documents the resolution of all findings from `docs/tasks/TASK-133-STAGE-3-REVIEW-2.md` following the completion and verification of **Stage 3** of TASK-133. All work remains strictly within the boundaries of `docs/tasks/TASK-133-STAGE-3-LAUNCHER-RA.md` and the preceding bounded cleanup protocol `docs/tasks/TASK-133-BUILD-CLEANUP.md`.
+This report documents the resolution of all findings from `docs/tasks/TASK-133-STAGE-3-REVIEW-3.md` following the completion and verification of **Stage 3** of TASK-133. All work remains strictly within the boundaries of `docs/tasks/TASK-133-STAGE-3-LAUNCHER-RA.md` and the preceding bounded cleanup protocol `docs/tasks/TASK-133-BUILD-CLEANUP.md`.
 
-### Disposition of Review 2 Required Corrections
+### Disposition of Review 3 Required Adjustments
 
-1. **Native Configure Recipes & Provenance:** Recovered the exact CMake cache configuration variables from `CMakeCache.txt` for both fresh candidates (`slice333-rc7-ra-build` and `slice334-rc7-ra-spec2`). Explicitly disclosed that the original interactive command-line strings were not logged to a standalone shell script at configure time, but are fully reconstructed from `CMakeCache.txt` and verified against input pins and output binary hashes. Corrected previous incorrect references to `GT4_GAME_TARGET` (the actual CMake variable is `GT4_TARGET=spec2`) and legacy slice151/153 runtime paths.
-2. **Tracked UI Script & DOM Selector Parity:** Moved `capture_previews.js` into the repository at `docs/tasks/evidence/stage3-ui/capture_previews.js`. Corrected claims in earlier documentation regarding username and achievement counts: the DOM displays mock username `DemoDriver` (not `FakeDriver`) and exactly 3 achievement rows (not 4), matching `mock-data.js`. Tracked execution logs in `docs/tasks/evidence/stage3-logs/ui-checks.log` demonstrate 0 JS errors across all routes.
-3. **Delayed-Response Account Races with Real Fake TCP Server:** Added a multi-threaded TCP/HTTP server in `launcher/crates/gt4l-tauri/src/flow_audit.rs` (`retroachievements_network_race_tests_with_real_tcp_server`) with individual worker threads per connection. Covered 6 distinct race and error scenarios: delayed login vs. logout, delayed login vs. newer login, delayed refresh vs. logout, delayed refresh vs. selected game switch, network disconnect/abort, and failed login. Explicitly documented the mechanism: state-versioning and revision fencing (`state.ra_revision`) discard stale in-flight responses upon arrival; network cancellation is not implemented as underlying `ureq` calls are blocking.
-4. **Accurate Bounded Cleanup Attribution:** Reconciled disk cleanup metrics strictly with `O:\gt4recomp-scratch\task133-cargo-target-receipt.json`: 7,400 files totaling 3,833,790,678 bytes (~3.57 GiB / 3.83 GB). Removed speculative claims regarding the cause of the additional ~4.58 GB free space increase observed on drive C:; acknowledged that the receipt only certifies the relocated files and that the exact cause of any concurrent OS free-space delta was unmeasured.
-5. **Realistic Redaction Audit:** Audited `LaunchPlan` debug formatting realistically: `LaunchPlan::Debug` and the newly added `LaunchPlan::safe_environment()` mask environment keys ending in `_TOKEN` or `_PASSWORD`, while process command-line `arguments` are unmasked executable paths and flags. Corrected test diagnostic in `flow_audit.rs` (line 494) to use `plan.safe_environment()`, ensuring diagnostics never emit secrets even in test logs. Added unit test controls verifying that raw secrets are never leaked.
-6. **CTest & Python Baseline Precision:** Full CTest logs show 48/50 passed on both fresh configurations. Documented the two non-passing tests (`python_native_contracts` due to runner timeout, and transient timing in `native_mtvu_ring` / `native_audio_input`). Acknowledged that isolated reruns passing does not by itself prove load as cause. Documented direct Python suite results (710 tests: 642 passed, 13 failed, 55 skipped) and identified all 13 failures explicitly, starting with `test_defaults_are_vulkan_3x_high_blending_automatic_deinterlace_16_9_vsync`, matching baseline debt from `docs/tasks/TASK-133-BASELINE-REPORT.md`.
-7. **General Settings Row Order Assertion & Provenance:** Re-verified strict row order check in `focus-check.js`: `language,update_channel,launcher_version,launcher_gpu`. Documented provenance: the `launcher_gpu` row was added directly below Version by commit `40b90e81e547cdbf789d93922e580d4e0c7e751a` (TASK-118, 2026-10-26). Independent runnable focus checks pass 215 of 215 in `en-US` and 222 of 222 in `pt-BR`.
+1. **Deterministic Channel/Barrier Coordinated Race Tests:** Replaced timing-only sleeps in `launcher/crates/gt4l-tauri/src/flow_audit.rs` (`retroachievements_network_race_tests_with_real_tcp_server`) with a `SyncGate` channel coordination mechanism (`Sender<()>` and `Receiver<()>`). The fake server explicitly signals request arrival and pauses response dispatch until the test thread completes the concurrent mutation (logout, newer login, or target switch). Bounded timeouts (3s) ensure the fake server cannot hang tests under any failure condition.
+2. **Exercising Real Network Paths for Refresh Scenarios:** Both refresh concurrency scenarios (refresh vs. logout and refresh vs. target switch) now exercise the real `commands::ra_status_at` network path over TCP against the fake HTTP server, eliminating previous reliance on the closure-based `ra_status_with` mock. Both the returned `RaStatusView` and persisted configuration (`retroachievements.toml`) are asserted.
+3. **Network Disconnect and Error Response Reporting:** Accurately characterized `ra_status_at` error behavior: because `login_with_token` and `fetch_game_overview` calls are wrapped in `.ok()`, network drops (e.g., `/abort`) do not return an `Err` to the caller; instead, `ra_status_at` returns `Ok(RaStatusView)` gracefully falling back to local cached state (`game: None`). Verified that persisted disk credentials and score remain intact.
+4. **Distinction of Service Error vs. HTTP 401:** Implemented distinct test cases for service-level errors (HTTP 200 with JSON `{"Success": false, "Error": "Invalid user or password."}`) and genuine HTTP 401 Unauthorized status (`HTTP/1.1 401 Unauthorized`). Verified that both return `Err` without corrupting persisted credentials on disk.
+5. **Reconciliation of Cargo Workspace Totals:** Reconciled all 34 `test result` blocks in `docs/tasks/evidence/stage3-logs/cargo-test-workspace.log`: exactly 574 tests passed, 0 failed, 5 ignored across the workspace crates.
+6. **Preservation of Uncertainty on CTest Baseline:** Preserved explicit uncertainty regarding transient timeouts (`native_mtvu_ring`, `python_native_contracts`) and audio input failure in full CTest runs, avoiding unsubstantiated causality claims.
+7. **Strict Stage Boundaries Maintained:**
+   - No controller curves, stick deadzones, or wheel bridge modifications.
+   - No packaging, NSIS installer compilation, or portable zip creation.
+   - No release drafting, tags, publication, or PR creation.
+   - Paused for Codex Orchestrator review.
 
 ---
 
@@ -151,7 +155,7 @@ An audit was conducted on diagnostic and debug output paths:
 - **Environment Scrubbing:** `LaunchPlan::Debug` and the newly introduced `LaunchPlan::safe_environment()` filter sensitive keys: any key whose name ends with `_TOKEN` or `_PASSWORD`, or equals `GT4_RA_TOKEN` / `GT4_RA_PASSWORD`, has its value replaced with `"[REDACTED]"`.
 - **Command-line Arguments:** Process `arguments` (such as `--data-root` and target flags) are printed without modification as they contain filesystem paths and flags, not secret credentials. The earlier claim that arguments were masked was incorrect and has been corrected.
 - **Diagnostic Logging in Tests:** In `launcher/crates/gt4l-tauri/src/flow_audit.rs` (line 494), an existing diagnostic note previously printed `plan.environment` directly. This was updated to `plan.safe_environment()`, ensuring that debug notes in flow audit tests never print raw credential tokens.
-- **Unit Verification:** Added automated tests in `retroachievements_tests.rs` asserting that `format!("{plan:?}")` renders `[REDACTED]` for `GT4_RA_TOKEN` and never contains raw credential strings.
+- **Unit Verification:** Automated tests in `retroachievements_tests.rs` assert that `format!("{plan:?}")` renders `[REDACTED]` for `GT4_RA_TOKEN` and never contains raw credential strings.
 
 ---
 
@@ -203,15 +207,50 @@ check("General lists Language, Channel, Version and GPU acceleration in that ord
 
 ## 6. Real Network Race Tests, Account Isolation & Test Precision
 
-### 6.1 Multi-Threaded Real TCP Test Server
-A real multi-threaded TCP/HTTP test server was implemented in `launcher/crates/gt4l-tauri/src/flow_audit.rs` (`retroachievements_network_race_tests_with_real_tcp_server`). Each connection is handled in a spawned thread to exercise concurrent request arrival and completion. Six test scenarios are validated:
+### 6.1 Multi-Threaded Real TCP Test Server with Bounded Channel Gates
+A multi-threaded TCP/HTTP test server was implemented in `launcher/crates/gt4l-tauri/src/flow_audit.rs` (`retroachievements_network_race_tests_with_real_tcp_server`). Accepted streams have `stream.set_nonblocking(false)` and `stream.set_read_timeout(Some(Duration::from_secs(3)))` configured to prevent nonblocking inheritance race conditions on Windows. Coordination between the fake server and test thread is handled via `SyncGate` bounded channels (`Sender<()>` and `Receiver<()>`) rather than sleeps:
 
-1. **Delayed Login vs. Logout Race:** Login A delayed by 80ms on the fake server; concurrent logout issued at 20ms. When login A completes late, its result is discarded. State and disk config remain signed out.
-2. **Delayed Login vs. Newer Login Race:** Login A (`UserOld`) delayed by 80ms; login B (`UserNew`) completes immediately (0ms). Login A completes late. State and disk config retain `UserNew` (`tok_UserNew`) and are not overwritten by `UserOld`.
-3. **Delayed Refresh vs. Logout Race:** Account refresh delayed by 60ms; concurrent logout issued at 20ms. The delayed refresh response is discarded, and state remains signed out.
-4. **Delayed Refresh vs. Selected Game Switch Race:** Refresh initiated for GT4 (delayed by 60ms); selected game switched concurrently to `spec2`. When the delayed response completes, the returned view correctly identifies `selected_game = "spec2"`, marks `supported = false`, and discards the stale GT4 achievement overview.
-5. **Abrupt Network Disconnect / Abort:** Server drops the TCP stream immediately on `/abort`. The error is propagated cleanly to the caller, and credentials (`retroachievements.toml`) remain intact on disk without corruption.
-6. **Failed Login:** HTTP 401 response with `"Invalid user or password"`. Returns `Err`, preserving local state.
+1. **Delayed Login vs. Logout Race:**
+   - Client calls `commands::ra_login_at(&url1, "UserA", "pass_wait", &shared1)`.
+   - Fake server receives `"UserA"`, signals `arrived_tx.send(())`, and pauses on `release_rx.recv_timeout(Duration::from_secs(3))`.
+   - Test thread confirms request arrival deterministically, executes `commands::ra_logout_of(&shared)`, and verifies disk config is immediately signed out.
+   - Test thread releases the gate. The late login response completes, sees `ra_revision` incremented by logout, and discards the session.
+   - Asserted: returned view reports `!signed_in`; persisted disk config remains signed out (`cfg.username == ""`).
+
+2. **Delayed Login vs. Newer Login Race (UserOld vs. UserNew):**
+   - Client calls `commands::ra_login_at(&url2, "UserOld", "pass_wait", &shared2)`.
+   - Fake server confirms arrival of `"UserOld"` via channel gate and holds the response.
+   - Client calls `commands::ra_login_at(&base_url, "UserNew", "pass_fast", &shared)`. Fake server immediately returns `UserNew` session.
+   - Test thread asserts `UserNew` is signed in and written to disk.
+   - Test thread releases `UserOld`. When `UserOld` finishes late, its result is discarded due to `ra_revision` mismatch.
+   - Asserted: returned view for `UserOld` does not apply `UserOld`; persisted disk config retains `UserNew` (`tok_UserNew`).
+
+3. **Delayed Refresh vs. Logout Race (Real `ra_status_at` TCP Path):**
+   - Initial state: disk signed in as `RefreshUser` with token `tok_refresh_123` and score 1000.
+   - Client calls real `commands::ra_status_at(&url3, &shared3)` over TCP.
+   - Fake server receives POST `r=login2` with `RefreshUser`, signals arrival via channel gate, and holds the response.
+   - Test thread confirms arrival, executes `commands::ra_logout_of(&shared)`.
+   - Test thread releases the gate. The refreshed score (9999) response completes late and is discarded.
+   - Asserted: returned view reports `!signed_in`; persisted disk config remains signed out.
+
+4. **Delayed Refresh vs. Selected Game Switch Race (Real `ra_status_at` TCP Path):**
+   - Initial state: disk signed in as `TargetUser`, game target set to `gt4`.
+   - Client calls real `commands::ra_status_at(&url4, &shared4)` over TCP.
+   - Fake server confirms arrival of `TargetUser` request and holds the response.
+   - Test thread executes `commands::select_game_of("spec2".to_string(), &shared)`. Target switches to `spec2`, incrementing `ra_revision`.
+   - Test thread releases the gate. The GT4 refresh completes late.
+   - Asserted: returned view reports `selected_game = "spec2"`, `supported = false`, and `game = None` (stale GT4 overview discarded). Persisted credentials (`TargetUser`, `tok_target_123`) remain intact. Target restored to `gt4`.
+
+5. **Interrupted Network Connection (`/abort`):**
+   - Initial state: disk signed in as `AbortUser` with token `tok_abort_123` and score 777.
+   - Client calls `commands::ra_status_at(&format!("{}/abort", base_url), &shared)`. Fake server drops the TCP connection immediately.
+   - Because `ra_status_at` catches network failure via `.ok()`, it returns `Ok(RaStatusView)` falling back to local cached state with `game: None`.
+   - Asserted: call succeeds with view reflecting cached score 777; persisted disk config remains intact.
+
+6. **Failed Login: Service Error vs. Genuine HTTP 401:**
+   - Initial state: disk signed in as `StableUser` with score 777.
+   - **6A (Service JSON Error):** Client calls `ra_login_at` with `"badpass_service_fail"`. Server returns HTTP 200 with `{"Success": false, "Error": "Invalid user or password."}`. Returns `Err("Invalid user or password.")`. Disk state remains `StableUser` (777).
+   - **6B (HTTP 401 Unauthorized):** Client calls `ra_login_at` with `"badpass_http_401"`. Server returns `HTTP/1.1 401 Unauthorized` with empty body. In `gt4l-core`, `.http_status_as_error(false)` delivers the non-JSON payload, which fails JSON deserialization, returning `Err("Unexpected response from RetroAchievements.")`. Disk state remains `StableUser` (777).
 
 ### 6.2 State-Versioning vs. Network Cancellation
 - **Mechanism:** Concurrency control is achieved strictly through **state-versioning / revision fencing**. Each mutating action (login, logout, game target switch) increments `state.ra_revision`. When a background request completes, its snapshot revision and selected game are compared against current state. If `ra_revision` or `selected.id` differs, the result is discarded.
@@ -249,16 +288,22 @@ Direct execution using `private/tooling-venv/Scripts/python.exe -m unittest disc
   13. `test_gs_settings.ResetToDefaultsTests.test_when_set_row_equal_to_its_default_is_not_written`
 
 ### 6.5 Cargo Test Workspace Summary
+- Command: `python scratch/run_cargo.py test --workspace` (with `CARGO_TARGET_DIR=O:\gt4recomp-scratch\task133-cargo-target`)
 - Log: `docs/tasks/evidence/stage3-logs/cargo-test-workspace.log`
-- Total: 569 tests passed, 0 failed, 5 ignored across the workspace crates (`gt4l-core`, `gt4l-tauri`, `gt4saves`, `gt4controls`, `gt4l-disc`, `gt4l-platform`).
+- Reconciled Total: Exactly 34 `test result` blocks totaling **574 tests passed, 0 failed, 5 ignored** across the workspace crates (`gt4l-core`, `gt4l-tauri`, `gt4saves`, `gt4controls`, `gt4l-disc`, `gt4l-platform`).
 
 ---
 
 ## 7. Limitations & Explicit Stop for Review
 
-- **Stage Boundaries Maintained:**
-  - No controller curves, stick deadzone tuning, or wheel bridge code was modified or started.
-  - No packaging, NSIS installer compilation, or portable zip creation was performed.
-  - No release drafting, tags, GitHub releases, or PR merges were executed.
-  - No real game execution or live user credentials were used.
+- **Proven Scope:**
+  - Complete RetroAchievements configuration serialization and persistence in installed and portable modes.
+  - Case-insensitive Windows environment variable scrubbing and token redaction (`safe_environment`) in launch plans.
+  - Deterministic concurrency race handling across login/logout, newer login, refresh, and target switch using channel-gated fake HTTP server verification.
+  - Graceful fallback to cached state on interrupted network connections without state corruption.
+  - Strict UI layout, spatial navigation, and bilingual localization (en-US / pt-BR) verified with 0 JavaScript errors.
+- **Untested / Out of Scope for Stage 3:**
+  - Automated tests do not prove full game execution, gameplay progress, or real RetroAchievements server interaction with live accounts.
+  - Controller curve mappings, deadzone tuning, and wheel bridge features are not part of Stage 3.
+  - Packaging, NSIS installer compilation, and release artifact drafting remain untouched.
 - **Review Stop:** All work on Stage 3 is paused pending Codex Orchestrator review.

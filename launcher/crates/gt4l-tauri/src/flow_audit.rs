@@ -1028,8 +1028,19 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
+
+    struct SyncGate {
+        trigger: String,
+        arrived_tx: Sender<()>,
+        release_rx: Receiver<()>,
+    }
+
+    let gate: Arc<Mutex<Option<SyncGate>>> = Arc::new(Mutex::new(None));
+    let gate_srv = gate.clone();
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
     let addr = listener.local_addr().unwrap();
@@ -1043,6 +1054,9 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
         while !stop_srv.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+                    let gate_conn = gate_srv.clone();
                     thread::spawn(move || {
                         let mut buf = [0u8; 4096];
                         let mut read_bytes = 0;
@@ -1066,34 +1080,70 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
                                 Err(_) => break,
                             }
                         }
+                        if read_bytes == 0 {
+                            return;
+                        }
                         let req = String::from_utf8_lossy(&buf[..read_bytes]);
 
-                        if req.contains("mode_delay_login") || req.contains("mode_delay_refresh") {
-                            thread::sleep(std::time::Duration::from_millis(80));
-                        }
-
+                        // Interrupted network connection route
                         if req.contains("mode_abort") || req.starts_with("POST /abort") {
                             drop(stream);
                             return;
                         }
 
-                        if req.contains("mode_fail") {
+                        // HTTP 401 Unauthorized route
+                        if req.contains("badpass_http_401") {
+                            let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                            let _ = stream.write_all(resp.as_bytes());
+                            let _ = stream.flush();
+                            let _ = stream.shutdown(std::net::Shutdown::Write);
+                            return;
+                        }
+
+                        // Service error route (HTTP 200 with JSON Success:false)
+                        if req.contains("badpass_service_fail") || req.contains("mode_fail") {
                             let body = r#"{"Success":false,"Error":"Invalid user or password."}"#;
                             let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
                             let _ = stream.write_all(resp.as_bytes());
                             let _ = stream.flush();
                             let _ = stream.shutdown(std::net::Shutdown::Write);
-                            thread::sleep(std::time::Duration::from_millis(15));
                             return;
                         }
 
-                        if req.contains("r=gameoverview") {
-                            let body = r#"{"Success":true,"GameID":20580,"GameTitle":"Gran Turismo 4","NumAchievements":2,"NumAwarded":1,"Score":25,"MaxScore":50,"Achievements":{"101":{"ID":101,"Title":"First Win","Description":"Win race","Points":25,"TrueRatio":25,"Author":"GT","DateCreated":"2020","DateModified":"2020","BadgeName":"123","DisplayOrder":1,"MemAddr":""}}}"#;
+                        // Check coordination gate
+                        let active_gate = {
+                            let mut g = gate_conn.lock().unwrap();
+                            if let Some(ref current) = *g {
+                                if req.contains(&current.trigger) {
+                                    g.take()
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(active) = active_gate {
+                            let _ = active.arrived_tx.send(());
+                            // Bounded wait: max 3 seconds to guarantee server never hangs tests
+                            let _ = active.release_rx.recv_timeout(Duration::from_secs(3));
+                        }
+
+                        // RA Game Overview endpoints
+                        if req.contains("r=patch") {
+                            let body = r#"{"Success":true,"PatchData":{"ID":20387,"Title":"Gran Turismo 4","Achievements":[{"ID":101,"Title":"First Win","Description":"Win race","Points":10,"Flags":3,"BadgeName":"00001"}]}}"#;
                             let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
                             let _ = stream.write_all(resp.as_bytes());
                             let _ = stream.flush();
                             let _ = stream.shutdown(std::net::Shutdown::Write);
-                            thread::sleep(std::time::Duration::from_millis(15));
+                            return;
+                        }
+                        if req.contains("r=startsession") {
+                            let body = r#"{"Success":true,"Unlocks":[],"HardcoreUnlocks":[{"ID":101}]}"#;
+                            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                            let _ = stream.write_all(resp.as_bytes());
+                            let _ = stream.flush();
+                            let _ = stream.shutdown(std::net::Shutdown::Write);
                             return;
                         }
 
@@ -1103,6 +1153,10 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
                             "UserNew"
                         } else if req.contains("UserA") {
                             "UserA"
+                        } else if req.contains("RefreshUser") {
+                            "RefreshUser"
+                        } else if req.contains("TargetUser") {
+                            "TargetUser"
                         } else {
                             "TestRacer"
                         };
@@ -1114,11 +1168,10 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
                         let _ = stream.write_all(resp.as_bytes());
                         let _ = stream.flush();
                         let _ = stream.shutdown(std::net::Shutdown::Write);
-                        thread::sleep(std::time::Duration::from_millis(15));
                     });
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(std::time::Duration::from_millis(5));
+                    thread::sleep(Duration::from_millis(5));
                 }
                 Err(_) => break,
             }
@@ -1131,127 +1184,217 @@ fn retroachievements_network_race_tests_with_real_tcp_server() {
     let shared = launch(&dirs, &Pins::embedded().unwrap());
     let ra_path = lock(&shared).user_dirs.retroachievements_file();
 
-    // 1. Delayed Login vs Logout Race
-    let shared1 = shared.clone();
-    let url1 = base_url.clone();
-    let login_thread1 = thread::spawn(move || {
-        commands::ra_login_at(&url1, "UserA", "pass_mode_delay_login", &shared1)
-    });
-    thread::sleep(std::time::Duration::from_millis(20));
-    commands::ra_logout_of(&shared).expect("logout succeeds");
+    // 1. Delayed Login vs Logout Race (Coordinated via Bounded Channel Gate)
+    {
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        *gate.lock().unwrap() = Some(SyncGate {
+            trigger: "UserA".to_string(),
+            arrived_tx,
+            release_rx,
+        });
 
-    let res1 = login_thread1.join().unwrap().expect("login call completes");
-    assert!(!res1.signed_in, "Delayed login must not sign in after concurrent logout");
-    let cfg1 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
-    assert!(!cfg1.is_signed_in(), "Disk config must remain signed out after concurrent logout");
-    assert_eq!(cfg1.username, "");
+        let shared1 = shared.clone();
+        let url1 = base_url.clone();
+        let login_thread1 = thread::spawn(move || {
+            commands::ra_login_at(&url1, "UserA", "pass_wait", &shared1)
+        });
 
-    // 2. Delayed Login vs Newer Login Race (Login A vs Login B)
-    let shared2a = shared.clone();
-    let url2a = base_url.clone();
-    let login_old = thread::spawn(move || {
-        commands::ra_login_at(&url2a, "UserOld", "pass_mode_delay_login", &shared2a)
-    });
-    thread::sleep(std::time::Duration::from_millis(20));
-    let res_new = commands::ra_login_at(&base_url, "UserNew", "pass_fast", &shared)
-        .expect("newer login succeeds");
-    assert!(res_new.signed_in);
-    assert_eq!(res_new.username, "UserNew");
+        // Deterministically wait for fake server to receive UserA request
+        arrived_rx.recv_timeout(Duration::from_secs(3)).expect("UserA request arrived at server");
 
-    let res_old = login_old.join().unwrap().expect("old login completes without panic");
-    assert_ne!(res_old.username, "UserOld", "Stale login result must never apply UserOld");
+        // Mutate local state while response is held by fake server
+        commands::ra_logout_of(&shared).expect("logout succeeds");
+        let cfg_mid = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert!(!cfg_mid.is_signed_in(), "Disk config must be signed out immediately");
 
-    let cfg2 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
-    assert_eq!(cfg2.username, "UserNew", "Disk config must retain UserNew and not be overwritten by UserOld");
-    assert_eq!(cfg2.token, "tok_UserNew");
+        // Release fake server response
+        release_tx.send(()).expect("release gate");
 
-    // 3. Delayed Refresh vs Logout Race
-    let shared3 = shared.clone();
-    let refresh_thread = thread::spawn(move || {
-        commands::ra_status_with(&shared3, |cfg, _game_id| {
-            thread::sleep(std::time::Duration::from_millis(60));
-            let session = Some(gt4l_core::retroachievements::RaAccountSession {
-                username: cfg.username.clone(),
-                token: cfg.token.clone(),
-                display_name: cfg.username.clone(),
-                score: 9999,
-                score_softcore: 1111,
-            });
-            let game = None;
-            (session, game)
-        })
-    });
-    thread::sleep(std::time::Duration::from_millis(20));
-    commands::ra_logout_of(&shared).expect("logout succeeds");
+        let res1 = login_thread1.join().unwrap().expect("login call completes");
+        assert!(!res1.signed_in, "Delayed login must not sign in after concurrent logout");
+        let cfg1 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert!(!cfg1.is_signed_in(), "Disk config must remain signed out after concurrent logout");
+        assert_eq!(cfg1.username, "");
+    }
 
-    let res3 = refresh_thread.join().unwrap().expect("refresh completes");
-    assert!(!res3.signed_in, "Delayed refresh must not restore signed-in state after logout");
-    let cfg3 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
-    assert!(!cfg3.is_signed_in());
+    // 2. Delayed Login vs Newer Login Race (UserOld vs UserNew)
+    {
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        *gate.lock().unwrap() = Some(SyncGate {
+            trigger: "UserOld".to_string(),
+            arrived_tx,
+            release_rx,
+        });
 
-    // 4. Delayed Refresh vs Selected Game Switch Race
-    let mut cfg_switch = gt4l_core::retroachievements::RaConfig::default();
-    cfg_switch.username = "SwitchUser".to_string();
-    cfg_switch.token = "tok_switch_123".to_string();
-    cfg_switch.save(&ra_path).unwrap();
-    assert_eq!(lock(&shared).selected.id, "gt4");
+        let shared2 = shared.clone();
+        let url2 = base_url.clone();
+        let login_old = thread::spawn(move || {
+            commands::ra_login_at(&url2, "UserOld", "pass_wait", &shared2)
+        });
 
-    let shared4 = shared.clone();
-    let refresh_switch = thread::spawn(move || {
-        commands::ra_status_with(&shared4, |cfg, game_id| {
-            thread::sleep(std::time::Duration::from_millis(60));
-            let session = Some(gt4l_core::retroachievements::RaAccountSession {
-                username: cfg.username.clone(),
-                token: cfg.token.clone(),
-                display_name: cfg.username.clone(),
-                score: 5555,
-                score_softcore: 555,
-            });
-            let game = if game_id == "gt4" {
-                Some(gt4l_core::retroachievements::RaGameOverview {
-                    game_id: 20387,
-                    title: "Gran Turismo 4".to_string(),
-                    total_achievements: 10,
-                    unlocked_achievements: 2,
-                    total_points: 100,
-                    unlocked_points: 20,
-                    achievements: vec![],
-                })
-            } else {
-                None
-            };
-            (session, game)
-        })
-    });
-    thread::sleep(std::time::Duration::from_millis(20));
-    commands::select_game_of("spec2".to_string(), &shared).expect("select spec2 succeeds");
-    assert_eq!(lock(&shared).selected.id, "spec2");
+        // Deterministically wait for fake server to receive UserOld request
+        arrived_rx.recv_timeout(Duration::from_secs(3)).expect("UserOld request arrived at server");
 
-    let res_switch = refresh_switch.join().unwrap().expect("delayed refresh completes");
-    assert_eq!(res_switch.selected_game, "spec2");
-    assert!(!res_switch.supported, "Spec II must be marked unsupported");
-    assert!(res_switch.game.is_none(), "Stale GT4 game overview must be discarded when game changed to spec2");
+        // Execute newer login immediately while UserOld response is held
+        let res_new = commands::ra_login_at(&base_url, "UserNew", "pass_fast", &shared)
+            .expect("newer login succeeds");
+        assert!(res_new.signed_in);
+        assert_eq!(res_new.username, "UserNew");
+        let cfg_mid = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert_eq!(cfg_mid.username, "UserNew");
 
-    // Restore GT4 target
-    commands::select_game_of("gt4".to_string(), &shared).expect("restore gt4 succeeds");
+        // Release UserOld response
+        release_tx.send(()).expect("release gate");
 
-    // 5. Failed / Aborted Network Preserves Account State
-    let mut cfg4 = gt4l_core::retroachievements::RaConfig::default();
-    cfg4.username = "StableUser".to_string();
-    cfg4.token = "tok_stable_123".to_string();
-    cfg4.score = 777;
-    cfg4.save(&ra_path).unwrap();
+        let res_old = login_old.join().unwrap().expect("old login completes without panic");
+        assert_ne!(res_old.username, "UserOld", "Stale login result must never apply UserOld");
 
-    let _ = commands::ra_status_at(&format!("{}/abort", base_url), &shared);
-    let cfg_after_abort = gt4l_core::retroachievements::RaConfig::load(&ra_path);
-    assert_eq!(cfg_after_abort.username, "StableUser");
-    assert_eq!(cfg_after_abort.token, "tok_stable_123");
-    assert_eq!(cfg_after_abort.score, 777);
+        let cfg2 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert_eq!(cfg2.username, "UserNew", "Disk config must retain UserNew and not be overwritten by UserOld");
+        assert_eq!(cfg2.token, "tok_UserNew");
+    }
 
-    // 6. Failed Login Preserves Account State
-    let res_fail = commands::ra_login_at(&base_url, "StableUser", "badpass_mode_fail", &shared);
-    assert!(res_fail.is_err(), "Invalid credentials must return Err");
-    assert!(res_fail.unwrap_err().contains("Invalid user or password"));
+    // 3. Delayed Refresh vs Logout Race (Exercising Real ra_status_at Network Path)
+    {
+        let mut cfg_ref = gt4l_core::retroachievements::RaConfig::default();
+        cfg_ref.username = "RefreshUser".to_string();
+        cfg_ref.token = "tok_refresh_123".to_string();
+        cfg_ref.score = 1000;
+        cfg_ref.save(&ra_path).unwrap();
+
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        *gate.lock().unwrap() = Some(SyncGate {
+            trigger: "RefreshUser".to_string(),
+            arrived_tx,
+            release_rx,
+        });
+
+        let shared3 = shared.clone();
+        let url3 = base_url.clone();
+        let refresh_thread = thread::spawn(move || {
+            commands::ra_status_at(&url3, &shared3)
+        });
+
+        // Deterministically wait for fake server to receive RefreshUser request
+        arrived_rx.recv_timeout(Duration::from_secs(3)).expect("RefreshUser request arrived at server");
+
+        // Concurrently logout while refresh response is held
+        commands::ra_logout_of(&shared).expect("logout succeeds");
+        let cfg_mid = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert!(!cfg_mid.is_signed_in());
+
+        // Release server response
+        release_tx.send(()).expect("release gate");
+
+        let res3 = refresh_thread.join().unwrap().expect("refresh completes");
+        assert!(!res3.signed_in, "Delayed refresh must not restore signed-in state after logout");
+        let cfg3 = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert!(!cfg3.is_signed_in(), "Disk config must remain signed out");
+        assert_eq!(cfg3.username, "");
+    }
+
+    // 4. Delayed Refresh vs Selected Game Switch Race (Exercising Real ra_status_at Network Path)
+    {
+        let mut cfg_target = gt4l_core::retroachievements::RaConfig::default();
+        cfg_target.username = "TargetUser".to_string();
+        cfg_target.token = "tok_target_123".to_string();
+        cfg_target.score = 2500;
+        cfg_target.save(&ra_path).unwrap();
+        assert_eq!(lock(&shared).selected.id, "gt4");
+
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        *gate.lock().unwrap() = Some(SyncGate {
+            trigger: "TargetUser".to_string(),
+            arrived_tx,
+            release_rx,
+        });
+
+        let shared4 = shared.clone();
+        let url4 = base_url.clone();
+        let refresh_switch = thread::spawn(move || {
+            commands::ra_status_at(&url4, &shared4)
+        });
+
+        // Deterministically wait for fake server to receive TargetUser request
+        arrived_rx.recv_timeout(Duration::from_secs(3)).expect("TargetUser request arrived at server");
+
+        // Switch selected game to spec2 while response is held
+        commands::select_game_of("spec2".to_string(), &shared).expect("select spec2 succeeds");
+        assert_eq!(lock(&shared).selected.id, "spec2");
+
+        // Release server response
+        release_tx.send(()).expect("release gate");
+
+        let res_switch = refresh_switch.join().unwrap().expect("delayed refresh completes");
+        assert_eq!(res_switch.selected_game, "spec2");
+        assert!(!res_switch.supported, "Spec II must be marked unsupported");
+        assert!(res_switch.game.is_none(), "Stale GT4 game overview must be discarded when game changed to spec2");
+
+        // Assert persisted account on disk is preserved
+        let cfg_target_disk = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert_eq!(cfg_target_disk.username, "TargetUser");
+        assert_eq!(cfg_target_disk.token, "tok_target_123");
+
+        // Restore GT4 target
+        commands::select_game_of("gt4".to_string(), &shared).expect("restore gt4 succeeds");
+    }
+
+    // 5. Interrupted Network Connection: Preserves Account State & Returns View Gracefully
+    {
+        let mut cfg5 = gt4l_core::retroachievements::RaConfig::default();
+        cfg5.username = "StableUser".to_string();
+        cfg5.token = "tok_stable_123".to_string();
+        cfg5.score = 777;
+        cfg5.save(&ra_path).unwrap();
+
+        // ra_status_at catches network drop via .ok() and returns Ok(RaStatusView) from local cache
+        let res_abort = commands::ra_status_at(&format!("{}/abort", base_url), &shared);
+        assert!(res_abort.is_ok(), "ra_status_at returns Ok(view) falling back to local state on network error");
+        let view_abort = res_abort.unwrap();
+        assert_eq!(view_abort.username, "StableUser");
+        assert_eq!(view_abort.score, 777);
+        assert!(view_abort.game.is_none(), "Game overview is None when network disconnected");
+
+        let cfg_after_abort = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert_eq!(cfg_after_abort.username, "StableUser");
+        assert_eq!(cfg_after_abort.token, "tok_stable_123");
+        assert_eq!(cfg_after_abort.score, 777);
+    }
+
+    // 6. Failed Login: HTTP 200 Service Error vs Genuine HTTP 401 (Both Preserve Account State)
+    {
+        let mut cfg6 = gt4l_core::retroachievements::RaConfig::default();
+        cfg6.username = "StableUser".to_string();
+        cfg6.token = "tok_stable_123".to_string();
+        cfg6.score = 777;
+        cfg6.save(&ra_path).unwrap();
+
+        // 6A: Service JSON Error with HTTP 200 OK
+        let res_svc_fail = commands::ra_login_at(&base_url, "StableUser", "badpass_service_fail", &shared);
+        assert!(res_svc_fail.is_err(), "Service error must return Err");
+        assert!(res_svc_fail.unwrap_err().contains("Invalid user or password"));
+        let cfg_after_svc_fail = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert_eq!(cfg_after_svc_fail.username, "StableUser");
+        assert_eq!(cfg_after_svc_fail.token, "tok_stable_123");
+        assert_eq!(cfg_after_svc_fail.score, 777);
+
+        // 6B: Genuine HTTP 401 Unauthorized
+        let res_401_fail = commands::ra_login_at(&base_url, "StableUser", "badpass_http_401", &shared);
+        assert!(res_401_fail.is_err(), "HTTP 401 must return Err");
+        let err_401 = res_401_fail.unwrap_err();
+        assert!(
+            err_401.contains("Unexpected response from RetroAchievements") || err_401.contains("401"),
+            "Error message must reflect non-JSON response from HTTP 401: {err_401}"
+        );
+        let cfg_after_401_fail = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        assert_eq!(cfg_after_401_fail.username, "StableUser");
+        assert_eq!(cfg_after_401_fail.token, "tok_stable_123");
+        assert_eq!(cfg_after_401_fail.score, 777);
+    }
 
     stop.store(true, Ordering::Relaxed);
     let _ = server_thread.join();
