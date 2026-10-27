@@ -5,6 +5,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod commands;
+mod discord_presence;
 #[cfg(test)]
 mod contract;
 #[cfg(test)]
@@ -155,7 +156,7 @@ fn main() {
     }
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(shared)
+        .manage(shared.clone())
         .manage(guard.clone())
         .setup(move |app| {
             tray::install(app)?;
@@ -275,4 +276,6 @@ fn main() {
         state::log_error(&dirs, &format!("WebView2 is missing or could not start: {error}"));
         webview_guard::show_failure(&dirs, webview_guard::Problem::Missing);
     }
+    // Clear Discord presence on launcher exit.
+    state::lock(&shared).discord.on_launcher_exit();
 }

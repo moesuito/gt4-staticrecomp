@@ -189,6 +189,8 @@
   "setting.async_gs.help": "Sends graphics work to the GPU without waiting. Needed for full speed; turn off only to compare.",
   "setting.performance_report.label": "Performance report",
   "setting.performance_report.help": "Records frame timing while you play for bug reports.",
+  "setting.discord_rich_presence.label": "Discord Rich Presence",
+  "setting.discord_rich_presence.help": "Shows that you are playing Gran Turismo 4 or Gran Turismo 4 Spec II in your Discord profile while a game runs. Shows the game name, GT4Recomp and the session time. No mode, track, car, save, account or path is shared. On by default; turn it off to keep your play private.",
   "setting.check_vu_code.label": "Check compiled VU code",
   "setting.check_vu_code.help": "Compares compiled vector-unit code with the reference while playing. Slower.",
   "choice.check_vu_code.off": "Off",

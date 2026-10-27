@@ -26,6 +26,7 @@ use gt4l_disc::spec2 as disc_spec2;
 use gt4l_disc::{DiscGame, Pins, Spec2Pins};
 use gt4saves::library::Library;
 
+use crate::discord_presence::DiscordPresence;
 use crate::saves;
 
 /// One game's save library and the user folders it was opened in (the Documents-free `games\<id>` place, or the data-folder
@@ -76,6 +77,8 @@ pub struct AppState {
     /// True when the controls file was written by a newer launcher: it is kept as it is (never overwritten).
     pub controls_locked: bool,
     pub ra_revision: u64,
+    /// Discord Rich Presence manager for the current launcher session.
+    pub discord: Arc<DiscordPresence>,
 }
 
 pub type Shared = Arc<Mutex<AppState>>;
@@ -265,6 +268,7 @@ impl AppState {
             replays_status: String::new(),
             controls_locked,
             ra_revision: 0,
+            discord: Arc::new(DiscordPresence::new_default()),
         };
         // TASK-118: the RC settings must not survive into a final build: an RC install can leave the release report or
         // the VU check on, and the final build does not ship their rows. Force the factory values and save.

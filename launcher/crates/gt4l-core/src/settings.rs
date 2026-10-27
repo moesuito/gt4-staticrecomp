@@ -229,6 +229,16 @@ pub const SETTINGS: &[SettingDef] = &[
         default: "off",
         connected: true,
     },
+    SettingDef {
+        id: "discord_rich_presence",
+        page: Page::General,
+        group: "Discord",
+        title: "Discord Rich Presence",
+        info: "Shows that you are playing Gran Turismo 4 or Gran Turismo 4 Spec II in your Discord profile while a game is running. The game name, GT4Recomp and the session time are shown. No mode, track, car, save, account or path is shared. On by default; turn off to keep your play private.",
+        kind: TOGGLE,
+        default: "on",
+        connected: true,
+    },
 ];
 
 /// Settings that earlier launchers stored and that are now fixed (owner, 2026-10-21). A value of one of these in

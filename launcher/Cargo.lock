@@ -1246,6 +1246,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "toml 1.1.8+spec-1.1.0",
+ "windows",
 ]
 
 [[package]]

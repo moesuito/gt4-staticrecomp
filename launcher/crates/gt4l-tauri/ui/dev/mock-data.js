@@ -259,6 +259,12 @@
       values: [{ value: "stable", label: "Stable" }, { value: "beta", label: "Beta" }]
     };
   }
+  function discordRow() {
+    return {
+      id: "discord_rich_presence", label: "Discord Rich Presence", group: "general", page: "basic", control: "toggle",
+      help: "Shows that you are playing in your Discord profile while a game runs.", default: true, current: true
+    };
+  }
 
   // TASK-109 version picker: a fake GitHub release list with stable releases, candidates and drafts that must not show.
   // The mock applies the same rules as gt4l-core version_list.rs (minimum 1.3.0-rc5, drafts out, dates for candidates,
@@ -327,7 +333,7 @@
     fillDisplayRows();
     return {
       max_upscale: maxUpscale,
-      rows: [languageRow(), channelRow()].concat(rows.map(function (row) {
+      rows: [languageRow(), channelRow(), discordRow()].concat(rows.map(function (row) {
         return JSON.parse(JSON.stringify(row));
       }))
     };

@@ -6,7 +6,7 @@ use gt4l_core::messages;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gt4controls::{self as controls_file, default_bindings};
 use gt4l_core::display::{self as display_rules, DisplayTarget};
@@ -314,6 +314,12 @@ pub fn set_setting_of(id: String, value: Value, shared: &Shared) -> Result<(), S
     } else {
         return Err(format!("unknown setting '{id}'"));
     }
+    if id == "discord_rich_presence" {
+        let enabled = state.config.settings.is_on("discord_rich_presence");
+        if state.game_child.is_some() {
+            state.discord.apply_toggle(enabled);
+        }
+    }
     state.save_config();
     Ok(())
 }
@@ -488,6 +494,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     let textures = lock(&shared).dirs.textures();
     paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
     let running = game::start(&dirs, &executable, &elf, &disc, &settings, &pcsx2, display.as_ref(), &textures, &extra)?;
+    let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);
         state.game_child = Some(running.child.clone());
@@ -506,6 +513,8 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         state.save_config();
         // save_config writes the stored choice; a run that fell back to Direct3D 11 keeps its own direct-start file.
         state.write_standalone_files(&settings);
+        let discord_enabled = state.config.settings.is_on("discord_rich_presence");
+        state.discord.on_game_start(game.display_name, start_unix, discord_enabled);
     }
     state::log(&dirs, &format!("game started ({}), session {}", game.id, running.session_dir.display()));
     // TASK-112: the last 20 game session folders are kept; the one just started is never removed.
@@ -536,6 +545,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         }
         let log_path = running.log_path.clone();
         drop(running);
+        lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
         // Owner (2026-10-26): Vulkan loses the device on the Intel HD 620 (issue #89). Remember it for this machine so
         // the next Play starts on Direct3D 11 instead of losing the device again.
