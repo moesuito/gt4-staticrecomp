@@ -1,197 +1,189 @@
-# TASK-133 Stage 5: Local rc7 Test Kit Assembly & Verification Report
+# TASK-133 Stage 5: Local rc7 Test Kit Assembly & Verification Report (Revision 2)
 
 Date: 2026-10-27  
 Workspace: `C:\Antigravity\gt4-wt-133-rc7-ra-controls`  
-Head Commit: `9ec11a4 docs(task-133): accept controls and plan local rc7 kit`  
+Head Commit at Review Base: `db0150c`  
 Branch: `task/133-rc7-ra-controls`  
 Author: João Alano <57041838+moesuito@users.noreply.github.com>
 
 ---
 
-## 1. Executive Summary & Boundaries
+## 1. Executive Summary & Review Adjustments
 
-Stage 5 of TASK-133 has assembled and validated a complete, local, installable and portable **1.3.0-rc7 test kit**. This test kit integrates:
-1. Gran Turismo 4 v2.00 and Spec II 1.10 dual-target architecture (from rc6).
-2. RetroAchievements support for Gran Turismo 4 v2.00 (integrated from 1.2.4), strictly isolated from Spec II.
-3. 7 canonical controller response curves and standardized trigger travel (integrated from 1.2.5).
+Following Codex Orchestrator review (`docs/tasks/TASK-133-STAGE-5-REVIEW.md`), this revised Stage 5 report records the exact corrected provenance, release notes, and independent package verification for the local **1.3.0-rc7 test kit**:
 
-### Strict Execution Boundaries Enforced:
-- **No Subagents:** Executed directly by the single repository writer.
-- **No Game or Installer Execution:** The installer and game executables were not run.
-- **No Private or Copyrighted Game Data:** Zero ISOs, ELFs, memory cards (`card.ps2`), saves, or owner credentials were included or staged.
-- **No Remote Publishing:** Zero GitHub draft releases, tags, PRs, or public releases were created (`gh release create --draft` strictly avoided).
-- **Tooling Isolation:** Release binaries and packages built on drive `O:` to preserve machine workspace boundaries.
+1. **Release Notes Corrections:**
+   - **Accurate RetroAchievements Location & Flow:** The release notes accurately state that RetroAchievements account connection is managed in **Settings > Achievements** (em português: **Configurações > Conquistas**) using username and password.
+   - **Credential Persistence Clarification:** Removed misleading claims regarding encryption or zero plain text credentials. Notes accurately state that login exchanges credentials with RetroAchievements `dorequest.php` for an authentication token; the username and session token are persisted in plain text TOML (`retroachievements.toml`) in the configuration directory (passwords are not saved).
+   - **Controls & Physics Clarification:** Removed any implication of actual physics or game timing changes. The 7 selectable curves modify analog input mapping only, while vehicle physics and 1/60s simulation timing remain untouched.
+   - **Update Expectations:** Removed claims of an automatic updater from rc6 for this unpublished local test kit; installation and testing are performed directly via the local installer or portable folder.
+2. **Provenance & Toolchain Precision:**
+   - Corrected candidate source paths to their verified locations on drive `O:`:
+     - v200: `O:\gt4recomp-scratch\slice335-rc7-controls-build\build\gt4vulkan.exe`
+     - Spec II: `O:\gt4recomp-scratch\slice336-rc7-controls-spec2\build\gt4vulkan-spec2.exe`
+   - Corrected toolchain metadata in candidate manifests (`slice335-pcsx2.json` and `slice336-spec2.json`) to reflect measured environment versions: CMake 4.3.1, Ninja 1.13.2, Clang-cl 22.1.3.
+3. **Targeted CTest Precision:**
+   - Corrected the names of the 5 targeted tests executed per configuration:
+     `native_audio_input`, `native_controls`, `native_achievements`, `native_achievements_spec2`, `native_achievements_http`.
+4. **Rebuilt Fresh Test Kit (Kit v2):**
+   - Because launcher-embedded release notes (`build.rs` embeds `docs/release-notes/launcher/1.3.0.md` and `pt-BR/1.3.0.md`) were updated, fresh launcher binaries and packages were built in `O:\gt4recomp-scratch\task133-cargo-target-v2` and packaged into `O:\gt4recomp-scratch\task133-rc7-kit-v2`. The original kit in `task133-rc7-kit` was preserved intact for comparison.
 
 ---
 
-## 2. Toolchain, Environment & Disk Provenance
+## 2. Toolchain & Environment Provenance
 
-- **Operating System:** Windows 11 Pro x64 (Build 26100)
+Measured directly from the active build environment:
 - **Compiler:** Clang-cl 22.1.3 (`C:/Program Files/LLVM/bin/clang-cl.exe`) / MSVC 17.14
-- **Build System:** Ninja 1.13.1, CMake 3.31
-- **Rust Toolchain:** cargo 1.92.0 / rustc 1.92.0
+- **Build Generator:** CMake 4.3.1 (`C:/Program Files/CMake/bin/cmake.exe`), Ninja 1.13.2
+- **Rust Toolchain:** cargo 1.99.0 (5f94df478 2026-08-27), rustc 1.99.0 (b940084d7 2026-09-28)
 - **Tauri CLI:** 2.11.0
 - **NSIS:** Makensis v3.13 (`C:\Program Files (x86)\NSIS\makensis.exe`)
 - **Archive Tool:** 7-Zip 25.01 x64 (`C:\Program Files\7-Zip\7z.exe`)
-- **Python:** Python 3.12 (venv `private/tooling-venv/Scripts/python.exe`)
-- **Disk Availability:**
-  - `C:`: ~28.8 GB free
-  - `O:`: ~89.8 GB free
+- **Python:** Python 3.14.2 (virtual environment `private/tooling-venv/Scripts/python.exe`)
+- **Node / Playwright:** Node.js v25.3.0 with Playwright in `C:\Users\Alano\AppData\Roaming\npm\node_modules`
 
 ---
 
-## 3. Build Provenance & Input Manifests
+## 3. Candidate Binaries & Staging Provenance
 
-### 3.1 Candidate Native Executables (Built in Stage 4)
-- **Gran Turismo 4 (SCUS-97328 v2.00):**
-  - Binary: `O:\gt4recomp-scratch\slice335-pcsx2-build\build\gt4vulkan.exe`
-  - Renamed for distribution: `gt4.exe`
+### 3.1 Candidate Native Executables (Stage 4 Candidate Builds)
+- **Gran Turismo 4 v2.00 (SCUS-97328):**
+  - Source Path: `O:\gt4recomp-scratch\slice335-rc7-controls-build\build\gt4vulkan.exe`
+  - Distributed As: `gt4.exe`
   - Size: 97,702,912 bytes
   - SHA-256: `17406ba4bfcd3ded71e68427c45b3528b43c1caccb3c4872fda3ded5634ae917`
   - Pinned Manifest: `docs/inputs/slice335-pcsx2.json`
 - **Gran Turismo 4 Spec II (Mod 1.10):**
-  - Binary: `O:\gt4recomp-scratch\slice336-spec2-build\build\gt4vulkan.exe`
-  - Renamed for distribution: `gt4-spec2.exe`
+  - Source Path: `O:\gt4recomp-scratch\slice336-rc7-controls-spec2\build\gt4vulkan-spec2.exe`
+  - Distributed As: `gt4-spec2.exe`
   - Size: 104,719,872 bytes
   - SHA-256: `67951470d1faf767c8d619bac5483bbfd30f9b164e6aaeb04e7ad20858083f1a`
   - Pinned Manifest: `docs/inputs/slice336-spec2.json`
 
-### 3.2 Game Distribution Staging
-Assembled via `scripts/make_distribution.py` into:
-`C:\Antigravity\gt4-staticrecomp\private\slice337-dist-130-rc7`
-Contents (19 files total):
-- `gt4.exe` (97,702,912 bytes)
-- `gt4-spec2.exe` (104,719,872 bytes)
-- `SDL3.dll` (2,848,256 bytes, SDL 3.4.18)
-- Visual C++ Runtime: `msvcp140.dll` (557,728 bytes), `msvcp140_atomic_wait.dll` (50,304 bytes), `vcruntime140.dll` (124,544 bytes)
+### 3.2 Game Distribution Directory
+Staged via `scripts/make_distribution.py`:
+`C:\Antigravity\gt4-staticrecomp\private\slice337-dist-130-rc7` (19 files total)
+- `gt4.exe` (97,702,912 bytes, `17406ba4...`)
+- `gt4-spec2.exe` (104,719,872 bytes, `67951470...`)
+- `SDL3.dll` (2,848,256 bytes, SDL 3.4.18, `785ae6a8...`)
+- CRT Runtime: `msvcp140.dll` (557,728 bytes), `msvcp140_atomic_wait.dll` (50,304 bytes), `vcruntime140.dll` (124,544 bytes)
 - `MANIFEST.json` (3,796 bytes)
-- Shaders (`shaders/`): `copy_read.spv`, `copy_write.spv`, `decode.spv`, `display.spv`, `load_clut.spv`, `raster.spv`, `resolve.spv`, `snapshot.spv`, `upload.spv`
-- Licenses (`licenses/`): `LICENSE-GT4Recomp.txt`, `LICENSE-ps2-web-recomp.txt`, `LICENSE-SDL3.txt`, `THIRD_PARTY.md`
+- Compute Shaders (`shaders/`, 9 SPV files)
+- Licenses (`licenses/`, 4 files)
 
-### 3.3 Launcher Release Builds
-Built with `launcher/tools/build-release.ps1 -Label rc7` and path prefix remapping:
+### 3.3 Rebuilt Release Launcher Binaries (Kit v2)
+Built with `launcher/tools/build-release.ps1 -Label rc7`:
 - **Installer Edition (`GT4Recomp.exe`):**
-  - Path: `O:\gt4recomp-scratch\task133-cargo-target\release\GT4Recomp.exe`
-  - Size: 17,953,792 bytes
-  - SHA-256: `74f14811f63c16719cf6d9dad0c1eeed39e92aa3939724650de0594522ec204d`
-  - Machine path scan: 0 hits (clean).
+  - Path: `O:\gt4recomp-scratch\task133-cargo-target-v2\release\GT4Recomp.exe`
+  - Size: 17,949,696 bytes
+  - SHA-256: `444f5befc8caee61fe26467d346d0e629ee2760c0dfd3ce7a8d786431b3319eb`
+  - Build/machine path scan: 0 hits (clean).
 - **Portable Edition (`GT4Recomp.exe`):**
-  - Path: `O:\gt4recomp-scratch\task133-cargo-target-portable\release\GT4Recomp.exe`
+  - Path: `O:\gt4recomp-scratch\task133-cargo-target-v2-portable\release\GT4Recomp.exe`
   - Size: 17,936,896 bytes
-  - SHA-256: `b0d12f730e39cdedebaa52afcbf1a5bf572c98a1470fcba2297b1be3f16bce33`
-  - Machine path scan: 0 hits (clean).
+  - SHA-256: `5fa6060d404bd1e581e1f0bf526975be410176dcb6fa850481498f6999dc7e45`
+  - Build/machine path scan: 0 hits (clean).
 
-### 3.4 Third-Party Components
-- **WebView2 Bootstrapper:**
-  `C:\Antigravity\gt4-staticrecomp\private\release-100-webview2\MicrosoftEdgeWebview2Setup.exe`
-  - Size: 1,876,736 bytes
-  - SHA-256: `f414de01c4680f0bb0694d1ea7803c6968f3a81bf6bad01b89bfc65dce14c2a2`
-- **SDL3 Runtime:**
-  `C:\Antigravity\gt4-staticrecomp\private\tooling\sdl3-3.4.18\runtime\SDL3.dll`
-  - Size: 2,848,256 bytes
-  - SHA-256: `785ae6a8df6a7e0d3753a3eb1777b7899bb57c8bfbe19e0788eb59b6feeb10d4`
+### 3.4 Launcher Release Notes Embedding Contract
+In `launcher/crates/gt4l-tauri/build.rs`, `embed_release_notes()` reads numeric versions `(u32, u32, u32)` up to `CARGO_PKG_VERSION` (`1.3.0`).
+- The en-US embedded note is `docs/release-notes/launcher/1.3.0.md`.
+- The pt-BR embedded note is `docs/release-notes/launcher/pt-BR/1.3.0.md`.
+- `docs/release-notes/launcher/1.3.0-rc7.md` and its `pt-BR` sibling are kept for documentation parity with full notes `docs/release-notes/1.3.0-rc7.md`. Both 1.3.0 and 1.3.0-rc7 note sets share identical content bullets.
 
 ---
 
-## 4. Test Kit Packages & SHA256SUMS
+## 4. Test Kit Packages & Verification Receipts
 
-Output destination: `O:\gt4recomp-scratch\task133-rc7-kit\`
+Output destination: `O:\gt4recomp-scratch\task133-rc7-kit-v2\`
 
 | Package Asset | Size (bytes) | SHA-256 Hash |
 | :--- | :--- | :--- |
-| `GT4Recomp-Setup-1.3.0-rc7.exe` | 51,818,079 | `437c9eacc84c0a0d628d10b91e7e1d6665ab097adc0c8a29ed592cc6ba8a35c5` |
-| `GT4Recomp-1.3.0-rc7-portable.zip` | 83,613,348 | `530d5fb6698488213d85b5af74a1ef10fb7545cf3bbb96c8fca9517034328d7b` |
+| `GT4Recomp-Setup-1.3.0-rc7.exe` | 51,816,606 | `03b714a3292b27ec410f07b1d460e2b7e8209c2d01f8a12a1ca7cbf18ffba4fe` |
+| `GT4Recomp-1.3.0-rc7-portable.zip` | 83,612,296 | `425ec22c07d92e0af1efbde43c58c4ef809304f12a7916c28208aca162ae741f` |
 
-### `SHA256SUMS` Contents:
+### `SHA256SUMS` (Kit v2):
 ```text
-437c9eacc84c0a0d628d10b91e7e1d6665ab097adc0c8a29ed592cc6ba8a35c5  GT4Recomp-Setup-1.3.0-rc7.exe
-530d5fb6698488213d85b5af74a1ef10fb7545cf3bbb96c8fca9517034328d7b  GT4Recomp-1.3.0-rc7-portable.zip
+03b714a3292b27ec410f07b1d460e2b7e8209c2d01f8a12a1ca7cbf18ffba4fe  GT4Recomp-Setup-1.3.0-rc7.exe
+425ec22c07d92e0af1efbde43c58c4ef809304f12a7916c28208aca162ae741f  GT4Recomp-1.3.0-rc7-portable.zip
 ```
 
 ---
 
-## 5. Archive Contents & Integrity Validation
+## 5. Independent Archive Extraction & Member Integrity Analysis
 
-Both packages were unpacked to an isolated test directory using 7-Zip (`7z x`) and systematically verified:
+Both v2 archives were independently unpacked with 7-Zip (`7z x`) into isolated directories under `O:\gt4recomp-scratch\task133-kit-v2-verification\`:
+- Portable archive: 25 files, 2 empty directories (`user/`, `data/`).
+- Setup archive: 30 files (including `$PLUGINSDIR` and `.update-staging`).
 
-### 5.1 Binary Hash Exactness
-- `game/gt4.exe` (both archives) matches `slice335-pcsx2.json`:
-  `17406ba4bfcd3ded71e68427c45b3528b43c1caccb3c4872fda3ded5634ae917` (Exact bit match).
-- `game/gt4-spec2.exe` (both archives) matches `slice336-spec2.json`:
-  `67951470d1faf767c8d619bac5483bbfd30f9b164e6aaeb04e7ad20858083f1a` (Exact bit match).
-- `GT4Recomp.exe` in setup matches candidate installer build:
-  `74f14811f63c16719cf6d9dad0c1eeed39e92aa3939724650de0594522ec204d` (Exact bit match).
-- `GT4Recomp.exe` in portable zip matches candidate portable build:
-  `b0d12f730e39cdedebaa52afcbf1a5bf572c98a1470fcba2297b1be3f16bce33` (Exact bit match).
+### 5.1 Member Bit-Exact Verification Against Source Artifacts
+- `game/gt4.exe` (both archives) == `17406ba4bfcd3ded71e68427c45b3528b43c1caccb3c4872fda3ded5634ae917` (Exact match).
+- `game/gt4-spec2.exe` (both archives) == `67951470d1faf767c8d619bac5483bbfd30f9b164e6aaeb04e7ad20858083f1a` (Exact match).
+- Setup `.update-staging/GT4Recomp.exe` == `444f5befc8caee61fe26467d346d0e629ee2760c0dfd3ce7a8d786431b3319eb` (Exact match).
+- Portable `GT4Recomp.exe` == `5fa6060d404bd1e581e1f0bf526975be410176dcb6fa850481498f6999dc7e45` (Exact match).
+- Setup `$PLUGINSDIR/MicrosoftEdgeWebview2Setup.exe` == `f414de01c4680f0bb0694d1ea7803c6968f3a81bf6bad01b89bfc65dce14c2a2` (Exact match).
+- All 9 SPV shaders, 3 CRT DLLs, 4 licenses, `SDL3.dll`, and `MANIFEST.json` matched their staged counterparts in `slice337-dist-130-rc7` bit-for-bit.
 
-### 5.2 Cleanliness & Data Privacy
-- **Forbidden file check:** 0 `.iso`, 0 `.bin`, 0 `.elf`, 0 `.ps2`, 0 `.mc2`, 0 `.gt4`, 0 `.log` files found.
-- **Forbidden name check:** 0 `core.gt4`, 0 `scus_973.28`, 0 `card.ps2`, 0 `credentials.json` found.
-- **Directory Structure:**
-  - Portable zip root includes: `GT4Recomp.exe`, `SDL3.dll`, `NOTICE.md`, `LICENSE.txt`, `PORTABLE.txt`, `user/` (empty), `data/` (empty), and `game/` with both targets.
-  - Setup installer includes `.update-staging/` hierarchy with identical game layout plus `$PLUGINSDIR\MicrosoftEdgeWebview2Setup.exe`.
+### 5.2 Deep Header & Content Inspection
+Beyond extension checks, every file's byte headers were inspected:
+- **ELF Magic (`\x7fELF`):** 0 occurrences.
+- **ISO 9660 Volume Descriptor (`CD001` at 0x8001 / 0x8801 / 0x9001):** 0 occurrences.
+- **PS2 Memory Card Format Magic (`Sony PS2 Memory Card Format`):** 0 occurrences.
+- **Plain Text Password Persistence:** 0 occurrences.
+Full JSON receipt generated at `O:\gt4recomp-scratch\task133-rc7-kit-v2\INSPECTION-RECEIPT.json`.
 
 ---
 
-## 6. Automated Verification Summary
-
-All automated controls were executed serially prior to kit packaging:
+## 6. Automated Controls Summary
 
 1. **Locales Parity:**
-   - English (`en-US.json`): 604 keys.
-   - Portuguese (`pt-BR.json`): 604 keys.
-   - Missing keys: 0. Missing placeholders: 0.
-2. **Playwright UI Checks:**
-   - `focus-check.html?lang=en-US`: 215/215 passed, 0 failures.
-   - `focus-check.html?lang=pt-BR`: 222/222 passed, 0 failures.
-   - `nav-test.html`: 209/209 passed, 0 failures.
-   - JavaScript runtime console errors: 0.
-3. **Controller Curve Parity Sweep:**
-   - 8,960/8,960 points passed (100.0000% parity between native C++ `controls.cpp` and JS `controls-model.js` across 7 curves, 5 deadzones, and 256 inputs).
-4. **Rust Unit & Integration Workspace:**
-   - 34 test blocks, 578 tests passed, 0 failed, 5 ignored (`live_network` tests).
-5. **Targeted CTest:**
-   - Gran Turismo 4 v200 (`slice335`): 5/5 passed (`native_audio_input`, `native_controls`, `ra_native_memory`, `ra_native_session`, `ra_native_leaderboard`).
-   - Gran Turismo 4 Spec II (`slice336`): 5/5 passed.
+   - 604 keys in `en-US.json` and `pt-BR.json`.
+   - Missing keys: 0. Mismatched placeholders: 0.
+2. **Playwright UI Automation (Node.js + Headless Edge):**
+   - `focus-check.html?lang=en-US`: 215/215 passed, 0 failures, 0 console errors.
+   - `focus-check.html?lang=pt-BR`: 222/222 passed, 0 failures, 0 console errors.
+   - `nav-test.html`: 209/209 passed, 0 failures, 0 console errors.
+3. **Rust Workspace Suite:**
+   - 34 test blocks, 578 tests passed, 0 failed, 5 ignored (live network tests).
+4. **Targeted CTest Suite (Both Targets):**
+   - **v200 Candidate (`slice335-rc7-controls-build`):** 5/5 passed.
+     - `Test #10: native_audio_input`: Passed (3.43s)
+     - `Test #11: native_controls`: Passed (0.11s)
+     - `Test #14: native_achievements`: Passed (0.04s)
+     - `Test #15: native_achievements_spec2`: Passed (0.03s)
+     - `Test #16: native_achievements_http`: Passed (0.10s)
+   - **Spec II Candidate (`slice336-rc7-controls-spec2`):** 5/5 passed.
+     - `Test #10: native_audio_input`: Passed (3.45s)
+     - `Test #11: native_controls`: Passed (0.08s)
+     - `Test #14: native_achievements`: Passed (0.04s)
+     - `Test #15: native_achievements_spec2`: Passed (0.03s)
+     - `Test #16: native_achievements_http`: Passed (0.06s)
 
 ### Accounting of Known Baseline Failures:
-The 13 known baseline failures in the full Python CTest suite (from rc6) remain identified as existing GS settings/live window test expectations. They are tracked as known baseline behavior and were not modified or masked.
+The 13 known baseline failures in the full Python CTest suite from rc6 remain documented as pre-existing GS settings/live window test expectations. They are not regressions.
 
 ---
 
-## 7. Owner Manual Test Checklist
+## 7. Owner In-Game Verification Checklist
 
-The following items cannot be validated through automated mocks and require owner in-game verification on physical hardware:
+Hardware feel, tactile response, and live network server unlocks cannot be verified via automated mocks and remain for owner verification:
 
-- [ ] **Dual-Game Selection:**
-  - Launch `GT4Recomp.exe`. Select Gran Turismo 4 (v2.00) and verify boot into menus/track.
-  - Return to launcher, select Spec II (1.10) and verify separate boot and independent save card.
-- [ ] **RetroAchievements Integration (Gran Turismo 4 v2.00):**
-  - Navigate to **Settings > General > RetroAchievements**.
-  - Enter valid credentials. Confirm banner shows logged-in status.
-  - Launch Gran Turismo 4 v2.00: verify rich presence and achievement triggers fire.
-  - Launch Spec II: verify RetroAchievements is cleanly deactivated (no attempts to hash or track Spec II).
-- [ ] **Controller Response Curves & Triggers:**
+- [ ] **Dual-Game Home Screen:**
+  - Launch `GT4Recomp.exe`. Verify choice between Gran Turismo 4 (v2.00) and Spec II (1.10).
+  - Verify separate saves, separate disc preparation, and independent boot for each title.
+- [ ] **RetroAchievements (Gran Turismo 4 v2.00 Only):**
+  - Navigate to **Settings > Achievements** (or **Configurações > Conquistas**).
+  - Log in with your RetroAchievements username and password. Confirm session status displays score and username.
+  - Launch Gran Turismo 4 v2.00: verify rich presence updates and achievement triggers fire on real hardware.
+  - Launch Spec II: verify RetroAchievements is cleanly deactivated (unsupported for mod image).
+- [ ] **Controller Response Curves:**
   - Navigate to **Settings > Controls**.
-  - Test all 7 curves (Linear, Quadratic, Cubic, S-Curve, Smooth Power, Sublinear, Logarithmic) using the visual curve preview.
-  - In-game: test steering and throttle/brake feel on a physical gamepad (DualSense/DualShock 4 or Xbox controller).
-  - Verify smooth, standardized trigger response (0..100% travel without sudden step-jumps).
+  - Review the 7 curves (Linear, Quadratic, Cubic, S-Curve, Smooth Power, Sublinear, Logarithmic) on the visualizer.
+  - Test driving feel on physical gamepad (DualSense, DualShock 4, or Xbox pad) to verify comfortable steering sensitivity and progressive throttle/brake travel.
 - [ ] **Saves & Settings:**
-  - Create a new save, export save, and rename save. Confirm tag labels match active game.
-- [ ] **Audio & Pacing:**
-  - Verify smooth audio pacing without crackles, buffer underruns, or presentation stuttering.
+  - Verify active save rename, export, and game-specific tags.
 
 ---
 
-## 8. Release Documentation & Git State
+## 8. Git State & Review Hand-Off
 
-### Updated Documentation:
-- `docs/inputs/slice335-pcsx2.json`: candidate v200 native build manifest.
-- `docs/inputs/slice336-spec2.json`: candidate Spec II native build manifest.
-- `docs/release-notes/1.3.0-rc7.md`: full technical release notes for rc7.
-- `docs/release-notes/launcher/1.3.0.md` & `pt-BR/1.3.0.md`: updated cumulative launcher notes.
-- `docs/release-notes/launcher/1.3.0-rc7.md` & `pt-BR/1.3.0-rc7.md`: version-specific launcher notes.
-- `docs/tasks/TASK-133-STAGE-5-REPORT.md`: this report.
-
-### Git Status & Review Hand-off:
-All generated release assets and logs remain strictly in `O:\gt4recomp-scratch\task133-rc7-kit\`. Only authorized documentation and input manifests are staged for commit. Work stops here for Codex review.
+All test kit packages and inspection logs remain local under `O:\gt4recomp-scratch\task133-rc7-kit-v2\`. Only authorized documentation, release notes, and input manifests are staged for commit. Work stops here for Codex review.
