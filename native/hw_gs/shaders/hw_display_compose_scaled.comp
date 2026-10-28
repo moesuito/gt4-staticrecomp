@@ -16,7 +16,7 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-const uint kScaledColourSlots = 6u;  // gpu::kGpuColourSlots
+const uint kScaledColourSlots = 16u;  // gpu::kGpuColourSlots (IN-400)
 const uint kDisplayShadows = 2u;     // gpu::kGpuDisplayShadows (IN-377)
 const uint kScaledSources = kScaledColourSlots + kDisplayShadows;
 

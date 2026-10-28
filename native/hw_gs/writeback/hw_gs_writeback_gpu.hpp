@@ -80,8 +80,8 @@ static_assert(Count <= 48, "GpuPixelState has 48 fields");
 // stored values of the 32-bit view (SLM readPixel), row-major with width = rect width.
 // Target slots (IN-344): GPU images that hold resident colour and depth targets. The last slot of each kind is
 // the write-back mode's scratch pair, so a write-back batch never disturbs a resident target.
-constexpr std::uint32_t kGpuColourSlots = 6;
-constexpr std::uint32_t kGpuDepthSlots = 3;
+constexpr std::uint32_t kGpuColourSlots = 16;  // IN-400: GT4 uses many small targets per frame (was 6)
+constexpr std::uint32_t kGpuDepthSlots = 8;     // IN-400 (was 3)
 constexpr std::uint32_t kGpuScratchColourSlot = kGpuColourSlots - 1;
 constexpr std::uint32_t kGpuScratchDepthSlot = kGpuDepthSlots - 1;
 

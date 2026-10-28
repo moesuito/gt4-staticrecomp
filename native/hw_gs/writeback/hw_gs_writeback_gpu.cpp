@@ -2721,7 +2721,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
         std::fprintf(file,
                      "chunk target=%u depth=%u rect=%d,%d,%d,%d draws=%zu tex=%d slot=%d glm=%d scaled=%d "
                      "tw=%u th=%u cw=%u ch=%u texlin=%u texfst=%u texon=%u psm=%u tpsm=%u tlog=%u,%u "
-                     "zte=%u ztst=%u zmsk=%u zfmt=%u fbmsk=%08x ate=%u atst=%u afail=%u\n",
+                     "zte=%u ztst=%u zmsk=%u zfmt=%u fbmsk=%08x ate=%u atst=%u afail=%u tbp=%u\n",
                      chunk.colourSlot, chunk.depthSlot, chunk.rectX0, chunk.rectY0, chunk.rectX1, chunk.rectY1,
                      chunk.draws.size(), chunk.hasTexture ? 1 : 0, chunk.textureSlot, chunk.glmTexture ? 1 : 0,
                      scaledTextureCopy ? 1 : 0, chunk.texWidth, chunk.texHeight, copyWidth, copyHeight,
@@ -2731,7 +2731,7 @@ bool GpuDrawer::Execute(GpuChunk &chunk, std::string &error) {
                      chunk.state.fields[gpufield::Ztest], chunk.state.fields[gpufield::Ztst],
                      chunk.state.fields[gpufield::Zmsk], chunk.state.fields[gpufield::Zformat],
                      chunk.state.fields[gpufield::Fbmsk], chunk.state.fields[gpufield::Ate],
-                     chunk.state.fields[gpufield::Atst], chunk.state.fields[gpufield::Afail]);
+                     chunk.state.fields[gpufield::Atst], chunk.state.fields[gpufield::Afail], chunk.glmBp);
         // GT4_HW_DRAW_TRACE_VERTS=N: the vertices (12.4 X/Y, Z, colour) of every traced chunk with at least N draws.
         static const char *vertsText = std::getenv("GT4_HW_DRAW_TRACE_VERTS");
         if (vertsText && chunk.draws.size() >= static_cast<std::size_t>(std::atoi(vertsText))) {

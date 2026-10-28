@@ -1421,10 +1421,12 @@ int TestCacheEqualsWriteback(const gpu::VulkanHandles& handles) {
                            frameReg(kA), 0x4C, tex0(kT8 * 32, 0x13, 6, kClut * 32, true), 0x06,
                            kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(30, 30), 0x05,
                            uv(30, 30), 0x03, xyz(60, 60), 0x05});
-        // 3b. Seven more small colour targets (pages 20, 24, ..., 44): more targets than resident slots, so the
-        //     least recently used ones are evicted (written back) and reloaded; then one is read as a texture.
-        for (uint64_t k = 0; k < 7; ++k) {
-            w.insert(w.end(), {frameReg(20 + 4 * k), 0x4C, kSprite, 0x00, rgbaq(0x80000000u + 0x0F0F0Fu * (k + 1) + frame),
+        // 3b. Eighteen more small colour targets (pages 20, 24, ..., 44, then 52, 56, ..., 92, around page 48 used
+        //     below): more targets than resident slots (IN-400: 15), so the least recently used ones are evicted
+        //     (written back) and reloaded; then one is read as a texture.
+        for (uint64_t k = 0; k < 18; ++k) {
+            const uint64_t page = k < 7 ? 20 + 4 * k : 52 + 4 * (k - 7);
+            w.insert(w.end(), {frameReg(page), 0x4C, kSprite, 0x00, rgbaq(0x80000000u + 0x0F0F0Fu * (k + 1) + frame),
                                0x01, xyz(2 * k, 1), 0x05, xyz(20 + 2 * k, 20), 0x05});
         }
         w.insert(w.end(), {frameReg(kA), 0x4C, tex0(20 * 32, 0x00, 5, 0, false), 0x06, kSprite | kTme | kFst, 0x00,
