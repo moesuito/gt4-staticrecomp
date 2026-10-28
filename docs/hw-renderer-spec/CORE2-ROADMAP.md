@@ -145,11 +145,33 @@ end of each phase.
 
 ### Phase B: deep performance pass (owner, 2026-10-28)
 
-Revised after the night measurement above. Goals at 3x in the night B-Spec scene:
-- whole emulator at or under 16.7 ms per VBlank;
-- GS thread at or under 8 ms;
-- no frame over 16.7 ms at a race start;
-- then the same at 6x.
+Revised after the night measurement above.
+
+**Owner direction (2026-10-28): 16.7 ms is not the goal, it is the ceiling.**
+- Cut the load as far as possible, the waits first.
+- An unlocked frame rate is planned later, mostly through frame interpolation, so headroom matters.
+- So does the mobile port.
+- **The beta gate is the owner's laptop:** an Intel Core i5-7200U (2 cores, 4 threads) with Intel HD 620 (shared
+  memory, about 34 GB/s), running at 2x (720p) at full speed. When that works, CoreGS 2.0 ships as a beta.
+- This desktop (Ryzen 7 5700X, RX 9060 XT, PCIe 4.0) only hides the cost, so the code must be efficient from the
+  start, not tuned later.
+
+**Budgets that follow** (Hypothesis: they assume the laptop is about 1.7x slower per thread and has half the cores;
+they get checked on the laptop):
+- **This desktop, night B-Spec scene at 3x:**
+  - GS thread at or under 3 ms CPU per VBlank;
+  - zero full-queue waits in a frame with no EE download;
+  - at most one wait per EE download, on that copy alone;
+  - whole emulator at or under 10 ms.
+- **The laptop at 2x:** the whole frame inside 16.7 ms, with the GS thread under 6 ms of one core.
+- **Memory:** a fixed budget for images (shared memory on the laptop).
+- **GPU:** the uber shader with the pixel interlock is the heavy path on a small GPU.
+  - Before the beta, the hardware raster path (D1) must carry the common draws.
+  - Whether the HD 620's Windows driver exposes the fragment-shader interlock is Unknown: check `vulkaninfo` on the
+    laptop.
+
+Order inside the phase: the waits first (B1), then the CPU work (B2-B5), every step measured on the night scene
+against the budgets above.
 
 The game's logic and every value the EE reads stay exact. The changes are inside the renderer unless a measurement
 proves otherwise.
@@ -249,7 +271,7 @@ proves otherwise.
 | 2 | B0-B6 deep performance pass | 14: night B-Spec City race (cars facing the camera), race start, GPU power |
 | 3 | C1-C3 picture | 15: shimmer, sharpness, CAS |
 | 4 | D1-D2 GPU fast path | 16: 6x and above, power against GSdx |
-| 5 | Phase E | beta candidate |
+| 5 | Phase E | beta candidate: full speed at 2x on the i5-7200U / HD 620 laptop |
 
 The owner cannot save a replay now (2026-10-28). Step 2 uses the night B-Spec scene and its `.gscap` capture
 instead (B0).
