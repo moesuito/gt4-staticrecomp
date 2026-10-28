@@ -40,6 +40,39 @@ the GS work 20.2 ms, against 16.7 ms for 60 FPS.
   - Each readback submits and waits, so the CPU and the GPU stop overlapping.
 - **The old core** took 15-16 ms for the whole emulator on the same race.
 
+### Night race (owner run, candidate 287, Confirmed)
+
+The owner's 3x session log (`private/hwr-play-274/session-x3-20261028-175612.log`, B-Spec night City course, the
+first replay-style cameras with several cars facing the camera). The owner's overlay shows 35 FPS, GPU at 51% and
+34 W. Per VBlank, from the 600-VBlank timing lines and the counter deltas over VBlanks 29400-30600:
+
+| Measure | Value |
+|---|---|
+| Whole emulator (wall) | 22.7-23.6 ms (16.7-17.9 ms in the day scenes of the same session) |
+| GS thread, GIF to submit (wall) | 16.1-18.2 ms, of which only 8.7-9.6 ms is CPU time: the rest is waiting |
+| Readbacks (wall, inside the GIF time) | 7.7-7.9 ms |
+| CLUT loads (wall, they include their readbacks) | 5.3-5.9 ms (0.2-1.2 ms in the day scenes) |
+| Batching (front end, translate, targets, textures, draw recording) | 7.4-9.3 ms |
+| Texture lookup and decode | 2.5-3.9 ms: 236 GPU decodes and 97 cache hits |
+| Targets | 1.8-1.9 ms: 5.4 created and 5.4 replaced |
+| Readbacks | 3.7: 2.9 CLUT loads over a drawn target, 0.03 indexed textures over a target, about 0.7 others (EE downloads) |
+| Pixels read back | about 79,000 (about 21,000 per readback: the target's whole drawn area, not the CLUT's 16 x 16) |
+| Submits, each followed by a full wait | 5.7 |
+| Live image memory | 177 MB at the start of the session, 1,027 MB at the end: it grows, nothing bounds it |
+
+The reading:
+- **The night cost is not the game's own readbacks.**
+  - The EE asks for a download about 0.2-0.7 times per VBlank (`[mtvu] sync download` 6,121 in 31,180 VSYNCs).
+  - About 2.9 readbacks per VBlank come from **our** CLUT path: GT4 draws palettes into a target and then loads a CLUT
+    from that target. Core 2 copies the target's whole drawn area to the CPU, so the CPU waits for the GPU each time.
+  - Hypothesis, to confirm with `GT4_CORE2_READBACK_TRACE` on the night scene: this is the light and flare effect,
+    which on the PS2 stays inside the GS. That would explain why the cost grows with the number of cars facing the
+    camera.
+- **The GPU is idle because the CPU waits on it about six times per frame,** and then it waits for the CPU. Neither
+  side runs ahead.
+- **The rest is CPU work:** batching (about 8 ms), texture decodes that the cache should have hit, and the target
+  churn.
+
 ### GPU (Confirmed in code, cost Hypothesis)
 
 - **One uber pipeline for every draw:** storage images with an ordered pixel interlock, and no hardware blending or
@@ -110,32 +143,65 @@ end of each phase.
   - Acceptance: the GT Mode ticker and the Info dialog are clean at 3x, as with the old core (IN-396 evidence).
 - **A2. FXAA in core 2.** Port the IN-376 pass to the core 2 present, behind the same option.
 
-### Phase B: CPU performance (the GPU waits on the CPU)
+### Phase B: deep performance pass (owner, 2026-10-28)
 
-Goal: GS thread at or under 8 ms per VBlank in the race at 3x, and no frame over 16.7 ms at a race start.
+Revised after the night measurement above. Goals at 3x in the night B-Spec scene:
+- whole emulator at or under 16.7 ms per VBlank;
+- GS thread at or under 8 ms;
+- no frame over 16.7 ms at a race start;
+- then the same at 6x.
 
-- **B1. Measurement first:**
-  - the per-frame timeline in the replay tool and the game (F8);
-  - the owner's replay as the scene.
-- **B2. Front-end fast path** (9.1 ms):
+The game's logic and every value the EE reads stay exact. The changes are inside the renderer unless a measurement
+proves otherwise.
+
+- **B0. Scene and timeline (first):**
+  - **Test scene:** a headless night B-Spec City race from a copy of the owner's card (the replay is not available).
+    The menus are driven with `--press`, and the agent finds the path itself.
+  - **GS-only capture:** a 20-second `.gscap` of the same cameras, recorded through the gt4-gs path. It is replayed
+    with `hw_writeback_replay` for GS-only, frame-exact timings, and through gt4-gs for reference frames.
+  - **Per-frame timeline:** a nested stage tree with no double counting. Each readback is labelled with its reason
+    (CLUT, EE download, texture over a target), its pixels, its CPU drain time and its GPU wait time. GPU timestamps
+    per submit. Max and p99 per stage. The F8 report adds the EE, VU1 and MTVU split.
+- **B1. Readbacks without the CPU** (night: 7.7 ms):
+  - **CLUT from a drawn target on the GPU.** A GPU pass writes the target's pixels into the GPU copy of GS memory
+    (the GLM that textures are already decoded from). The CLUT load then reads it there (`hw_glm_clut.comp`), so the
+    CPU no longer waits.
+  - **The CPU copy of those blocks is marked stale.** It is read back only when a CPU reader needs it: an EE
+    download, or a CPU-side texture key. The data is the same bit for bit; only the round trip goes.
+  - **Indexed textures over a target:** the same path.
+  - **The EE downloads that remain:**
+    - read only the requested rectangle, never the target's whole drawn area;
+    - copy into a persistently mapped buffer and wait on that copy's timeline value;
+    - submit the frame's work in steady chunks, so that at a download the GPU has little left to do.
+- **B2. Texture cache** (2.5-3.9 ms):
+  - Find out why 236 textures are decoded per VBlank against 97 hits: page versions bumped by uploads or dirty
+    patches that do not touch the texture, or palette changes.
+  - Key the cache to the content that really changed.
+- **B3. Targets and image memory** (1.9 ms, race-start spikes):
+  - reuse targets of the same size instead of 5.4 creations and 5.4 replacements per VBlank;
+  - sub-allocate images from large device-memory blocks and clear them with a GPU command;
+  - add a memory budget: live image memory grew from 177 MB to 1 GB in one session;
+  - confirm that nothing compiles at run time.
+- **B4. Front end and translate** (batching about 8 ms):
   - a tight PACKED/REGLIST loop for the common register sets (ST, RGBAQ, XYZ2, XYZF2);
-  - no per-vertex allocation or virtual call;
+  - the translated pixel state cached per register version;
+  - no allocation or virtual call per vertex;
   - the bounding box and `ShouldDraw` computed once per primitive from integers.
-  - Profile before and after.
-- **B3. Translate, targets, textures** (~7 ms):
-  - cache the translated pixel state per register version;
-  - reuse vertex arrays;
-  - find why ~240 textures per frame are decoded again (page versions bumped by unrelated uploads? palette hash
-    misses?) and key the cache to what really changed.
-- **B4. Race-start spikes:**
-  - sub-allocate images from large device-memory blocks;
-  - clear with a GPU command instead of on creation;
-  - pre-size the texture pool;
-  - check that nothing compiles at run time (the draw pipeline is built at start-up; confirm with the timeline).
-- **B5. Readbacks without stalls:**
-  - CLUT loads from a target are resolved on the GPU (palette read from the target image) instead of by a CPU
-    readback;
-  - the remaining readbacks are fenced per region instead of waiting for the whole queue.
+- **B5. A second GS worker** (only if B1-B4 leave the GS thread over budget): parse and translate on one thread,
+  record and submit on another, in stream order.
+- **B6. Spec II as the stress scene** (owner proposal, after B1):
+  - Spec II already boots and races on gt4-gs (TASK-100 S7c, branch `task/100-spec2`, not merged).
+  - A test build combines its game library with this branch's renderer.
+  - George V Paris (the heaviest track; it does not reach full speed in GSdx at 6x) then becomes the 6x target.
+  - The v2.00 game stays the fidelity reference.
+
+**Outside phase B:**
+- **VU1 on the GPU belongs to CoreGS 3.0 (TASK-090), not here.**
+  - VU1 already runs on its own thread (MTVU), and the night cost sits in the GS thread.
+  - In 3.0, the VU1 output would feed the GPU directly and skip the CPU's GIF parsing.
+  - B0's F8 split decides whether VU1 matters before then.
+- **Flares through occlusion queries** are also CoreGS 3.0. In 2.0, B1 keeps them exact and removes the wait.
+- **EE single-thread work in the game code** is a separate task (owner, later).
 
 ### Phase C: picture quality
 
@@ -180,9 +246,10 @@ Goal: GS thread at or under 8 ms per VBlank in the race at 3x, and no frame over
 | Order | Step | Owner test |
 |---|---|---|
 | 1 | A1 deinterlace, A2 FXAA | 13: menus (480i) and FXAA on/off |
-| 2 | B1-B5 CPU performance | 14: race start and mid-race frame times, GPU power |
+| 2 | B0-B6 deep performance pass | 14: night B-Spec City race (cars facing the camera), race start, GPU power |
 | 3 | C1-C3 picture | 15: shimmer, sharpness, CAS |
 | 4 | D1-D2 GPU fast path | 16: 6x and above, power against GSdx |
 | 5 | Phase E | beta candidate |
 
-The owner's saved replay is needed from step 2 on.
+The owner cannot save a replay now (2026-10-28). Step 2 uses the night B-Spec scene and its `.gscap` capture
+instead (B0).
