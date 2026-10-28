@@ -413,17 +413,31 @@ struct GpuDrawer::Impl {
     mark(kTimeUpload);  // the load before the refresh (12.8 timing: each interval goes to the mark after it)
     full_barrier();
     const std::uint32_t set = depthSlot ? kGpuColourSlots + slot : slot;
+    // IN-398: the carry slot (set 1) when the renderer named one for this kind of slot, else the target's own set.
+    const bool carry = refreshCarry.active && refreshCarry.depth == depthSlot && refreshCarry.slot != slot;
+    const std::uint32_t carrySet = carry ? (depthSlot ? kGpuColourSlots + refreshCarry.slot : refreshCarry.slot) : set;
+    const VkDescriptorSet sets[2] = {upsampleSets[set], upsampleSets[carrySet]};
     gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upsamplePipeline);
-    gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upsampleLayout, 0, 1, &upsampleSets[set], 0,
-                                    nullptr);
+    gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upsampleLayout, 0, 2, sets, 0, nullptr);
+    if (carry) ++stats.scaledRefreshCarries;
     boundComputePipeline = upsamplePipeline;  // bind_compute rebinds its own pipeline and set afterwards
     boundComputeSet = upsampleSets[set];
     const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
     const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
     // IN-384 follow-up: bilinear for the colour slots (the reference's default for a 1x upload into a scaled target),
     // nearest for the depth slots (their words are compared, not shown).
-    const std::uint32_t push[6] = {static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height, scale,
-                                   depthSlot ? 0u : (scaledRefreshLinear ? 1u : 0u)};
+    const std::uint32_t push[12] = {static_cast<std::uint32_t>(x0),
+                                    static_cast<std::uint32_t>(y0),
+                                    width,
+                                    height,
+                                    scale,
+                                    depthSlot ? 0u : (scaledRefreshLinear ? 1u : 0u),
+                                    carry ? 1u : 0u,
+                                    refreshCarry.mask,
+                                    static_cast<std::uint32_t>(std::max(refreshCarry.x0, 0)),
+                                    static_cast<std::uint32_t>(std::max(refreshCarry.y0, 0)),
+                                    static_cast<std::uint32_t>(std::max(refreshCarry.x1, 0)),
+                                    static_cast<std::uint32_t>(std::max(refreshCarry.y1, 0))};
     gt4_hwd_vkCmdPushConstants(cmd, upsampleLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     recorded_work();
     gt4_hwd_vkCmdDispatch(cmd, (width * scale + 7) / 8, (height * scale + 7) / 8, 1);
@@ -434,6 +448,14 @@ struct GpuDrawer::Impl {
   }
 
   bool create_scaled_resources(std::string &error);
+  // IN-398: the slot whose images the next refreshes of this kind may keep (GpuDrawer::SetRefreshCarry).
+  struct RefreshCarry {
+    bool active = false;
+    bool depth = false;
+    std::uint32_t slot = 0;
+    std::uint32_t mask = 0xFFFFFFFFu;
+    std::int32_t x0 = 0, y0 = 0, x1 = -1, y1 = -1;  // its valid native rectangle (inclusive)
+  } refreshCarry;
   VkDescriptorSet displaySets[2] = {};  // compute set 0 with binding 4 = the display image, per frame set
   VkShaderModule displayModule = VK_NULL_HANDLE;
   VkPipeline displayPipeline = VK_NULL_HANDLE;
@@ -2111,10 +2133,13 @@ bool GpuDrawer::Impl::create_scaled_resources(std::string &error) {
              "vkCreateDescriptorSetLayout", error)) {
     return false;
   }
-  VkPushConstantRange upsamplePush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 5 * sizeof(std::uint32_t)};
+  // IN-398: twelve push words (the range was five while six were pushed, so the IN-384 `linear` word never reached
+  // the kernel) and a second set: the carry slot's images, in the same layout.
+  VkPushConstantRange upsamplePush{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12 * sizeof(std::uint32_t)};
+  const VkDescriptorSetLayout upsamplePipelineSets[2] = {upsampleSetLayout, upsampleSetLayout};
   VkPipelineLayoutCreateInfo upsampleLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-  upsampleLayoutInfo.setLayoutCount = 1;
-  upsampleLayoutInfo.pSetLayouts = &upsampleSetLayout;
+  upsampleLayoutInfo.setLayoutCount = 2;
+  upsampleLayoutInfo.pSetLayouts = upsamplePipelineSets;
   upsampleLayoutInfo.pushConstantRangeCount = 1;
   upsampleLayoutInfo.pPushConstantRanges = &upsamplePush;
   if (!check(gt4_hwd_vkCreatePipelineLayout(device, &upsampleLayoutInfo, nullptr, &upsampleLayout),
@@ -3558,6 +3583,21 @@ bool GpuDrawer::CarryTone(std::uint32_t slot, std::int32_t x0, std::int32_t y0, 
 }
 
 void GpuDrawer::PauseScaled(bool paused) { impl_->scaledPaused = paused; }
+
+void GpuDrawer::SetRefreshCarry(bool depthSlot, std::uint32_t slot, std::uint32_t mask, std::int32_t x0,
+                                std::int32_t y0, std::int32_t x1, std::int32_t y1) {
+  Impl &s = *impl_;
+  s.refreshCarry = Impl::RefreshCarry{};
+  if (!s.scaled() || slot >= (depthSlot ? kGpuDepthSlots : kGpuColourSlots)) return;
+  // The carry slot's scaled image must hold the rectangle (it may be smaller than its 1x words, IN-384).
+  const Impl::ScaledExtent &extent = depthSlot ? s.scaledDepthExtent[slot] : s.scaledFrameExtent[slot];
+  x1 = std::min(x1, static_cast<std::int32_t>(extent.width) - 1);
+  y1 = std::min(y1, static_cast<std::int32_t>(extent.height) - 1);
+  if (x1 < x0 || y1 < y0) return;
+  s.refreshCarry = Impl::RefreshCarry{true, depthSlot, slot, mask, x0, y0, x1, y1};
+}
+
+void GpuDrawer::ClearRefreshCarry() { impl_->refreshCarry = Impl::RefreshCarry{}; }
 
 void GpuDrawer::ArmTrace(bool armed) { impl_->traceArmed = armed; }
 

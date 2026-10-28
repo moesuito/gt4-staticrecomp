@@ -1143,6 +1143,14 @@ public:
         uint64_t drawSequence = 0;        // bumped by every draw into the slot
         uint64_t glmSwizzledDraw = ~0ull; // drawSequence at the last swizzle (~0: none)
         uint64_t glmSwizzledClock = 0;    // glmUploadClock_ at the last swizzle
+        // IN-398: the scaled image lags the 1x words (drawn while a tone run paused the scaled pass and not
+        // refreshed after it); never a carry source.
+        bool scaledStale = false;
+        // IN-398: what the slot held when it was last dropped. Its images stay as they were until the slot takes a new
+        // identity, so a later load of the same memory (under any interchangeable view) can keep its scaled blocks.
+        bool droppedIntact = false;
+        memory::BufferView droppedView{0, 0, memory::Psm::Ct32};
+        PixelRect droppedLoaded;
     };
 
     static constexpr uint32_t kResidentColourSlots = gpu::kGpuColourSlots - 1;
@@ -1263,7 +1271,24 @@ public:
         return -1;
     }
 
+    // S1 diagnostics (SCALE-ONLY-PLAN): GT4_HW_SLOT_TRACE=<file> logs slot drops, loads and refreshes from
+    // GT4_HW_TRACE_FROM_VBLANK on, so the reloads that rebuild a scaled image from 1x words can be attributed.
+    void SlotTrace(const char* event, const ResidentSlot& slot, const PixelRect& rect) {
+        static const char* path = std::getenv("GT4_HW_SLOT_TRACE");
+        static const long from = std::getenv("GT4_HW_TRACE_FROM_VBLANK") ? std::atol(std::getenv("GT4_HW_TRACE_FROM_VBLANK")) : 0L;
+        if (!path || static_cast<long>(vblanks_) < from) return;
+        if (std::FILE* file = std::fopen(path, "ab")) {
+            std::fprintf(file, "v%llu %s gpu=%u depth=%u bp=%u bw=%u psm=%u rect=%d,%d,%d,%d reason=%u shown=%u\n",
+                         static_cast<unsigned long long>(vblanks_), event, slot.gpuIndex, slot.depth ? 1u : 0u,
+                         slot.view.basePointer, slot.view.bufferWidth, static_cast<unsigned>(slot.view.psm), rect.x0,
+                         rect.y0, rect.x1, rect.y1, static_cast<unsigned>(writebackReason_),
+                         (!slot.depth && DisplayedView(slot.view)) ? 1u : 0u);
+            std::fclose(file);
+        }
+    }
+
     void Drop(ResidentSlot& slot, bool keepShadow = true) {
+        if (slot.hasIdentity) SlotTrace("drop", slot, slot.loaded);
         if (keepShadow) SaveDisplayShadow(slot);
         static const bool trace = std::getenv("GT4_HW_SCALE_TRACE") != nullptr;  // diagnostic only
         if (trace && slot.hasIdentity && !slot.depth && DisplayedView(slot.view)) {
@@ -1271,9 +1296,13 @@ public:
                          slot.view.basePointer, slot.view.bufferWidth, static_cast<unsigned>(slot.view.psm),
                          static_cast<unsigned>(writebackReason_));
         }
+        slot.droppedIntact = slot.hasIdentity && !slot.loaded.Empty() && !slot.scaledStale;
+        slot.droppedView = slot.view;
+        slot.droppedLoaded = slot.loaded;
         slot.loaded = PixelRect{};
         slot.drawn = PixelRect{};
         slot.hasIdentity = false;
+        slot.scaledStale = false;
         slot.glmSwizzledDraw = ~0ull;
     }
 
@@ -1607,6 +1636,24 @@ public:
         return false;
     }
 
+    // IN-398: the bits two views of the same memory share when both lay out one 32-bit word per pixel (CT32/CT24,
+    // Z32/Z24): all 32 for the same format, the low 24 when either is a 24-bit view. 0 = not interchangeable.
+    static uint32_t SharedViewMask(const memory::BufferView& a, const memory::BufferView& b) {
+        if (a.basePointer != b.basePointer || a.bufferWidth != b.bufferWidth) return 0u;
+        const auto family = [](memory::Psm psm) {
+            switch (psm) {
+                case memory::Psm::Ct32: case memory::Psm::Ct24: return 1;
+                case memory::Psm::Z32: case memory::Psm::Z24: return 2;
+                default: return 0;
+            }
+        };
+        const int fa = family(a.psm), fb = family(b.psm);
+        if (fa == 0 || fa != fb) return 0u;
+        const bool narrow = a.psm == memory::Psm::Ct24 || b.psm == memory::Psm::Ct24 || a.psm == memory::Psm::Z24 ||
+                            b.psm == memory::Psm::Z24;
+        return narrow ? 0x00FFFFFFu : 0xFFFFFFFFu;
+    }
+
     ResidentSlot& Acquire(bool depth, const memory::BufferView& view) {
         ResidentSlot* oldest = nullptr;
         for (ResidentSlot& slot : slots_) {
@@ -1624,6 +1671,14 @@ public:
             for (ResidentSlot& slot : slots_) {
                 if (slot.depth != depth || &slot == protectedSlot_) continue;  // never evict this batch's texture
                 if (pass == 0 && keepDisplayed && slot.hasIdentity && DisplayedView(slot.view)) continue;
+                // IN-398: at scale, the slot holding this memory under another view is not the victim: its images
+                // stay intact until the load below, which keeps its scaled blocks (the load's own overlap pass
+                // still writes it back and drops it).
+                if (pass == 0 && gpu_.Scale() > 1 &&
+                    ((slot.hasIdentity && SharedViewMask(slot.view, view) != 0u) ||
+                     (!slot.hasIdentity && slot.droppedIntact && SharedViewMask(slot.droppedView, view) != 0u))) {
+                    continue;
+                }
                 if (!oldest || (!slot.hasIdentity && oldest->hasIdentity) ||
                     (slot.hasIdentity == oldest->hasIdentity && slot.lastUse < oldest->lastUse)) {
                     oldest = &slot;
@@ -1640,6 +1695,7 @@ public:
             }
         }
         Drop(*oldest);
+        oldest->droppedIntact = false;  // IN-398: its images are about to hold the new view
         oldest->hasIdentity = true;
         oldest->view = view;
         oldest->lastUse = ++slotUses_;
@@ -1650,6 +1706,7 @@ public:
     // Fills `rect` of the slot's image from memory: from the GLM when a page under it is GLM-owned (IN-350),
     // otherwise from the shadow memory.
     void UploadIntoSlot(ResidentSlot& slot, const PixelRect& rect) {
+        SlotTrace("load", slot, rect);
         const BlockSpan span = SpanOfRect(slot.view, rect);
         if (GlmParkingActive() && (glmLoadsAlways_ || AnyGlmOwned(span))) {
             if (!UploadStalePages(span)) return;
@@ -1698,6 +1755,32 @@ public:
         StageTimer timer(counters.cacheLoadUs);
         const PixelRect old = slot.loaded;
         const PixelRect wanted = old.Empty() ? rect : UnionRects(old, rect);
+        // IN-398 (SCALE-ONLY-PLAN S1): another slot holding this memory under an interchangeable view (GT4 reads its
+        // race frame as CT32 and CT24 in turn). The overlap pass below writes it back and drops it, but its images
+        // stay until reused, so the refreshes of this load keep its scaled blocks wherever the words still match.
+        static const bool carryEnabled = std::getenv("GT4_HW_SCALED_CARRY") == nullptr ||
+                                         std::strcmp(std::getenv("GT4_HW_SCALED_CARRY"), "0") != 0;
+        bool carrying = false;
+        if (carryEnabled && gpu_.Scale() > 1) {
+            // A resident slot of the same memory first, else one dropped with its images intact.
+            for (int pass = 0; pass < 2 && !carrying; ++pass) {
+                for (const ResidentSlot& other : slots_) {
+                    if (&other == &slot || other.depth != slot.depth) continue;
+                    const bool resident = other.hasIdentity && !other.loaded.Empty() && !other.scaledStale;
+                    const bool dropped = !other.hasIdentity && other.droppedIntact;
+                    if (pass == 0 ? !resident : !dropped) continue;
+                    const memory::BufferView& otherView = pass == 0 ? other.view : other.droppedView;
+                    const PixelRect& otherRect = pass == 0 ? other.loaded : other.droppedLoaded;
+                    const uint32_t mask = SharedViewMask(otherView, slot.view);
+                    if (mask == 0u) continue;
+                    gpu_.SetRefreshCarry(slot.depth, other.gpuIndex, mask, otherRect.x0, otherRect.y0, otherRect.x1,
+                                         otherRect.y1);
+                    SlotTrace(pass == 0 ? "carry-resident" : "carry-dropped", other, otherRect);
+                    carrying = true;
+                    break;
+                }
+            }
+        }
         {
             ReasonScope scope(writebackReason_, WritebackReason::LoadOverlap);
             CoherentForWrite(SpanOfRect(slot.view, wanted), &slot, true);
@@ -1712,6 +1795,7 @@ public:
             if (wanted.x0 < old.x0) UploadIntoSlot(slot, PixelRect{wanted.x0, old.y0, old.x0 - 1, old.y1});
             if (wanted.x1 > old.x1) UploadIntoSlot(slot, PixelRect{old.x1 + 1, old.y0, wanted.x1, old.y1});
         }
+        if (carrying) gpu_.ClearRefreshCarry();
         slot.loaded = wanted;
         counters.cacheLoads++;
     }
@@ -2161,7 +2245,10 @@ public:
         for (const ResidentSlot& used : slots_) {
             if (!used.hasIdentity || used.loaded.Empty() || used.lastUse <= toneRun_.firstUse) continue;
             // The source memory (any view of it) is reloaded and rebuilt by the carry below.
-            if (SpansOverlap(LoadedSpan(used), SpanOfRect(toneRun_.source, toneRun_.saved))) continue;
+            if (SpansOverlap(LoadedSpan(used), SpanOfRect(toneRun_.source, toneRun_.saved))) {
+                const_cast<ResidentSlot&>(used).scaledStale = true;  // IN-398: rebuilt by the carry, not refreshed
+                continue;
+            }
             std::string error;
             if (!gpu_.RefreshScaledSlot(used.depth, used.gpuIndex, used.loaded.x0, used.loaded.y0, used.loaded.x1,
                                         used.loaded.y1, error)) {

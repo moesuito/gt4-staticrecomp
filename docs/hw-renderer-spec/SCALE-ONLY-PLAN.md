@@ -96,4 +96,5 @@ room from that prose and from our own code.
 
 ## 6. Status
 
-- 2026-10-27: plan written. S1 next.
+- 2026-10-27: plan written.
+- 2026-10-27: S1 first step, IN-398 (a reload keeps another view's scaled blocks): the stripes on the track are gone. Next: the remaining refreshes from 1x (EE uploads only).

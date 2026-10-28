@@ -182,6 +182,7 @@ struct GpuStats {
     std::uint64_t scaledDraws = 0;
     std::uint64_t scaledPasses = 0;
     std::uint64_t scaledRefreshes = 0;
+    std::uint64_t scaledRefreshCarries = 0;  // IN-398: refreshes that kept another view's scaled blocks
     std::uint64_t scaledRefreshPixels = 0;  // native pixels refreshed
     std::uint64_t scaledTextureCopies = 0;  // IN-374: textures copied from a slot's scaled image
     std::uint64_t fxaaFrames = 0;           // IN-376: presentation frames passed through FXAA
@@ -317,6 +318,12 @@ public:
     // rebuilds or refreshes every scaled image the paused work touched). RefreshScaledSlot refreshes a slot's
     // scaled image over a native rectangle (inclusive) from its 1x words.
     void PauseScaled(bool paused);
+    // IN-398: until ClearRefreshCarry, a refresh of a slot of this kind keeps the scaled block of `slot` wherever its
+    // 1x word equals the loaded one in `mask` (the same memory under another view: CT32/CT24, Z32/Z24), inside
+    // its valid native rectangle x0..x1, y0..y1. Presentation only: the 1x words are loaded as before.
+    void SetRefreshCarry(bool depthSlot, std::uint32_t slot, std::uint32_t mask, std::int32_t x0, std::int32_t y0,
+                         std::int32_t x1, std::int32_t y1);
+    void ClearRefreshCarry();
     // Diagnostics: GT4_HW_DRAW_TRACE / GT4_HW_SCALED_TRACE write only while armed (the renderer arms them from the
     // VBlank named by GT4_HW_TRACE_FROM_VBLANK; armed from the start without it).
     void ArmTrace(bool armed);
