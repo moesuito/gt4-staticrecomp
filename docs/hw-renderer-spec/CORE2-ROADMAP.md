@@ -66,8 +66,12 @@ the GS work 20.2 ms, against 16.7 ms for 60 FPS.
   - The frames are not exactly matched, and gt4-gs's dump is resampled to 480 rows.
   - The reading: the softness the owner sees is not missing resolution. It is aliasing (no mipmaps, no AA) and the
     present resampling.
-- **Present:** box halvings then bilinear (IN-390). At 3x in a 1080p window, it reduces 1344 rows to 1080 and keeps
-  1920 columns 1:1. There is no supersampling horizontally, so edges stay aliased.
+  - **Correction (owner test 13, IN-406, Confirmed):** these dumps are taken before the present. The softness came
+    from the present itself: the halving rule of IN-390 reduced the 3x frame to 960 x 672 and stretched it back to
+    1920 x 1080. Fixed in candidate 287. Aliasing (mipmaps, AA) is still open for the shimmer.
+- **Present:** box halvings while the halved level still covers the window, then one bilinear reduction (IN-406). At
+  3x in a 1080p window, it reduces 1344 rows to 1080 and keeps 1920 columns 1:1. There is no supersampling
+  horizontally, so edges stay aliased.
 
 ### Quality options
 

@@ -18,8 +18,10 @@ frametime spikes at race start, CORE2 at 1x (HUD only), the remaining speed gap.
 for picture faults ("zero bugs visuais"); open: race-start stutter and mid-race drops (the GS thread costs 20 ms per
 VBlank at 3x, the GPU waits), no anti-aliasing, 480i deinterlace. Next steps in
 [CORE2-ROADMAP](hw-renderer-spec/CORE2-ROADMAP.md). Roadmap phase A done in candidate 286 (IN-405): 480i deinterlace
-and FXAA in core 2, with an adaptive rule that keeps GT4's fast-scrolling ticker clean as in gt4-gs. Waiting for owner
-test 13. Not merged; no pins.
+and FXAA in core 2, with an adaptive rule that keeps GT4's fast-scrolling ticker clean as in gt4-gs. Owner test 13:
+deinterlace clean like GSdx, but the race picture softer than GSdx's in the same 1080p window. Cause: the present
+halved the 3x frame to 960 x 672 and stretched it back (IN-390 rule); fixed in candidate 287 (IN-406, both cores), one
+bilinear reduction like the reference. Waiting for owner test 13b. Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
 

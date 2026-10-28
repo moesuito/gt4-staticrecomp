@@ -52,6 +52,24 @@ inline PresentRect present_rect_for(std::uint32_t width, std::uint32_t height, b
   return fill ? present_rect_ratio(width, height, fill_ratio) : present_rect_widescreen(width, height);
 }
 
+// IN-406: the number of 2x2 box halvings before the final bilinear blit of an upscaled frame into a dst_w x dst_h
+// rectangle. A level is halved only while the halved level still covers the destination on both axes, so the final
+// blit always reduces (a ratio in (0.5, 1] on the tighter axis) and never magnifies a halved level back up. That is the
+// reference's default "smooth" present for a reduction under 2x: one bilinear sample of the whole image
+// (Q-GSDX-COMPARISON section 6). IN-390 halved down to HALF the destination instead, so a 3x frame in a 1080p window
+// (1920 x 1344 into 1920 x 1080) was halved to 960 x 672 and stretched back: half the detail was thrown away (owner
+// test 13). max_levels is the image's mip level count (level 0 included).
+inline std::uint32_t present_box_halvings(std::uint32_t src_w, std::uint32_t src_h, std::uint32_t dst_w,
+                                          std::uint32_t dst_h, std::uint32_t max_levels) {
+  std::uint32_t levels = 0;
+  while (levels + 1 < max_levels && (src_w >> 1) >= dst_w && (src_h >> 1) >= dst_h && dst_w && dst_h) {
+    src_w >>= 1;
+    src_h >>= 1;
+    ++levels;
+  }
+  return levels;
+}
+
 // The fill request packed into one 64-bit word so it can cross threads atomically: bit 0 = fill, bits 32..63 = the
 // target ratio x 1e6 (0 = the whole window), as the stream protocol carries it.
 inline std::uint64_t pack_display_aspect(bool fill, std::uint32_t ratio_millionths) {

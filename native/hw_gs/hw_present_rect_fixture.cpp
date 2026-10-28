@@ -120,6 +120,32 @@ int main() {
     }
   }
 
+  // IN-406: box halvings before the final bilinear blit. The final blit must reduce, never magnify a halved level.
+  {
+    struct Halving {
+      std::uint32_t src_w, src_h, dst_w, dst_h, max_levels, expected;
+    };
+    const Halving known[] = {
+        {1920, 1344, 1920, 1080, 4, 0},  // 3x in a 1080p window (owner test 13): one bilinear reduction, no halving
+        {3840, 2688, 1920, 1080, 4, 1},  // 6x in 1080p: one box halving to 1920 x 1344, then a 0.8x reduction
+        {3840, 2688, 2434, 1369, 4, 0},  // 6x in the owner's 3440 x 1369 window: one 0.63x bilinear reduction
+        {7680, 5376, 1920, 1080, 4, 2},  // 12x in 1080p: two halvings to 1920 x 1344
+        {7680, 5376, 1920, 1080, 2, 1},  // capped by the image's mip levels
+        {1280, 896, 1920, 1080, 4, 0},   // 2x in 1080p: a magnification, nothing to halve
+        {3840, 2688, 0, 0, 4, 0},        // empty rectangle
+    };
+    for (const Halving &h : known) {
+      const std::uint32_t got = gt4::hw::present_box_halvings(h.src_w, h.src_h, h.dst_w, h.dst_h, h.max_levels);
+      const std::uint32_t lw = h.src_w >> got, lh = h.src_h >> got;
+      const bool magnifies = h.dst_w && h.dst_h && got > 0 && (lw < h.dst_w || lh < h.dst_h);
+      if (got != h.expected || magnifies) {
+        ++failures;
+        std::fprintf(stderr, "FAIL: halvings %ux%u into %ux%u (levels %u) gave %u expected %u\n", h.src_w, h.src_h,
+                     h.dst_w, h.dst_h, h.max_levels, got, h.expected);
+      }
+    }
+  }
+
   if (failures == 0) std::printf("hw_present_rect: all checks passed\n");
   return failures == 0 ? 0 : 1;
 }
