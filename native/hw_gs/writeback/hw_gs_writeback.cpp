@@ -859,6 +859,7 @@ public:
     // spans). A cached decode is reused only when none of its pages changed after it was made.
     void MarkWritten(const BlockSpan& span) {
         if (span.count == 0) return;
+        BumpMemory(span, "reject-shadow-write");
         ++writeSequence_;
         if (span.count >= kAllBlocks) {
             pageWrites_.fill(writeSequence_);
@@ -869,6 +870,58 @@ public:
         for (uint32_t page = firstPage; page <= lastBlock / kBlocksPerPage; ++page) {
             pageWrites_[page % memory::kPagesTotal] = writeSequence_;
         }
+    }
+
+    // IN-398 follow-up: a version per page bumped by EVERY write into GS memory, the shadow memory (MarkWritten) or
+    // the GLM (slot swizzles, EE uploads into GLM-owned pages, tone strips). A dropped slot is a carry source only
+    // while its pages still hold the version they had when it was dropped: an older copy of the same memory never
+    // supplies scaled blocks (the owner's flickering shadow shapes: a target cleared to the same value kept an older
+    // slot's scaled remnants).
+    void BumpMemory(const BlockSpan& span, const char* writer = "shadow") {
+        if (span.count == 0) return;
+        ++memoryClock_;
+        if (span.count >= kAllBlocks) {
+            memoryVersion_.fill(memoryClock_);
+            memoryWriter_.fill(writer);
+            return;
+        }
+        const uint32_t firstPage = span.begin / kBlocksPerPage;
+        const uint32_t lastBlock = span.begin + span.count - 1u;
+        for (uint32_t page = firstPage; page <= lastBlock / kBlocksPerPage; ++page) {
+            memoryVersion_[page % memory::kPagesTotal] = memoryClock_;
+            memoryWriter_[page % memory::kPagesTotal] = writer;
+        }
+    }
+
+    // Diagnostics: the writer of the newest page of `span`.
+    const char* NewestWriter(const BlockSpan& span) const {
+        if (span.count == 0 || span.count >= kAllBlocks) return "reject-all";
+        uint64_t newest = 0;
+        const char* writer = "reject-none";
+        const uint32_t firstPage = span.begin / kBlocksPerPage;
+        const uint32_t lastBlock = span.begin + span.count - 1u;
+        for (uint32_t page = firstPage; page <= lastBlock / kBlocksPerPage; ++page) {
+            if (memoryVersion_[page % memory::kPagesTotal] >= newest) {
+                newest = memoryVersion_[page % memory::kPagesTotal];
+                writer = memoryWriter_[page % memory::kPagesTotal];
+            }
+        }
+        return writer;
+    }
+
+    uint64_t MemoryVersion(const BlockSpan& span) const {
+        uint64_t newest = 0;
+        if (span.count == 0) return 0;
+        if (span.count >= kAllBlocks) {
+            for (uint64_t value : memoryVersion_) newest = std::max(newest, value);
+            return newest;
+        }
+        const uint32_t firstPage = span.begin / kBlocksPerPage;
+        const uint32_t lastBlock = span.begin + span.count - 1u;
+        for (uint32_t page = firstPage; page <= lastBlock / kBlocksPerPage; ++page) {
+            newest = std::max(newest, memoryVersion_[page % memory::kPagesTotal]);
+        }
+        return newest;
     }
 
     bool UnchangedSince(const BlockSpan& span, uint64_t sequence) const {
@@ -1030,6 +1083,7 @@ public:
             Fail(error);
             return true;
         }
+        BumpMemory(span, "reject-host-upload");
         ForEachPage(span, [&](uint32_t page) {
             if (!glmOwned_[page]) {
                 glmOwned_[page] = true;
@@ -1151,6 +1205,7 @@ public:
         bool droppedIntact = false;
         memory::BufferView droppedView{0, 0, memory::Psm::Ct32};
         PixelRect droppedLoaded;
+        uint64_t droppedVersion = 0;  // MemoryVersion of droppedLoaded's pages at the drop
     };
 
     static constexpr uint32_t kResidentColourSlots = gpu::kGpuColourSlots - 1;
@@ -1299,6 +1354,7 @@ public:
         slot.droppedIntact = slot.hasIdentity && !slot.loaded.Empty() && !slot.scaledStale;
         slot.droppedView = slot.view;
         slot.droppedLoaded = slot.loaded;
+        slot.droppedVersion = slot.droppedIntact ? MemoryVersion(SpanOfRect(slot.view, slot.loaded)) : 0;
         slot.loaded = PixelRect{};
         slot.drawn = PixelRect{};
         slot.hasIdentity = false;
@@ -1479,6 +1535,7 @@ public:
         }
         slot.glmSwizzledDraw = slot.drawSequence;
         slot.glmSwizzledClock = glmUploadClock_;
+        BumpMemory(SpanOfRect(slot.view, slot.drawn), "reject-swizzle");
         counters.glmSwizzles++;
         return true;
     }
@@ -1767,7 +1824,18 @@ public:
                 for (const ResidentSlot& other : slots_) {
                     if (&other == &slot || other.depth != slot.depth) continue;
                     const bool resident = other.hasIdentity && !other.loaded.Empty() && !other.scaledStale;
-                    const bool dropped = !other.hasIdentity && other.droppedIntact;
+                    // A colour source must still be the newest copy of its memory (a stale scaled remnant would be
+                    // shown); a depth source is only compared, never shown, so its per-pixel 1x match is enough (the
+                    // depth refreshed in 1x blocks drew the dark stripes on the track: the road's layers fail the
+                    // depth test at scale in rows).
+                    const bool dropped = !other.hasIdentity && other.droppedIntact &&
+                                         (other.depth ||
+                                          MemoryVersion(SpanOfRect(other.droppedView, other.droppedLoaded)) ==
+                                              other.droppedVersion);
+                    if (pass == 1 && !other.hasIdentity && other.droppedIntact && !dropped &&
+                        SharedViewMask(other.droppedView, slot.view) != 0u) {
+                        SlotTrace(NewestWriter(SpanOfRect(other.droppedView, other.droppedLoaded)), other, other.droppedLoaded);  // diagnostics: the newer write
+                    }
                     if (pass == 0 ? !resident : !dropped) continue;
                     const memory::BufferView& otherView = pass == 0 ? other.view : other.droppedView;
                     const PixelRect& otherRect = pass == 0 ? other.loaded : other.droppedLoaded;
@@ -2666,6 +2734,8 @@ public:
             Fail(error);
             return;
         }
+        // IN-398: the race colour filter's strips rewrite the frame's pages, but its scaled result is rebuilt by
+        // the tone carry at the end of the run (IN-379), so they do not retire a carry source.
         ForEachPage(span, [&](uint32_t pageIndex) {
             if (!glmOwned_[pageIndex]) {
                 glmOwned_[pageIndex] = true;
@@ -2706,6 +2776,7 @@ public:
             Fail(error.empty() ? std::string("tone strip verification failed") : error);
             return;
         }
+        // IN-398: as above (the colour filter, rebuilt by the tone carry).
         if (!glmOwned_[page]) {
             glmOwned_[page] = true;
             ++glmOwnedPages_;
@@ -2938,6 +3009,9 @@ public:
     static constexpr size_t kTextureCacheEntries = 256;
     bool textureCacheEnabled_ = true;
     std::array<uint64_t, memory::kPagesTotal> pageWrites_{};
+    std::array<uint64_t, memory::kPagesTotal> memoryVersion_{};  // IN-398: every GS memory write (BumpMemory)
+    uint64_t memoryClock_ = 0;
+    std::array<const char*, memory::kPagesTotal> memoryWriter_{};  // diagnostics: the last writer of each page
     // IN-377 display shadows.
     struct DisplayShadow {
         bool valid = false;
