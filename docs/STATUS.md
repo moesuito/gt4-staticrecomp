@@ -14,8 +14,10 @@ no pixel centre, which is right only at 1x (IN-403, found by black-box compariso
 synthetic GS streams in `scripts/hw_blackbox/`). Fixed for both cores: the 6x menu ring now equals gt4-gs's, the grey
 line across the road near the horizon is gone, race480p memory at 6x identical. Target heights round to page rows
 (IN-404, no more menu-field overlap with the texture memory). Open: 480i deinterlace in CORE2, the car shadow,
-frametime spikes at race start, CORE2 at 1x (HUD only), the remaining speed gap. Waiting for owner test of candidate
-`O:\gt4recomp-scratch\coregs2-candidate-285`. Not merged; no pins.
+frametime spikes at race start, CORE2 at 1x (HUD only), the remaining speed gap. Owner test 12 (candidate 285): passed
+for picture faults ("zero bugs visuais"); open: race-start stutter and mid-race drops (the GS thread costs 20 ms per
+VBlank at 3x, the GPU waits), no anti-aliasing, 480i deinterlace. Next steps in
+[CORE2-ROADMAP](hw-renderer-spec/CORE2-ROADMAP.md). Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
 
