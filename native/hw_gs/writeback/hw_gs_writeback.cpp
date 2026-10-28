@@ -9,6 +9,8 @@
 
 #include "hw_gs_writeback.hpp"
 
+#include "../core2/core2_renderer.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <array>
@@ -312,38 +314,8 @@ private:
     Clock::time_point start_;
 };
 
-// Called just before the texels of a batch are read from the shadow memory (the M7 resident targets write
-// back drawn pixels that overlap the texture first, IN-340).
-using TextureReadHook = std::function<void(const memory::BufferView&, uint32_t width, uint32_t height)>;
 
-// IN-346: asked first for a non-indexed texture; returns the GPU colour slot that holds the texture's memory
-// (exact view, whole extent loaded), so the texels are copied on the GPU, or -1 to decode from the shadow memory.
-// `footprint`: the texels the batch can sample (inclusive, inside width x height), see TextureFootprint.
-using TextureFromTargetHook =
-    std::function<int32_t(const memory::BufferView&, uint32_t width, uint32_t height, const PixelRect& footprint)>;
 
-// IN-347: asked next; returns true when the texture overlaps GPU-newer target data and the GLM was made
-// current for it (pages uploaded, targets swizzled), so the texels are decoded from the GLM on the GPU.
-using TextureFromGlmHook =
-    std::function<bool(const memory::BufferView&, uint32_t width, uint32_t height, bool indexed, bool& gpuClut)>;
-
-// Decoded-texture cache (M7 memory sources, chapter 04; IN-341). The key is everything the decode reads
-// besides memory: TBP0, TBW, PSM, the decoded extent, TEXA for 16/24-bit texels and the palette contents
-// for indexed ones. `find` returns texels only when no shadow-memory write touched the texture's pages since
-// they were decoded; `store` keeps a fresh decode.
-struct TextureKey {
-    uint32_t tbp = 0, tbw = 0, psm = 0, width = 0, height = 0;
-    uint32_t ta0 = 0, ta1 = 0, aem = 0;
-    uint64_t paletteHash = 0;
-    bool operator==(const TextureKey&) const = default;
-};
-
-class TextureCacheView {
-public:
-    virtual ~TextureCacheView() = default;
-    virtual const std::vector<uint32_t>* find(const TextureKey& key, const memory::BufferView& view) = 0;
-    virtual void store(const TextureKey& key, const memory::BufferView& view, const std::vector<uint32_t>& texels) = 0;
-};
 
 uint64_t HashPalette(const clut::Palette& palette) {
     uint64_t hash = 1469598103934665603ull;
@@ -835,6 +807,13 @@ bool ExecuteBatch(gpu::GpuDrawer &gpu, const BatchTranslation &t, memory::LocalM
 void TranslateBatch(const Batch &batch, const memory::LocalMemory &local, const clut::ClutUnit &clut,
                     BatchTranslation &out, Counters &counters) {
     Translate(batch, local, clut, out, counters);
+}
+
+void TranslateBatchHooked(const Batch &batch, const memory::LocalMemory &local, const clut::ClutUnit &clut,
+                          BatchTranslation &out, Counters &counters, const TextureReadHook &beforeTextureRead,
+                          TextureCacheView *textureCache, const TextureFromTargetHook &textureFromTarget,
+                          const TextureFromGlmHook &textureFromGlm) {
+    Translate(batch, local, clut, out, counters, beforeTextureRead, textureCache, textureFromTarget, textureFromGlm);
 }
 
 // ---- Renderer -----------------------------------------------------------------------------------
@@ -3052,21 +3031,33 @@ public:
     uint64_t slotUses_ = 0;
 };
 
-Renderer::Renderer() : impl_(std::make_unique<Impl>()) {}
+Renderer::Renderer() : impl_(std::make_unique<Impl>()) {
+    // CORE2 (owner decision 2026-10-28, CORE2-DESIGN.md): GT4_HW_CORE=2 selects the core rewrite.
+    const char* core = std::getenv("GT4_HW_CORE");
+    if (core && std::strcmp(core, "2") == 0) {
+        core2_ = std::make_unique<core2::Renderer>();
+        std::fprintf(stderr, "[hw] GT4_HW_CORE=2: CORE2 core (one image per target at scale)\n");
+    }
+}
 
 Renderer::~Renderer() = default;
 
-void Renderer::SetScale(std::uint32_t scale, float scaleOffset) { impl_->gpu_.SetScale(scale, scaleOffset); }
+void Renderer::SetScale(std::uint32_t scale, float scaleOffset) {
+    if (core2_) return core2_->SetScale(scale, scaleOffset);
+    impl_->gpu_.SetScale(scale, scaleOffset);
+}
 
-std::uint32_t Renderer::Scale() const { return impl_->gpu_.Scale(); }
+std::uint32_t Renderer::Scale() const { return core2_ ? core2_->Scale() : impl_->gpu_.Scale(); }
 
 bool Renderer::Init(const gpu::VulkanHandles& handles, std::string& error) {
+    if (core2_) return core2_->Init(handles, error);
     if (!impl_->gpu_.Init(handles, error)) return false;
     impl_->UpdateClutCopies();
     return true;
 }
 
 bool Renderer::GifTransfer(std::uint32_t path, const std::uint8_t* bytes, std::size_t byteCount) {
+    if (core2_) return core2_->GifTransfer(path, bytes, byteCount);
     if (path == 0 || path > 3) return false;  // IN-312
     if (byteCount % 16 != 0) return false;
     StageTimer timer(impl_->counters.gifUs);
@@ -3091,14 +3082,18 @@ bool Renderer::GifTransfer(std::uint32_t path, const std::uint8_t* bytes, std::s
     return true;
 }
 
-bool Renderer::GifBusy(std::uint32_t path) const { return impl_->frontEnd_.GifBusy(path); }
+bool Renderer::GifBusy(std::uint32_t path) const {
+    return core2_ ? core2_->GifBusy(path) : impl_->frontEnd_.GifBusy(path);
+}
 
 void Renderer::GifReset(std::uint32_t pathMask) {
+    if (core2_) return core2_->GifReset(pathMask);
     impl_->frontEnd_.GifReset(pathMask);
     impl_->memory_.ResetRead();  // a GIF reset cancels the pending LOCAL->HOST read (10.2)
 }
 
 bool Renderer::WritePrivileged(std::uint32_t address, std::uint64_t value) {
+    if (core2_) return core2_->WritePrivileged(address, value);
     using namespace priv;
     auto& regs = impl_->displayRegs_;
     switch (address) {
@@ -3126,6 +3121,7 @@ bool Renderer::WritePrivileged(std::uint32_t address, std::uint64_t value) {
 }
 
 void Renderer::ResetGs() {
+    if (core2_) return core2_->ResetGs();
     Impl& s = *impl_;
     s.WriteBackAll();  // a GS reset keeps local memory, so resident draws are stored first
     s.DropAll();
@@ -3144,6 +3140,7 @@ void Renderer::ResetGs() {
 }
 
 bool Renderer::BeginAuxiliaryFrame() {
+    if (core2_) return false;  // CORE2: no auxiliary frames yet
     Impl& s = *impl_;
     if (s.auxiliary_) return false;
     s.WriteBackAll();  // the snapshot is the guest's memory including resident draws
@@ -3177,6 +3174,7 @@ const PassTimings& Renderer::TimingTotals() const { return impl_->timingTotals_;
 std::uint64_t Renderer::TimedFrames() const { return impl_->timedFrames_; }
 
 void Renderer::ClearVram() {
+    if (core2_) return core2_->ClearVram();
     impl_->DropAll();
     impl_->DiscardGlmOwned();
     auto bytes = impl_->memory_.Local().bytes();
@@ -3185,6 +3183,7 @@ void Renderer::ClearVram() {
 }
 
 std::size_t Renderer::ReadFifo(void* destination, std::size_t byteCount) {
+    if (core2_) return core2_->ReadFifo(destination, byteCount);
     Impl& s = *impl_;
     if (s.auxiliary_) {
         // A guest readback is never answered from an auxiliary frame (roadmap requirement 2).
@@ -3210,6 +3209,32 @@ std::size_t Renderer::ReadFifo(void* destination, std::size_t byteCount) {
 }
 
 void Renderer::Flush() {
+    // Diagnostics (CORE2 bring-up): GT4_HW_SLM_DUMP=<vblank>:<file> writes GS memory, with every drawn target written
+    // back, at that VBlank, so the two cores' memory can be compared in the game.
+    {
+        static long long dumpAt = -2;
+        static std::string dumpPath;
+        if (dumpAt == -2) {
+            dumpAt = -1;
+            if (const char* text = std::getenv("GT4_HW_SLM_DUMP")) {
+                const char* colon = std::strchr(text, ':');
+                if (colon) {
+                    dumpAt = std::atoll(text);
+                    dumpPath = colon + 1;
+                }
+            }
+        }
+        static long long flushes = 0;
+        if (dumpAt >= 0 && flushes++ == dumpAt) {
+            const std::uint8_t* bytes = Slm();
+            if (std::FILE* file = std::fopen(dumpPath.c_str(), "wb")) {
+                std::fwrite(bytes, 1, memory::kLocalMemoryBytes, file);
+                std::fclose(file);
+                std::fprintf(stderr, "[hw] GS memory written to %s at VBlank %lld\n", dumpPath.c_str(), dumpAt);
+            }
+        }
+    }
+    if (core2_) return core2_->Flush();
     Impl& s = *impl_;
     s.frontEnd_.VBlank(&kEverything, 1);
     s.frontEnd_.FlushBatch(FlushReason::VBlank);
@@ -3250,11 +3275,15 @@ FrameOutput Renderer::Compose(ComposeKind kind) {
     return out;
 }
 
-void Renderer::SetDisplayField(bool odd) { impl_->oddField_ = odd; }
+void Renderer::SetDisplayField(bool odd) {
+    if (core2_) core2_->SetDisplayField(odd);
+    impl_->oddField_ = odd;
+}
 
 bool Renderer::DisplayField() const { return impl_->oddField_; }
 
 void Renderer::SetOutputSettings(const OutputSettings& settings) {
+    if (core2_) core2_->SetOutputSettings(settings);
     impl_->settings_ = settings;
     impl_->displayRegs_.anti_blur = settings.antiBlur;
 }
@@ -3324,6 +3353,10 @@ display::Image ReadCircuit(const memory::LocalMemory& local, const display::Circ
 }  // namespace
 
 void Renderer::ComposeFrame(FrameOutput& out, ComposeKind kind) {
+    if (core2_) {
+        (void)kind;
+        return core2_->ComposeFrame(out);
+    }
     Impl& s = *impl_;
     out.valid = false;
     out.width = 0;
@@ -3462,6 +3495,7 @@ void Renderer::ComposeFrame(FrameOutput& out, ComposeKind kind) {
 void Renderer::SetBatchObserver(BatchObserver observer) { impl_->observer_ = std::move(observer); }
 
 const std::uint8_t* Renderer::Slm() const {
+    if (core2_) return core2_->Slm();
     impl_->WriteBackAll();  // a caller reading the shadow memory sees every draw (M7 coherence)
     return impl_->memory_.Local().bytes().data();
 }
@@ -3523,6 +3557,7 @@ void Renderer::SetChunksPerSubmission(std::uint32_t chunks) { impl_->gpu_.SetChu
 void Renderer::SetDoubleBuffering(bool enabled) { impl_->gpu_.SetDoubleBuffering(enabled); }
 
 bool Renderer::ComposeFrameGpu(GpuFrame& out) {
+    if (core2_) return core2_->ComposeFrameGpu(out);
     Impl& s = *impl_;
     s.FlushToneStrips();  // IN-383: the compose reads local memory
     s.FinishToneRun();  // IN-379: the presentation reads the carried scaled image
@@ -3732,6 +3767,7 @@ void Renderer::SetGpuCompose(bool enabled) { impl_->gpuCompose_ = enabled; }
 void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
 
 bool Renderer::ReadGpuFrame(const GpuFrame& frame, std::vector<std::uint32_t>& pixels) {
+    if (core2_) return core2_->ReadGpuFrame(frame, pixels);
     std::string error;
     if (!frame.valid || !impl_->gpu_.ReadDisplay(frame.width, frame.height, pixels, error, frame.fxaa)) return false;
     return true;
@@ -3745,12 +3781,12 @@ void Renderer::SetAsyncPresentation(bool enabled) {
 
 void Renderer::SetCpuSmallSprites(bool enabled) { impl_->cpuSmallSprites_ = enabled; }
 
-const Counters& Renderer::GetCounters() const { return impl_->counters; }
+const Counters& Renderer::GetCounters() const { return core2_ ? core2_->GetCounters() : impl_->counters; }
 
 const gpu::GpuStats& Renderer::GpuCounters() const { return impl_->gpu_.Stats(); }
 
 const std::string& Renderer::LastError() const { return impl_->lastError_; }
 
-bool Renderer::Failed() const { return impl_->failed_; }
+bool Renderer::Failed() const { return core2_ ? core2_->Failed() : impl_->failed_; }
 
 } // namespace hwgs::writeback

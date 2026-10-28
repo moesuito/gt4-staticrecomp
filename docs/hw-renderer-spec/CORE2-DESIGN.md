@@ -1,6 +1,6 @@
 # CoreGS 2.0 core rewrite: design (CORE2)
 
-Status: design, 2026-10-28 (owner decision "Sim, refaz"; ai-memory `decisions/coregs2-scale-only-rendering`). The
+Status: C1-C3 implemented (IN-401, candidate 283), 2026-10-28 (owner decision "Sim, refaz"; ai-memory `decisions/coregs2-scale-only-rendering`). The
 rules come from [CORE2-SPEC.md](CORE2-SPEC.md); this file maps them onto our code. Clean room: written by the TASK-027
 implementer, who never opens reference sources.
 

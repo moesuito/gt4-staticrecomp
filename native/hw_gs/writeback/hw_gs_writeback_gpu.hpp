@@ -71,6 +71,7 @@ enum : std::uint32_t {
     Zformat, BlendOn, Pabe, BlendA, BlendB, BlendC, BlendD, Fix, Colclamp, TexOn, Tfx, Tcc, TexelKind,
     Ta0, Ta1, Aem, FogOn, FogR, FogG, FogB, TexFst, TexLinear, WrapS, WrapT, WrapMinS, WrapMaxS,
     WrapMinT, WrapMaxT, TexLog2W, TexLog2H, TexOriginX, TexOriginY,
+    KeepTopByte,  // CORE2: a CT24 write keeps the stored top byte (shared 32/24 target)
     Count
 };
 static_assert(Count <= 48, "GpuPixelState has 48 fields");

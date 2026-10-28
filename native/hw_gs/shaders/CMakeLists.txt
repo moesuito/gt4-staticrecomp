@@ -93,6 +93,11 @@ hw_add_shader(hw_glm_unswizzle "${HW_SHADER_DIR}/hw_glm_unswizzle.comp" comp)
 hw_add_shader(hw_glm_merge "${HW_SHADER_DIR}/hw_glm_merge.comp" comp)
 hw_add_shader(hw_glm_host_upload "${HW_SHADER_DIR}/hw_glm_host_upload.comp" comp)
 hw_add_shader(hw_display_compose "${HW_SHADER_DIR}/hw_display_compose.comp" comp)
+# CORE2 core rewrite (CORE2-SPEC): patch from memory, reduction to 1x, GT4 hook, display merge.
+hw_add_shader(core2_patch "${HW_SHADER_DIR}/core2_patch.comp" comp)
+hw_add_shader(core2_reduce "${HW_SHADER_DIR}/core2_reduce.comp" comp)
+hw_add_shader(core2_tone "${HW_SHADER_DIR}/core2_tone.comp" comp)
+hw_add_shader(core2_compose "${HW_SHADER_DIR}/core2_compose.comp" comp)
 hw_add_shader(hw_blend_exact "${HW_SHADER_DIR}/hw_blend_exact.comp" comp)
 hw_add_shader(hw_pixel_exact "${HW_SHADER_DIR}/hw_pixel_exact.comp" comp)
 

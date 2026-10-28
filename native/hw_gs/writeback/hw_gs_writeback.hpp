@@ -24,6 +24,10 @@
 #include "hw_memory.hpp"
 #include "hw_gs_writeback_gpu.hpp"
 
+namespace hwgs::core2 {
+class Renderer;
+}
+
 namespace hwgs::writeback {
 
 // Counters for the replay and the F8 report of the M4 milestone.
@@ -196,6 +200,56 @@ struct BatchTranslation {
 void TranslateBatch(const Batch &batch, const memory::LocalMemory &local, const clut::ClutUnit &clut,
                     BatchTranslation &out, Counters &counters);
 
+// Called just before the texels of a batch are read from the shadow memory (the M7 resident targets write
+// back drawn pixels that overlap the texture first, IN-340).
+using TextureReadHook = std::function<void(const memory::BufferView&, uint32_t width, uint32_t height)>;
+
+// IN-346: asked first for a non-indexed texture; returns the GPU colour slot that holds the texture's memory
+// (exact view, whole extent loaded), so the texels are copied on the GPU, or -1 to decode from the shadow memory.
+// `footprint`: the texels the batch can sample (inclusive, inside width x height), see TextureFootprint.
+using TextureFromTargetHook =
+    std::function<int32_t(const memory::BufferView&, uint32_t width, uint32_t height, const PixelRect& footprint)>;
+
+// Decoded-texture cache (M7 memory sources, chapter 04; IN-341). The key is everything the decode reads
+// besides memory: TBP0, TBW, PSM, the decoded extent, TEXA for 16/24-bit texels and the palette contents
+// for indexed ones. `find` returns texels only when no shadow-memory write touched the texture's pages since
+// they were decoded; `store` keeps a fresh decode.
+struct TextureKey {
+    uint32_t tbp = 0, tbw = 0, psm = 0, width = 0, height = 0;
+    uint32_t ta0 = 0, ta1 = 0, aem = 0;
+    uint64_t paletteHash = 0;
+    bool operator==(const TextureKey&) const = default;
+};
+
+class TextureCacheView {
+public:
+    virtual ~TextureCacheView() = default;
+    virtual const std::vector<uint32_t>* find(const TextureKey& key, const memory::BufferView& view) = 0;
+    virtual void store(const TextureKey& key, const memory::BufferView& view, const std::vector<uint32_t>& texels) = 0;
+};
+
+// IN-347: asked next; returns true when the texture overlaps GPU-newer target data and the GLM was made
+// current for it (pages uploaded, targets swizzled), so the texels are decoded from the GLM on the GPU.
+using TextureFromGlmHook =
+    std::function<bool(const memory::BufferView&, uint32_t width, uint32_t height, bool indexed, bool& gpuClut)>;
+
+// FNV-1a of a 256-entry palette as BatchTranslation::palette holds it (texture cache keys).
+inline uint64_t HashPaletteWords(const std::vector<uint32_t> &palette) {
+    uint64_t hash = 1469598103934665603ull;
+    for (uint32_t entry : palette) {
+        hash ^= entry;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+// TranslateBatch with the hooks the cache renderers use (CORE2, decision coregs2-scale-only-rendering): a texture
+// read hook, a decoded-texture cache and a texture-from-target lookup.
+void TranslateBatchHooked(const Batch &batch, const memory::LocalMemory &local, const clut::ClutUnit &clut,
+                          BatchTranslation &out, Counters &counters, const TextureReadHook &beforeTextureRead,
+                          TextureCacheView *textureCache, const TextureFromTargetHook &textureFromTarget,
+                          const TextureFromGlmHook &textureFromGlm = {});
+
 // Draws a translated batch in chunks (one Execute per chunk), reading the frame and depth words of
 // the rectangle from the SLM first and writing them back afterwards (chapter 00 write-back mode).
 bool ExecuteBatch(gpu::GpuDrawer &gpu, const BatchTranslation &translation, memory::LocalMemory &local,
@@ -333,9 +387,14 @@ public:
     const std::string &LastError() const;
     bool Failed() const;
 
+    // CORE2 (the core rewrite, CORE2-DESIGN.md): true when GT4_HW_CORE=2 selected it at construction.
+    bool Core2() const { return core2_ != nullptr; }
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;
+    // GT4_HW_CORE=2: every call below goes to the new core; the old one stays idle.
+    std::unique_ptr<core2::Renderer> core2_;
 };
 
 } // namespace hwgs::writeback

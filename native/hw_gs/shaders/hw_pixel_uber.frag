@@ -85,6 +85,9 @@ layout(std140, set = 0, binding = 0) uniform PixelStateBlock {
     uint tex_log2_h;   // TH
     uint tex_origin_x; // the chunk's region in the texel atlas (IN-352)
     uint tex_origin_y;
+    // CORE2: 1 when the frame image is shared by the 32- and 24-bit views of the same memory (one target per
+    // memory, CORE2-SPEC 1.3), so a CT24 write keeps the stored top byte as GS memory does. 0 in the old core.
+    uint keep_top_byte;
 } state;
 
 #if HWR_INTERLOCK
@@ -310,6 +313,9 @@ void main() {
     uint depth_old = imageLoad(hw_depth, pixel).x;
     HwOutcome o = hw_process_pixel(s, f, frame_old, depth_old);
     if (o.frame_written) {
+        if (state.keep_top_byte != 0u && state.format == HW_FORMAT_CT24) {
+            o.frame_stored = (o.frame_stored & 0x00FFFFFFu) | (frame_old & 0xFF000000u);
+        }
         imageStore(hw_frame, pixel, uvec4(o.frame_stored));
     }
     if (o.depth_written) {

@@ -47,8 +47,12 @@ target_compile_definitions(gt4_hw_gpu PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 # Renderer of the write-back mode: front end, batch translation, GPU draw, SLM write-back, display.
 add_library(gt4_hw_writeback STATIC writeback/hw_gs_writeback.cpp
-    writeback/hw_gs_present_scheduler.cpp)
+    writeback/hw_gs_present_scheduler.cpp
+    core2/core2_renderer.cpp core2/core2_gpu.cpp)
 target_link_libraries(gt4_hw_writeback PUBLIC gt4_hw_core gt4_hw_gpu)
+# CORE2 (the core rewrite, CORE2-DESIGN.md): its GPU file includes Vulkan headers.
+target_include_directories(gt4_hw_writeback PRIVATE "${GT4_HW_VULKAN_SDK}/Include" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(gt4_hw_writeback PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(gt4_hw_writeback PRIVATE /W4)
 
 # M4 fixtures: CPU-side de-index/corner rules and GPU equivalence against the CPU reference.

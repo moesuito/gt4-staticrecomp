@@ -79,6 +79,7 @@ bool load_device_entry_points(VkInstance instance, std::vector<std::string> &mis
   resolve(gt4_hwd_vkMapMemory, proc, instance, "vkMapMemory", missing);
   resolve(gt4_hwd_vkUnmapMemory, proc, instance, "vkUnmapMemory", missing);
   resolve(gt4_hwd_vkUpdateDescriptorSets, proc, instance, "vkUpdateDescriptorSets", missing);
+  resolve(gt4_hwd_vkResetDescriptorPool, proc, instance, "vkResetDescriptorPool", missing);
   return missing.empty();
 }
 

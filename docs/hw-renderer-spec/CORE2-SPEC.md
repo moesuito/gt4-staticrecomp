@@ -344,3 +344,32 @@ are options.
 - GPU local-to-local moves (4.3).
 - The alpha-only shuffle variant (7.2).
 - Fractional scales, texture replacement, and ageing / memory budget.
+
+## 7.2 addendum: exact hook semantics (Q-GSDX-COMPARISON 22)
+
+- **Palette.**
+  - Captured once, at the first shuffle draw of a run: the GS CLUT buffer as that draw's own TEX0 write (CLD) left
+    it. It is not re-read from GS memory.
+  - It is read as 256 entries of 32 bits, through that draw's CPSM and CSA; a 16-bit palette is expanded with the
+    current TEXA. The index is the channel value.
+- **CLUT loads inside a run** still happen, so the CLUT buffer keeps the last load for later normal draws. The
+  replacement draw ignores them.
+- **Mapping.** R' = entry[R].red, G' = entry[G].green, B' = entry[B].blue. Alpha is kept.
+- **Destination.** The colour target that the first draw's texture base resolves to, written in place.
+  - It covers the target's whole native rectangle, at its scale.
+  - The write mask is always RGB only. The frame mask is not applied.
+  - If the texture base has no colour target, the hook does nothing and the draw runs normally.
+- **Run.**
+  - **Continues** while each draw is a possible shuffle with the same FBMSK as the first. Those draws are skipped.
+  - **Ends** at the first draw that is not a possible shuffle; that draw is drawn.
+  - **New run:** a possible shuffle with another FBMSK starts one, with its own palette and target.
+  - **No effect:** CLUT changes, CBP changes and VBlanks do not end a run.
+  - **GT4's copy-back strips** are possible shuffles. They are skipped when their FBMSK matches (High confidence;
+    to be checked with a FBMSK log).
+- **Detection.** TME, PSM T8, sprite class. The first sprite's size is |X1 − X0| >> 4 and |Y1 − Y0| >> 4 from the
+  first two vertices' 12.4 coordinates.
+  - **Rejected:** a batch of at most 2 vertices whose box is at most 8 × 8.
+  - **Single page:** the batch's vertex box is at most 64 × 64, and the first sprite is 8 wide or 2 tall, or WMS or
+    WMT is a region mode.
+  - **Strip:** the box is at most 64 wide and taller than 64. It needs TBW == 2 × FBW, a page-aligned box in the
+    frame's format, and the same 8-wide / 2-tall / region test.

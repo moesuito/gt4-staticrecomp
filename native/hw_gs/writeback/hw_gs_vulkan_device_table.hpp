@@ -60,6 +60,7 @@
 #define vkMapMemory gt4_hwd_vkMapMemory
 #define vkUnmapMemory gt4_hwd_vkUnmapMemory
 #define vkUpdateDescriptorSets gt4_hwd_vkUpdateDescriptorSets
+#define vkResetDescriptorPool gt4_hwd_vkResetDescriptorPool
 #define vkCreateQueryPool gt4_hwd_vkCreateQueryPool
 #define vkDestroyQueryPool gt4_hwd_vkDestroyQueryPool
 #define vkCmdResetQueryPool gt4_hwd_vkCmdResetQueryPool
@@ -114,6 +115,7 @@ inline PFN_vkGetPhysicalDeviceMemoryProperties gt4_hwd_vkGetPhysicalDeviceMemory
 inline PFN_vkMapMemory gt4_hwd_vkMapMemory = nullptr;
 inline PFN_vkUnmapMemory gt4_hwd_vkUnmapMemory = nullptr;
 inline PFN_vkUpdateDescriptorSets gt4_hwd_vkUpdateDescriptorSets = nullptr;
+inline PFN_vkResetDescriptorPool gt4_hwd_vkResetDescriptorPool = nullptr;  // CORE2
 inline PFN_vkCreateQueryPool gt4_hwd_vkCreateQueryPool = nullptr;
 inline PFN_vkDestroyQueryPool gt4_hwd_vkDestroyQueryPool = nullptr;
 inline PFN_vkCmdResetQueryPool gt4_hwd_vkCmdResetQueryPool = nullptr;

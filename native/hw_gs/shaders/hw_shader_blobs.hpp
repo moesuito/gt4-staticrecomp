@@ -55,6 +55,16 @@ extern const std::size_t hw_deinterlace_scaled_word_count;
 extern const std::uint32_t hw_postfx_fxaa_words[];
 extern const std::size_t hw_postfx_fxaa_word_count;
 
+// CORE2 core rewrite (CORE2-SPEC).
+extern const std::uint32_t core2_patch_words[];
+extern const std::size_t core2_patch_word_count;
+extern const std::uint32_t core2_reduce_words[];
+extern const std::size_t core2_reduce_word_count;
+extern const std::uint32_t core2_tone_words[];
+extern const std::size_t core2_tone_word_count;
+extern const std::uint32_t core2_compose_words[];
+extern const std::size_t core2_compose_word_count;
+
 // Exactness compute entry points (fixture only; never linked into the game).
 extern const std::uint32_t hw_blend_exact_words[];
 extern const std::size_t hw_blend_exact_word_count;
