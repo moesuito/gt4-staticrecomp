@@ -19,6 +19,9 @@
 //     above and below and the woven field agrees with the older field of its parity (three back) on the row itself
 //     (no channel moves by more than the threshold). Moving: the average of the rows above and below when they agree
 //     and the woven row differs from them at least as much, else the woven row. The edge rows are always woven.
+//   6 adaptive, moving rows interpolated (IN-405, CORE2's default): as 5, but a moving pixel is always the average of
+//     the rows above and below. Rule 5 keeps the woven row where those two rows disagree, which on thin strokes moving
+//     fast (GT4's GT Mode ticker) weaves two text positions into a comb; the reference shows that text clean.
 
 #version 450
 
@@ -129,11 +132,26 @@ void main() {
                  channel_excess(down, load_history(pc.previous_same, ivec2(p.x, p.y + s))) > 0 ||
                  channel_excess(woven_word, load_history(pc.older_other, p)) > 0;
     }
+    // Mode 6: the same tests on the neighbours up to two native pixels left and right, so a pixel inside a moving
+    // stroke that happens to match its value two fields back still counts as moving.
+    if (!motion && pc.mode == 6u) {
+        int last = int(pc.width) - 1;
+        for (int k = -2; k <= 2 && !motion; ++k) {
+            if (k == 0) continue;
+            int x = clamp(p.x + k * int(pc.scale), 0, last);
+            motion = channel_excess(load_history(pc.current, ivec2(x, p.y - s)),
+                                    load_history(pc.previous_same, ivec2(x, p.y - s))) > 0 ||
+                     channel_excess(load_history(pc.current, ivec2(x, p.y + s)),
+                                    load_history(pc.previous_same, ivec2(x, p.y + s))) > 0 ||
+                     channel_excess(load_history(pc.previous_other, ivec2(x, p.y)),
+                                    load_history(pc.older_other, ivec2(x, p.y))) > 0;
+        }
+    }
     uint result = woven_word;
     if (motion) {
         int up_down = channel_excess(up, down);
         int up_woven = channel_excess(up, woven_word);
-        bool interpolate = !have_woven || (up_down < 0 && 10 * up_woven >= 9 * up_down);
+        bool interpolate = !have_woven || pc.mode == 6u || (up_down < 0 && 10 * up_woven >= 9 * up_down);
         result = interpolate ? bob : woven_word;
     }
     imageStore(display_out, p, uvec4(result, 0u, 0u, 0u));

@@ -3017,6 +3017,174 @@ int TestScaleInterlacedPresent(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_interlaced_present (IN-405): core 2's GPU deinterlace of 480i field-mode frames, on the same stream as
+// hw_scale_interlaced_present (EE uploads of a 64 x 32 field buffer, per-field lines, a right half that changes every
+// VBlank), with one algorithm row = one native row (GT4_HW_DEINTERLACE_ROWS=native) so a 1x-block image has an exact
+// 1x answer.
+//   - Weave, bob, blend and adaptive rule 5 (GT4_HW_DEINTERLACE_MOVING=reference): the scaled presentation equals
+//     the CPU presentation compose at 1x blown up by nearest, pixel for pixel, on all eight VBlanks.
+//   - Adaptive (the default, rule 6): the static left half still equals the CPU result once four fields are known
+//     (before that every pixel counts as moving), except next to the moving half; on the moving right half
+//     every interior missing row is the rounded average of the field rows above and below it (no woven row).
+//   - FXAA: with SetFxaa every frame comes from the FXAA image.
+int TestCore2InterlacedPresent(const gpu::VulkanHandles& handles) {
+    _putenv_s("GT4_HW_DEINTERLACE_ROWS", "native");
+    constexpr uint32_t kWidth = 64;
+    constexpr uint32_t kRows = 32;  // field buffer rows; the frame is 64 rows
+    auto lineColour = [](uint32_t line, uint32_t x, uint32_t frame) {
+        const uint32_t moving = x >= kWidth / 2 ? frame * 0x00302010u : 0u;  // the right half changes every VBlank
+        return 0x80000000u | (((line * 7u + 3u) & 0xFFu) | (((line * 13u) & 0xFFu) << 8) | ((x * 3u) << 16)) + moving;
+    };
+    auto upload = [&](writeback::Renderer& renderer, uint32_t fieldLine, uint32_t frame) {
+        std::vector<Qword> stream;
+        stream.push_back(PackedTag(4, false, 0, {0xE}));
+        stream.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 48), 0x50});  // BITBLTBUF: DBP 0, DBW 1, CT32
+        stream.push_back(Qword{0, 0x51});
+        stream.push_back(Qword{uint64_t{kWidth} | (uint64_t{kRows} << 32), 0x52});
+        stream.push_back(Qword{0, 0x53});
+        const uint32_t qwords = kWidth * kRows / 4;
+        stream.push_back(PackedTag(qwords, true, 2, {}));
+        for (uint32_t i = 0; i < qwords; ++i) {
+            const uint32_t row = (i * 4) / kWidth;
+            const uint32_t x = (i * 4) % kWidth;
+            uint32_t c[4];
+            for (uint32_t k = 0; k < 4; ++k) c[k] = lineColour(2 * row + fieldLine, x + k, frame);
+            stream.push_back(Qword{uint64_t{c[0]} | (uint64_t{c[1]} << 32), uint64_t{c[2]} | (uint64_t{c[3]} << 32)});
+        }
+        renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(stream.data()), stream.size() * sizeof(Qword));
+    };
+    auto setup = [&](writeback::Renderer& renderer, display::DeinterlaceMode mode) {
+        writeback::OutputSettings settings;
+        settings.deinterlace = mode;
+        renderer.SetOutputSettings(settings);
+        renderer.WritePrivileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));  // PMODE: RC1, MMOD 1, ALP 255
+        renderer.WritePrivileged(0x12000010u, uint64_t{2} << 13);              // SMODE1: NTSC
+        renderer.WritePrivileged(0x12000020u, 3u);                             // SMODE2: INT, FFMD
+        renderer.WritePrivileged(0x12000060u, 1u);                             // SYNCV: interlaced signal (13.1)
+        renderer.WritePrivileged(0x12000070u, uint64_t{1} << 9);               // DISPFB1: FBP 0, FBW 1, CT32
+        renderer.WritePrivileged(0x12000080u, (uint64_t{3} << 23) | (uint64_t{4 * kWidth - 1} << 32) |
+                                                  (uint64_t{2 * kRows - 1} << 44));  // DISPLAY1: MAGH 3, 64 x 64
+    };
+    auto average = [](uint32_t a, uint32_t b) {
+        uint32_t out = 0;
+        for (uint32_t shift = 0; shift < 24; shift += 8) {
+            out |= ((((a >> shift) & 0xFFu) + ((b >> shift) & 0xFFu) + 1u) / 2u) << shift;
+        }
+        return out;
+    };
+    int failures = 0;
+    const struct {
+        display::DeinterlaceMode mode;
+        bool reference;  // adaptive rule 5
+        bool fxaa;
+        const char* name;
+    } modes[] = {{display::DeinterlaceMode::Weave, false, false, "weave"},
+                 {display::DeinterlaceMode::Bob, false, false, "bob"},
+                 {display::DeinterlaceMode::Blend, false, false, "blend"},
+                 {display::DeinterlaceMode::Auto, true, false, "adaptive rule 5"},
+                 {display::DeinterlaceMode::Auto, false, false, "adaptive rule 6"},
+                 {display::DeinterlaceMode::Auto, false, true, "adaptive rule 6 + FXAA"}};
+    for (uint32_t scale : {2u, 4u}) {
+        for (const auto& m : modes) {
+            _putenv_s("GT4_HW_DEINTERLACE_MOVING", m.reference ? "reference" : "");
+            _putenv_s("GT4_HW_CORE", "");
+            writeback::Renderer native;
+            _putenv_s("GT4_HW_CORE", "2");
+            writeback::Renderer scaled;
+            _putenv_s("GT4_HW_CORE", "");
+            std::string error;
+            scaled.SetScale(scale, static_cast<float>(scale));
+            if (!native.Init(handles, error) || !scaled.Init(handles, error)) {
+                std::printf("hw_core2_interlaced_present: init failed: %s\n", error.c_str());
+                return 1;
+            }
+            native.SetSyncMode(true);
+            setup(native, m.mode);
+            setup(scaled, m.mode);
+            scaled.SetFxaa(m.fxaa);
+            const bool rule6 = m.mode == display::DeinterlaceMode::Auto && !m.reference;
+            uint64_t pixelErrors = 0, averageErrors = 0, compared = 0, fxaaFrames = 0;
+            for (uint32_t frame = 0; frame < 8; ++frame) {
+                const bool odd = (frame & 1u) != 0;
+                upload(native, odd ? 1u : 0u, frame);
+                upload(scaled, odd ? 1u : 0u, frame);
+                native.SetDisplayField(odd);
+                scaled.SetDisplayField(odd);
+                native.Flush();
+                scaled.Flush();
+                const writeback::FrameOutput reference = native.Compose(writeback::ComposeKind::Presentation);
+                writeback::GpuFrame gpuFrame;
+                std::vector<uint32_t> pixels;
+                if (!scaled.ComposeFrameGpu(gpuFrame) || !scaled.ReadGpuFrame(gpuFrame, pixels)) continue;
+                if (gpuFrame.fxaa) ++fxaaFrames;
+                if (!reference.valid || gpuFrame.width != reference.width * scale ||
+                    gpuFrame.height != reference.height * scale) {
+                    std::printf("    %s scale %u frame %u: size %ux%u vs 1x %ux%u\n", m.name, scale, frame,
+                                gpuFrame.width, gpuFrame.height, reference.width, reference.height);
+                    ++pixelErrors;
+                    continue;
+                }
+                ++compared;
+                if (m.fxaa) continue;  // FXAA changes edges: only the frame source is checked
+                const uint32_t w = gpuFrame.width;
+                auto at = [&](uint32_t x, uint32_t y) { return pixels[static_cast<size_t>(y) * w + x] & 0xFFFFFFu; };
+                for (uint32_t y = 0; y < gpuFrame.height; ++y) {
+                    for (uint32_t x = 0; x < w; ++x) {
+                        // Rule 6: the static half once the history is full, away from the two native pixels next to
+                        // the moving half (the motion test looks two native pixels left and right).
+                        if (rule6 && (frame < 4 || x + 2 * scale >= w / 2)) continue;
+                        const uint32_t expected =
+                            reference.pixels[static_cast<size_t>(y / scale) * reference.width + x / scale] & 0xFFFFFFu;
+                        if (at(x, y) != expected) {
+                            if (pixelErrors < 4) {
+                                std::printf("    %s scale %u frame %u pixel %u,%u: %06x, expected %06x\n", m.name,
+                                            scale, frame, x, y, at(x, y), expected);
+                            }
+                            ++pixelErrors;
+                        }
+                    }
+                }
+                if (!rule6 || frame < 4) continue;  // a full history from the fifth field on
+                // The missing native rows are the rows of one parity: every interior one must be the average of the
+                // rows s above and below (field rows, passed through). The parity with no error is the missing one.
+                uint64_t best = ~uint64_t{0};
+                for (uint32_t parity = 0; parity < 2; ++parity) {
+                    uint64_t errors = 0;
+                    for (uint32_t row = 1; row + 1 < gpuFrame.height / scale; ++row) {
+                        if ((row & 1u) != parity) continue;
+                        for (uint32_t sub = 0; sub < scale; ++sub) {
+                            const uint32_t y = row * scale + sub;
+                            for (uint32_t x = w / 2 + scale; x < w; ++x) {
+                                if (at(x, y) != average(at(x, y - scale), at(x, y + scale))) ++errors;
+                            }
+                        }
+                    }
+                    best = std::min(best, errors);
+                }
+                averageErrors += best;
+            }
+            std::printf("  %s scale %u: compared %llu, pixels off the 1x deinterlacer %llu, moving pixels not "
+                        "interpolated %llu, FXAA frames %llu, deinterlaced %llu\n",
+                        m.name, scale, static_cast<unsigned long long>(compared),
+                        static_cast<unsigned long long>(pixelErrors), static_cast<unsigned long long>(averageErrors),
+                        static_cast<unsigned long long>(fxaaFrames),
+                        static_cast<unsigned long long>(scaled.GetCounters().deinterlacedFrames));
+            if (compared != 8 || pixelErrors != 0 || averageErrors != 0 ||
+                scaled.GetCounters().deinterlacedFrames != 8 || fxaaFrames != (m.fxaa ? 8u : 0u)) {
+                ++failures;
+            }
+            if (native.Failed() || scaled.Failed()) {
+                std::printf("    renderer failed: %s %s\n", native.LastError().c_str(), scaled.LastError().c_str());
+                ++failures;
+            }
+        }
+    }
+    _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");
+    _putenv_s("GT4_HW_DEINTERLACE_ROWS", "");
+    std::printf("hw_core2_interlaced_present: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_postfx_fxaa (IN-376, chapter 13.5): a dark buffer with one bright flat triangle whose long edges are steep
 // and shallow, composed on the GPU at 1x and 2x with and without FXAA. Edge-only FXAA must leave every pixel away
 // from the edges unchanged, change pixels along them, and only produce colours between the two flat colours.
@@ -3642,6 +3810,7 @@ int main(int argc, char** argv) {
     if (name == "hw_scale_fullscreen_passes") return TestScaleFullscreenPasses(handles);
     if (name == "hw_tone_hle_exact") return TestToneHleExact(handles);
     if (name == "hw_scale_interlaced_present") return TestScaleInterlacedPresent(handles);
+    if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
     std::printf("unknown test: %s\n", name.c_str());
     return 2;
 }

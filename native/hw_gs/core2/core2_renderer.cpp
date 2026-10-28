@@ -297,6 +297,27 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool oddField_ = false;
     writeback::OutputSettings settings_;
     std::uint64_t vblanks_ = 0;
+    bool fxaa_ = false;  // IN-405: 13.5 FXAA of the presented frame
+    // IN-405: the GPU deinterlace history (the old core's rules, IN-381/IN-386/IN-396): which of the four merge images
+    // holds which field, by age.
+    struct DeinterlaceHistory {
+        std::uint32_t width = 0, height = 0;
+        std::array<bool, gpu::kGpuDeinterlaceHistory> valid{};
+        std::array<int, gpu::kGpuDeinterlaceHistory> parity{};
+        std::array<std::uint64_t, gpu::kGpuDeinterlaceHistory> age{};
+        std::uint64_t clock = 0;
+        bool woven = false;
+        bool output = false;
+        void Clear() {
+            valid.fill(false);
+            woven = false;
+            output = false;
+        }
+    };
+    DeinterlaceHistory deinterlace_;
+    // A second compose in the same VBlank (a dump next to the present) returns the first, so the history moves once.
+    std::uint64_t composedVblank_ = ~std::uint64_t{0};
+    writeback::GpuFrame lastFrame_;
 
     std::vector<Target> targets_;
     std::uint64_t drawCounter_ = 0;
@@ -1371,9 +1392,90 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return true;
     }
 
+    // 13.4 at scale (IN-405): the old core's history rules around Gpu::Deinterlace.
+    bool DeinterlaceGpu(display::DeinterlaceMode mode, int vblankField, std::uint32_t width, std::uint32_t height,
+                        std::string &error) {
+        DeinterlaceHistory &h = deinterlace_;
+        if (h.width != width || h.height != height) {
+            h.Clear();
+            h.width = width;
+            h.height = height;
+        }
+        const int rowParity = (vblankField ^ (settings_.bottomFieldFirst ? 1 : 0)) & 1;
+        gpu::GpuDrawer::DeinterlaceStep step;
+        step.width = width;
+        step.height = height;
+        step.rowParity = static_cast<std::uint32_t>(rowParity);
+        step.field = static_cast<std::uint32_t>(vblankField & 1);
+        // IN-386: one output row per algorithm row (the reference); GT4_HW_DEINTERLACE_ROWS=native: one native row.
+        const bool nativeRows = std::getenv("GT4_HW_DEINTERLACE_ROWS") != nullptr &&
+                                       std::strcmp(std::getenv("GT4_HW_DEINTERLACE_ROWS"), "native") == 0;
+        step.rowStep = nativeRows ? scale_ : 1u;
+        // This field's entry: a free one, else the oldest.
+        constexpr std::uint32_t kNone = gpu::kGpuDeinterlaceHistory;
+        std::uint32_t current = kNone;
+        for (std::uint32_t i = 0; i < kNone && current == kNone; ++i) {
+            if (!h.valid[i]) current = i;
+        }
+        if (current == kNone) {
+            current = 0;
+            for (std::uint32_t i = 1; i < kNone; ++i) {
+                if (h.age[i] < h.age[current]) current = i;
+            }
+        }
+        // The previous same- and opposite-parity fields, and (IN-396) the older opposite-parity field.
+        std::uint64_t sameAge = 0, otherAge = 0, olderAge = 0;
+        for (std::uint32_t i = 0; i < kNone; ++i) {
+            if (i == current || !h.valid[i]) continue;
+            if (h.parity[i] == rowParity) {
+                if (step.previousSame == kNone || h.age[i] > sameAge) {
+                    step.previousSame = i;
+                    sameAge = h.age[i];
+                }
+            } else if (step.previousOther == kNone || h.age[i] > otherAge) {
+                step.olderOther = step.previousOther;
+                olderAge = otherAge;
+                step.previousOther = i;
+                otherAge = h.age[i];
+            } else if (step.olderOther == kNone || h.age[i] > olderAge) {
+                step.olderOther = i;
+                olderAge = h.age[i];
+            }
+        }
+        step.current = current;
+        step.haveOutput = h.output;
+        step.initWoven = !h.woven;
+        switch (mode) {
+            case display::DeinterlaceMode::Weave: step.mode = 2; break;
+            case display::DeinterlaceMode::Blend: step.mode = 3; break;
+            case display::DeinterlaceMode::Bob: step.mode = 4; break;
+            default: {
+                // IN-405: moving pixels interpolated (mode 6); GT4_HW_DEINTERLACE_MOVING=reference keeps rule 5.
+                const bool reference = std::getenv("GT4_HW_DEINTERLACE_MOVING") != nullptr &&
+                                              std::strcmp(std::getenv("GT4_HW_DEINTERLACE_MOVING"), "reference") == 0;
+                step.mode = reference ? 5 : 6;
+                break;
+            }
+        }
+        if (!gpu_.Deinterlace(step, error)) return false;
+        if (step.mode >= 5) {
+            h.valid[current] = true;  // only the adaptive mode keeps a field history
+            h.parity[current] = rowParity;
+            h.age[current] = ++h.clock;
+            h.output = true;
+        }
+        if (step.mode == 2 || step.mode == 3) h.woven = true;
+        counters.deinterlacedFrames++;
+        return true;
+    }
+
     bool ComposeGpu(writeback::GpuFrame &out) {
         out = writeback::GpuFrame{};
         if (failed_ || !gpu_.Ready()) return false;
+        if (composedVblank_ == vblanks_ && lastFrame_.valid) {
+            out = lastFrame_;  // already composed (and deinterlaced) this VBlank
+            return true;
+        }
         frontEnd_.FlushBatch(FlushReason::VBlank);
         const display::DisplayLayout layout = display::compute_layout(displayRegs_, previousDby_);
         if (!layout.valid) {
@@ -1389,8 +1491,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const display::MergePlan plan =
             display::plan_merge(pmode, layout.circuits[0], layout.circuits[1], available[0], available[1]);
         if (plan.outcome == display::MergeOutcome::KeepPrevious) return false;
-        // Step 1 (CORE2-DESIGN): no deinterlace yet; the field offset of 13.3 step 3 is applied at scale.
-        const display::OutputSize size = display::merge_output_size(layout, true, 1);
+        // 13.3 and 13.4 as in the old core (IN-381, IN-405): a progressive frame has no field offset and no
+        // deinterlace; an interlaced one gets the step 3 offset of one native row in the field's phase and the GPU
+        // deinterlace of the composed image.
+        const display::DeinterlaceMode effective =
+            settings_.deinterlace == display::DeinterlaceMode::Auto
+                ? display::resolve_auto_deinterlace(layout, layout.ffmd, displayRegs_.scanmsk_active)
+                : settings_.deinterlace;
+        const display::OutputSize size =
+            display::merge_output_size(layout, effective == display::DeinterlaceMode::Off, 1);
         if (size.width == 0 || size.height == 0) return false;
         std::uint32_t words[28] = {};
         const std::uint32_t outWidth = size.width * scale_;
@@ -1405,7 +1514,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         ImageId sources[2] = {kNoImage, kNoImage};
         const bool use[2] = {plan.outcome == display::MergeOutcome::Composite && plan.use_rc1,
                              plan.outcome == display::MergeOutcome::Composite && plan.use_rc2};
-        const int fieldPhase = RowFieldOfDisplayField(oddField_) ^ (settings_.bottomFieldFirst ? 1 : 0);
+        const int vblankField = RowFieldOfDisplayField(oddField_);
+        const int fieldPhase = vblankField ^ (settings_.bottomFieldFirst ? 1 : 0);
+        const bool interlaced = layout.really_interlaced;
+        const std::int32_t offsetRows =
+            interlaced ? display::interlace_offset_rows(true, layout.ffmd, effective, 1, fieldPhase) : 0;
+        const bool deinterlace = interlaced && effective != display::DeinterlaceMode::Off;
         for (std::size_t i = 0; i < 2; ++i) {
             if (!use[i]) continue;
             const display::CircuitRect &c = layout.circuits[i];
@@ -1415,10 +1529,6 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 continue;
             }
             std::uint32_t *w = &words[6 + 10 * i];
-            const std::int32_t offsetRows =
-                layout.really_interlaced
-                    ? display::interlace_offset_rows(true, layout.ffmd, display::DeinterlaceMode::Off, 1, fieldPhase)
-                    : 0;
             w[0] = 1u;
             w[1] = c.psm == 0x01u ? 1u : (c.psm == 0x02u || c.psm == 0x0Au) ? 2u : 0u;
             w[2] = sourceScale;
@@ -1432,7 +1542,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             words[26 + i] = c.display_height;
         }
         std::string error;
-        if (!gpu_.Compose(words, sources[0], sources[1], outWidth, outHeight, error) || !gpu_.Submit(false, error)) {
+        bool composed = gpu_.Compose(words, sources[0], sources[1], outWidth, outHeight, error);
+        if (composed && interlaced) {
+            if (offsetRows != 0) counters.interlaceOffsetFrames++;
+            if (deinterlace) composed = DeinterlaceGpu(effective, vblankField, outWidth, outHeight, error);
+        }
+        const bool fxaa = composed && fxaa_;
+        if (fxaa) composed = gpu_.Fxaa(outWidth, outHeight, error);  // IN-376
+        if (!composed || !gpu_.Submit(false, error)) {
             Fail(error);
             return false;
         }
@@ -1442,8 +1559,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         out.valid = true;
         out.width = outWidth;
         out.height = outHeight;
-        out.image = gpu_.DisplayImage();
-        out.fxaa = false;
+        out.image = fxaa ? gpu_.FxaaImage() : gpu_.DisplayImage();
+        out.fxaa = fxaa;
+        composedVblank_ = vblanks_;
+        lastFrame_ = out;
         return true;
     }
 
@@ -1651,7 +1770,7 @@ bool Renderer::ComposeFrameGpu(writeback::GpuFrame &out) {
 bool Renderer::ReadGpuFrame(const writeback::GpuFrame &frame, std::vector<std::uint32_t> &pixels) {
     if (!frame.valid) return false;
     std::string error;
-    if (!impl_->gpu_.ReadDisplay(frame.width, frame.height, pixels, error)) {
+    if (!impl_->gpu_.ReadDisplay(frame.width, frame.height, pixels, error, frame.fxaa)) {
         impl_->Fail(error);
         return false;
     }
@@ -1673,8 +1792,11 @@ bool Renderer::DisplayField() const { return impl_->oddField_; }
 
 void Renderer::SetOutputSettings(const writeback::OutputSettings &settings) {
     impl_->settings_ = settings;
+    impl_->deinterlace_.Clear();
     impl_->displayRegs_.anti_blur = settings.antiBlur;
 }
+
+void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
 
 const std::uint8_t *Renderer::Slm() {
     impl_->frontEnd_.FlushBatch(FlushReason::Transfer);

@@ -44,6 +44,8 @@ struct Core2GpuStats {
     std::uint64_t reductions = 0;
     std::uint64_t tones = 0;
     std::uint64_t composes = 0;
+    std::uint64_t deinterlaces = 0;
+    std::uint64_t fxaaFrames = 0;
     std::uint64_t submissions = 0;
     std::uint64_t waits = 0;
     std::uint64_t atlasUploads = 0;
@@ -115,7 +117,17 @@ public:
     bool Compose(const std::uint32_t words[28], ImageId sourceA, ImageId sourceB, std::uint32_t outWidth,
                  std::uint32_t outHeight, std::string &error);
     std::uint64_t DisplayImage() const;  // VkImage
-    bool ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels, std::string &error);
+    // 13.4 at scale (IN-405): deinterlaces the top-left step.width x step.height pixels of the display image in
+    // place with the old core's kernel and step (hw_deinterlace_scaled.comp: the display image is first copied into
+    // history entry `current`). The history images (four merge images, the woven image, the last adaptive output)
+    // follow the display size; the caller keeps which entry holds which field.
+    bool Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error);
+    // 13.5 (IN-376, IN-405 in core 2): FXAA of the display image's top-left width x height pixels into the FXAA image.
+    bool Fxaa(std::uint32_t width, std::uint32_t height, std::string &error);
+    std::uint64_t FxaaImage() const;  // VkImage
+    // `fxaa`: read the FXAA image instead of the display image.
+    bool ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels, std::string &error,
+                     bool fxaa = false);
     // Diagnostics: the top-left width x height words of an image (submits and waits).
     bool ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words,
                    std::string &error);

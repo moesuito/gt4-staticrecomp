@@ -3765,7 +3765,10 @@ bool Renderer::ComposeFrameGpu(GpuFrame& out) {
 
 void Renderer::SetGpuCompose(bool enabled) { impl_->gpuCompose_ = enabled; }
 
-void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
+void Renderer::SetFxaa(bool enabled) {
+    if (core2_) core2_->SetFxaa(enabled);
+    impl_->fxaa_ = enabled;
+}
 
 bool Renderer::ReadGpuFrame(const GpuFrame& frame, std::vector<std::uint32_t>& pixels) {
     if (core2_) return core2_->ReadGpuFrame(frame, pixels);

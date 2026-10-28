@@ -105,6 +105,14 @@ struct Gpu::Impl {
   Image atlas;
   std::uint32_t atlasShelfX = 0, atlasShelfY = 0, atlasShelfHeight = 0;
   Image display;
+  // IN-405: deinterlace (hw_deinterlace_scaled.comp: 0 history[4], 4 woven, 5 previous output, 6 output) and FXAA
+  // (hw_postfx_fxaa.comp: 0 source, 1 output), each with its own set layout; the images follow the display size.
+  Image deinterlaceHistory[gpu::kGpuDeinterlaceHistory];
+  Image deinterlaceWoven, deinterlaceOutput, fxaa;
+  VkDescriptorSetLayout deinterlaceSetLayout = VK_NULL_HANDLE, fxaaSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout deinterlaceLayout = VK_NULL_HANDLE, fxaaLayout = VK_NULL_HANDLE;
+  VkShaderModule deinterlaceModule = VK_NULL_HANDLE, fxaaModule = VK_NULL_HANDLE;
+  VkPipeline deinterlacePipeline = VK_NULL_HANDLE, fxaaPipeline = VK_NULL_HANDLE;
 
   VkDescriptorSetLayout drawSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout drawLayout = VK_NULL_HANDLE;
@@ -346,17 +354,49 @@ struct Gpu::Impl {
     return pipeline;
   }
 
-  VkPipeline make_compute(VkShaderModule module, std::string &error) {
+  VkPipeline make_compute(VkShaderModule module, std::string &error, VkPipelineLayout layout = VK_NULL_HANDLE) {
     VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     info.stage.module = module;
     info.stage.pName = "main";
-    info.layout = computeLayout;
+    info.layout = layout ? layout : computeLayout;
     VkPipeline pipeline = VK_NULL_HANDLE;
     check(gt4_hwd_vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
           "vkCreateComputePipelines", error);
     return pipeline;
+  }
+
+  // A set layout of storage images only (`counts[i]` images at binding i) and its pipeline layout with `pushBytes`.
+  bool image_layouts(const std::uint32_t *counts, std::uint32_t bindings, std::uint32_t pushBytes,
+                     VkDescriptorSetLayout &setLayout, VkPipelineLayout &pipelineLayout, std::string &error) {
+    std::vector<VkDescriptorSetLayoutBinding> list(bindings);
+    for (std::uint32_t i = 0; i < bindings; ++i) {
+      list[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, counts[i], VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    }
+    VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    info.bindingCount = bindings;
+    info.pBindings = list.data();
+    if (!check(gt4_hwd_vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayout), "vkCreateDescriptorSetLayout",
+               error)) return false;
+    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, pushBytes};
+    VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout.setLayoutCount = 1;
+    layout.pSetLayouts = &setLayout;
+    layout.pushConstantRangeCount = 1;
+    layout.pPushConstantRanges = &push;
+    return check(gt4_hwd_vkCreatePipelineLayout(device, &layout, nullptr, &pipelineLayout), "vkCreatePipelineLayout",
+                 error);
+  }
+
+  // A 1x-addressed post image of exactly width x height output pixels (recreated when the size changes; `fresh` tells
+  // the caller the content is gone).
+  bool post_image(Image &image, std::uint32_t width, std::uint32_t height, bool &fresh, std::string &error) {
+    fresh = false;
+    if (image.alive && image.width == width && image.height == height) return true;
+    doom(image);
+    fresh = true;
+    return make_image(image, width, height, 1, error);
   }
 
   // ---- Recording ---------------------------------------------------------------------------------------
@@ -519,6 +559,10 @@ Gpu::~Gpu() {
   for (Image &image : s.doomed) s.release(image);
   s.release(s.atlas);
   s.release(s.display);
+  for (Image &image : s.deinterlaceHistory) s.release(image);
+  s.release(s.deinterlaceWoven);
+  s.release(s.deinterlaceOutput);
+  s.release(s.fxaa);
   // The remaining objects live as long as the device (the renderer is destroyed with the backend).
 }
 
@@ -622,7 +666,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   {
     VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, kTransientSets},
-                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 * kTransientSets},
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 * kTransientSets + 64},
                                      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kTransientSets}};
     VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     info.maxSets = kTransientSets;
@@ -691,6 +735,21 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.tonePipeline = s.make_compute(s.toneModule, error);
   s.composePipeline = s.make_compute(s.composeModule, error);
   if (!s.patchPipeline || !s.reducePipeline || !s.tonePipeline || !s.composePipeline) return false;
+  {
+    const std::uint32_t deinterlaceCounts[7] = {gpu::kGpuDeinterlaceHistory, 0, 0, 0, 1, 1, 1};
+    const std::uint32_t fxaaCounts[2] = {1, 1};
+    if (!s.image_layouts(deinterlaceCounts, 7, 14 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
+        !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
+      return false;
+    }
+    s.deinterlaceModule = s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
+                                        hwgs::shaders::hw_deinterlace_scaled_word_count, error);
+    s.fxaaModule = s.make_module(hwgs::shaders::hw_postfx_fxaa_words, hwgs::shaders::hw_postfx_fxaa_word_count, error);
+    if (!s.deinterlaceModule || !s.fxaaModule) return false;
+    s.deinterlacePipeline = s.make_compute(s.deinterlaceModule, error, s.deinterlaceLayout);
+    s.fxaaPipeline = s.make_compute(s.fxaaModule, error, s.fxaaLayout);
+    if (!s.deinterlacePipeline || !s.fxaaPipeline) return false;
+  }
 
   // ---- GLM and the decode kernel ----
   {
@@ -1303,11 +1362,117 @@ std::uint64_t Gpu::DisplayImage() const {
   return reinterpret_cast<std::uint64_t>(impl_->display.image);
 }
 
-bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels,
-                      std::string &error) {
+bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error) {
   Impl &s = *impl_;
-  width = std::min(width, s.display.width);
-  height = std::min(height, s.display.height);
+  if (step.width == 0 || step.height == 0 || step.width > s.display.width || step.height > s.display.height ||
+      step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 || step.mode > 6) {
+    error = "CORE2 deinterlace outside the display image";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  // The history follows the display size. A new size starts a new history: the caller's step then says there is no
+  // earlier field and no earlier output (its history is cleared on the same size change).
+  bool fresh = false;
+  for (Image &image : s.deinterlaceHistory) {
+    if (!s.post_image(image, step.width, step.height, fresh, error)) return false;
+  }
+  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error) ||
+      !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) {
+    return false;
+  }
+  s.outside_pass();
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.extent = {step.width, step.height, 1};
+  gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceHistory[step.current].image,
+                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+  s.full_barrier();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.deinterlaceSetLayout, set, error)) return false;
+  VkDescriptorImageInfo history[gpu::kGpuDeinterlaceHistory];
+  for (std::uint32_t i = 0; i < gpu::kGpuDeinterlaceHistory; ++i) {
+    history[i] = {VK_NULL_HANDLE, s.deinterlaceHistory[i].view, VK_IMAGE_LAYOUT_GENERAL};
+  }
+  const VkDescriptorImageInfo woven{VK_NULL_HANDLE, s.deinterlaceWoven.view, VK_IMAGE_LAYOUT_GENERAL};
+  const VkDescriptorImageInfo previous{VK_NULL_HANDLE, s.deinterlaceOutput.view, VK_IMAGE_LAYOUT_GENERAL};
+  const VkDescriptorImageInfo output{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet writes[4]{};
+  const std::uint32_t bindings[4] = {0, 4, 5, 6};
+  const VkDescriptorImageInfo *infos[4] = {history, &woven, &previous, &output};
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = bindings[i];
+    writes[i].descriptorCount = i == 0 ? gpu::kGpuDeinterlaceHistory : 1u;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[i].pImageInfo = infos[i];
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 4, writes, 0, nullptr);
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlacePipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlaceLayout, 0, 1, &set, 0, nullptr);
+  auto dispatch = [&](std::uint32_t mode) {
+    const std::uint32_t push[14] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
+                                    step.previousSame, step.previousOther, step.haveOutput ? 1u : 0u,
+                                    step.thresholdPermille, step.initWoven ? 1u : 0u, step.rowStep,
+                                    step.olderOther};
+    gt4_hwd_vkCmdPushConstants(s.cmd, s.deinterlaceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+    gt4_hwd_vkCmdDispatch(s.cmd, (step.width + 7) / 8, (step.height + 7) / 8, 1);
+    s.full_barrier();
+  };
+  if (step.mode == 2 || step.mode == 3) dispatch(1);  // the weave update first
+  dispatch(step.mode);
+  if (step.mode >= 5) {
+    gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
+                           VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    s.full_barrier();
+  }
+  s.stats.deinterlaces++;
+  return true;
+}
+
+bool Gpu::Fxaa(std::uint32_t width, std::uint32_t height, std::string &error) {
+  Impl &s = *impl_;
+  if (width == 0 || height == 0 || width > s.display.width || height > s.display.height) {
+    error = "CORE2 FXAA outside the display image";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  bool fresh = false;
+  if (!s.post_image(s.fxaa, s.display.width, s.display.height, fresh, error)) return false;
+  s.outside_pass();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.fxaaSetLayout, set, error)) return false;
+  const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL},
+                                           {VK_NULL_HANDLE, s.fxaa.view, VK_IMAGE_LAYOUT_GENERAL}};
+  VkWriteDescriptorSet writes[2]{};
+  for (std::uint32_t i = 0; i < 2; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[i].pImageInfo = &images[i];
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 2, writes, 0, nullptr);
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.fxaaPipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.fxaaLayout, 0, 1, &set, 0, nullptr);
+  const std::uint32_t push[2] = {width, height};
+  gt4_hwd_vkCmdPushConstants(s.cmd, s.fxaaLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+  gt4_hwd_vkCmdDispatch(s.cmd, (width + 7) / 8, (height + 7) / 8, 1);
+  s.full_barrier();
+  s.stats.fxaaFrames++;
+  return true;
+}
+
+std::uint64_t Gpu::FxaaImage() const { return reinterpret_cast<std::uint64_t>(impl_->fxaa.image); }
+
+bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels,
+                      std::string &error, bool fxaa) {
+  Impl &s = *impl_;
+  const Image &source = fxaa ? s.fxaa : s.display;
+  width = std::min(width, source.width);
+  height = std::min(height, source.height);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
   if (bytes == 0 || bytes > kReadbackBytes) {
     error = "CORE2 display read outside the readback buffer";
@@ -1318,7 +1483,7 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
   VkBufferImageCopy region{};
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageExtent = {width, height, 1};
-  gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
+  gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, source.image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
   s.full_barrier();
   if (!s.submit(true, error)) return false;
   pixels.resize(static_cast<std::size_t>(width) * height);

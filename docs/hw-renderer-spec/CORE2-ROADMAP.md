@@ -98,7 +98,7 @@ the GS work 20.2 ms, against 16.7 ms for 60 FPS.
 One writer at a time. Every step is one candidate, with CTest and the race480p memory gate, and an owner test at the
 end of each phase.
 
-### Phase A: quick picture fixes
+### Phase A: quick picture fixes (done, IN-405, candidate 286)
 
 - **A1. Deinterlace in core 2.**
   - The FFMD field offset is already applied. Run the adaptive output-row deinterlace (IN-386, IN-396) on the

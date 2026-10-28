@@ -80,7 +80,7 @@ foreach(hw_writeback_test IN ITEMS hw_flat_provoking hw_sprite_corners hw_presen
         hw_gpu_equivalence_scissor hw_gpu_raster_blend hw_gpu_raster_pabe hw_gpu_raster_atest
         hw_gpu_raster_date hw_gpu_raster_frame hw_gpu_gouraud_report
         hw_gpu_writeback_aliased_depth hw_readback_pending_draw hw_replay_parity_double_buffer
-        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present
+        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present
         hw_scale_target_extent
         hw_tone_hle_exact
         hw_glm_decode hw_glm_swizzle hw_glm_clut hw_glm_unswizzle hw_glm_upload_merge

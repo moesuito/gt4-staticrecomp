@@ -70,6 +70,7 @@ public:
     void SetDisplayField(bool odd);
     bool DisplayField() const;
     void SetOutputSettings(const writeback::OutputSettings &settings);
+    void SetFxaa(bool enabled);  // IN-405: 13.5 FXAA of the presented frame
 
     // The shadow memory after writing every target's drawn area back (a host read of the whole memory).
     const std::uint8_t *Slm();

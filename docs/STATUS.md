@@ -17,7 +17,9 @@ line across the road near the horizon is gone, race480p memory at 6x identical. 
 frametime spikes at race start, CORE2 at 1x (HUD only), the remaining speed gap. Owner test 12 (candidate 285): passed
 for picture faults ("zero bugs visuais"); open: race-start stutter and mid-race drops (the GS thread costs 20 ms per
 VBlank at 3x, the GPU waits), no anti-aliasing, 480i deinterlace. Next steps in
-[CORE2-ROADMAP](hw-renderer-spec/CORE2-ROADMAP.md). Not merged; no pins.
+[CORE2-ROADMAP](hw-renderer-spec/CORE2-ROADMAP.md). Roadmap phase A done in candidate 286 (IN-405): 480i deinterlace
+and FXAA in core 2, with an adaptive rule that keeps GT4's fast-scrolling ticker clean as in gt4-gs. Waiting for owner
+test 13. Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
 
