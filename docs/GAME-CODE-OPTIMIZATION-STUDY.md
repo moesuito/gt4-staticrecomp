@@ -31,7 +31,8 @@ RX 9060 XT). Owner baseline on the laptop, same scene and settings: **PCSX2 ~50%
    (one subtraction per basic block); the GS IPC **is** a large cost (1.4 ms on the EE plus a 3.4 ms thread) but it
    disappears with an in-process CoreGS 2.0 if that intake is zero-copy; FPU/MMI wrappers are exact software
    emulation whose share is Unknown until a profile; kernel/syscall cost is small, but the interrupt-handler path
-   (`kernel_service`, partly game code) is 1.4 ms.
+   (`kernel_service`, partly game code) is 1.4 ms. There is **no guest busy-wait to skip**: every game wait (frame,
+   DMA, SIF RPC) already blocks and is fast-forwarded by the runtime (section 3.2).
 4. **Generated EE code** keeps all guest state in memory behind a reference that may alias guest RAM, splits code
    into 16 KiB-window functions with a switch at every entry, and calls through those switches from 95,305 sites
    (section 3.3): the largest long-term lever for `ee_dispatch` and the 3D-menu dips.
@@ -226,12 +227,49 @@ Read in the capsule `system.cpp` and the donor `runtime/src/kernel.cpp` (Confirm
   switches per frame this is microseconds, not milliseconds (High confidence).
 - **Syscalls are cheap:** 129-1,187 per frame measured, 0.03-0.06 ms in total (`[frame] syscalls/frame=N in M ms`
   in every F8). 0x2F GetThreadId and 0x29 ChangeThreadPriority dominate in menus and the showroom (444.8 and 258.4 per
-  frame); in races 0x2F is 66 per frame. Short-circuiting them would save at most those 0.06 ms.
+  frame); in races 0x2F is 66 per frame. A fit over four desktop intervals gives about 25 ns per GetThreadId and
+  80 ns per ChangeThreadPriority (Hypothesis), and most of the 25 ns is the two clock reads of the always-on
+  `SyscallScope` (`slice262-license-guard-runtime/kernel.cpp:572-573`, `native/perf_probe.cpp:67-98`).
+- **Who calls them (Confirmed in gt4-decomp and the trace):** a recursive mutex of the game's stream/manager library
+  (`src/libstream/unit_005676B0`): lock `func_00576418`, unlock `func_00576640`, wrappers `func_00576788` (lock, 299
+  call sites) and `func_005767C0` (unlock, 315); the variants `func_005769F0`/`func_00576A28` (34 sites each) also
+  raise the calling thread from priority 24 to 1 and back. Every lock and unlock asks GetThreadId. The title-screen
+  trace `private/slice214-smoke/h214-baseline/stderr.log` holds 4,920,060 GetThreadId and 1,255,474
+  ChangeThreadPriority calls in 4,200 frames (1,171 and 299 per frame), the priorities always 24 -> 1 -> 24 on the same
+  thread. The uncontended path never blocks.
+- **Exact short-circuits for them** (small gain, 0.03-0.05 ms desktop): GetThreadId answered inline (it only returns
+  the current thread id; keep the budget charge and the counter); ChangeThreadPriority raising the running thread is
+  a no-op for scheduling when no reschedule is pending (it is already the best thread); the restore must still look for
+  a better ready thread, and a same-priority call on a *ready* thread still moves it in the queue in the donor model
+  (`kernel.cpp:632-640`). The donor model is the reference; the real PS2 kernel's requeue rule is Unknown.
 - **Guest idle costs nothing measurable:** when no guest thread is ready, `idle()` advances guest time to the next
   event (`system.cpp:150-163`); F8 `guest_idle` is 0.001-0.005 ms per frame on both machines while the EE is idle
   for 4-11 ms of every frame. The game waits mostly by blocking on semaphores (0x44 WaitSema 14.9 per frame) and
   sleeping threads, which the HLE kernel turns into this fast-forward. DMA and VIF transfers complete instantly in
   this runtime, so polling loops on `D_STAT`, `CHCR` or `VIF1_STAT` exit at their first test (High confidence).
+- **The game's waits, one by one** (Confirmed in gt4-decomp unless noted):
+  - Frame wait: main loop `func_001016E8` -> flip `func_00107878` -> `func_004A21F0` does `while (old == lock->value)
+    SleepThread()` on a scratchpad counter that the VBLANK-start interrupt handler (0x4AB430) bumps. A **block**, not a
+    spin: it ends in `idle()`.
+  - DMA wait for channels 1/2: `func_004A0F68` queues the thread and calls SleepThread until the DMAC handler (0x4AB6D8)
+    wakes it. The DMA itself already finished at start (`dmac.cpp:84-91,230-263` in the capsule), but the interrupt is
+    delivered at the next unwind, so each wait is one sleep/wake pair (Hypothesis: part of the 38-53 switches per frame).
+  - Flip check `func_004A20C8`: three polling loops with 0x1000000-iteration timeouts on `VIF1_STAT`, `VPU_STAT` and
+    `GIF_STAT`; in this runtime those bits never read as busy, so the loops run zero iterations.
+  - SIF RPC: CreateSema -> SifSetDma -> WaitSema -> DeleteSema about 2.4 times per frame on the title schedule; the
+    reply wakes the thread through iSignalSema and the wait ends in `idle()`.
+  - Movie playback polls IPU and DMA channels 3/4 (`func_0054C8F0` and neighbours): movies only. Polls of `INTC_STAT`
+    or GS `CSR` elsewhere: Unknown (the register-access scan was coarse).
+  - **Conclusion:** there is no guest busy-wait to skip. Unlike a JIT emulator, this runtime already turns every guest
+    wait into a host fast-forward, so "idle-loop skipping" has nothing left to win here.
+- **What must not change:** the number of run-loop iterations and the 20,000-cycle slice decide when the IOP is synced
+  and therefore when SIF replies and DMA interrupts are delivered. Fewer or larger slices, fibers per guest thread or a
+  different `kMaxSlice` would move guest-visible timing. **Only cheaper iterations are exact** (`system.cpp:45,69-88,
+  337-349`; High confidence).
+- Two accounting details that change how F8 reads: the 0.5 ms pacing spin runs on the EE thread, so it is inside
+  `measured_thread_cpu` (about 9% of the 5.75 ms showroom EE CPU); and the VIF batch copy in `flush_vif_chain`
+  (`mtvu_runtime.cpp:476-488` at rc6, called from the capsule's `dmac.cpp:79,86`) has no scope of its own, so its 0.5-2.5 MB per frame lands
+  in whichever category is open (usually `ee_dispatch`).
 
 ### 3.3 Quality of the generated EE C++
 
@@ -384,8 +422,8 @@ unchanged. Effort is agent days, not counting builds.
 | Step | What | Laptop gain (Hypothesis) | Effort | Risk | Identity proof |
 |---|---|---|---|---|---|
 | **P0** | Measurement first: sub-scopes for `kernel_service` (delivery vs guest handlers), `host_vblank`, `iop_run` (interpreter / SPU2 mix / HLE); counters for run-loop iterations, IOP syncs, `dispatch()` calls and scope entries; a per-VBlank guest-state hash (EE RAM, IOP RAM, SPU2 RAM, CPU state) behind a switch; `--cpu-mask` for 2-core/4-thread runs; one WPR CPU profile on the desktop (M3) | none (diagnostics) | 2-3 | low | stream hash and frame dumps equal with the new counters on and off |
-| **P1** | Host quick wins, each behind its own switch: (a) build runtime, native and VU AOT code with `-msse4.1`; (b) doorbell diet: statistics counters per thread instead of a locked add on the shared line, cache-line padding of both bells, power-of-two ring masks; (c) worker reads VIF batches in place (`try_peek`) instead of copying into a `std::vector`; (d) probe: one VIF scope per DMA chain and a cheaper clock; (e) pacing tail spin 0.5 ms -> about 0.15 ms with `_mm_pause` (measure timer lateness first); (f) MMCSS "Games" for the EE thread, EE and VU1 threads steered to different physical cores | EE 0.3-0.8; VU1 worker 0.5-1.5 (mostly 1a); ~0.1-0.3 W | 3-5 | low | stream hash, frame dumps, `GT4_MTVU_VERIFY=1` 0 mismatches, CTest/Python, laptop F8 |
-| **P2** | Kernel delivery and run loop hygiene in a runtime overlay (section 3.2): no `std::vector` copy of the handler list per interrupt (copy only when the list changed), alarms in a small sorted array, flat thread and semaphore tables, the event queue without `std::function` calls per event; then whatever the P0 split of `kernel_service` shows outside the guest handlers | 0.1-0.4 (the guest handler code itself speeds up with P4) | 1-2 | medium | guest-state hash every 500 VBlanks, stream hash, syscall trace equal on a short schedule |
+| **P1** | Host quick wins, each behind its own switch: (a) build runtime, native and VU AOT code with `-msse4.1`; (b) doorbell diet: statistics counters per thread instead of a locked add on the shared line, cache-line padding of both bells, power-of-two ring masks; (c) worker reads VIF batches in place (`try_peek`) instead of copying into a `std::vector`; (d) probe: one VIF scope per DMA chain, `SyscallScope` timing only inside F7..F8 intervals (counts kept), a cheaper clock; (e) pacing tail spin 0.5 ms -> about 0.15 ms with `_mm_pause` (measure timer lateness first); (f) MMCSS "Games" for the EE thread, EE and VU1 threads steered to different physical cores | EE 0.3-0.8; VU1 worker 0.5-1.5 (mostly 1a); ~0.1-0.3 W | 3-5 | low | stream hash, frame dumps, `GT4_MTVU_VERIFY=1` 0 mismatches, CTest/Python, laptop F8 |
+| **P2** | Kernel delivery and run loop hygiene in a runtime overlay (section 3.2): no `std::vector` copy of the handler list per interrupt (copy only when the list changed), alarms in a small sorted array, flat thread and semaphore tables, the event queue without `std::function` calls per event, GetThreadId answered inline and the ChangeThreadPriority raise-self fast path; then whatever the P0 split of `kernel_service` shows outside the guest handlers. Never fewer iterations or larger slices: only cheaper ones | 0.1-0.4 (the guest handler code itself speeds up with P4) | 1-2 | medium | guest-state hash every 500 VBlanks, stream hash, syscall trace equal on a short schedule |
 | **P3** | IOP and SPU2, chosen by the P0 split: interpreter hygiene overlay (inline RAM fast path and the switch check, no `std::function` copy per event, no `std::map` scan per switch); if the mix dominates, a vectorised SPU2 mixer with identical integer output | 0.3-0.8 of the 1.27 ms | 2-4 | medium (audio timing, SIF) | audio PCM hash of the headless schedules, guest-state hash, card bytes after a save |
 | **P4** | Translated game code (`ee_dispatch` 4.9 ms in races, 6-8 ms in 3D menus): (a) one compiler version for library and executable, then ThinLTO, then PGO from the headless schedules; (b) EE library with `-msse4.1`; (c) translator: `Cpu & __restrict c` once every slow path and callback takes `c` explicitly instead of `g_cpu`; (d) translator: one host function per guest function (gt4-decomp boundaries, as TASK-014 used for entries) with direct calls, keeping the 16 KiB window switch only for indirect entries; (e) `dispatch()` division -> shift; (f) FPU fast paths only where M3 shows `fp::` hot and an exhaustive or proven equivalence exists | (a) 5-15% of EE CPU; (c)+(d) 20-40% of translated code: 1-2 ms in races, 1.5-3 ms in 3D menus | (a) 3-5; (c) 3-5; (d) 10-15 | (a) low; (c)(d) medium-high | new producer contract; guest-state hash every VBlank on all schedules (old and new library must agree bit for bit), stream hash, frame dumps, replay and save identity, owner play-through |
 | **P5** | VIF/MTVU data path: EE builds VIF batches directly in the input ring (one copy fewer); fewer worker->EE records per job where the stream hash allows | EE 0.2-0.5; worker 0.2-0.4 | 2-3 | medium (record boundaries; check how `GT4_GS_STREAM_HASH` frames records before merging any) | stream hash, MTVU verify, frame dumps |
