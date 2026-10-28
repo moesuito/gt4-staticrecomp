@@ -97,6 +97,7 @@ hw_add_shader(hw_display_compose "${HW_SHADER_DIR}/hw_display_compose.comp" comp
 hw_add_shader(core2_patch "${HW_SHADER_DIR}/core2_patch.comp" comp)
 hw_add_shader(core2_reduce "${HW_SHADER_DIR}/core2_reduce.comp" comp)
 hw_add_shader(core2_tone "${HW_SHADER_DIR}/core2_tone.comp" comp)
+hw_add_shader(core2_patch_glm "${HW_SHADER_DIR}/core2_patch_glm.comp" comp)
 hw_add_shader(core2_compose "${HW_SHADER_DIR}/core2_compose.comp" comp)
 hw_add_shader(hw_blend_exact "${HW_SHADER_DIR}/hw_blend_exact.comp" comp)
 hw_add_shader(hw_pixel_exact "${HW_SHADER_DIR}/hw_pixel_exact.comp" comp)

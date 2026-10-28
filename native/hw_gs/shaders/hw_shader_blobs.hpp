@@ -62,6 +62,8 @@ extern const std::uint32_t core2_reduce_words[];
 extern const std::size_t core2_reduce_word_count;
 extern const std::uint32_t core2_tone_words[];
 extern const std::size_t core2_tone_word_count;
+extern const std::uint32_t core2_patch_glm_words[];
+extern const std::size_t core2_patch_glm_word_count;
 extern const std::uint32_t core2_compose_words[];
 extern const std::size_t core2_compose_word_count;
 

@@ -100,6 +100,9 @@ public:
     // the bits written.
     bool Patch(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
                const std::vector<std::uint32_t> &words, std::uint32_t mask, std::string &error);
+    // 4.1 from the GLM: the rectangle read on the GPU in (bp, bw, psm) addressing (UploadGlm first).
+    bool PatchFromGlm(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::int32_t x0,
+                      std::int32_t y0, std::int32_t x1, std::int32_t y1, std::uint32_t mask, std::string &error);
     // 4.2: the native rectangle (inclusive) reduced to 1x stored words (submits and waits).
     bool Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
                 std::vector<std::uint32_t> &words, std::string &error);

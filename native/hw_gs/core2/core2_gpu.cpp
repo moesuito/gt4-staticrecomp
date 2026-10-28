@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 
 namespace hwgs::core2 {
 namespace {
@@ -45,7 +46,8 @@ struct Buffer {
   VkDeviceMemory memory = VK_NULL_HANDLE;
   void *mapped = nullptr;
   VkDeviceSize size = 0;
-  VkDeviceSize used = 0;  // ring cursor for this recording
+  VkDeviceSize used = 0;  // ring cursor for this recording, inside the recording's half
+  VkDeviceSize base = 0;  // the recording's half: [base, base + size / 2) (two recordings alternate)
 };
 
 struct Image {
@@ -74,10 +76,23 @@ struct Gpu::Impl {
   bool ready = false;
 
   VkCommandPool pool = VK_NULL_HANDLE;
-  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  // Two recordings alternate (double buffering): the CPU records one while the GPU runs the other, each with its own
+  // command buffer, fence, descriptor pool and half of every ring.
+  struct Slot {
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    bool inFlight = false;
+    std::vector<Image> doomed;  // released once this slot's submission is complete
+  };
+  Slot slots[2];
+  std::uint32_t slot = 0;           // the slot being recorded
+  std::uint32_t lastSubmitted = 1;  // the slot submitted last
+  VkCommandBuffer cmd = VK_NULL_HANDLE;  // slots[slot].cmd
   VkFence fence = VK_NULL_HANDLE;
   bool recording = false;
-  bool inFlight = false;
+  // Draw descriptor sets of this recording by their four images (a batch with the same targets reuses its set).
+  std::unordered_map<std::uint64_t, VkDescriptorSet> drawSets;
   bool renderPassOpen = false;
   bool drewSinceBarrier = false;
 
@@ -85,8 +100,7 @@ struct Gpu::Impl {
 
   std::vector<Image> images;
   std::vector<ImageId> freeIds;
-  std::vector<Image> doomed;          // destroyed once the submission that may use them is complete
-  std::vector<Image> doomedInFlight;  // doomed images of the submission in flight
+  std::vector<Image> doomed;  // destroyed once the submission that may use them is complete
 
   Image atlas;
   std::uint32_t atlasShelfX = 0, atlasShelfY = 0, atlasShelfHeight = 0;
@@ -115,8 +129,8 @@ struct Gpu::Impl {
   VkDeviceSize glmTableBytes = 0;
   VkDescriptorSetLayout decodeSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout decodeLayout = VK_NULL_HANDLE;
-  VkShaderModule decodeModule = VK_NULL_HANDLE;
-  VkPipeline decodePipeline = VK_NULL_HANDLE;
+  VkShaderModule decodeModule = VK_NULL_HANDLE, patchGlmModule = VK_NULL_HANDLE;
+  VkPipeline decodePipeline = VK_NULL_HANDLE, patchGlmPipeline = VK_NULL_HANDLE;
 
   VkDescriptorPool transientPool = VK_NULL_HANDLE;
   std::uint32_t transientSetsUsed = 0;
@@ -168,13 +182,18 @@ struct Gpu::Impl {
       error = "CORE2 ring request larger than the ring";
       return false;
     }
+    const VkDeviceSize half = buffer.size / 2;
+    if (bytes > half) {
+      error = "CORE2 ring request larger than half the ring";
+      return false;
+    }
     VkDeviceSize at = (buffer.used + alignment - 1) / alignment * alignment;
-    if (at + bytes > buffer.size) {
-      if (!submit(true, error) || !begin_recording(error)) return false;
+    if (at + bytes > half) {
+      if (!submit(false, error) || !begin_recording(error)) return false;
       at = 0;
     }
     buffer.used = at + bytes;
-    offset = at;
+    offset = buffer.base + at;
     return true;
   }
 
@@ -220,6 +239,7 @@ struct Gpu::Impl {
     if (!check(gt4_hwd_vkCreateImageView(device, &view, nullptr, &out.view), "vkCreateImageView", error)) return false;
     out.bytes = requirements.size;
     out.alive = true;
+    drawSets.clear();
     stats.imageBytes += out.bytes;
     // UNDEFINED -> GENERAL and zero, in this recording.
     if (!begin_recording(error)) return false;
@@ -252,6 +272,7 @@ struct Gpu::Impl {
 
   void doom(Image &image) {
     if (!image.alive) return;
+    drawSets.clear();  // a cached set may name this image (an id can be reused or grown)
     doomed.push_back(image);
     image = Image{};
   }
@@ -370,30 +391,40 @@ struct Gpu::Impl {
     full_barrier();
   }
 
-  void finish_in_flight() {
-    for (Image &image : doomedInFlight) release(image);
-    doomedInFlight.clear();
-    inFlight = false;
-  }
-
-  bool wait_in_flight(std::string &error) {
-    if (!inFlight) return true;
-    if (!check(gt4_hw_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences", error)) return false;
+  bool wait_slot(std::uint32_t index, std::string &error) {
+    Slot &s = slots[index];
+    if (!s.inFlight) return true;
+    if (!check(gt4_hw_vkWaitForFences(device, 1, &s.fence, VK_TRUE, UINT64_MAX), "vkWaitForFences", error)) return false;
     stats.waits++;
-    finish_in_flight();
+    for (Image &image : s.doomed) release(image);
+    s.doomed.clear();
+    s.inFlight = false;
     return true;
   }
 
+  // Waits for everything submitted (a fence signals after every earlier submission on the queue too).
+  bool wait_all(std::string &error) { return wait_slot(lastSubmitted, error) && wait_slot(lastSubmitted ^ 1u, error); }
+
   bool begin_recording(std::string &error) {
     if (recording) return true;
-    if (!wait_in_flight(error)) return false;
+    slot = lastSubmitted ^ 1u;
+    if (!wait_slot(slot, error)) return false;  // the submission before the last one: usually long done
+    cmd = slots[slot].cmd;
+    fence = slots[slot].fence;
+    transientPool = slots[slot].pool;
     if (!check(gt4_hw_vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer", error)) return false;
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!check(gt4_hw_vkBeginCommandBuffer(cmd, &begin), "vkBeginCommandBuffer", error)) return false;
     if (!check(gt4_hwd_vkResetDescriptorPool(device, transientPool, 0), "vkResetDescriptorPool", error)) return false;
     transientSetsUsed = 0;
-    staging.used = vertices.used = uniforms.used = readback.used = 0;
+    drawSets.clear();
+    for (Buffer *buffer : {&staging, &vertices, &uniforms}) {
+      buffer->used = 0;
+      buffer->base = slot * (buffer->size / 2);
+    }
+    readback.used = 0;  // the readback buffer is only used by waited submissions
+    readback.base = 0;
     recording = true;
     // A barrier's first scope covers every command submitted before it on this queue (the presentation's copy of
     // the display image included), so the new recording never overwrites what an earlier submission still reads.
@@ -403,7 +434,7 @@ struct Gpu::Impl {
 
   bool submit(bool wait, std::string &error) {
     if (!recording) {
-      return wait ? wait_in_flight(error) : true;
+      return wait ? wait_all(error) : true;
     }
     end_render_pass();
     if (!check(gt4_hw_vkEndCommandBuffer(cmd), "vkEndCommandBuffer", error)) return false;
@@ -414,15 +445,16 @@ struct Gpu::Impl {
     info.pCommandBuffers = &cmd;
     if (!check(gt4_hw_vkQueueSubmit(queue, 1, &info, fence), "vkQueueSubmit", error)) return false;
     stats.submissions++;
-    inFlight = true;
-    doomedInFlight.insert(doomedInFlight.end(), doomed.begin(), doomed.end());
+    slots[slot].inFlight = true;
+    slots[slot].doomed.insert(slots[slot].doomed.end(), doomed.begin(), doomed.end());
     doomed.clear();
-    return wait ? wait_in_flight(error) : true;
+    lastSubmitted = slot;
+    return wait ? wait_all(error) : true;
   }
 
   bool allocate_set(VkDescriptorSetLayout layout, VkDescriptorSet &set, std::string &error) {
     if (transientSetsUsed >= kTransientSets) {
-      if (!submit(true, error) || !begin_recording(error)) return false;
+      if (!submit(false, error) || !begin_recording(error)) return false;
     }
     VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     allocate.descriptorPool = transientPool;
@@ -531,9 +563,13 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   allocate.commandPool = s.pool;
   allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   allocate.commandBufferCount = 1;
-  if (!check(gt4_hw_vkAllocateCommandBuffers(s.device, &allocate, &s.cmd), "vkAllocateCommandBuffers", error)) return false;
-  VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  if (!check(gt4_hw_vkCreateFence(s.device, &fenceInfo, nullptr, &s.fence), "vkCreateFence", error)) return false;
+  for (Impl::Slot &slot : s.slots) {
+    if (!check(gt4_hw_vkAllocateCommandBuffers(s.device, &allocate, &slot.cmd), "vkAllocateCommandBuffers", error)) {
+      return false;
+    }
+    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (!check(gt4_hw_vkCreateFence(s.device, &fenceInfo, nullptr, &slot.fence), "vkCreateFence", error)) return false;
+  }
 
   const VkBufferUsageFlags stagingUsage =
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -592,8 +628,11 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     info.maxSets = kTransientSets;
     info.poolSizeCount = 3;
     info.pPoolSizes = sizes;
-    if (!check(gt4_hwd_vkCreateDescriptorPool(s.device, &info, nullptr, &s.transientPool), "vkCreateDescriptorPool",
-               error)) return false;
+    for (Impl::Slot &slot : s.slots) {
+      if (!check(gt4_hwd_vkCreateDescriptorPool(s.device, &info, nullptr, &slot.pool), "vkCreateDescriptorPool", error)) {
+        return false;
+      }
+    }
   }
   // One subpass with no attachments; its self-dependency lets a draw see the storage-image stores of the draws before
   // it (the fragment barrier between batches and, without pixel interlock, between primitives).
@@ -707,6 +746,12 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     pipeline.stage.pName = "main";
     pipeline.layout = s.decodeLayout;
     if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.decodePipeline),
+               "vkCreateComputePipelines", error)) return false;
+    s.patchGlmModule =
+        s.make_module(hwgs::shaders::core2_patch_glm_words, hwgs::shaders::core2_patch_glm_word_count, error);
+    if (!s.patchGlmModule) return false;
+    pipeline.stage.module = s.patchGlmModule;
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.patchGlmPipeline),
                "vkCreateComputePipelines", error)) return false;
   }
 
@@ -898,8 +943,15 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
 
   VkDescriptorSet set = VK_NULL_HANDLE;
-  if (!s.allocate_set(s.drawSetLayout, set, error)) return false;
-  {
+  const std::uint64_t setKey = (static_cast<std::uint64_t>(batch.frame + 1) << 48) ^
+                               (static_cast<std::uint64_t>(batch.depth + 1) << 32) ^
+                               (static_cast<std::uint64_t>(batch.memoryTexture + 1) << 16) ^
+                               static_cast<std::uint64_t>(batch.texture + 1);
+  if (auto cached = s.drawSets.find(setKey); cached != s.drawSets.end()) {
+    set = cached->second;
+  } else {
+    if (!s.allocate_set(s.drawSetLayout, set, error)) return false;
+    s.drawSets[setKey] = set;
     VkDescriptorBufferInfo uniformInfo{s.uniforms.buffer, 0, kPixelStateBytes};
     VkDescriptorImageInfo imageInfo[4] = {{VK_NULL_HANDLE, frame->view, VK_IMAGE_LAYOUT_GENERAL},
                                           {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL},
@@ -1092,6 +1144,50 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
   s.full_barrier();
   s.stats.atlasUploads++;
+  return true;
+}
+
+bool Gpu::PatchFromGlm(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::int32_t x0,
+                       std::int32_t y0, std::int32_t x1, std::int32_t y1, std::uint32_t mask, std::string &error) {
+  Impl &s = *impl_;
+  const Image *image = s.image_of(id);
+  if (!image || x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0) {
+    error = "CORE2 GLM patch of an image or rectangle that does not exist";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
+  VkDescriptorBufferInfo buffers[3] = {{s.glm, 0, 4u << 20}, {s.glmTables.buffer, 0, s.glmTableBytes},
+                                       {s.glm, 0, 1024 * 4}};  // bindings 2 and 5 are not read by this kernel
+  VkDescriptorImageInfo target{VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet writes[5]{};
+  const std::uint32_t bindingOf[5] = {0, 1, 2, 3, 5};
+  for (std::uint32_t i = 0; i < 5; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = bindingOf[i];
+    writes[i].descriptorCount = 1;
+    if (i == 3) {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &target;
+    } else {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &buffers[i < 2 ? i : 2];
+    }
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
+  const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
+  const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
+  const std::uint32_t push[9] = {bp, bw, psm, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0),
+                                 width, height, image->scale, mask};
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.patchGlmPipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
+  gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+  gt4_hwd_vkCmdDispatch(s.cmd, (width * image->scale + 7u) / 8u, (height * image->scale + 7u) / 8u, 1);
+  s.full_barrier();
+  s.stats.patches++;
   return true;
 }
 

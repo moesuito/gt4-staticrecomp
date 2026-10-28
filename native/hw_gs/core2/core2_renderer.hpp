@@ -39,7 +39,9 @@ struct Core2Counters {
     std::uint64_t displayFromMemory = 0;
     std::uint64_t indexedFromTargetReadbacks = 0;  // interim 3.5: a T8/T4 texture over a drawn target
     std::uint64_t directFromTargetReadbacks = 0;   // a 16/24/32-bit memory texture over a drawn target (not a hit)
-    std::uint64_t clutReadbacks = 0;               // CLUT loads over a drawn target (GT4 draws palettes)
+    std::uint64_t clutReadbacks = 0;
+    std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
+    std::uint64_t uploadCheckMismatches = 0;               // CLUT loads over a drawn target (GT4 draws palettes)
 };
 
 class Renderer {

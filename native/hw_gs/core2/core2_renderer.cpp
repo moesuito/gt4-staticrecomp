@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,6 +97,26 @@ BlockSpan SpanOfRect(const BufferView &view, std::int32_t x0, std::int32_t y0, s
     if (x1 < x0 || y1 < y0) return BlockSpan{};
     if (x0 < 0 || y0 < 0 || x1 >= 2048 || y1 >= 2048) return BlockSpan{0, kAllBlocks};
     const memory::PsmInfo &info = memory::psmInfo(view.psm);
+    const std::uint32_t bufferWidth = std::max<std::uint32_t>(view.bufferWidth, 1u) * 64u;
+    const std::uint32_t pagesPerRow = std::max<std::uint32_t>(1u, (bufferWidth + info.pageWidth - 1u) / info.pageWidth);
+    const std::uint32_t firstRow = static_cast<std::uint32_t>(y0) / info.pageHeight;
+    std::uint32_t rows = static_cast<std::uint32_t>(y1) / info.pageHeight - firstRow + 1u;
+    if (static_cast<std::uint32_t>(x1) >= bufferWidth) rows += 1u + static_cast<std::uint32_t>(x1) / bufferWidth;
+    const std::uint64_t spill = (view.basePointer % memory::kBlocksPerPage) != 0 ? memory::kBlocksPerPage : 0;
+    const std::uint64_t count = static_cast<std::uint64_t>(rows) * pagesPerRow * memory::kBlocksPerPage + spill;
+    if (count >= kAllBlocks) return BlockSpan{0, kAllBlocks};
+    return BlockSpan{(view.basePointer + firstRow * pagesPerRow * memory::kBlocksPerPage) % kAllBlocks,
+                     static_cast<std::uint32_t>(count)};
+}
+
+BlockSpan SpanOfRect(const BufferView &view, const PixelRect &r) { return SpanOfRect(view, r.x0, r.y0, r.x1, r.y1); }
+
+// The span of a write into GS memory (EE uploads, moves): exact blocks for a small rectangle, else SpanOfRect.
+BlockSpan WriteSpan(const BufferView &view, const PixelRect &r) {
+    const std::int32_t x0 = r.x0, y0 = r.y0, x1 = r.x1, y1 = r.y1;
+    if (x1 < x0 || y1 < y0) return BlockSpan{};
+    if (x0 < 0 || y0 < 0 || x1 >= 2048 || y1 >= 2048) return BlockSpan{0, kAllBlocks};
+    const memory::PsmInfo &info = memory::psmInfo(view.psm);
     // A small rectangle gets its exact blocks: the conservative page rows below add a whole page when the base is
     // not page aligned, and near the end of memory that page wraps to block 0 (GT4 writes 8 x 8 pixels at block
     // 16328: the spill page reached the display buffer at block 0 and its top rows were patched from memory).
@@ -118,19 +139,8 @@ BlockSpan SpanOfRect(const BufferView &view, std::int32_t x0, std::int32_t y0, s
             if (last - first < kAllBlocks / 2) return BlockSpan{first, last - first + 1u};
         }
     }
-    const std::uint32_t bufferWidth = std::max<std::uint32_t>(view.bufferWidth, 1u) * 64u;
-    const std::uint32_t pagesPerRow = std::max<std::uint32_t>(1u, (bufferWidth + info.pageWidth - 1u) / info.pageWidth);
-    const std::uint32_t firstRow = static_cast<std::uint32_t>(y0) / info.pageHeight;
-    std::uint32_t rows = static_cast<std::uint32_t>(y1) / info.pageHeight - firstRow + 1u;
-    if (static_cast<std::uint32_t>(x1) >= bufferWidth) rows += 1u + static_cast<std::uint32_t>(x1) / bufferWidth;
-    const std::uint64_t spill = (view.basePointer % memory::kBlocksPerPage) != 0 ? memory::kBlocksPerPage : 0;
-    const std::uint64_t count = static_cast<std::uint64_t>(rows) * pagesPerRow * memory::kBlocksPerPage + spill;
-    if (count >= kAllBlocks) return BlockSpan{0, kAllBlocks};
-    return BlockSpan{(view.basePointer + firstRow * pagesPerRow * memory::kBlocksPerPage) % kAllBlocks,
-                     static_cast<std::uint32_t>(count)};
+    return SpanOfRect(view, r);
 }
-
-BlockSpan SpanOfRect(const BufferView &view, const PixelRect &r) { return SpanOfRect(view, r.x0, r.y0, r.x1, r.y1); }
 
 bool SpansOverlap(const BlockSpan &a, const BlockSpan &b) {
     if (a.count == 0 || b.count == 0) return false;
@@ -198,6 +208,74 @@ std::uint64_t KeyHash(const writeback::TextureKey &k) {
 
 int RowFieldOfDisplayField(bool csrFieldOdd) { return csrFieldOdd ? 0 : 1; }
 
+// A host-to-local upload swizzled through the precomputed in-page tables (memory::gpuAddressTables, the same numbers
+// as memory::pixelSlot): the generic per-pixel path cost about 8 ms per race frame. Returns false (nothing written)
+// when the data does not cover the whole rectangle; the caller then takes the generic path.
+bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
+                     std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount) {
+    static const memory::GpuAddressTables tables = memory::gpuAddressTables();
+    const memory::PsmInfo &info = memory::psmInfo(view.psm);
+    const std::uint32_t bpp = info.transferBpp;
+    if (static_cast<std::uint64_t>(width) * height * bpp > static_cast<std::uint64_t>(byteCount) * 8u) return false;
+    const std::uint32_t code = static_cast<std::uint32_t>(view.psm) & 63u;
+    const std::uint32_t tableOffset = tables.directory[code * 4u];
+    const std::uint32_t pageWidth = tables.directory[code * 4u + 1u];
+    const std::uint32_t pageHeight = tables.directory[code * 4u + 2u];
+    const bool zXor = tables.directory[code * 4u + 3u] != 0;
+    if (pageWidth == 0 || pageHeight == 0) return false;
+    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
+    const std::uint32_t *entries = tables.entries.data() + tableOffset;
+    std::uint64_t index = 0;
+    for (std::uint32_t row = 0; row < height; ++row) {
+        const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
+        const std::uint32_t pageRow = (y / pageHeight) * perRow;
+        const std::uint32_t *rowEntries = entries + (y % pageHeight) * pageWidth;
+        for (std::uint32_t column = 0; column < width; ++column, ++index) {
+            const std::uint32_t x = (x0 + column) % memory::kTransferCoordinateWrap;
+            const std::uint32_t entry = rowEntries[x % pageWidth];
+            std::uint32_t block = view.basePointer + memory::kBlocksPerPage * (pageRow + x / pageWidth) + (entry & 31u);
+            if (zXor) block ^= 24u;
+            block &= memory::kBlocksTotal - 1u;
+            const std::uint32_t at = (block * memory::kBlockBytes + ((entry >> 5) & 255u)) & (memory::kLocalMemoryBytes - 1u);
+            const std::uint32_t shift = (entry >> 13) & 31u;
+            std::uint8_t *out = memoryBytes + at;
+            switch (bpp) {
+                case 32: std::memcpy(out, data + index * 4u, 4); break;
+                case 24: std::memcpy(out, data + index * 3u, 3); break;
+                case 16: std::memcpy(out, data + index * 2u, 2); break;
+                case 8: *out = data[index]; break;
+                default: {  // 4 bits, low nibble first in the host stream
+                    const std::uint8_t nibble =
+                        (index & 1u) ? static_cast<std::uint8_t>(data[index / 2] >> 4) : (data[index / 2] & 0x0Fu);
+                    *out = static_cast<std::uint8_t>((*out & ~(0x0Fu << shift)) | (nibble << shift));
+                    break;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// CPU time of CORE2's stages (microseconds, summed between two [core2] lines).
+struct PhaseTimes {
+    double gif = 0, batch = 0, upload = 0, written = 0, clut = 0, clutLoads = 0, uploads = 0, hook = 0, glmHook = 0, translate = 0, targets = 0, texture = 0, draw = 0, readback = 0, patch = 0, compose = 0,
+           flush = 0;
+};
+
+class ScopedUs {
+public:
+    explicit ScopedUs(double &sum) : sum_(sum), start_(std::chrono::steady_clock::now()) {}
+    ~ScopedUs() {
+        sum_ += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start_).count();
+    }
+    ScopedUs(const ScopedUs &) = delete;
+    ScopedUs &operator=(const ScopedUs &) = delete;
+
+private:
+    double &sum_;
+    std::chrono::steady_clock::time_point start_;
+};
+
 }  // namespace
 
 struct Renderer::Impl final : public BatchSink, public SyncSink, public TransferSink, public writeback::TextureCacheView {
@@ -211,6 +289,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::string failure_;
     writeback::Counters counters;
     Core2Counters stats;
+    PhaseTimes times_;
 
     display::DisplayRegisters displayRegs_;
     std::array<std::uint32_t, 2> previousDby_{};
@@ -257,6 +336,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // A CLUT load reads GS memory. GT4 draws some of its palettes (the race colour filter's ramp), so a load over
         // a drawn target reduces that target into memory first, like any host read of drawn pixels (4.2).
         frontEnd_.SetBeforeLocalRead([this](const BlockRange &range) {
+            ScopedUs clutTimer(times_.clut);
+            times_.clutLoads += 1;
             const BlockSpan span{range.begin, range.count};
             for (const Target &t : targets_) {
                 if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) {
@@ -389,6 +470,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // A texture from GS memory (3.7): decoded on the GPU into a 1x image, kept while its pages are unchanged; the
     // least recently used textures go when the cache is over its budget.
     ImageId MemoryTexture(const writeback::BatchTranslation &t) {
+        ScopedUs timer(times_.texture);
         writeback::TextureKey key;
         key.tbp = t.glmBp;
         key.tbw = t.glmBw;
@@ -467,6 +549,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // Makes the image of `t` hold every rectangle the EE wrote into it (4.1, applied lazily at the next use).
     bool ApplyDirty(Target &t) {
         if (t.dirty.empty()) return true;
+        ScopedUs timer(times_.patch);
         std::vector<Dirty> pending;
         pending.swap(t.dirty);
         for (const Dirty &d : pending) {
@@ -475,12 +558,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (r.Empty()) continue;
             const std::uint32_t w = static_cast<std::uint32_t>(r.x1 - r.x0 + 1);
             const std::uint32_t h = static_cast<std::uint32_t>(r.y1 - r.y0 + 1);
-            std::vector<std::uint32_t> words(static_cast<std::size_t>(w) * h);
             const BufferView source{t.view.basePointer, t.view.bufferWidth, d.psm};
-            memory_.Local().readRect(source, static_cast<std::uint32_t>(r.x0), static_cast<std::uint32_t>(r.y0), w, h,
-                                     words.data());
+            // The words are read on the GPU from the GLM, made current for the rectangle first.
+            if (!MakeGlmCurrent(SpanOfRect(source, r))) return false;
             std::string error;
-            if (!gpu_.Patch(t.image, r.x0, r.y0, r.x1, r.y1, words, WriteMaskOf(d.psm), error)) {
+            if (!gpu_.PatchFromGlm(t.image, t.view.basePointer, t.view.bufferWidth, static_cast<std::uint32_t>(d.psm),
+                                   r.x0, r.y0, r.x1, r.y1, WriteMaskOf(d.psm), error)) {
                 Fail(error);
                 return false;
             }
@@ -627,7 +710,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember) {
-        const BlockSpan span = SpanOfRect(view, rect);
+        ScopedUs writtenTimer(times_.written);
+        const BlockSpan span = WriteSpan(view, rect);
         MarkWritten(span);
         for (Target &t : targets_) {
             if (!t.alive) continue;
@@ -667,6 +751,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // 4.2: every target over `span` writes its drawn area (inside `limit` when it is given in the same buffer) back
     // to GS memory, oldest draw first so the newest content wins.
     bool Readback(const BlockSpan &span, const BufferView *limitView = nullptr, const PixelRect *limit = nullptr) {
+        ScopedUs timer(times_.readback);
         std::vector<Target *> order;
         for (Target &t : targets_) {
             if (!t.alive || t.drawn.Empty()) continue;
@@ -725,8 +810,48 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void InvalidateDestination(const UploadCommit &c) override { memory_.InvalidateDestination(c); }
 
     void CommitUpload(const UploadCommit &c, const std::uint8_t *bytes, std::size_t byteCount) override {
-        memory_.CommitUpload(c, bytes, byteCount);
+        ScopedUs uploadTimer(times_.upload);
+        times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
+        static const bool fast = std::getenv("GT4_CORE2_FAST_UPLOAD") == nullptr ||
+                                 std::strcmp(std::getenv("GT4_CORE2_FAST_UPLOAD"), "0") != 0;  // A/B
+        if (!fast || !psm ||
+            !FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay, c.rrw,
+                             c.rrh, bytes, byteCount)) {
+            memory_.CommitUpload(c, bytes, byteCount);
+        } else {
+            // Diagnostics: GT4_CORE2_UPLOAD_CHECK=1 reads the rectangle back through the generic addressing
+            // (memory::pixelSlot) and compares every pixel with the host data.
+            static const bool check = std::getenv("GT4_CORE2_UPLOAD_CHECK") != nullptr;
+            if (check) {
+                const BufferView view{c.dbp, c.dbw, *psm};
+                const std::uint32_t bpp = memory::psmInfo(*psm).transferBpp;
+                std::uint64_t index = 0;
+                bool same = true;
+                for (std::uint32_t row = 0; row < c.rrh && same; ++row) {
+                    for (std::uint32_t column = 0; column < c.rrw; ++column, ++index) {
+                        std::uint32_t expected = 0;  // the host texel (little endian, 4-bit low nibble first)
+                        if (bpp == 4) {
+                            expected = (index & 1u) ? (bytes[index / 2] >> 4) : (bytes[index / 2] & 0x0Fu);
+                        } else {
+                            std::memcpy(&expected, bytes + index * (bpp / 8u), bpp / 8u);
+                        }
+                        const std::uint32_t x = (c.dsax + column) % memory::kTransferCoordinateWrap;
+                        const std::uint32_t y = (c.dsay + row) % memory::kTransferCoordinateWrap;
+                        if (memory_.Local().readPixel(view, x, y) != expected) {
+                            same = false;
+                            break;
+                        }
+                    }
+                }
+                stats.uploadChecks++;
+                if (!same) {
+                    stats.uploadCheckMismatches++;
+                    std::fprintf(stderr, "[core2] upload check mismatch bp=%u bw=%u psm=%02x rect=%u,%u %ux%u\n", c.dbp,
+                                 c.dbw, c.dpsm, c.dsax, c.dsay, c.rrw, c.rrh);
+                }
+            }
+        }
         if (!psm || c.rrw == 0 || c.rrh == 0) {
             MarkWritten(BlockSpan{0, kAllBlocks});
             return;
@@ -884,9 +1009,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // ---- Batches ---------------------------------------------------------------------------------------------
     void OnBatch(Batch &&batch) override {
+        ScopedUs batchTimer(times_.batch);
         if (failed_) return;
         counters.batches++;
-        if (ToneHook(batch)) return;
+        {
+            ScopedUs timer(times_.hook);
+            if (ToneHook(batch)) return;
+        }
 
         writeback::BatchTranslation t;
         textureHit_ = kNoImage;
@@ -904,6 +1033,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // (the reference reduces it on the GPU at 1x; the result is the same).
         const writeback::TextureFromGlmHook fromGlm = [this](const BufferView &view, std::uint32_t width,
                                                              std::uint32_t height, bool indexed, bool &gpuClut) {
+            ScopedUs hookTimer(times_.glmHook);
             gpuClut = false;
             static const bool readAll = std::getenv("GT4_CORE2_TEXTURE_READBACK") == nullptr ||
                                         std::strcmp(std::getenv("GT4_CORE2_TEXTURE_READBACK"), "0") != 0;
@@ -913,8 +1043,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 const PixelRect rect{0, 0, static_cast<std::int32_t>(width) - 1,
                                      static_cast<std::int32_t>(height) - 1};
                 const BlockSpan span = SpanOfRect(view, rect);
+                const BlockSpan exact = WriteSpan(view, rect);
                 for (const Target &target : targets_) {
-                    if (target.alive && !target.drawn.Empty() && SpansOverlap(TargetSpan(target, target.drawn), span)) {
+                    // The page-row test first (cheap), then exact blocks: a conservative overlap alone would read back
+                    // targets the texture does not touch.
+                    if (target.alive && !target.drawn.Empty() && SpansOverlap(TargetSpan(target, target.drawn), span) &&
+                        SpansOverlap(WriteSpan(target.view, target.drawn), exact)) {
                         static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;
                         if (trace) {
                             std::fprintf(stderr, "[core2] texture over target vblank=%llu tex bp=%u bw=%u psm=%u %ux%u\n",
@@ -933,8 +1067,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             return true;
         };
-        writeback::TranslateBatchHooked(batch, memory_.Local(), frontEnd_.Clut(), t, counters, {}, this, fromTarget,
-                                        fromGlm);
+        {
+            ScopedUs timer(times_.translate);
+            writeback::TranslateBatchHooked(batch, memory_.Local(), frontEnd_.Clut(), t, counters, {}, this, fromTarget,
+                                            fromGlm);
+        }
         if (t.skippedTexture) {
             counters.batchesSkippedTexture++;
             return;
@@ -945,6 +1082,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         if (failed_) return;
 
+        auto targetsStart = std::chrono::steady_clock::now();
         Target *frameTarget = DrawTarget(t.frameView, t.rect);
         if (!frameTarget) {
             counters.batchesEmpty++;
@@ -963,6 +1101,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         Target *textureTarget = textureTarget_ >= 0 ? &targets_[static_cast<std::size_t>(textureTarget_)] : nullptr;
         if (textureTarget && textureTarget->alive && !ApplyDirty(*textureTarget)) return;
 
+        times_.targets +=
+            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - targetsStart).count();
         DrawBatch draw;
         draw.frame = frameTarget->image;
         draw.depth = depthTarget ? depthTarget->image : kNoImage;
@@ -996,7 +1136,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                          t.rect.x1, t.rect.y1, t.draws.size(), t.state.fields[gpu::gpufield::Fbmsk]);
         }
         std::string error;
-        if (!gpu_.Draw(draw, error)) {
+        bool drawn = false;
+        {
+            ScopedUs timer(times_.draw);
+            drawn = gpu_.Draw(draw, error);
+        }
+        if (!drawn) {
             Fail(error);
             return;
         }
@@ -1229,6 +1374,7 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
 bool Renderer::GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::size_t byteCount) {
     if (path == 0 || path > 3 || byteCount % 16 != 0) return false;
     Impl &s = *impl_;
+    ScopedUs gifTimer(s.times_.gif);
     const std::size_t count = byteCount / 16;
     if constexpr (std::endian::native == std::endian::little && sizeof(Qword) == 16) {
         if (reinterpret_cast<std::uintptr_t>(bytes) % alignof(Qword) == 0) {
@@ -1337,12 +1483,33 @@ void Renderer::Flush() {
     }
     s.Age();
     s.TrimTexturePool();
-    if (s.vblanks_ % 600 == 0) PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_);
+    if (s.vblanks_ % 600 == 0) {
+        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_);
+        const PhaseTimes &p = s.times_;
+        const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        const double wall = std::chrono::duration<double, std::milli>(now - last).count() / 600.0;
+        last = now;
+        std::fprintf(stderr, "[core2] wall ms/vblank=%.2f (the whole emulator, GS thread included)\n", wall);
+        std::fprintf(stderr,
+                     "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
+                     "patch=%.2f compose=%.2f flush=%.2f\n",
+                     p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
+                     p.patch / f, p.compose / f, p.flush / f);
+        s.times_ = PhaseTimes{};
+    }
     std::string error;
-    if (s.gpu_.Ready() && !s.gpu_.Submit(false, error)) s.Fail(error);
+    {
+        ScopedUs timer(s.times_.flush);
+        if (s.gpu_.Ready() && !s.gpu_.Submit(false, error)) s.Fail(error);
+    }
 }
 
-bool Renderer::ComposeFrameGpu(writeback::GpuFrame &out) { return impl_->ComposeGpu(out); }
+bool Renderer::ComposeFrameGpu(writeback::GpuFrame &out) {
+    ScopedUs timer(impl_->times_.compose);
+    return impl_->ComposeGpu(out);
+}
 
 bool Renderer::ReadGpuFrame(const writeback::GpuFrame &frame, std::vector<std::uint32_t> &pixels) {
     if (!frame.valid) return false;
