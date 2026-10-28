@@ -116,6 +116,9 @@ public:
                  std::uint32_t outHeight, std::string &error);
     std::uint64_t DisplayImage() const;  // VkImage
     bool ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels, std::string &error);
+    // Diagnostics: the top-left width x height words of an image (submits and waits).
+    bool ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words,
+                   std::string &error);
 
     bool Submit(bool wait, std::string &error);
     const Core2GpuStats &Stats() const;

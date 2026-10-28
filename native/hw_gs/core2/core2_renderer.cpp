@@ -579,9 +579,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         width = std::min(width, maxSide);
         height = std::min(height, maxSide);
         if (width <= t.width && height <= t.height) return true;
-        // Rows grow in steps of 64 so a target that is drawn a few rows further each time grows rarely.
+        // Rows grow in whole page rows of the target's format, so a target drawn a few rows further each time grows
+        // rarely; never more, or its rows past the buffer would overlap the memory after it (GT4's 224-row menu
+        // fields sit right before texture memory: 64-row steps made every texture upload patch the display buffer).
+        const std::uint32_t pageRows = memory::psmInfo(t.view.psm).pageHeight;
         const std::uint32_t newWidth = std::max(t.width, width);
-        const std::uint32_t newHeight = std::min(maxSide, std::max(t.height, (height + 63u) / 64u * 64u));
+        const std::uint32_t newHeight =
+            std::min(maxSide, std::max(t.height, (height + pageRows - 1u) / pageRows * pageRows));
         std::string error;
         if (!gpu_.GrowImage(t.image, newWidth, newHeight, error)) {
             Fail(error);
@@ -607,8 +611,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     Target *CreateTarget(const BufferView &view, FormatClass cls, const PixelRect &rect) {
         const std::uint32_t maxSide = gpu_.MaxNativeSide();
         const std::uint32_t width = std::min(std::max<std::uint32_t>(view.bufferWidth, 1u) * 64u, maxSide);
-        const std::uint32_t height =
-            std::min(maxSide, (static_cast<std::uint32_t>(std::max(rect.y1, 0)) + 1u + 63u) / 64u * 64u);
+        const std::uint32_t pageRows = memory::psmInfo(view.psm).pageHeight;  // see Grow
+        const std::uint32_t height = std::min(
+            maxSide, (static_cast<std::uint32_t>(std::max(rect.y1, 0)) + pageRows) / pageRows * pageRows);
         std::string error;
         const ImageId image = gpu_.CreateImage(width, height, true, error);
         if (image == kNoImage) {
@@ -1082,6 +1087,30 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         if (failed_) return;
 
+        // Diagnostics: GT4_CORE2_PRIMID_TEX=<texture base block> draws every batch with that texture untextured, each
+        // primitive in a colour that encodes its index (R = index & 255, G = index >> 8, B = 0x80), so a frame shows
+        // which primitive wrote each sample. Depth and the alpha test (vertex alpha) still run.
+        {
+            static const long long idTex =
+                std::getenv("GT4_CORE2_PRIMID_TEX") ? std::atoll(std::getenv("GT4_CORE2_PRIMID_TEX")) : -1;
+            if (idTex >= 0 && t.hasTexture && static_cast<long long>(tex0::Tbp0(batch.state.ctx.tex0)) == idTex) {
+                for (std::size_t i = 0; i < t.draws.size(); ++i) {
+                    const gpu::GpuDraw &d = t.draws[i];
+                    for (std::uint32_t v = d.first; v < d.first + d.count && v < t.vertices.size(); ++v) {
+                        t.vertices[v].rgba[0] = static_cast<std::uint8_t>(i & 0xFFu);
+                        t.vertices[v].rgba[1] = static_cast<std::uint8_t>((i >> 8) & 0xFFu);
+                        t.vertices[v].rgba[2] = 0x80;
+                        t.vertices[v].rgba[3] = 128;
+                    }
+                }
+                t.state.fields[gpu::gpufield::TexOn] = 0;
+                t.state.fields[gpu::gpufield::FogOn] = 0;
+                t.state.fields[gpu::gpufield::BlendOn] = 0;
+                t.state.fields[gpu::gpufield::Dither] = 0;
+                t.hasTexture = false;
+            }
+        }
+
         auto targetsStart = std::chrono::steady_clock::now();
         Target *frameTarget = DrawTarget(t.frameView, t.rect);
         if (!frameTarget) {
@@ -1117,9 +1146,102 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             draw.memoryTexture = MemoryTexture(t);
             if (draw.memoryTexture == kNoImage) return;
             stats.texturesFromMemory++;
+            // Diagnostics: GT4_CORE2_DUMP_TEX=<texture base block>:<folder> writes that texture as this core decoded
+            // it (RGB as PPM, alpha as PGM) once, with its TEX0 and CLAMP.
+            static long long dumpTex = -2;
+            static std::string dumpDir;
+            if (dumpTex == -2) {
+                dumpTex = -1;
+                if (const char *text = std::getenv("GT4_CORE2_DUMP_TEX")) {
+                    if (const char *colon = std::strchr(text, ':')) {
+                        dumpTex = std::atoll(text);
+                        dumpDir = colon + 1;
+                    }
+                }
+            }
+            if (dumpTex >= 0 && static_cast<long long>(t.glmBp) == dumpTex) {
+                dumpTex = -1;
+                std::vector<std::uint32_t> words;
+                std::string error;
+                if (gpu_.ReadImage(draw.memoryTexture, t.texWidth, t.texHeight, words, error)) {
+                    const std::string rgb = dumpDir + "\\texture.ppm", alpha = dumpDir + "\\texture-alpha.pgm";
+                    if (std::FILE *f = std::fopen(rgb.c_str(), "wb")) {
+                        std::fprintf(f, "P6\n%u %u\n255\n", t.texWidth, t.texHeight);
+                        for (std::uint32_t w : words) {
+                            const unsigned char px[3] = {static_cast<unsigned char>(w), static_cast<unsigned char>(w >> 8),
+                                                         static_cast<unsigned char>(w >> 16)};
+                            std::fwrite(px, 1, 3, f);
+                        }
+                        std::fclose(f);
+                    }
+                    if (std::FILE *f = std::fopen(alpha.c_str(), "wb")) {
+                        std::fprintf(f, "P5\n%u %u\n255\n", t.texWidth, t.texHeight);
+                        for (std::uint32_t w : words) {
+                            const unsigned char a = static_cast<unsigned char>(w >> 24);
+                            std::fwrite(&a, 1, 1, f);
+                        }
+                        std::fclose(f);
+                    }
+                    std::fprintf(stderr, "[core2] texture %u dumped: %ux%u tex0=%llx clamp=%llx texa=%llx\n", t.glmBp,
+                                 t.texWidth, t.texHeight, static_cast<unsigned long long>(batch.state.ctx.tex0),
+                                 static_cast<unsigned long long>(batch.state.ctx.clamp),
+                                 static_cast<unsigned long long>(batch.state.env.texa));
+                }
+            }
         } else if (draw.texture != kNoImage) {
             stats.texturesFromTargets++;
             textureTarget->usedThisFrame = true;
+        }
+        // Diagnostics: GT4_CORE2_SKIP=<vblank>:<first>[-<last>] leaves out the drawn batches of that VBlank with those
+        // indices (counted from 1 in drawing order, as the batch trace numbers them), to find which draw makes an
+        // artifact.
+        {
+            static long long skipAt = -2, skipFirst = 0, skipLast = 0;
+            if (skipAt == -2) {
+                skipAt = -1;
+                if (const char *text = std::getenv("GT4_CORE2_SKIP")) {
+                    long long a = 0, b = 0, c = 0;
+                    const int n = std::sscanf(text, "%lld:%lld-%lld", &a, &b, &c);
+                    if (n >= 2) {
+                        skipAt = a;
+                        skipFirst = b;
+                        skipLast = n == 3 ? c : b;
+                    }
+                }
+            }
+            static long long lastVblank = -1, index = 0;
+            if (static_cast<long long>(vblanks_) != lastVblank) {
+                lastVblank = static_cast<long long>(vblanks_);
+                index = 0;
+            }
+            ++index;
+            if (skipAt >= 0 && static_cast<long long>(vblanks_) == skipAt && index >= skipFirst && index <= skipLast) {
+                return;
+            }
+            // GT4_CORE2_SKIP_TEX=<texture base block> and GT4_CORE2_SKIP_PRIMS=<primitive count>: the same, by the
+            // batch's identity, at every VBlank.
+            static const long long skipTex =
+                std::getenv("GT4_CORE2_SKIP_TEX") ? std::atoll(std::getenv("GT4_CORE2_SKIP_TEX")) : -1;
+            static const long long skipPrims =
+                std::getenv("GT4_CORE2_SKIP_PRIMS") ? std::atoll(std::getenv("GT4_CORE2_SKIP_PRIMS")) : -1;
+            if (skipTex >= 0 && t.hasTexture && static_cast<long long>(tex0::Tbp0(batch.state.ctx.tex0)) == skipTex) return;
+            if (skipPrims >= 0 && static_cast<long long>(t.draws.size()) == skipPrims) return;
+            // GT4_CORE2_SKIP_TEST=<TEST register, hex>: leaves out batches with exactly that TEST value.
+            static const long long skipTest =
+                std::getenv("GT4_CORE2_SKIP_TEST") ? std::strtoll(std::getenv("GT4_CORE2_SKIP_TEST"), nullptr, 16) : -1;
+            if (skipTest >= 0 && static_cast<long long>(batch.state.ctx.test) == skipTest) return;
+            // GT4_CORE2_NEAREST_TEX=<texture base block>: batches with that texture sample it nearest.
+            static const long long nearestTex =
+                std::getenv("GT4_CORE2_NEAREST_TEX") ? std::atoll(std::getenv("GT4_CORE2_NEAREST_TEX")) : -1;
+            if (nearestTex >= 0 && static_cast<long long>(tex0::Tbp0(batch.state.ctx.tex0)) == nearestTex) {
+                draw.state.fields[gpu::gpufield::TexLinear] = 0;
+            }
+            // GT4_CORE2_NOATE_TEX=<texture base block>: the alpha test of batches with that texture always passes.
+            static const long long noAteTex =
+                std::getenv("GT4_CORE2_NOATE_TEX") ? std::atoll(std::getenv("GT4_CORE2_NOATE_TEX")) : -1;
+            if (noAteTex >= 0 && static_cast<long long>(tex0::Tbp0(batch.state.ctx.tex0)) == noAteTex) {
+                draw.state.fields[gpu::gpufield::Ate] = 0;
+            }
         }
         static const long long traceAt = std::getenv("GT4_CORE2_BATCH_TRACE_AT")
                                              ? std::atoll(std::getenv("GT4_CORE2_BATCH_TRACE_AT"))
@@ -1128,12 +1250,26 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const std::uint64_t tex0 = batch.state.ctx.tex0;
             std::fprintf(stderr,
                          "[core2] batch frame=%u/%u/%02x z=%u tex=%u/%u/%02x from=%s rect=%d,%d,%d,%d prims=%zu "
-                         "fbmsk=%08x\n",
+                         "fbmsk=%08x prim=%llx test=%llx zbuf=%llx alpha=%llx verts=%zu tex1=%llx\n",
                          t.frameView.basePointer, t.frameView.bufferWidth, static_cast<unsigned>(t.frameView.psm),
                          depthTarget ? t.zView.basePointer : 0u, t.hasTexture ? tex0::Tbp0(tex0) : 0u,
                          t.hasTexture ? tex0::Tbw(tex0) : 0u, t.hasTexture ? tex0::Psm(tex0) : 0u,
                          !t.hasTexture ? "-" : draw.texture != kNoImage ? "target" : "memory", t.rect.x0, t.rect.y0,
-                         t.rect.x1, t.rect.y1, t.draws.size(), t.state.fields[gpu::gpufield::Fbmsk]);
+                         t.rect.x1, t.rect.y1, t.draws.size(), t.state.fields[gpu::gpufield::Fbmsk],
+                         static_cast<unsigned long long>(batch.state.effectivePrim),
+                         static_cast<unsigned long long>(batch.state.ctx.test),
+                         static_cast<unsigned long long>(batch.state.ctx.zbuf),
+                         static_cast<unsigned long long>(batch.state.ctx.alpha), batch.vertices.size(),
+                         static_cast<unsigned long long>(batch.state.ctx.tex1));
+            static const long long vertsAbove = std::getenv("GT4_CORE2_TRACE_VERTS")
+                                                    ? std::atoll(std::getenv("GT4_CORE2_TRACE_VERTS"))
+                                                    : -1;  // diagnostics: vertices of batches with this many prims
+            if (vertsAbove >= 0 && static_cast<long long>(t.draws.size()) >= vertsAbove) {
+                for (const Vertex &v : batch.vertices) {
+                    std::fprintf(stderr, "[core2]   v xy4=%d,%d z=%u rgba=%u,%u,%u,%u stq=%.6g,%.6g,%.6g uv=%u,%u\n",
+                                 v.x4, v.y4, v.z, v.r, v.g, v.b, v.a, v.s, v.t, v.q, v.u, v.v);
+                }
+            }
         }
         std::string error;
         bool drawn = false;
@@ -1363,6 +1499,7 @@ Renderer::~Renderer() { PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_
 void Renderer::SetScale(std::uint32_t scale, float shift) {
     impl_->scale_ = std::max<std::uint32_t>(scale, 1u);
     impl_->shift_ = shift;
+    impl_->frontEnd_.SetCullUncovered(impl_->scale_ <= 1);  // IN-403
 }
 
 std::uint32_t Renderer::Scale() const { return impl_->scale_; }

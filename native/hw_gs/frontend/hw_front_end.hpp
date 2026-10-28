@@ -35,6 +35,10 @@ struct FrontEndOptions {
     // IN-366 A/B switch: strip runs decoded at once, no candidate copy for non-drawing kicks, the flush decision
     // reused while nothing it reads changed. Off: the generic per-register path (the fixture's oracle).
     bool fastPaths = true;
+    // IN-403: a triangle or sprite whose bounding box holds no pixel centre draws nothing at 1x and is dropped. At an
+    // internal scale above 1 it covers samples between the centres (GT4's sub-pixel strip pieces, thin far-away
+    // geometry), so a renderer at scale keeps it (the reference culls it only at 1x, Q-GSDX-COMPARISON 23).
+    bool cullUncovered = true;
 };
 
 enum class SyncKind : uint8_t { Signal, Finish, Label };
@@ -65,6 +69,8 @@ public:
 
     // Local memory image (4 MiB) used by CLUT loads. Defaults to zeros.
     void SetLocalMemory(const uint8_t* localMemory);
+    // IN-403: FrontEndOptions::cullUncovered, set by the renderer once it knows its internal scale.
+    void SetCullUncovered(bool cull) { options_.cullUncovered = cull; }
 
     // Called just before a CLUT load reads the local memory image (after the batch flush of 07.3), with a
     // conservative block range covering the palette. A renderer that keeps drawn pixels outside the image

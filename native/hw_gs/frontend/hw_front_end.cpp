@@ -590,9 +590,17 @@ bool FrontEnd::ShouldDraw(const Candidate& candidate, PrimType type, uint32_t co
         const int32_t coverY0 = (minY + 15) & ~15;
         const int32_t coverY1 = (maxY - 1) & ~15;
         if (coverX0 > coverX1 || coverY0 > coverY1) {
-            return false;  // covers no pixel centre
+            if (options_.cullUncovered) {
+                return false;  // covers no pixel centre
+            }
+            // IN-403 (at scale): kept, with the pixels its box touches as its rectangle (the rasteriser, not this
+            // rectangle, decides the samples it covers; the rectangle only sizes the target and the scissor).
+            raw = PixelRect{minX >> 4, minY >> 4, (maxX - 1) >> 4, (maxY - 1) >> 4};
+            if (raw.x1 < raw.x0) raw.x1 = raw.x0;
+            if (raw.y1 < raw.y0) raw.y1 = raw.y0;
+        } else {
+            raw = PixelRect{coverX0 >> 4, coverY0 >> 4, coverX1 >> 4, coverY1 >> 4};
         }
-        raw = PixelRect{coverX0 >> 4, coverY0 >> 4, coverX1 >> 4, coverY1 >> 4};
     }
 
     rect = IntersectRects(raw, scissorRect);

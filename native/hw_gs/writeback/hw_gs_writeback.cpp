@@ -3045,6 +3045,7 @@ Renderer::~Renderer() = default;
 void Renderer::SetScale(std::uint32_t scale, float scaleOffset) {
     if (core2_) return core2_->SetScale(scale, scaleOffset);
     impl_->gpu_.SetScale(scale, scaleOffset);
+    impl_->frontEnd_.SetCullUncovered(scale <= 1);  // IN-403
 }
 
 std::uint32_t Renderer::Scale() const { return core2_ ? core2_->Scale() : impl_->gpu_.Scale(); }

@@ -155,9 +155,10 @@ bool WritePackedPpm(const std::string& path, std::uint32_t width, std::uint32_t 
 bool ReadFile(const char* path, std::vector<std::uint8_t>& out) {
     std::FILE* file = std::fopen(path, "rb");
     if (!file) return false;
-    std::fseek(file, 0, SEEK_END);
-    const long size = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
+    // 64-bit offsets: race captures are several GB (long is 32 bits on Windows).
+    _fseeki64(file, 0, SEEK_END);
+    const long long size = _ftelli64(file);
+    _fseeki64(file, 0, SEEK_SET);
     if (size > 0) {
         out.resize(static_cast<std::size_t>(size));
         const std::size_t read = std::fread(out.data(), 1, out.size(), file);

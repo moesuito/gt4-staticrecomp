@@ -1326,6 +1326,34 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
   return true;
 }
 
+bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words,
+                    std::string &error) {
+  Impl &s = *impl_;
+  const Image *image = s.image_of(id);
+  if (!image) {
+    error = "CORE2 reads an image that does not exist";
+    return false;
+  }
+  width = std::min(width, image->width);
+  height = std::min(height, image->height);
+  const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
+  if (bytes == 0 || bytes > kReadbackBytes) {
+    error = "CORE2 image read outside the readback buffer";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {width, height, 1};
+  gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, image->image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
+  s.full_barrier();
+  if (!s.submit(true, error)) return false;
+  words.resize(static_cast<std::size_t>(width) * height);
+  std::memcpy(words.data(), s.readback.mapped, static_cast<std::size_t>(bytes));
+  return true;
+}
+
 bool Gpu::Submit(bool wait, std::string &error) { return impl_->submit(wait, error); }
 
 }  // namespace hwgs::core2
