@@ -1,5 +1,27 @@
 # Issue intake and local owner reports (2026-10-26)
 
+## Local report: race replay missing after restarting the game
+
+Recorded 2026-10-28; documentation only, with no public GitHub issue, implementation
+plan or assigned release. The owner tested original GT4; Spec II was not tested.
+
+- After recording a race replay, the owner returned to the game's main menu and
+  could still see the replay. After closing and reopening the game, it was no
+  longer present. The owner also saw no saved replay in the replays folder.
+- Whether the replay was explicitly saved through the game's replay/save flow,
+  whether a separate game save was necessary, the precise build, settings and
+  the exact folder checked are unknown. Do not assert that saving was attempted
+  or that data was lost from persistent storage.
+- Expected to investigate: a replay intentionally saved through the correct flow
+  should remain available after restarting, with its storage location and launcher
+  behavior understood. Determine first whether the menu entry was a temporary
+  last-race replay or a persisted replay, and distinguish memory-card storage from
+  any launcher-managed replay folder before diagnosing a persistence defect.
+- Existing TASK-063 concerns PS2 replay/ghost compatibility and numeric fidelity;
+  save-library and multi-game tasks cover storage generally. No existing task was
+  identified as specifically covering this owner report; a shared cause is unknown.
+  Keep the report local and unnumbered until triage; protect all existing saves.
+
 ## Local report: uneven frame pacing in video scenes on i5-7200U
 
 Recorded 2026-10-26; documentation only, without an implementation plan or release target.
