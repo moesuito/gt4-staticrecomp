@@ -7,7 +7,9 @@ branch task/134-game-code-optimization-study. From the owner's laptop logs (rc6,
 threads use about 35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3, gt4-gs CPU thread 3.4, gt4-gs GS thread
 ~11); half or more of the EE critical path (12.2 ms) is emulation plumbing; syscalls and guest idle are negligible and
 no large spin-wait exists. Ordered plan P0 (measure) to P8 (IOP AOT); the GSdx bridge is left to the CoreGS 2.0
-intake, which must be zero-copy. Waiting for the owner's answers (study section 7).
+intake, which must be zero-copy. Owner decisions recorded the same day (study section 7): cheapest steps first,
+SSE4.1 only, translator last, no GSdx bridge work, game-side gains ship with CoreGS 2.0. P0 baselines (headless Arcade
+night race and its replay, WPR profile) start when the owner says the CoreGS 2.0 build has freed the desktop.
 
 
 ## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)

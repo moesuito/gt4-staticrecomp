@@ -38,11 +38,16 @@ RX 9060 XT). Owner baseline on the laptop, same scene and settings: **PCSX2 ~50%
    (section 3.3): the largest long-term lever for `ee_dispatch` and the 3D-menu dips.
 5. **Free ISA win:** the game executable is built for SSE2 although the launcher already requires SSE4.1; the VU1
    worker's clamp (`vfix`) needs one SSE4.1 instruction instead of four (section 3.5).
-6. **Ordered plan (section 4):** P0 measure (sub-scopes, guest-state hash, one CPU profile) -> P1 host quick wins
-   (SSE4.1, doorbells, copies, probe clock, pacing tail, thread placement) -> P2 kernel delivery -> P3 IOP/SPU2 ->
-   P4 translated code (LTO/PGO, then noalias state and per-function output) -> P5 VIF path -> P6 zero-copy CoreGS 2.0
-   intake -> P7 VU1 program quality -> P8 IOP AOT. Expected (Hypothesis): laptop race critical path 12.2 -> 8-9 ms
-   with GSdx and about 7 ms with CoreGS 2.0, and total CPU into the PCSX2 class.
+6. **Ordered plan (section 4), cheapest first (owner rule):** P0 measure (sub-scopes, guest-state hash, one CPU
+   profile) -> P1 host quick wins (SSE4.1, doorbells, copies, probe clock, pacing tail, thread placement) -> P2 kernel
+   delivery -> P3 IOP/SPU2 -> P4 build-level speed (one compiler, ThinLTO, PGO) -> P5 VIF path -> P6 zero-copy CoreGS
+   2.0 intake (ships with CoreGS 2.0) -> P7 VU1 program quality -> P8 EE translator (noalias state, per-function
+   output; the most complex, last) -> P9 IOP AOT only if needed. Expected (Hypothesis): laptop race critical path
+   12.2 -> 9-10 ms with GSdx, about 8 ms with CoreGS 2.0, about 6.5-7 ms after P7-P8, with total CPU in or below the
+   PCSX2 class.
+7. **Owner decisions of 2026-10-28** are in section 7: SSE4.1 only (no AVX2 executable unless a large
+   measured gain), cheapest first, thread placement yes, profiler and first baselines once the desktop is free of the
+   CoreGS 2.0 build, laptop tests manual on both games, no more work on the GSdx bridge.
 
 ## 1. Sources and method
 
@@ -356,7 +361,8 @@ library's PDB to source lines, each `L_XXXXXXXX:` label mapped to its gt4-decomp
   gain is a Hypothesis, plausibly 5-15% of `vu1_program`, which is 8.8 ms per frame on the laptop).
 - `GT4_X86_64_V3` (AVX2, FMA, with `-ffp-contract=off`) exists for the runtime only (TASK-010) and was never
   measured on an idle machine (`docs/BUILD.md:700-760`). The i5-7200U has AVX2; a second executable chosen by CPUID
-  in the launcher would keep the SSE4.1 floor (owner decision, question Q1).
+  in the launcher would keep the SSE4.1 floor; owner decision of 2026-10-28: no second executable unless M9 shows a
+  large gain (section 7).
 - ThinLTO and PGO were never tried (TASK-010). They need one compiler version for the library and the executable.
   PGO profiles from the headless day/night/menu schedules are deterministic and need no owner session.
 
@@ -422,25 +428,28 @@ unchanged. Effort is agent days, not counting builds.
 | Step | What | Laptop gain (Hypothesis) | Effort | Risk | Identity proof |
 |---|---|---|---|---|---|
 | **P0** | Measurement first: sub-scopes for `kernel_service` (delivery vs guest handlers), `host_vblank`, `iop_run` (interpreter / SPU2 mix / HLE); counters for run-loop iterations, IOP syncs, `dispatch()` calls and scope entries; a per-VBlank guest-state hash (EE RAM, IOP RAM, SPU2 RAM, CPU state) behind a switch; `--cpu-mask` for 2-core/4-thread runs; one WPR CPU profile on the desktop (M3) | none (diagnostics) | 2-3 | low | stream hash and frame dumps equal with the new counters on and off |
-| **P1** | Host quick wins, each behind its own switch: (a) build runtime, native and VU AOT code with `-msse4.1`; (b) doorbell diet: statistics counters per thread instead of a locked add on the shared line, cache-line padding of both bells, power-of-two ring masks; (c) worker reads VIF batches in place (`try_peek`) instead of copying into a `std::vector`; (d) probe: one VIF scope per DMA chain, `SyscallScope` timing only inside F7..F8 intervals (counts kept), a cheaper clock; (e) pacing tail spin 0.5 ms -> about 0.15 ms with `_mm_pause` (measure timer lateness first); (f) MMCSS "Games" for the EE thread, EE and VU1 threads steered to different physical cores | EE 0.3-0.8; VU1 worker 0.5-1.5 (mostly 1a); ~0.1-0.3 W | 3-5 | low | stream hash, frame dumps, `GT4_MTVU_VERIFY=1` 0 mismatches, CTest/Python, laptop F8 |
-| **P2** | Kernel delivery and run loop hygiene in a runtime overlay (section 3.2): no `std::vector` copy of the handler list per interrupt (copy only when the list changed), alarms in a small sorted array, flat thread and semaphore tables, the event queue without `std::function` calls per event, GetThreadId answered inline and the ChangeThreadPriority raise-self fast path; then whatever the P0 split of `kernel_service` shows outside the guest handlers. Never fewer iterations or larger slices: only cheaper ones | 0.1-0.4 (the guest handler code itself speeds up with P4) | 1-2 | medium | guest-state hash every 500 VBlanks, stream hash, syscall trace equal on a short schedule |
+| **P1** | Host quick wins, each behind its own switch: (a) build runtime, native and VU AOT code with `-msse4.1` (plus one `x86-64-v3` experiment build for M9, never shipped); (b) doorbell diet: statistics counters per thread instead of a locked add on the shared line, cache-line padding of both bells, power-of-two ring masks; (c) worker reads VIF batches in place (`try_peek`) instead of copying into a `std::vector`; (d) probe: one VIF scope per DMA chain, `SyscallScope` timing only inside F7..F8 intervals (counts kept), a cheaper clock; (e) pacing tail spin 0.5 ms -> about 0.15 ms with `_mm_pause` (measure timer lateness first); (f) MMCSS "Games" for the EE thread, EE and VU1 threads steered to different physical cores | EE 0.3-0.8; VU1 worker 0.5-1.5 (mostly 1a); ~0.1-0.3 W | 3-5 | low | stream hash, frame dumps, `GT4_MTVU_VERIFY=1` 0 mismatches, CTest/Python, laptop F8 |
+| **P2** | Kernel delivery and run loop hygiene in a runtime overlay (section 3.2): no `std::vector` copy of the handler list per interrupt (copy only when the list changed), alarms in a small sorted array, flat thread and semaphore tables, the event queue without `std::function` calls per event, GetThreadId answered inline and the ChangeThreadPriority raise-self fast path; then whatever the P0 split of `kernel_service` shows outside the guest handlers. Never fewer iterations or larger slices: only cheaper ones | 0.1-0.4 (the guest handler code itself speeds up with P4 and P8) | 1-2 | medium | guest-state hash every 500 VBlanks, stream hash, syscall trace equal on a short schedule |
 | **P3** | IOP and SPU2, chosen by the P0 split: interpreter hygiene overlay (inline RAM fast path and the switch check, no `std::function` copy per event, no `std::map` scan per switch); if the mix dominates, a vectorised SPU2 mixer with identical integer output | 0.3-0.8 of the 1.27 ms | 2-4 | medium (audio timing, SIF) | audio PCM hash of the headless schedules, guest-state hash, card bytes after a save |
-| **P4** | Translated game code (`ee_dispatch` 4.9 ms in races, 6-8 ms in 3D menus): (a) one compiler version for library and executable, then ThinLTO, then PGO from the headless schedules; (b) EE library with `-msse4.1`; (c) translator: `Cpu & __restrict c` once every slow path and callback takes `c` explicitly instead of `g_cpu`; (d) translator: one host function per guest function (gt4-decomp boundaries, as TASK-014 used for entries) with direct calls, keeping the 16 KiB window switch only for indirect entries; (e) `dispatch()` division -> shift; (f) FPU fast paths only where M3 shows `fp::` hot and an exhaustive or proven equivalence exists | (a) 5-15% of EE CPU; (c)+(d) 20-40% of translated code: 1-2 ms in races, 1.5-3 ms in 3D menus | (a) 3-5; (c) 3-5; (d) 10-15 | (a) low; (c)(d) medium-high | new producer contract; guest-state hash every VBlank on all schedules (old and new library must agree bit for bit), stream hash, frame dumps, replay and save identity, owner play-through |
+| **P4** | Build-level speed for the translated code (`ee_dispatch` 4.9 ms in races, 6-8 ms in 3D menus), no change to the generated C++: (a) one compiler version for library and executable, then ThinLTO, then PGO from the headless schedules; (b) EE library rebuilt with `-msse4.1`; (c) `dispatch()` division -> shift | 5-15% of EE CPU (Hypothesis) | 3-5 | low | guest-state hash every VBlank on all schedules, stream hash, frame dumps; new library pin |
 | **P5** | VIF/MTVU data path: EE builds VIF batches directly in the input ring (one copy fewer); fewer worker->EE records per job where the stream hash allows | EE 0.2-0.5; worker 0.2-0.4 | 2-3 | medium (record boundaries; check how `GT4_GS_STREAM_HASH` frames records before merging any) | stream hash, MTVU verify, frame dumps |
-| **P6** | CoreGS 2.0 intake (with TASK-027 integration, game side only): the requirements of section 3.6 | EE 1.4 + gt4-gs CPU thread 3.4 (8.9 on D3D12) no longer exist; GS thread cost becomes CoreGS 2.0's | part of TASK-027 integration | owned by TASK-027 | same stream hash as the GSdx path on the headless schedules |
+| **P6** | CoreGS 2.0 intake (with TASK-027 integration, game side only; shipped together with CoreGS 2.0): the requirements of section 3.6 | EE 1.4 + gt4-gs CPU thread 3.4 (8.9 on D3D12) no longer exist; GS thread cost becomes CoreGS 2.0's | part of TASK-027 integration | owned by TASK-027 | same stream hash as the GSdx path on the headless schedules |
 | **P7** | VU1 worker program quality (worker 9.3 ms, the second-largest thread): after P1a, fewer `vfix` where the operand is provably already fixed, register shadows kept across blocks, PATH1 output batching (`docs/FRAME-COST-STUDY.md` item 8) | worker 1-3 | 5-10 | medium | VU1 corpus differential (existing), `--vu1-verify N`, frame dumps |
-| **P8** | IOP IRX ahead-of-time compilation | 0.2-0.5, only if P3 shows the interpreter dominates | weeks | medium | as P3 |
+| **P8** | Translator, **the most complex step, last** (owner, 2026-10-28): (a) `Cpu & __restrict c` once every slow path and callback takes `c` explicitly instead of `g_cpu`; (b) one host function per guest function (gt4-decomp boundaries, as TASK-014 used for entries) with direct calls, keeping the 16 KiB window switch only for indirect entries; (c) FPU fast paths only where M3 shows `fp::` hot and an exhaustive or proven equivalence exists | 20-40% of translated code: 1-2 ms in races, 1.5-3 ms in 3D menus | (a) 3-5; (b) 10-15 | medium-high | new producer contract; guest-state hash every VBlank on all schedules (old and new library must agree bit for bit), stream hash, frame dumps, replay and save identity, owner play-through |
+| **P9** | IOP IRX ahead-of-time compilation | 0.2-0.5, only if P3 shows the interpreter dominates | weeks | medium | as P3 |
 
 Expected outcome (Hypothesis, to be replaced by measurements): after P0-P5 on GSdx, the laptop race critical path goes
-from 12.2 ms to about 8-9 ms and the four busy threads from about 35 to 27-30 ms per frame; with P6 and a CoreGS 2.0
-GS thread no heavier than GSdx's, about 7-7.5 ms and 22-25 ms, which is the PCSX2 class (~50% of the laptop). P7 is the
-step that takes it below PCSX2.
+from 12.2 ms to about 9-10 ms and the four busy threads from about 35 to 28-31 ms per frame; with P6 and a CoreGS 2.0
+GS thread no heavier than GSdx's, about 8 ms and 24-27 ms. P7 and P8 are the steps that take it into and below the
+PCSX2 class (~50% of the laptop): about 6.5-7 ms and 20-23 ms.
 
-Why this order: P0 is cheap and turns the Unknowns of P2-P4 into numbers. P1 is the cheapest risk-free set and helps
-every thread on a 2-core machine. P2 is small and safe once P0 has split `kernel_service`; P3 attacks the largest
-plumbing item that stays with every renderer (IOP plus the sound mixer). P4 is the
-largest single lever but the most expensive and needs a new EE library, so it starts once P0's profile says where the
-translated time goes. P6 waits for CoreGS 2.0 because optimising the GSdx bridge would be thrown away.
+Why this order (owner rule, 2026-10-28: **always the easiest and cheapest step first, built and tested right away;
+the most complex work last**): P0 is cheap and turns the Unknowns into numbers. P1 is the cheapest risk-free set and
+helps every thread on a 2-core machine. P2 and P3 are small runtime overlays. P4 speeds up the translated code
+without touching it. P5 trims copies. P6 is done with CoreGS 2.0 and ships with it (the GSdx bridge gets no more
+work). P7 works on the VU1 emitter, which already has differential tests. P8 changes the EE translator and needs a new
+producer contract: the largest lever for the game code, and the most expensive, so it comes last, guided by P0's
+profile. P9 only if P3's numbers ask for it.
 
 
 ## 5. Measurement protocol (to run later; nothing here was run)
@@ -453,9 +462,23 @@ rule; `docs/FRAME-COST-STUDY.md` section 1.1 has the checker that waits for `nin
 
 1. Build the candidate in a fresh `private/sliceNNN-*` directory with its own pin; the baseline is the rc6 recipe
    (pin `docs/inputs/slice303-pcsx2.json` at `v1.3.0-rc6`) or the newest pinned release.
-2. Run `scripts/frame_cost_headless.py` (rc6) for menus (4,200 VBlanks), showroom (7,000), day race El Capitan
-   (16,000) and night race Clubman Stage Route 5 (16,000), with `GT4_MTVU_REPORT_EVERY=500`, in the order A, B, A, B
-   (two runs per variant), surfaceless, 1x, `GT4_GS_STREAM_HASH=1`.
+2. **Main scene (owner, 2026-10-28): one fixed night race in Arcade Mode**, same car and same track every run; Arcade
+   goes straight to the race and is predictable, while GT Mode needs a car bought on the card and many menu steps. The
+   existing Arcade night schedule fits: Arcade > Single Race > City Courses > **Clubman Stage Route 5 (night)**, Ford
+   Ka, 5 AI, accelerator held by the script, so every run drives the same race (`scripts/frame_cost_headless.py` scene
+   `night`, 16,000 VBlanks, presses in `docs/FRAME-COST-STUDY.md` section 1.1, pinned seed card
+   `private/slice110-menu-pilot/name-control4`). Night adds the flare readbacks.
+   - The owner asked for B-Spec because the game's AI then drives and its changing cameras show the heavy lighting
+     moments. B-Spec exists only in GT Mode (High confidence; the first headless run checks the Arcade menus). In Arcade
+     the same camera variety comes from the **replay of that race** (TV-style cameras), so the schedule is extended to
+     finish the race and play its replay, measured as a second window. Building that extension is part of P0.
+   - The CoreGS 2.0 work's GT Mode B-Spec night scene (FF Challenge race 3, Hong Kong Reverse, VW Lupo; ai-memory
+     `concepts/coregs2-state`) is **not** used as the main scene, by owner decision; it stays available for a
+     cross-check with CoreGS 2.0 numbers.
+   - Secondary schedules from `scripts/frame_cost_headless.py` (rc6): menus (4,200 VBlanks), showroom (7,000), day
+     race El Capitan (16,000).
+   - Order A, B, A, B (two runs per variant), surfaceless, 1x and the owner's 3x, `GT4_GS_STREAM_HASH=1`,
+     `GT4_MTVU_REPORT_EVERY=500`.
 3. Weak-CPU shape: run the day and night race again with the process limited to **two physical cores and their SMT
    siblings** (logical CPUs 0-3 on this Ryzen). `scripts/cpu_affinity.py --cpu-cores 4` picks four physical cores, so a
    `--cpu-mask` option is needed first (small script change, part of step P0).
@@ -467,27 +490,25 @@ rule; `docs/FRAME-COST-STUDY.md` section 1.1 has the checker that waits for `nin
    (`dumps.sha256`); `GT4_MTVU_VERIFY=1` 0 mismatches on the day race; CTest and the Python suite on the candidate
    build. For runtime or translator changes also the guest-state gate of step P0 (EE RAM, IOP RAM, SPU2 RAM and
    CPU-state hash every 500 VBlanks) and the audio PCM hash.
-6. M3 (once, P0): a Windows Performance Recorder CPU sampling profile (`wpr -start CPU -filemode`, elevated, owner
-   approval) of one headless day race and one night race on the baseline, resolved with the PDBs; top 50 functions,
+6. M3 (once, P0; owner approved on 2026-10-28, to run when the owner says the CoreGS 2.0 build is done and the desktop
+   is free): a Windows Performance Recorder CPU sampling profile (`wpr -start CPU -filemode`, elevated) of the headless
+   Arcade night race (and its replay) and the day race on the baseline, resolved with the PDBs; top 50 functions,
    the translated ones mapped to gt4-decomp names.
 
-**Laptop, per milestone (owner, 2-3 minutes of play per run):**
+**Laptop, per milestone (owner runs it by hand; no agent runs on the laptop):**
 
+0. The agent builds and checks each candidate headless on the desktop first, then copies only the program files into
+   the laptop's portable folder over the network (`\\10.1.1.151\GT4Recomp`, mapped as `Z:` here) when the laptop is
+   on, keeping the old files in `Z:\_program-backups\<stamp>` and hashes in a receipt (as on 2026-10-26). The
+   laptop's save is a test save (owner, 2026-10-28). After the owner's run the agent copies `Z:\data\sessions\*\game.log`
+   back into the task worktree's ignored `private/`.
 1. Launcher closed or idle (TASK-118 fix), power adapter connected, same Windows power mode each time; no overlay.
-2. Spec II (the target installed on the laptop) and, once prepared there, v2.00: Time Trial Nordschleife with the
-   Performance Mode preset at 1x, Direct3D 11. F7 when the car is moving, F8 after about 60 s. Then one 3D menu stretch
-   (car select or showroom) with F7/F8, and, when available, a night race and a replay (open measurements M5, M6).
-3. During the run, the agent-provided command `typeperf "\Processor Information(_Total)\% Processor Utility"
-   "\Processor Information(_Total)\Processor Frequency" "\Process(gt4-spec2)\% Processor Time"
-   "\Process(gt4)\% Processor Time" "\Process(gt4-gs)\% Processor Time" -si 1 -sc 90 -o cpu.csv` records CPU and
-   clock beside the F8 (owner runs it; the portable build names the programs `game/gt4.exe` and `game/gt4-spec2.exe`).
-4. Same scene in PCSX2 with the same settings and the same `typeperf` command, so the comparison is numbers on both
-   sides (today PCSX2's 50% is a Task Manager reading).
-5. Acceptance per milestone: EE critical path and total CPU (sum of the thread rows of section 2.1) drop by the amount
-   the desktop predicted within ±30%; 0 audio underruns; no new late frames.
-
-**Matched desktop/laptop pair (M1/M2, once):** run the laptop scene (Spec II, TT Nordschleife, Performance preset,
-1x, D3D11) on the desktop too, with the same car, so the per-category ratio between the machines is measured instead of
+2. Both games are installed there (owner, 2026-10-28): v2.00 and Spec II. The same Arcade night race (Clubman Stage
+   Route 5, Ford Ka) and its replay, and Time Trial Nordschleife with the Performance Mode preset at 1x, Direct3D 11 (the existing laptop
+   reference). F7 when the race runs, F8 after about 60 s. Then one 3D menu stretch (car select or showroom) with
+   F7/F8, and, when available, a replay (open measurements M5, M6).
+**Matched desktop/laptop pair (M1/M2, once):** run the laptop scenes (Spec II and v2.00, TT Nordschleife, Performance
+preset, 1x, D3D11, and the Arcade night race) on the desktop too, with the same car, so the per-category ratio between the machines is measured instead of
 inferred (section 2.4).
 
 ## 6. Open measurements (only a run can answer them)
@@ -506,18 +527,17 @@ inferred (section 2.4).
 | M11 | Split of `host_vblank` (message pump, keyboard, SDL, audio pump, present) | P0 sub-scopes |
 | M12 | Whether clang really reloads guest registers after every guest store in the generated units | disassembly of two hot units (`llvm-objdump` of the pinned library), P0 |
 
-## 7. Questions for the owner
+## 7. Owner decisions (2026-10-28)
 
-1. **Second executable for AVX2 CPUs?** Keep one SSE4.1 build (the launcher's current floor), or ship a second
-   `x86-64-v3` build that the launcher picks by CPUID (your laptop has AVX2)? Only worth it if M9 shows a gain.
-2. **New EE library.** P4 changes the shape of the generated C++ (same game behaviour, proven by the identity gates).
-   That needs a new producer contract and a new pinned `ps2game.lib`. Agreed?
-3. **Thread priority and core placement.** Is it acceptable that the game raises its own threads' priority (MMCSS
-   "Games") and steers the EE thread and the VU1 thread to different physical cores?
-4. **Profiler.** May an agent run a Windows Performance Recorder CPU profile (needs an elevated shell) on this desktop
-   once, while nothing else runs? On the laptop, would you run one 60 s capture if needed?
-5. **Reference on the laptop.** Spec II is the only game prepared there. Should v2.00 be prepared too, so the laptop
-   numbers match the desktop's main reference scenes?
-6. **CoreGS 2.0 intake.** Do you agree that the game-side requirements of section 3.6 (zero-copy, front end off the EE,
-   small rings, same stream hash) go into the CoreGS 2.0 integration brief, and that the GSdx bridge itself is not
-   optimised further?
+| # | Question | Owner's answer | What it means for the plan |
+|---|---|---|---|
+| 1 | Second executable for AVX2 CPUs? | Measure first. If SSE2 -> SSE4.1 already gives enough, that may be all; AVX2 may be validated, but no second build or executable for now, only if it gives a large gain. | P1a and P4b build with `-msse4.1` (the launcher's existing floor; SSE4.2 adds nothing this code uses and would drop the 45 nm Core 2 the launcher accepts). `x86-64-v3` is only an A/B experiment (M9); a second executable is reopened only on a large measured gain. |
+| 2 | New EE library (translator changes)? | Valid, but the most complex work goes last; always the easiest and cheapest step first, tested right away. | The translator work moved to P8; P4 keeps only build-level changes (one compiler, ThinLTO, PGO, SSE4.1 library). |
+| 3 | Thread priority and core placement? | Valid. | P1f goes ahead behind a switch, measured on the laptop. |
+| 4 | Windows Performance Recorder profile? | Yes, but not now: the owner says when the current CoreGS 2.0 build is done; then the first baselines and the profile run, to have metrics of today's hardware path before CoreGS 2.0 continues. | P0 and M3 wait for the owner's signal; nothing runs on the desktop before it. |
+| 5 | v2.00 on the laptop? | Already installed there, not benchmarked yet. | Laptop runs cover both games (protocol above). |
+| 6 | CoreGS 2.0 intake and the GSdx bridge? | No effort on optimising GSdx; CoreGS 2.0 has progressed a lot, and these optimisations ship together with CoreGS 2.0. | No work on `gs_stream_ipc`/gt4-gs; P6 is part of the CoreGS 2.0 integration and the game-side steps target the 2.0.0 release. |
+
+Test method (owner, 2026-10-28): headless runs on one fixed race in Arcade Mode (same car, same track, at night; the
+owner prefers B-Spec, which Arcade lacks, so the race's replay supplies the varied cameras) on the desktop; the laptop
+only with a finished build, tested by hand by the owner with F7/F8, logs collected over the network.
