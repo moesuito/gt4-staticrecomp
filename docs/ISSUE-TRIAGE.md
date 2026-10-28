@@ -12,6 +12,12 @@ plan or assigned release. The owner tested original GT4; Spec II was not tested.
   whether a separate game save was necessary, the precise build, settings and
   the exact folder checked are unknown. Do not assert that saving was attempted
   or that data was lost from persistent storage.
+- Owner suspects each saved replay is a separate memory-card item, independent of
+  the primary game save. Synthetic `launcher/crates/gt4saves/tests/library.rs`
+  tests model a separate replay directory on the card and library synchronization;
+  this confirms the intended test model, not the owner's exact in-game save flow.
+  Also check whether this was a normal launcher session or the separate diagnostic
+  script, which runs on a copied card; the session used for this report is unknown.
 - Expected to investigate: a replay intentionally saved through the correct flow
   should remain available after restarting, with its storage location and launcher
   behavior understood. Determine first whether the menu entry was a temporary
