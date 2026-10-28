@@ -184,7 +184,9 @@ proves otherwise.
   - **Per-frame timeline:** a nested stage tree with no double counting. Each readback is labelled with its reason
     (CLUT, EE download, texture over a target), its pixels, its CPU drain time and its GPU wait time. GPU timestamps
     per submit. Max and p99 per stage. The F8 report adds the EE, VU1 and MTVU split.
-- **B1. Readbacks without the CPU** (night: 7.7 ms):
+- **B1. Readbacks without the CPU** (night: 7.7 ms). **Done in candidate 288 (IN-407..IN-410)**: readback 6.9-8.7
+  -> 0.8-1.6 ms per VBlank, the whole night race 20.8-26.4 -> 17.0-20.6 ms (headless, 3x). What remains is the EE's own
+  flare download (about once per VBlank) and the GPU work before it.
   - **CLUT from a drawn target on the GPU.** A GPU pass writes the target's pixels into the GPU copy of GS memory
     (the GLM that textures are already decoded from). The CLUT load then reads it there (`hw_glm_clut.comp`), so the
     CPU no longer waits.

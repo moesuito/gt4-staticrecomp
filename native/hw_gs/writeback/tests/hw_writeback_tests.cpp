@@ -13,9 +13,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "../../core2/core2_renderer.hpp"
 #include "../../cpuref/cpuref_draw.hpp"
 #include "../../cpuref/cpuref_memory.hpp"
 #include "../../memory/hw_memory.hpp"
@@ -1351,8 +1353,10 @@ int TestPresentationFieldPhase() {
 //   - a CLUT load from memory a draw just wrote, used by a T8 texture,
 //   - a draw whose ZBUF shares the colour buffer's pages (the IN-335 case: write-back fallback).
 // It also proves the cache is in use (resident batches, loads, write-backs) so a silently disabled cache fails.
-int TestCacheEqualsWriteback(const gpu::VulkanHandles& handles) {
-    constexpr uint32_t kFrames = 5;
+// The hw_cache_equals_writeback stream (also replayed through core 2 by hw_core2_cpu_sprites, IN-407).
+constexpr uint32_t kCacheFixtureFrames = 5;
+cpuref::CaptureWriter CacheFixtureCapture() {
+    constexpr uint32_t kFrames = kCacheFixtureFrames;
     constexpr uint64_t kA = 0, kB = 2, kZ = 8, kT8 = 12, kClut = 14;  // pages
     auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
     auto xyz = [](uint32_t x, uint32_t y, uint32_t z = 0) {
@@ -1509,6 +1513,12 @@ int TestCacheEqualsWriteback(const gpu::VulkanHandles& handles) {
             rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 32), 0x05, uv(64, 32), 0x03, xyz(64, 64), 0x05});
         capture.FrameEnd(frame);
     }
+    return capture;
+}
+
+int TestCacheEqualsWriteback(const gpu::VulkanHandles& handles) {
+    constexpr uint32_t kFrames = 5;
+    const cpuref::CaptureWriter capture = CacheFixtureCapture();
 
     struct FrameRecord {
         bool valid = false;
@@ -3185,6 +3195,350 @@ int TestCore2InterlacedPresent(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// ---- Core 2 A/B fixtures (IN-407, IN-408) ------------------------------------------------------------------------
+// Core 2 at 2x replays one stream twice, with an A/B switch (an environment variable core 2 reads when it is built)
+// set to "0" and left unset, and compares both runs with each other and with the CPU reference renderer (1x, the GS
+// semantics): every frame's composed image must be equal in both runs, and the run with the switch on must never
+// move GS memory away from the reference (a word may differ between the runs only where the run with the switch off
+// is already off the reference: at scale, a target's undrawn first sub-pixel row and column, sampled as a texture at
+// its edge, hold the image's earlier content). `exact` asks for the reference itself in both runs.
+struct Core2AbRun {
+    std::vector<std::vector<uint8_t>> images;
+    std::vector<std::vector<uint8_t>> memory;
+    core2::Core2Counters stats;
+};
+
+constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
+
+bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, const char* abSwitch,
+                   bool on, Core2AbRun& out, std::string& error) {
+    _putenv_s(abSwitch, on ? "" : "0");
+    _putenv_s("GT4_HW_CORE", "2");
+    writeback::Renderer renderer;
+    _putenv_s("GT4_HW_CORE", "");
+    _putenv_s(abSwitch, "");
+    renderer.SetScale(2, 2.0f);
+    if (!renderer.Init(handles, error)) return false;
+    if (!renderer.Core2()) {
+        error = "GT4_HW_CORE=2 did not select core 2";
+        return false;
+    }
+    writeback::WritebackReplayTarget target(renderer);
+    cpuref::ReplaySummary summary;
+    const bool ok = cpuref::ReplayCapture(capture.Bytes(), target, summary,
+                                          [&](uint64_t, const cpuref::FrameImage& image) {
+                                              std::vector<uint8_t> rgb;
+                                              for (const display::Rgba8& p : image.image.pixels) {
+                                                  rgb.push_back(p.r);
+                                                  rgb.push_back(p.g);
+                                                  rgb.push_back(p.b);
+                                              }
+                                              out.images.push_back(std::move(rgb));
+                                              const uint8_t* slm = renderer.Slm();
+                                              out.memory.emplace_back(slm, slm + kGsMemoryBytes);
+                                          },
+                                          error);
+    if (const core2::Core2Counters* stats = renderer.Core2Stats()) out.stats = *stats;
+    if (renderer.Failed()) error += " " + renderer.LastError();
+    return ok && !renderer.Failed();
+}
+
+// Returns the number of failures; `counters` checks the two runs' counters (switch off, switch on).
+int CheckCore2Ab(const gpu::VulkanHandles& handles, const char* name, const cpuref::CaptureWriter& capture,
+                 uint32_t frames, const char* abSwitch, bool exact,
+                 const std::function<int(const Core2AbRun& off, const Core2AbRun& on)>& counters) {
+    Core2AbRun off, on;
+    std::vector<std::vector<uint8_t>> reference;
+    std::string error;
+    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error) &&
+              ReplayCore2Ab(handles, capture, abSwitch, true, on, error);
+    if (ok) {
+        cpuref::CpuRenderer renderer;
+        cpuref::ReplaySummary summary;
+        ok = cpuref::ReplayCapture(capture.Bytes(), renderer, summary,
+                                   [&](uint64_t, const cpuref::FrameImage&) {
+                                       const auto& bytes = renderer.Memory().Local().bytes();
+                                       reference.emplace_back(bytes.begin(), bytes.begin() + kGsMemoryBytes);
+                                   },
+                                   error);
+    }
+    if (!ok) {
+        std::printf("  %s: replay failed: %s\n", name, error.c_str());
+        return 1;
+    }
+    if (off.images.size() != frames || on.images.size() != frames || reference.size() != frames) {
+        std::printf("  %s: frame counts %zu / %zu / %zu\n", name, off.images.size(), on.images.size(), reference.size());
+        return 1;
+    }
+    int failures = 0;
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        const bool image = !off.images[frame].empty() && off.images[frame] == on.images[frame];
+        uint64_t differing = 0, newDeviations = 0, offDeviations = 0, onDeviations = 0;
+        for (size_t at = 0; at < kGsMemoryBytes; at += 4) {
+            uint32_t a = 0, b = 0, r = 0;
+            std::memcpy(&a, off.memory[frame].data() + at, 4);
+            std::memcpy(&b, on.memory[frame].data() + at, 4);
+            std::memcpy(&r, reference[frame].data() + at, 4);
+            if (a != r) ++offDeviations;
+            if (b != r) ++onDeviations;
+            if (a == b) continue;
+            ++differing;
+            if (b != r && (a == r || exact)) {
+                if (newDeviations < 4) {
+                    std::printf("    %s frame %u byte %zu: switch off %08x, on %08x, reference %08x\n", name, frame, at,
+                                a, b, r);
+                }
+                ++newDeviations;
+            }
+        }
+        std::printf("  %s frame %u: image %s; memory words differing %llu, of which new deviations %llu "
+                    "(words off the reference: switch off %llu, on %llu)\n",
+                    name, frame, image ? "equal" : "DIFFERENT", static_cast<unsigned long long>(differing),
+                    static_cast<unsigned long long>(newDeviations), static_cast<unsigned long long>(offDeviations),
+                    static_cast<unsigned long long>(onDeviations));
+        if (!image || newDeviations != 0 || (exact && (offDeviations != 0 || onDeviations != 0))) ++failures;
+    }
+    failures += counters(off, on);
+    return failures;
+}
+
+// GT4's palette pattern (IN-407): a 16 x 16 palette drawn as untextured sprites with no depth test, a CLUT load from it
+// right away and a T8 sprite through it, every frame with new colours.
+cpuref::CaptureWriter Core2PaletteSpritesCapture(uint32_t frames) {
+    cpuref::CaptureWriter palettes;
+    constexpr uint64_t kA = 0, kT8 = 12, kClut = 14;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    const uint64_t kSprite = 6, kIip = 1u << 3, kTme = 1u << 4, kFst = 1u << 8;
+    const uint64_t t8 = kT8 * 32 | (uint64_t{1} << 14) | (uint64_t{0x13} << 20) | (uint64_t{6} << 26) |
+                        (uint64_t{6} << 30) | (uint64_t{1} << 34) | (uint64_t{kClut * 32} << 37) |
+                        (uint64_t{1} << 61);  // T8 64 x 64, CT32 palette at kClut, CSM1, load
+    palettes.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    palettes.Privileged(0x12000010u, uint64_t{2} << 13);
+    palettes.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    palettes.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        palettes.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                      words));
+    };
+    // The T8 indices (64 x 64): index = (x + 5y) & 255.
+    ad({uint64_t{kT8 * 32} << 32 | (uint64_t{1} << 48) | (uint64_t{0x13} << 56), 0x50, 0, 0x51,
+        uint64_t{64} | (uint64_t{64} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> data;
+        for (uint32_t i = 0; i < 64 * 64 / 8; ++i) {
+            uint64_t word = 0;
+            for (uint32_t b = 0; b < 8; ++b) {
+                const uint32_t p = i * 8 + b;
+                word |= uint64_t{((p % 64) + 5 * (p / 64)) & 255u} << (8 * b);
+            }
+            data.push_back(word);
+        }
+        palettes.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {},
+                                                      data));
+    }
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,  // TEST: ZTST ALWAYS
+            uint64_t{1} << 32, 0x4E,                                                             // ZBUF masked
+            // the palette: two flat sprites (the halves of the 16 x 16 CSM1 block) in new colours
+            frameReg(kClut), 0x4C, kSprite, 0x00, rgbaq(0x80000000u | (0x102030u * (frame + 1))), 0x01, xyz(0, 0), 0x05,
+            xyz(16, 8), 0x05, kSprite | kIip, 0x00, rgbaq(0x80FFFFFFu - 0x030507u * frame), 0x01, xyz(0, 8), 0x05,
+            xyz(16, 16), 0x05,
+            // a clear of A, then the T8 sprite through the palette just drawn
+            frameReg(kA), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05, t8, 0x06,
+            kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(64, 64), 0x03,
+            xyz(64, 64), 0x05});
+        palettes.FrameEnd(frame);
+    }
+    return palettes;
+}
+
+// GT4's GPU palettes (IN-408, the night race): a palette drawn on the GPU from a texture (so the CPU sprite path cannot
+// take it) and loaded right away as a T8 CLUT; then a T4 CLUT loaded from memory into group 1 (CSA 1); then the T8
+// palette used again without a load, so its groups come from both loads; then a CT32 target drawn on the GPU read
+// back as a T8 texture (GT4 reads its 128 x 128 night render that way), through the same palette.
+cpuref::CaptureWriter Core2GpuPaletteCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kT8 = 12, kClut = 14, kSource = 16, kClut4 = 18, kT4 = 20, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    auto blit = [](uint64_t dbp, uint64_t dpsm) { return (dbp << 32) | (uint64_t{1} << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    // TEX0: base, TBW 1, PSM, TW/TH log2, TCC, TFX (0 modulate, 1 decal), CBP, CPSM CT32, CSM1, CSA, CLD.
+    auto tex0 = [](uint64_t blocks, uint64_t psm, uint64_t log2, uint64_t tfx, uint64_t cbpBlocks, uint64_t csa,
+                   bool load) {
+        return blocks | (uint64_t{1} << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) |
+               (tfx << 35) | (cbpBlocks << 37) | (csa << 56) | (uint64_t{load ? 1u : 0u} << 61);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // T8 indices (64 x 64, index = (x + 5y) & 255) and T4 indices (64 x 64, index = (x + y) & 15).
+    ad({blit(kT8 * 32, 0x13), 0x50, 0, 0x51, uint64_t{64} | (uint64_t{64} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> data;
+        for (uint32_t i = 0; i < 64 * 64 / 8; ++i) {
+            uint64_t word = 0;
+            for (uint32_t b = 0; b < 8; ++b) {
+                const uint32_t p = i * 8 + b;
+                word |= uint64_t{((p % 64) + 5 * (p / 64)) & 255u} << (8 * b);
+            }
+            data.push_back(word);
+        }
+        image(data);
+    }
+    ad({blit(kT4 * 32, 0x14), 0x50, 0, 0x51, uint64_t{64} | (uint64_t{64} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> data;
+        for (uint32_t i = 0; i < 64 * 64 / 16; ++i) {
+            uint64_t word = 0;
+            for (uint32_t n = 0; n < 16; ++n) {
+                const uint32_t p = i * 16 + n;
+                word |= uint64_t{((p % 64) + (p / 64)) & 15u} << (4 * n);
+            }
+            data.push_back(word);
+        }
+        image(data);
+    }
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        // The palette's source texture (16 x 16 CT32), new every frame.
+        ad({blit(kSource * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+        {
+            std::vector<uint64_t> texels;
+            for (uint32_t i = 0; i < 16 * 16 / 2; ++i) {
+                const uint32_t lo = 0x80000000u | ((i * 0x050301u + frame * 0x101010u) & 0xFFFFFFu);
+                const uint32_t hi = 0x40000000u | ((i * 0x010507u + frame * 0x0F0F0Fu) & 0xFFFFFFu);
+                texels.push_back(uint64_t{lo} | (uint64_t{hi} << 32));
+            }
+            image(texels);
+        }
+        // The T4 palette in memory (8 x 2 CT32, CSM1), new every frame.
+        ad({blit(kClut4 * 32, 0x00), 0x50, 0, 0x51, uint64_t{8} | (uint64_t{2} << 32), 0x52, 0, 0x53});
+        {
+            std::vector<uint64_t> entries;
+            for (uint32_t i = 0; i < 8; ++i) {
+                entries.push_back((uint64_t{0x80F00000u + 0x1020u * i + frame} << 32) | (0x800000F0u + 0x10200u * i));
+            }
+            image(entries);
+        }
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,  // TEST: ZTST ALWAYS
+            uint64_t{1} << 32, 0x4E,                                                             // ZBUF masked
+            // the palette drawn on the GPU: the source texture copied (decal) into the 16 x 16 palette block
+            frameReg(kClut), 0x4C, tex0(kSource * 32, 0x00, 4, 1, 0, 0, false), 0x06, kSprite | kTme | kFst, 0x00,
+            rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(16, 16), 0x03, xyz(16, 16), 0x05,
+            // a clear of A, then the T8 sprite through the palette just drawn (a CLUT load from the target)
+            frameReg(kA), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05,
+            tex0(kT8 * 32, 0x13, 6, 0, kClut * 32, 0, true), 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u),
+            0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(32, 64), 0x03, xyz(32, 64), 0x05,
+            // a T4 load from memory into group 1, and a T4 sprite through it
+            tex0(kT4 * 32, 0x14, 6, 0, kClut4 * 32, 1, true), 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u),
+            0x01, uv(0, 0), 0x03, xyz(32, 0), 0x05, uv(32, 32), 0x03, xyz(64, 32), 0x05,
+            // the T8 palette again without a load: groups 0 and 2..15 from the target, group 1 from memory
+            tex0(kT8 * 32, 0x13, 6, 0, kClut * 32, 0, false), 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u),
+            0x01, uv(32, 0), 0x03, xyz(32, 32), 0x05, uv(64, 32), 0x03, xyz(64, 64), 0x05,
+            // a CT32 render on the GPU (the source texture stretched over 32 x 32), then read as a T8 texture
+            frameReg(kRender), 0x4C, tex0(kSource * 32, 0x00, 4, 1, 0, 0, false), 0x06, kSprite | kTme | kFst, 0x00,
+            rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(16, 16), 0x03, xyz(32, 32), 0x05,
+            frameReg(kA), 0x4C, tex0(kRender * 32, 0x13, 5, 0, kClut * 32, 0, false), 0x06, kSprite | kTme | kFst,
+            0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 40), 0x05, uv(24, 24), 0x03, xyz(24, 64), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
+// hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
+// memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
+// readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
+// must need no readback with the switch on.
+int TestCore2CpuSprites(const gpu::VulkanHandles& handles) {
+    const char* kSwitch = "GT4_CORE2_CPU_SPRITES";
+    int failures = CheckCore2Ab(handles, "cache stream", CacheFixtureCapture(), kCacheFixtureFrames, kSwitch, false,
+                                [](const Core2AbRun& off, const Core2AbRun& on) {
+                                    std::printf("  cache stream: CPU sprite batches %llu / %llu\n",
+                                                static_cast<unsigned long long>(off.stats.cpuSpriteBatches),
+                                                static_cast<unsigned long long>(on.stats.cpuSpriteBatches));
+                                    return off.stats.cpuSpriteBatches == 0 && on.stats.cpuSpriteBatches > 0 ? 0 : 1;
+                                });
+    failures += CheckCore2Ab(handles, "palettes", Core2PaletteSpritesCapture(4), 4, kSwitch, true,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  palettes: CPU sprite batches %llu / %llu, CLUT readbacks %llu / %llu, "
+                                             "targets created %llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.cpuSpriteBatches),
+                                             static_cast<unsigned long long>(on.stats.cpuSpriteBatches),
+                                             static_cast<unsigned long long>(off.stats.clutReadbacks),
+                                             static_cast<unsigned long long>(on.stats.clutReadbacks),
+                                             static_cast<unsigned long long>(off.stats.targetsCreated),
+                                             static_cast<unsigned long long>(on.stats.targetsCreated));
+                                 return off.stats.cpuSpriteBatches == 0 && on.stats.cpuSpriteBatches > 0 &&
+                                                on.stats.clutReadbacks == 0 &&
+                                                (off.stats.clutReadbacks + off.stats.clutTargetLoads) > 0
+                                            ? 0
+                                            : 1;
+                             });
+    std::printf("hw_core2_cpu_sprites: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// hw_core2_gpu_clut (IN-408): GT4_CORE2_GPU_CLUT (CLUT loads from a drawn target read on the GPU) on GT4's GPU palette
+// pattern and on the hw_cache_equals_writeback stream. With the switch on the palette's CLUT loads need no readback,
+// they are read from the target on the GPU, the T8 sprites are expanded through the GPU CLUT (palette rows, IN-409),
+// and the T4 load from memory is mirrored into it (the last T8 sprite mixes both loads).
+int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
+    const char* kSwitch = "GT4_CORE2_GPU_CLUT";
+    int failures = CheckCore2Ab(handles, "GPU palettes", Core2GpuPaletteCapture(4), 4, kSwitch, false,
+                                [](const Core2AbRun& off, const Core2AbRun& on) {
+                                    std::printf("  GPU palettes: CLUT readbacks %llu / %llu, GPU CLUT loads %llu / %llu, "
+                                                "palette rows %llu / %llu\n",
+                                                static_cast<unsigned long long>(off.stats.clutReadbacks),
+                                                static_cast<unsigned long long>(on.stats.clutReadbacks),
+                                                static_cast<unsigned long long>(off.stats.clutTargetLoads),
+                                                static_cast<unsigned long long>(on.stats.clutTargetLoads),
+                                                static_cast<unsigned long long>(off.stats.paletteRowsWritten),
+                                                static_cast<unsigned long long>(on.stats.paletteRowsWritten));
+                                    return off.stats.clutReadbacks > 0 && off.stats.clutTargetLoads == 0 &&
+                                                   on.stats.clutReadbacks == 0 && on.stats.clutTargetLoads > 0 &&
+                                                   on.stats.paletteRowsWritten > 0
+                                               ? 0
+                                               : 1;
+                                });
+    failures += CheckCore2Ab(handles, "cache stream", CacheFixtureCapture(), kCacheFixtureFrames, kSwitch, false,
+                             [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // IN-409: GT4_CORE2_PALETTE_ROWS (indexed textures kept as indices, colours looked up in palette rows at draw time)
+    // must give the same images and memory as palettes expanded into every decode.
+    failures += CheckCore2Ab(handles, "palette rows", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_PALETTE_ROWS", false,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  palette rows: rows written %llu / %llu, row hits %llu / %llu, "
+                                             "GLM writes %llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.paletteRowsWritten),
+                                             static_cast<unsigned long long>(on.stats.paletteRowsWritten),
+                                             static_cast<unsigned long long>(off.stats.paletteRowHits),
+                                             static_cast<unsigned long long>(on.stats.paletteRowHits),
+                                             static_cast<unsigned long long>(off.stats.materializations),
+                                             static_cast<unsigned long long>(on.stats.materializations));
+                                 return off.stats.paletteRowsWritten == 0 && on.stats.paletteRowsWritten > 0 &&
+                                                on.stats.materializations > 0
+                                            ? 0
+                                            : 1;
+                             });
+    failures += CheckCore2Ab(handles, "palette rows, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
+                             "GT4_CORE2_PALETTE_ROWS", false,
+                             [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    std::printf("hw_core2_gpu_clut: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_postfx_fxaa (IN-376, chapter 13.5): a dark buffer with one bright flat triangle whose long edges are steep
 // and shallow, composed on the GPU at 1x and 2x with and without FXAA. Edge-only FXAA must leave every pixel away
 // from the edges unchanged, change pixels along them, and only produce colours between the two flat colours.
@@ -3811,6 +4165,8 @@ int main(int argc, char** argv) {
     if (name == "hw_tone_hle_exact") return TestToneHleExact(handles);
     if (name == "hw_scale_interlaced_present") return TestScaleInterlacedPresent(handles);
     if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
+    if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
+    if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     std::printf("unknown test: %s\n", name.c_str());
     return 2;
 }

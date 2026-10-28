@@ -34,6 +34,9 @@ struct DrawBatch {
     const std::vector<gpu::GpuVertex> *vertices = nullptr;
     const std::vector<gpu::GpuDraw> *draws = nullptr;
     std::uint32_t zMax = 0xFFFFFFFFu;
+    // IN-409: memoryTexture holds CLUT indices; their colours are row `paletteRow` of image `palettes` (-1: none).
+    ImageId palettes = kNoImage;
+    std::int32_t paletteRow = -1;
 };
 
 // Diagnostics for the F8 report and the replay summary.
@@ -51,6 +54,29 @@ struct Core2GpuStats {
     std::uint64_t atlasUploads = 0;
     std::uint64_t atlasResets = 0;
     std::uint64_t imageBytes = 0;
+    std::uint64_t clutTargetLoads = 0;  // IN-408: CLUT loads read from a target on the GPU
+    std::uint64_t clutWrites = 0;       // IN-408: CPU CLUT loads mirrored into the GPU CLUT
+    std::uint64_t clutReads = 0;        // IN-408: GPU CLUT read back for a CPU user (a wait)
+    std::uint64_t materializations = 0; // IN-408: target rectangles written into the GLM on the GPU
+    std::uint64_t paletteRows = 0;      // IN-409: palette rows expanded from the GPU CLUT
+    std::uint64_t waitNs = 0;           // B0: time the CPU spent waiting for GPU fences
+    std::uint64_t midFrameSubmissions = 0;  // IN-410: submissions after a number of draw batches
+};
+
+// IN-408: a CLUT load (07.4) whose source is a drawn 32-bit colour target, done on the GPU.
+struct ClutTargetLoad {
+    std::uint32_t cbp = 0, cpsm = 0, csm = 0, csa = 0;
+    bool eightBit = true;
+    std::uint32_t cbw = 0, cou = 0, cov = 0;  // TEXCLUT (CSM2)
+    std::uint32_t tbp = 0, tbw = 0;           // the target's base (blocks) and width (pages)
+    std::int32_t heldX0 = 0, heldY0 = 0, heldX1 = -1, heldY1 = -1;  // its drawn and valid area (native, inclusive)
+    bool fullWord = true;                     // false: only 24-bit draws, the top byte stays in memory
+};
+
+// IN-408: an indexed texture expanded through the GPU CLUT (07.5, as clut::ClutUnit::Decode).
+struct GpuPalette {
+    std::uint32_t cpsm = 0, csa = 0;
+    std::uint64_t texa = 0;
 };
 
 class Gpu {
@@ -97,6 +123,24 @@ public:
     // (the pixel shader expands CT16/CT24), RGBA8 through `palette` (256 entries) for indexed ones.
     bool DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
                        std::uint32_t height, const std::uint32_t *palette, std::string &error);
+    // IN-408: the same decode, indexed formats expanded through the GPU CLUT buffer.
+    bool DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
+                              std::uint32_t height, const GpuPalette &palette, std::string &error);
+
+    // IN-408: the GPU copy of the CLUT buffer (512 halfwords, one per uint). ClutFromTarget records a CLUT load
+    // read from target image `target` (GLM current for the entries outside it); WriteClut records halfwords
+    // [first, first + count) from the CPU CLUT unit; ReadClut submits, waits and returns all 512.
+    bool ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string &error);
+    // IN-409: row `row` of 1x palette image `palettes` (256 wide) from the GPU CLUT, expanded for a texture of format
+    // `psm` (16 or 256 entries) with `palette`'s CPSM, CSA and TEXA.
+    bool PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32_t psm, const GpuPalette &palette,
+                               std::string &error);
+    bool WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_t *halfwords, std::string &error);
+    bool ReadClut(std::uint16_t halfwords[512], std::string &error);
+    // IN-408: writes the native rectangle (inclusive) of 32-bit colour target `id` into the GLM at the target's own
+    // CT32 addresses (base `tbp` in blocks, width `tbw` in pages); `fullWord` false keeps the GLM's top bytes.
+    bool MaterializeTarget(ImageId id, std::uint32_t tbp, std::uint32_t tbw, std::int32_t x0, std::int32_t y0,
+                           std::int32_t x1, std::int32_t y1, bool fullWord, std::string &error);
 
     // 4.1: native rectangle (inclusive) of stored words, row-major, written into the image at scale; `mask` selects
     // the bits written.

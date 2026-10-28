@@ -22,6 +22,7 @@
 #include "hw_gs_registers.hpp"
 #include "hw_gs_types.hpp"
 #include "hw_memory.hpp"
+#include "../cpuref/cpuref_draw.hpp"
 #include "../cpuref/cpuref_memory.hpp"
 
 namespace hwgs::core2 {
@@ -259,7 +260,7 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uin
 // CPU time of CORE2's stages (microseconds, summed between two [core2] lines).
 struct PhaseTimes {
     double gif = 0, batch = 0, upload = 0, written = 0, clut = 0, clutLoads = 0, uploads = 0, hook = 0, glmHook = 0, translate = 0, targets = 0, texture = 0, draw = 0, readback = 0, patch = 0, compose = 0,
-           flush = 0;
+           flush = 0, cpuSprites = 0;
 };
 
 class ScopedUs {
@@ -342,6 +343,89 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::uint32_t toneFbmsk_ = 0;
 
     std::optional<LocalToHostSetup> pendingRead_;
+    const char *readbackReason_ = "other";  // diagnostics (GT4_CORE2_READBACK_TRACE): why the next readback runs
+
+    // IN-408: CLUT loads from drawn targets on the GPU. GT4 draws and filters palettes on the GPU (night races: several
+    // per VBlank) and loads a CLUT from them right away; a readback of each was a submit and a full wait. Such a load
+    // is now read on the GPU from the target into the GPU copy of the CLUT buffer, and the CPU CLUT unit, which
+    // still decides when a load happens, keeps the stale words it read from memory. clutSource_ says, per halfword,
+    // which GPU load wrote it (0: the CPU CLUT unit holds it). From the first such load on, every load is mirrored
+    // into the GPU CLUT, so it always equals the buffer the GS would hold. An indexed texture that uses a GPU-written
+    // halfword is expanded on the GPU; a CPU user of such a palette (the tone hook) reads the GPU CLUT back first.
+    // GT4_CORE2_GPU_CLUT=0 keeps the readback (A/B).
+    const bool gpuClut_ = std::getenv("GT4_CORE2_GPU_CLUT") == nullptr ||
+                          std::strcmp(std::getenv("GT4_CORE2_GPU_CLUT"), "0") != 0;
+    std::array<std::uint64_t, 512> clutSource_{};
+    std::uint64_t clutTargetLoadCount_ = 0;
+    bool gpuClutMirror_ = false;
+    // Halfwords loaded from memory since the GPU CLUT last received the CPU unit's words: written to the GPU only
+    // right before something on the GPU reads the GPU CLUT (GT4 loads about 500 CLUTs per night VBlank, almost all
+    // from memory; mirroring each one was a copy and a barrier).
+    std::array<bool, 512> clutMirrorPending_{};
+    bool clutMirrorAnyPending_ = false;
+    bool clutFromTargetPending_ = false;
+    std::uint64_t lastWaitNs_ = 0;
+
+    // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
+    // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
+    // that wrote it for GPU ones), reused round-robin. GT4_CORE2_PALETTE_ROWS=0 expands palettes into every decode.
+    const bool paletteRows_ = std::getenv("GT4_CORE2_PALETTE_ROWS") == nullptr ||
+                              std::strcmp(std::getenv("GT4_CORE2_PALETTE_ROWS"), "0") != 0;
+    static constexpr std::uint32_t kPaletteRows = 1024;
+    ImageId paletteImage_ = kNoImage;
+    std::unordered_map<std::uint64_t, std::uint32_t> paletteRowOf_;
+    std::vector<std::uint64_t> paletteRowKey_;
+    std::uint32_t nextPaletteRow_ = 0;
+
+    // The palette row of an indexed texture's palette (TEX0 CPSM and CSA, TEXA), filled on first use; -1 on failure.
+    std::int32_t PaletteRow(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa) {
+        const std::uint32_t cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
+        const std::uint32_t csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
+        const std::uint64_t gpuKey = GpuPaletteKey(t.glmPsm, cpsm, csa);
+        const std::uint64_t entries = (t.glmPsm & 7u) == 3u ? 256u : 16u;
+        std::uint64_t key = gpuKey != 0 ? gpuKey : writeback::HashPaletteWords(t.palette);
+        const std::uint64_t parts[] = {entries, gpuKey != 0 ? cpsm : 0u, gpuKey != 0 ? csa : 0u,
+                                       gpuKey != 0 ? (texa & 0xFF000080FFull) : 0u};
+        for (std::uint64_t part : parts) key = (key ^ part) * 1099511628211ull;
+        if (auto found = paletteRowOf_.find(key); found != paletteRowOf_.end()) {
+            stats.paletteRowHits++;
+            return static_cast<std::int32_t>(found->second);
+        }
+        std::string error;
+        if (paletteImage_ == kNoImage) {
+            paletteImage_ = gpu_.CreateImage(256, kPaletteRows, false, error);
+            if (paletteImage_ == kNoImage) {
+                Fail(error);
+                return -1;
+            }
+            paletteRowKey_.assign(kPaletteRows, 0);
+        }
+        const std::uint32_t row = nextPaletteRow_;
+        nextPaletteRow_ = (nextPaletteRow_ + 1u) % kPaletteRows;
+        if (paletteRowKey_[row] != 0) paletteRowOf_.erase(paletteRowKey_[row]);
+        paletteRowKey_[row] = key;
+        paletteRowOf_[key] = row;
+        bool ok = false;
+        if (gpuKey != 0) {
+            if (!FlushClutMirror()) return -1;
+            GpuPalette palette;
+            palette.cpsm = cpsm;
+            palette.csa = csa;
+            palette.texa = texa;
+            ok = gpu_.PaletteRowFromGpuClut(paletteImage_, row, t.glmPsm, palette, error);
+        } else {
+            std::vector<std::uint32_t> words(t.palette.begin(), t.palette.end());
+            words.resize(256, 0u);
+            ok = gpu_.Patch(paletteImage_, 0, static_cast<std::int32_t>(row), 255, static_cast<std::int32_t>(row), words,
+                            0xFFFFFFFFu, error);
+        }
+        if (!ok) {
+            Fail(error);
+            return -1;
+        }
+        stats.paletteRowsWritten++;
+        return static_cast<std::int32_t>(row);
+    }  // B0: GPU fence wait time at the last timing line
 
     std::vector<gpu::GpuVertex> vertexScratch_;
     std::vector<Qword> gifScratch_;
@@ -360,14 +444,180 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs clutTimer(times_.clut);
             times_.clutLoads += 1;
             const BlockSpan span{range.begin, range.count};
+            // IN-408: one drawn 32-bit colour target under a CSM1 palette is read on the GPU when the load happens.
+            if (gpuClut_ && span.count < kAllBlocks && ClutSourceTarget(span) != nullptr) {
+                clutFromTargetPending_ = true;
+                return;
+            }
             for (const Target &t : targets_) {
                 if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) {
                     stats.clutReadbacks++;
+                    readbackReason_ = "clut";
                     Readback(span);
+                    readbackReason_ = "other";
                     return;
                 }
             }
         });
+        frontEnd_.SetClutLoaded([this](const clut::Tex0Write &write) {
+            ScopedUs clutTimer(times_.clut);
+            OnClutLoaded(write);
+        });
+    }
+
+    // IN-408: the drawn target a CSM1 palette over `span` must be read from on the GPU: exactly one drawn target
+    // overlaps it and it is a 32-bit colour target; nullptr otherwise (the readback path).
+    Target *ClutSourceTarget(const BlockSpan &span) {
+        Target *found = nullptr;
+        for (Target &t : targets_) {
+            if (!t.alive || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (found || t.cls != FormatClass::Colour32) return nullptr;
+            found = &t;
+        }
+        return found;
+    }
+
+    // The CLUT buffer halfwords a load writes (hw_glm_clut.comp, ClutUnit::Copy).
+    static std::vector<std::uint32_t> ClutHalfwordsWritten(const clut::Tex0Write &write) {
+        std::vector<std::uint32_t> out;
+        const std::uint32_t count = (write.psm & 7u) == 3u ? 256u : 16u;
+        for (std::uint32_t e = 0; e < count; ++e) {
+            if (write.cpsm == 0) {
+                const std::uint32_t group = (e >> 4) + (write.csa & 15u);
+                if (group > 15u) continue;
+                out.push_back(16u * group + (e & 15u));
+                out.push_back(16u * group + (e & 15u) + 256u);
+            } else {
+                out.push_back((16u * write.csa + e) & 511u);
+            }
+        }
+        return out;
+    }
+
+    // The CLUT buffer halfwords an indexed texture's palette reads (hw_glm_decode.comp gpu_palette_entry).
+    static std::vector<std::uint32_t> ClutHalfwordsUsed(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) {
+        std::vector<std::uint32_t> out;
+        const std::uint32_t count = (psm & 7u) == 3u ? 256u : 16u;
+        for (std::uint32_t e = 0; e < count; ++e) {
+            if (cpsm == 0) {
+                const std::uint32_t group = std::min((e >> 4) + (csa & 15u), 15u);
+                out.push_back(16u * group + (e & 15u));
+                out.push_back(16u * group + (e & 15u) + 256u);
+            } else {
+                out.push_back((16u * csa + e) & 511u);
+            }
+        }
+        return out;
+    }
+
+    // IN-408: a hash of which GPU loads wrote the halfwords a palette uses; 0 when the CPU CLUT unit holds them all.
+    std::uint64_t GpuPaletteKey(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) const {
+        std::uint64_t hash = 0;
+        bool gpu = false;
+        for (std::uint32_t index : ClutHalfwordsUsed(psm, cpsm, csa)) {
+            if (clutSource_[index] == 0) continue;
+            gpu = true;
+            hash = (hash ^ (clutSource_[index] * 0x9E3779B97F4A7C15ull + index)) * 1099511628211ull;
+        }
+        return gpu ? (hash | (1ull << 63)) : 0;
+    }
+
+    void OnClutLoaded(const clut::Tex0Write &write) {
+        const bool fromTarget = clutFromTargetPending_;
+        clutFromTargetPending_ = false;
+        const std::vector<std::uint32_t> written = ClutHalfwordsWritten(write);
+        std::string error;
+        if (fromTarget) {
+            // An upload committed before the copy may have replaced the target: look again.
+            const BlockSpan span{write.cbp & ~31u, 64u};
+            if (Target *target = ClutSourceTarget(span)) {
+                if (!gpuClutMirror_) {
+                    // The GPU CLUT starts as the CPU unit's buffer (every halfword correct but the ones this load writes).
+                    if (!gpu_.WriteClut(0, 512, frontEnd_.Clut().Halfwords(), error)) {
+                        Fail(error);
+                        return;
+                    }
+                    gpuClutMirror_ = true;
+                }
+                if (!FlushClutMirror() || !ApplyDirty(*target) || !MakeGlmCurrent(span)) return;
+                ClutTargetLoad load;
+                load.cbp = write.cbp;
+                load.cpsm = write.cpsm;
+                load.csm = write.csm;
+                load.csa = write.csa;
+                load.eightBit = (write.psm & 7u) == 3u;
+                load.cbw = write.texclutCbw;
+                load.cou = write.texclutCou;
+                load.cov = write.texclutCov;
+                load.tbp = target->view.basePointer;
+                load.tbw = target->view.bufferWidth;
+                const PixelRect held = Union(target->valid, target->drawn);
+                load.heldX0 = held.x0;
+                load.heldY0 = held.y0;
+                load.heldX1 = held.x1;
+                load.heldY1 = held.y1;
+                load.fullWord = target->fullWordWritten;
+                if (!gpu_.ClutFromTarget(target->image, load, error)) {
+                    Fail(error);
+                    return;
+                }
+                target->usedThisFrame = true;
+                static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
+                if (trace) {
+                    std::fprintf(stderr, "[core2] gpu clut vblank=%llu cbp=%u psm=%u cpsm=%u csa=%u target bp=%u bw=%u "
+                                 "held=%d,%d,%d,%d\n", static_cast<unsigned long long>(vblanks_), write.cbp, write.psm,
+                                 write.cpsm, write.csa, target->view.basePointer, target->view.bufferWidth, held.x0,
+                                 held.y0, held.x1, held.y1);
+                }
+                ++clutTargetLoadCount_;
+                for (std::uint32_t index : written) clutSource_[index] = clutTargetLoadCount_;
+                stats.clutTargetLoads++;
+                return;
+            }
+        }
+        // A load from memory: the CPU CLUT unit's words are right; the GPU CLUT gets them before its next reader.
+        for (std::uint32_t index : written) clutSource_[index] = 0;
+        if (!gpuClutMirror_) return;
+        for (std::uint32_t index : written) clutMirrorPending_[index] = true;
+        clutMirrorAnyPending_ = clutMirrorAnyPending_ || !written.empty();
+    }
+
+    // Records the pending CPU halfwords into the GPU CLUT (contiguous runs), before a GPU reader of it.
+    bool FlushClutMirror() {
+        if (!clutMirrorAnyPending_) return true;
+        const std::uint16_t *halfwords = frontEnd_.Clut().Halfwords();
+        std::string error;
+        for (std::uint32_t i = 0; i < 512;) {
+            if (!clutMirrorPending_[i]) {
+                ++i;
+                continue;
+            }
+            std::uint32_t j = i;
+            while (j < 512 && clutMirrorPending_[j]) clutMirrorPending_[j++] = false;
+            if (!gpu_.WriteClut(i, j - i, halfwords, error)) {
+                Fail(error);
+                return false;
+            }
+            i = j;
+        }
+        clutMirrorAnyPending_ = false;
+        return true;
+    }
+
+    // IN-408: a CPU user of the CLUT (the tone hook) gets the GPU CLUT's words when the GPU wrote any it reads.
+    bool SyncClutToCpu(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) {
+        if (GpuPaletteKey(psm, cpsm, csa) == 0) return true;
+        if (!FlushClutMirror()) return false;
+        std::uint16_t halfwords[512];
+        std::string error;
+        if (!gpu_.ReadClut(halfwords, error)) {
+            Fail(error);
+            return false;
+        }
+        frontEnd_.MutableClut().SetHalfwords(halfwords);
+        clutSource_.fill(0);
+        stats.clutReads++;
+        return true;
     }
 
     void Fail(const std::string &error) {
@@ -456,6 +706,53 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         pendingStore_ = true;
     }
 
+    // IN-408: the GLM over `span` also holds what drawn targets hold there, written on the GPU (no readback): a GLM
+    // reader then sees what a readback would have stored. Only 32-bit colour targets are written this way; any other
+    // drawn target over the span is read back as before. Returns whether a target was written (`any`).
+    bool MaterializeTargets(const BlockSpan &span, bool &any) {
+        any = false;
+        for (const Target &t : targets_) {
+            if (t.alive && !t.drawn.Empty() && t.cls != FormatClass::Colour32 &&
+                SpansOverlap(TargetSpan(t, t.drawn), span)) {
+                return Readback(span);
+            }
+        }
+        for (Target &t : targets_) {
+            if (!t.alive || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (!ApplyDirty(t)) return false;
+            // The target's page rows inside the span, within its drawn area.
+            const memory::PsmInfo &info = memory::psmInfo(Psm::Ct32);
+            const std::uint32_t perRow = std::max<std::uint32_t>(t.view.bufferWidth, 1u);
+            PixelRect rows;
+            for (std::uint32_t row = 0; row * info.pageHeight < t.height; ++row) {
+                const BlockSpan rowSpan{(t.view.basePointer + row * perRow * memory::kBlocksPerPage) % kAllBlocks,
+                                        perRow * memory::kBlocksPerPage};
+                if (!SpansOverlap(rowSpan, span)) continue;
+                rows = Union(rows, PixelRect{0, static_cast<std::int32_t>(row * info.pageHeight),
+                                             static_cast<std::int32_t>(t.width) - 1,
+                                             static_cast<std::int32_t>((row + 1) * info.pageHeight) - 1});
+            }
+            const PixelRect area = Intersect(rows, t.drawn);
+            if (area.Empty()) continue;
+            std::string error;
+            if (!gpu_.MaterializeTarget(t.image, t.view.basePointer, t.view.bufferWidth, area.x0, area.y0, area.x1,
+                                        area.y1, t.fullWordWritten, error)) {
+                Fail(error);
+                return false;
+            }
+            t.usedThisFrame = true;
+            any = true;
+            stats.materializations++;
+            static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
+            if (trace) {
+                std::fprintf(stderr, "[core2] glm write vblank=%llu target bp=%u bw=%u size=%ux%u area=%d,%d,%d,%d span=%u+%u\n",
+                             static_cast<unsigned long long>(vblanks_), t.view.basePointer, t.view.bufferWidth, t.width,
+                             t.height, area.x0, area.y0, area.x1, area.y1, span.begin, span.count);
+            }
+        }
+        return true;
+    }
+
     // 3.7: the GLM pages a texture reads are made current (uploaded where GS memory changed since).
     bool MakeGlmCurrent(const BlockSpan &span) {
         std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
@@ -490,7 +787,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // A texture from GS memory (3.7): decoded on the GPU into a 1x image, kept while its pages are unchanged; the
     // least recently used textures go when the cache is over its budget.
-    ImageId MemoryTexture(const writeback::BatchTranslation &t) {
+    ImageId MemoryTexture(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa) {
         ScopedUs timer(times_.texture);
         writeback::TextureKey key;
         key.tbp = t.glmBp;
@@ -498,12 +795,40 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         key.psm = t.glmPsm;
         key.width = t.texWidth;
         key.height = t.texHeight;
-        if (t.glmIndexed) key.paletteHash = writeback::HashPaletteWords(t.palette);
+        // IN-408: a palette with GPU-written halfwords is expanded on the GPU and keyed by the loads that wrote them.
+        const std::uint64_t gpuPalette =
+            t.glmIndexed ? GpuPaletteKey(t.glmPsm, tex0::Cpsm(tex0), tex0::Csa(tex0)) : 0;
+        if (t.glmIndexed && paletteRows_) {
+            key.paletteHash = 0;  // IN-409: the decode holds CLUT indices, whatever the palette
+        } else if (t.glmIndexed) {
+            key.paletteHash = gpuPalette != 0 ? gpuPalette : writeback::HashPaletteWords(t.palette);
+            if (gpuPalette != 0) {
+                key.ta0 = static_cast<std::uint32_t>(texa & 0xFFu);
+                key.ta1 = static_cast<std::uint32_t>((texa >> 32) & 0xFFu);
+                key.aem = static_cast<std::uint32_t>((texa >> 15) & 1u);
+            }
+        }
         const std::uint64_t hash = KeyHash(key);
+        const auto texturePsm = memory::decodePsm(t.glmPsm);
+        if (!texturePsm) return kNoImage;
+        const BlockSpan textureSpan =
+            SpanOfRect(BufferView{t.glmBp, t.glmBw, *texturePsm}, 0, 0, static_cast<std::int32_t>(t.texWidth) - 1,
+                       static_cast<std::int32_t>(t.texHeight) - 1);
+        // IN-408: a texture over drawn targets reads them through the GLM, written on the GPU; such a decode is not
+        // kept, since the targets change without GS memory page versions changing.
+        bool overTargets = false;
+        if (gpuClut_) {
+            for (const Target &target : targets_) {
+                if (target.alive && !target.drawn.Empty() && SpansOverlap(TargetSpan(target, target.drawn), textureSpan)) {
+                    overTargets = true;
+                    break;
+                }
+            }
+        }
         auto found = textures_.find(hash);
         static const bool cacheOn = std::getenv("GT4_CORE2_TEXCACHE") == nullptr ||
                                     std::strcmp(std::getenv("GT4_CORE2_TEXCACHE"), "0") != 0;  // diagnostics A/B
-        if (cacheOn && found != textures_.end() && found->second.key == key &&
+        if (cacheOn && !overTargets && found != textures_.end() && found->second.key == key &&
             UnchangedSince(found->second.span, found->second.sequence)) {
             found->second.lastUse = ++textureUses_;
             stats.atlasHits++;
@@ -516,11 +841,32 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const BlockSpan span = SpanOfRect(view, 0, 0, static_cast<std::int32_t>(t.texWidth) - 1,
                                           static_cast<std::int32_t>(t.texHeight) - 1);
         if (!MakeGlmCurrent(span)) return kNoImage;
+        if (overTargets) {
+            bool any = false;
+            if (!MaterializeTargets(span, any)) return kNoImage;
+            stats.texturesOverTargets++;
+        }
         const ImageId image = TextureImage(t.texWidth, t.texHeight);
         if (image == kNoImage) return kNoImage;
         std::string error;
-        if (!gpu_.DecodeTexture(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight,
-                                t.glmIndexed ? t.palette.data() : nullptr, error)) {
+        if (t.glmIndexed && paletteRows_) {
+            if (!gpu_.DecodeTexture(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight, nullptr, error)) {
+                Fail(error);
+                return kNoImage;
+            }
+        } else if (gpuPalette != 0) {
+            if (!FlushClutMirror()) return kNoImage;
+            GpuPalette palette;
+            palette.cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
+            palette.csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
+            palette.texa = texa;
+            if (!gpu_.DecodeTextureGpuClut(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight, palette, error)) {
+                Fail(error);
+                return kNoImage;
+            }
+            stats.gpuPaletteDecodes++;
+        } else if (!gpu_.DecodeTexture(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight,
+                                       t.glmIndexed ? t.palette.data() : nullptr, error)) {
             Fail(error);
             return kNoImage;
         }
@@ -813,8 +1159,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const BufferView out{t->view.basePointer, t->view.bufferWidth, psm};
             static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
             if (trace) {
-                std::fprintf(stderr, "[core2] readback vblank=%llu target bp=%u bw=%u psm=%u size=%ux%u area=%d,%d,%d,%d "
-                             "span=%u+%u\n", static_cast<unsigned long long>(vblanks_), t->view.basePointer,
+                std::fprintf(stderr, "[core2] readback %s vblank=%llu target bp=%u bw=%u psm=%u size=%ux%u area=%d,%d,%d,%d "
+                             "span=%u+%u\n", readbackReason_, static_cast<unsigned long long>(vblanks_), t->view.basePointer,
                              t->view.bufferWidth, static_cast<unsigned>(psm), t->width, t->height, area.x0, area.y0,
                              area.x1, area.y1, span.begin, span.count);
             }
@@ -998,6 +1344,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         // A new run: the palette as the first draw's CLUT load left it (CPSM, CSA, TEXA of this draw).
         const std::uint64_t tex0 = batch.state.ctx.tex0;
+        if (!SyncClutToCpu(static_cast<std::uint32_t>(tex0::Psm(tex0)), static_cast<std::uint32_t>(tex0::Cpsm(tex0)),
+                           static_cast<std::uint32_t>(tex0::Csa(tex0)))) {
+            return true;
+        }
         const clut::Palette palette =
             frontEnd_.Clut().Decode(tex0::Psm(tex0), tex0::Cpsm(tex0), tex0::Csa(tex0), batch.state.env.texa);
         if (!ApplyDirty(*target)) return true;
@@ -1030,6 +1380,36 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         stats.toneRuns++;
         stats.toneDrawsSkipped++;
         counters.toneRuns++;
+        return true;
+    }
+
+    // IN-407 (the old core's IN-348): GT4 draws its palettes as small untextured sprites and loads a CLUT from them
+    // right away, about three times per VBlank in a night race. On the GPU each one became a target that the CLUT
+    // load read back (a submit and a full wait), and the next texture upload over that memory replaced the target.
+    // Such a batch is drawn by the CPU reference straight into GS memory instead, like an EE write: exact for
+    // untextured sprites, and the CLUT load then reads memory with no readback. Only where no target holds content
+    // (valid or drawn) in the memory the batch writes or tests: the CPU must see the newest pixels, and a small
+    // sprite on a resident target (a HUD box on the frame buffer) stays a GPU draw at scale. The write is remembered
+    // like an upload (2.4b), so a target created over that memory later starts from these pixels.
+    // GT4_CORE2_CPU_SPRITES=0 turns it off (A/B).
+    const bool cpuSprites_ = std::getenv("GT4_CORE2_CPU_SPRITES") == nullptr ||
+                             std::strcmp(std::getenv("GT4_CORE2_CPU_SPRITES"), "0") != 0;
+    bool CpuSmallSprites(const Batch &batch, const writeback::BatchTranslation &t, bool depthUsed) const {
+        if (!cpuSprites_ || t.hasTexture || t.rect.Empty() || batch.prims.empty()) return false;
+        const std::int64_t area = static_cast<std::int64_t>(t.rect.x1 - t.rect.x0 + 1) * (t.rect.y1 - t.rect.y0 + 1);
+        if (area > 64 * 64) return false;
+        for (const PrimRecord &record : batch.prims) {
+            if (record.type != PrimType::Sprite) return false;
+        }
+        const BlockSpan frameSpan = WriteSpan(t.frameView, t.rect);
+        const BlockSpan depthSpan = depthUsed ? WriteSpan(t.zView, t.rect) : BlockSpan{};
+        for (const Target &target : targets_) {
+            if (!target.alive) continue;
+            const PixelRect held = Union(target.valid, target.drawn);
+            if (held.Empty()) continue;
+            const BlockSpan heldSpan = WriteSpan(target.view, held);
+            if (SpansOverlap(heldSpan, frameSpan) || SpansOverlap(heldSpan, depthSpan)) return false;
+        }
         return true;
     }
 
@@ -1081,6 +1461,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                          static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth,
                                          static_cast<unsigned>(view.psm), width, height);
                         }
+                        if (gpuClut_ && target.cls == FormatClass::Colour32) continue;  // IN-408: MemoryTexture
                         if (indexed) {
                             stats.indexedFromTargetReadbacks++;
                         } else {
@@ -1132,6 +1513,48 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
 
+        const bool depthUsed = [&] {
+            const auto &st = t.state;
+            const bool testReads = st.fields[gpu::gpufield::Ztest] != 0 && st.fields[gpu::gpufield::Ztst] != 1u;
+            return testReads || st.fields[gpu::gpufield::Zmsk] == 0;
+        }();
+        if (CpuSmallSprites(batch, t, depthUsed)) {
+            ScopedUs timer(times_.cpuSprites);
+            cpuref::DrawStats drawStats;
+            cpuref::DrawBatch(batch, memory_.Local(), frontEnd_.Clut(), drawStats);
+            OnMemoryWritten(t.frameView, t.rect, true);
+            if (t.state.fields[gpu::gpufield::Zmsk] == 0) OnMemoryWritten(t.zView, t.rect, true);
+            stats.cpuSpriteBatches++;
+            return;
+        }
+
+        {
+            static const bool smallTrace = std::getenv("GT4_CORE2_SMALL_TRACE") != nullptr;  // diagnostics only
+            const std::int64_t area =
+                t.rect.Empty() ? 0 : static_cast<std::int64_t>(t.rect.x1 - t.rect.x0 + 1) * (t.rect.y1 - t.rect.y0 + 1);
+            if (smallTrace && area > 0 && area <= 64 * 192) {
+                unsigned primMask = 0;
+                for (const PrimRecord &record : batch.prims) primMask |= 1u << static_cast<unsigned>(record.type);
+                const char *holder = "none";
+                const BlockSpan frameSpan = WriteSpan(t.frameView, t.rect);
+                const BlockSpan depthSpan = depthUsed ? WriteSpan(t.zView, t.rect) : BlockSpan{};
+                for (const Target &target : targets_) {
+                    if (!target.alive) continue;
+                    const PixelRect held = Union(target.valid, target.drawn);
+                    if (held.Empty()) continue;
+                    const BlockSpan heldSpan = WriteSpan(target.view, held);
+                    if (SpansOverlap(heldSpan, frameSpan)) holder = "frame";
+                    if (SpansOverlap(heldSpan, depthSpan)) holder = "depth";
+                }
+                std::fprintf(stderr,
+                             "[core2] small vblank=%llu fb=%u fbw=%u psm=%u rect=%d,%d,%d,%d prims=%zu mask=%x tex=%d "
+                             "tbp=%u depth=%d held=%s\n",
+                             static_cast<unsigned long long>(vblanks_), t.frameView.basePointer,
+                             t.frameView.bufferWidth, static_cast<unsigned>(t.frameView.psm), t.rect.x0, t.rect.y0,
+                             t.rect.x1, t.rect.y1, batch.prims.size(), primMask, t.hasTexture ? 1 : 0,
+                             static_cast<unsigned>(tex0::Tbp0(batch.state.ctx.tex0)), depthUsed ? 1 : 0, holder);
+            }
+        }
         auto targetsStart = std::chrono::steady_clock::now();
         Target *frameTarget = DrawTarget(t.frameView, t.rect);
         if (!frameTarget) {
@@ -1139,11 +1562,6 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             return;
         }
         const std::size_t frameIndex = static_cast<std::size_t>(frameTarget - targets_.data());
-        const bool depthUsed = [&] {
-            const auto &st = t.state;
-            const bool testReads = st.fields[gpu::gpufield::Ztest] != 0 && st.fields[gpu::gpufield::Ztst] != 1u;
-            return testReads || st.fields[gpu::gpufield::Zmsk] == 0;
-        }();
         Target *depthTarget = depthUsed ? DrawTarget(t.zView, t.rect) : nullptr;
         frameTarget = &targets_[frameIndex];  // DrawTarget may have grown the table
         if (depthUsed && !depthTarget) return;
@@ -1164,8 +1582,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
         if (t.hasTexture && draw.texture == kNoImage) {
             if (!t.glmTexture) return;  // every memory texture is decoded on the GPU (the hook above)
-            draw.memoryTexture = MemoryTexture(t);
+            draw.memoryTexture = MemoryTexture(t, batch.state.ctx.tex0, batch.state.env.texa);
             if (draw.memoryTexture == kNoImage) return;
+            if (t.glmIndexed && paletteRows_) {
+                draw.paletteRow = PaletteRow(t, batch.state.ctx.tex0, batch.state.env.texa);
+                if (draw.paletteRow < 0) return;
+                draw.palettes = paletteImage_;
+            }
             stats.texturesFromMemory++;
             // Diagnostics: GT4_CORE2_DUMP_TEX=<texture base block>:<folder> writes that texture as this core decoded
             // it (RGB as PPM, alpha as PGM) once, with its TEX0 and CLAMP.
@@ -1594,7 +2017,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
-                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu gpu batches=%llu draws=%llu submits=%llu "
+                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "waits=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
@@ -1605,7 +2028,11 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.toneDrawsSkipped, (unsigned long long)c.toneAlphaOnlyUnsupported,
                  (unsigned long long)c.displayFromTargets, (unsigned long long)c.displayFromMemory,
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
-                 (unsigned long long)c.clutReadbacks,
+                 (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,
+                 (unsigned long long)c.cpuSpriteBatches, (unsigned long long)c.clutTargetLoads,
+                 (unsigned long long)c.gpuPaletteDecodes, (unsigned long long)c.clutReads,
+                 (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
+                 (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
                  (unsigned long long)g.waits, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
 }
@@ -1682,6 +2109,11 @@ void Renderer::ResetGs() {
     s.ReadbackAll();  // 4.4: a reset keeps local memory, so every drawn area is stored first
     s.frontEnd_.ResetGs();
     s.frontEnd_.GifReset(7u);
+    s.clutSource_.fill(0);  // IN-408: the CPU CLUT unit is authoritative again
+    s.gpuClutMirror_ = false;
+    s.clutFromTargetPending_ = false;
+    s.clutMirrorPending_.fill(false);
+    s.clutMirrorAnyPending_ = false;
     s.memory_.ResetRead();
     s.pendingRead_.reset();
     s.displayRegs_ = {};
@@ -1712,9 +2144,14 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
             const PixelRect rect{static_cast<std::int32_t>(setup.ssax), static_cast<std::int32_t>(setup.ssay),
                                  static_cast<std::int32_t>(setup.ssax + setup.rrw - 1u),
                                  static_cast<std::int32_t>(setup.ssay + setup.rrh - 1u)};
+            const std::uint64_t before = s.stats.readbacks;
+            s.readbackReason_ = "download";
             s.Readback(SpanOfRect(view, rect), &view, &rect);
+            s.readbackReason_ = "other";
+            if (s.stats.readbacks != before) s.stats.downloadReadbacks++;
         } else {
             s.ReadbackAll();
+            s.stats.downloadReadbacks++;
         }
         s.pendingRead_.reset();
     }
@@ -1750,9 +2187,11 @@ void Renderer::Flush() {
         std::fprintf(stderr, "[core2] wall ms/vblank=%.2f (the whole emulator, GS thread included)\n", wall);
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
-                     "patch=%.2f compose=%.2f flush=%.2f\n",
+                     "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f gpu_wait=%.2f\n",
                      p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
-                     p.patch / f, p.compose / f, p.flush / f);
+                     p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f,
+                     static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6);
+        s.lastWaitNs_ = s.gpu_.Stats().waitNs;
         s.times_ = PhaseTimes{};
     }
     std::string error;

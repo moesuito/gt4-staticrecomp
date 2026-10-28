@@ -106,6 +106,17 @@ uint glm_palette_entry(uint e) {
 
 void main() {
     uvec2 texel = gl_GlobalInvocationID.xy;
+    if (pc.indexed == 5u) {
+        // IN-409 (CORE2): palette row origin_y of the palette image, entry x from the GPU CLUT (07.5), so draws look
+        // indices up at draw time. A T4 palette has 16 entries, the rest 0 as in the CPU decode.
+        if (texel.x >= 256u || texel.y != 0u) {
+            return;
+        }
+        uint entries = ((pc.psm & 7u) == 3u) ? 256u : 16u;
+        uint colour = texel.x < entries ? gpu_palette_entry(texel.x) : 0u;
+        imageStore(hw_texels, ivec2(int(texel.x), int(pc.origin_y)), uvec4(colour));
+        return;
+    }
     if (texel.x >= pc.width || texel.y >= pc.height) {
         return;
     }

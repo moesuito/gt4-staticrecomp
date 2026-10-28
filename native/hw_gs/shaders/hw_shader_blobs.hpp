@@ -66,6 +66,10 @@ extern const std::uint32_t core2_patch_glm_words[];
 extern const std::size_t core2_patch_glm_word_count;
 extern const std::uint32_t core2_compose_words[];
 extern const std::size_t core2_compose_word_count;
+extern const std::uint32_t core2_clut_target_words[];
+extern const std::size_t core2_clut_target_word_count;
+extern const std::uint32_t core2_materialize_words[];
+extern const std::size_t core2_materialize_word_count;
 
 // Exactness compute entry points (fixture only; never linked into the game).
 extern const std::uint32_t hw_blend_exact_words[];

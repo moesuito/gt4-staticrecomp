@@ -26,6 +26,7 @@
 
 namespace hwgs::core2 {
 class Renderer;
+struct Core2Counters;
 }
 
 namespace hwgs::writeback {
@@ -389,6 +390,8 @@ public:
 
     // CORE2 (the core rewrite, CORE2-DESIGN.md): true when GT4_HW_CORE=2 selected it at construction.
     bool Core2() const { return core2_ != nullptr; }
+    // CORE2's own session counters (nullptr with the old core).
+    const core2::Core2Counters *Core2Stats() const;
 
 private:
     class Impl;

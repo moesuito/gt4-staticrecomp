@@ -35,6 +35,8 @@ const uint HW_TFX_HIGHLIGHT = 2u;
 const uint HW_TEXEL_RGBA8 = 0u;
 const uint HW_TEXEL_CT16 = 1u;
 const uint HW_TEXEL_CT24 = 2u;
+// IN-409 (CORE2): the texel is a CLUT index, looked up in a palette row at draw time (see hw_pixel_uber.frag).
+const uint HW_TEXEL_INDEXED = 3u;
 
 const uint HW_ALPHA_FAIL_FB_ONLY = 1u;
 const uint HW_ALPHA_FAIL_ZB_ONLY = 2u;

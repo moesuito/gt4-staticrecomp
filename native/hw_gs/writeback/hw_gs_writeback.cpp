@@ -3785,6 +3785,8 @@ void Renderer::SetAsyncPresentation(bool enabled) {
 
 void Renderer::SetCpuSmallSprites(bool enabled) { impl_->cpuSmallSprites_ = enabled; }
 
+const core2::Core2Counters* Renderer::Core2Stats() const { return core2_ ? &core2_->Core2Stats() : nullptr; }
+
 const Counters& Renderer::GetCounters() const { return core2_ ? core2_->GetCounters() : impl_->counters; }
 
 const gpu::GpuStats& Renderer::GpuCounters() const { return impl_->gpu_.Stats(); }

@@ -12,6 +12,7 @@
 #include "../memory/hw_memory.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -91,6 +92,14 @@ struct Gpu::Impl {
   VkCommandBuffer cmd = VK_NULL_HANDLE;  // slots[slot].cmd
   VkFence fence = VK_NULL_HANDLE;
   bool recording = false;
+  // IN-410: the recording is submitted every `submitEvery` draw batches, so the GPU draws while the CPU records the
+  // rest of the frame and a readback in mid-frame (GT4's flare reads) waits only for the work after the last
+  // submission. GT4_CORE2_SUBMIT_EVERY=<batches>, 0 = only when the CPU needs a result or at the end of the frame.
+  std::uint32_t submitEvery = [] {
+    const char *text = std::getenv("GT4_CORE2_SUBMIT_EVERY");
+    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : 96u;
+  }();
+  std::uint32_t batchesSinceSubmit = 0;
   // Draw descriptor sets of this recording by their four images (a batch with the same targets reuses its set).
   std::unordered_map<std::uint64_t, VkDescriptorSet> drawSets;
   bool renderPassOpen = false;
@@ -132,6 +141,12 @@ struct Gpu::Impl {
 
   // Texture decode from the GLM (hw_glm_decode.comp): 0 GLM, 1 address tables, 2 palettes, 3 texels, 5 GPU CLUT.
   Buffer glmTables;
+  // IN-408: the GPU CLUT (512 halfwords, device local), the CT32 inverse in-page table, the target CLUT kernel.
+  VkBuffer clut = VK_NULL_HANDLE;
+  VkDeviceMemory clutMemory = VK_NULL_HANDLE;
+  Buffer inverseCt32;
+  VkShaderModule clutTargetModule = VK_NULL_HANDLE, materializeModule = VK_NULL_HANDLE;
+  VkPipeline clutTargetPipeline = VK_NULL_HANDLE, materializePipeline = VK_NULL_HANDLE;
   VkBuffer glm = VK_NULL_HANDLE;
   VkDeviceMemory glmMemory = VK_NULL_HANDLE;
   VkDeviceSize glmTableBytes = 0;
@@ -434,7 +449,10 @@ struct Gpu::Impl {
   bool wait_slot(std::uint32_t index, std::string &error) {
     Slot &s = slots[index];
     if (!s.inFlight) return true;
+    const auto waitStart = std::chrono::steady_clock::now();
     if (!check(gt4_hw_vkWaitForFences(device, 1, &s.fence, VK_TRUE, UINT64_MAX), "vkWaitForFences", error)) return false;
+    stats.waitNs += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count());
     stats.waits++;
     for (Image &image : s.doomed) release(image);
     s.doomed.clear();
@@ -485,6 +503,7 @@ struct Gpu::Impl {
     info.pCommandBuffers = &cmd;
     if (!check(gt4_hw_vkQueueSubmit(queue, 1, &info, fence), "vkQueueSubmit", error)) return false;
     stats.submissions++;
+    batchesSinceSubmit = 0;
     slots[slot].inFlight = true;
     slots[slot].doomed.insert(slots[slot].doomed.end(), doomed.begin(), doomed.end());
     doomed.clear();
@@ -812,6 +831,53 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     pipeline.stage.module = s.patchGlmModule;
     if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.patchGlmPipeline),
                "vkCreateComputePipelines", error)) return false;
+    // IN-408: the target CLUT kernel shares the decode set (0 GLM, 1 tables, 2 inverse table, 3 target, 5 CLUT).
+    s.clutTargetModule =
+        s.make_module(hwgs::shaders::core2_clut_target_words, hwgs::shaders::core2_clut_target_word_count, error);
+    if (!s.clutTargetModule) return false;
+    pipeline.stage.module = s.clutTargetModule;
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.clutTargetPipeline),
+               "vkCreateComputePipelines", error)) return false;
+    s.materializeModule =
+        s.make_module(hwgs::shaders::core2_materialize_words, hwgs::shaders::core2_materialize_word_count, error);
+    if (!s.materializeModule) return false;
+    pipeline.stage.module = s.materializeModule;
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.materializePipeline),
+               "vkCreateComputePipelines", error)) return false;
+  }
+  // IN-408: the GPU CLUT and the inverse of the CT32 in-page layout (word of a page -> pixel x | y << 8).
+  {
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = 512 * 4;
+    info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (!check(gt4_hwd_vkCreateBuffer(s.device, &info, nullptr, &s.clut), "vkCreateBuffer", error)) return false;
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetBufferMemoryRequirements(s.device, s.clut, &requirements);
+    VkMemoryAllocateInfo allocateClut{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocateClut.allocationSize = requirements.size;
+    if (!s.memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0,
+                       allocateClut.memoryTypeIndex)) {
+      error = "no device-local memory type for the CORE2 GPU CLUT";
+      return false;
+    }
+    if (!check(gt4_hwd_vkAllocateMemory(s.device, &allocateClut, nullptr, &s.clutMemory), "vkAllocateMemory", error) ||
+        !check(gt4_hwd_vkBindBufferMemory(s.device, s.clut, s.clutMemory, 0), "vkBindBufferMemory", error)) {
+      return false;
+    }
+    const memory::GpuAddressTables tables = memory::gpuAddressTables();
+    const std::uint32_t tableOffset = tables.directory[0];  // PSMCT32 (code 0)
+    const std::uint32_t pageWidth = tables.directory[1];
+    const std::uint32_t pageHeight = tables.directory[2];
+    if (!s.make_buffer(s.inverseCt32, 2048 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, error)) return false;
+    auto *inverse = static_cast<std::uint32_t *>(s.inverseCt32.mapped);
+    for (std::uint32_t y = 0; y < pageHeight; ++y) {
+      for (std::uint32_t x = 0; x < pageWidth; ++x) {
+        const std::uint32_t entry = tables.entries[tableOffset + y * pageWidth + x];
+        const std::uint32_t word = (entry & 31u) * 64u + ((entry >> 5) & 255u) / 4u;
+        inverse[word & 2047u] = x | (y << 8);
+      }
+    }
   }
 
   if (!s.make_image(s.atlas, kAtlasSide, kAtlasSide, 1, error)) return false;
@@ -982,6 +1048,9 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   const Image *depth = batch.depth == kNoImage ? frame : s.image_of(batch.depth);
   const Image *texture = batch.texture == kNoImage ? &s.atlas : s.image_of(batch.texture);
   const Image *texels = batch.memoryTexture == kNoImage ? &s.atlas : s.image_of(batch.memoryTexture);
+  // IN-409: an indexed memory texture's palette row image goes where a target texture would (binding 4).
+  const bool paletted = batch.paletteRow >= 0 && batch.palettes != kNoImage;
+  if (paletted) texture = s.image_of(batch.palettes);
   if (!depth || !texture || !texels) {
     error = "CORE2 draw names a depth or texture image that does not exist";
     return false;
@@ -997,7 +1066,8 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
               static_cast<std::size_t>(vertexBytes));
   gpu::GpuPixelState state = batch.state;
   state.fields[gpu::gpufield::TexOriginX] = 0u;
-  state.fields[gpu::gpufield::TexOriginY] = 0u;
+  state.fields[gpu::gpufield::TexOriginY] = paletted ? static_cast<std::uint32_t>(batch.paletteRow) : 0u;
+  if (paletted) state.fields[gpu::gpufield::TexelKind] = 3u;  // HW_TEXEL_INDEXED
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
 
@@ -1005,7 +1075,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   const std::uint64_t setKey = (static_cast<std::uint64_t>(batch.frame + 1) << 48) ^
                                (static_cast<std::uint64_t>(batch.depth + 1) << 32) ^
                                (static_cast<std::uint64_t>(batch.memoryTexture + 1) << 16) ^
-                               static_cast<std::uint64_t>(batch.texture + 1);
+                               static_cast<std::uint64_t>(paletted ? batch.palettes + 0x8001 : batch.texture + 1);
   if (auto cached = s.drawSets.find(setKey); cached != s.drawSets.end()) {
     set = cached->second;
   } else {
@@ -1128,6 +1198,10 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
   }
   s.stats.batches++;
+  if (s.submitEvery != 0 && ++s.batchesSinceSubmit >= s.submitEvery) {
+    if (!s.submit(false, error)) return false;
+    s.stats.midFrameSubmissions++;
+  }
   return true;
 }
 
@@ -1172,7 +1246,7 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
                                        {s.glmTables.buffer, 0, s.glmTableBytes},
                                        {s.staging.buffer, paletteOffset, 256 * 4},
-                                       {s.glm, 0, 512 * 4}};  // the GPU CLUT binding is not read (mode 0 or 1)
+                                       {s.clut, 0, 512 * 4}};  // the GPU CLUT: read only in mode 2 (IN-408)
   VkDescriptorImageInfo texels{VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
   VkWriteDescriptorSet writes[5]{};
   const std::uint32_t bindingOf[5] = {0, 1, 2, 3, 5};
@@ -1203,6 +1277,252 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
   s.full_barrier();
   s.stats.atlasUploads++;
+  return true;
+}
+
+bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
+                               std::uint32_t height, const GpuPalette &palette, std::string &error) {
+  Impl &s = *impl_;
+  const Image *image = s.image_of(id);
+  if (!image || width > image->width || height > image->height) {
+    error = "CORE2 texture decode outside its image";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
+  VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},  // the palette ring is not read
+                                       {s.clut, 0, 512 * 4}};
+  VkDescriptorImageInfo texels{VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet writes[5]{};
+  const std::uint32_t bindingOf[5] = {0, 1, 2, 3, 5};
+  for (std::uint32_t i = 0; i < 5; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = bindingOf[i];
+    writes[i].descriptorCount = 1;
+    if (i == 3) {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &texels;
+    } else {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &buffers[i < 3 ? i : 3];
+    }
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
+  std::uint32_t push[20] = {};
+  push[0] = bp;
+  push[1] = bw;
+  push[2] = psm;
+  push[3] = width;
+  push[4] = height;
+  push[5] = 2u;  // GPU CLUT buffer
+  push[7] = palette.cpsm;
+  push[8] = palette.csa;
+  push[9] = static_cast<std::uint32_t>(palette.texa & 0xFFu);          // TEXA.TA0
+  push[10] = static_cast<std::uint32_t>((palette.texa >> 32) & 0xFFu); // TEXA.TA1
+  push[11] = static_cast<std::uint32_t>((palette.texa >> 15) & 1u);    // TEXA.AEM
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodePipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
+  gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+  gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
+  s.full_barrier();
+  s.stats.atlasUploads++;
+  return true;
+}
+
+bool Gpu::PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32_t psm, const GpuPalette &palette,
+                                std::string &error) {
+  Impl &s = *impl_;
+  const Image *image = s.image_of(palettes);
+  if (!image || image->width < 256 || row >= image->height) {
+    error = "CORE2 palette row outside the palette image";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
+  VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},  // the palette ring is not read
+                                       {s.clut, 0, 512 * 4}};
+  VkDescriptorImageInfo texels{VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet writes[5]{};
+  const std::uint32_t bindingOf[5] = {0, 1, 2, 3, 5};
+  for (std::uint32_t i = 0; i < 5; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = bindingOf[i];
+    writes[i].descriptorCount = 1;
+    if (i == 3) {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &texels;
+    } else {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &buffers[i < 3 ? i : 3];
+    }
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
+  std::uint32_t push[20] = {};
+  push[2] = psm;
+  push[3] = 256;
+  push[4] = 1;
+  push[5] = 5u;  // one palette row from the GPU CLUT
+  push[7] = palette.cpsm;
+  push[8] = palette.csa;
+  push[9] = static_cast<std::uint32_t>(palette.texa & 0xFFu);          // TEXA.TA0
+  push[10] = static_cast<std::uint32_t>((palette.texa >> 32) & 0xFFu); // TEXA.TA1
+  push[11] = static_cast<std::uint32_t>((palette.texa >> 15) & 1u);    // TEXA.AEM
+  push[13] = row;                                                      // origin_y
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodePipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
+  gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+  gt4_hwd_vkCmdDispatch(s.cmd, 32, 1, 1);  // 256 entries, 8 x 8 groups
+  s.full_barrier();
+  s.stats.paletteRows++;
+  return true;
+}
+
+bool Gpu::ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string &error) {
+  Impl &s = *impl_;
+  const Image *image = s.image_of(target);
+  if (!image) {
+    error = "CORE2 CLUT load from a target image that does not exist";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
+  VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},
+                                       {s.inverseCt32.buffer, 0, 2048 * 4},
+                                       {s.clut, 0, 512 * 4}};
+  VkDescriptorImageInfo source{VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet writes[5]{};
+  const std::uint32_t bindingOf[5] = {0, 1, 2, 3, 5};
+  for (std::uint32_t i = 0; i < 5; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = bindingOf[i];
+    writes[i].descriptorCount = 1;
+    if (i == 3) {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &source;
+    } else {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &buffers[i < 3 ? i : 3];
+    }
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
+  std::uint32_t push[18] = {load.cbp,
+                            load.cpsm,
+                            load.csm,
+                            load.csa,
+                            load.eightBit ? 1u : 0u,
+                            load.cbw,
+                            load.cou,
+                            load.cov,
+                            load.tbp,
+                            load.tbw,
+                            image->nativeWidth,
+                            image->nativeHeight,
+                            static_cast<std::uint32_t>(load.heldX0),
+                            static_cast<std::uint32_t>(load.heldY0),
+                            static_cast<std::uint32_t>(load.heldX1),
+                            static_cast<std::uint32_t>(load.heldY1),
+                            load.fullWord ? 1u : 0u,
+                            FloatBits(static_cast<float>(image->scale))};
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.clutTargetPipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
+  gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+  gt4_hwd_vkCmdDispatch(s.cmd, 4, 1, 1);  // 256 entries, 64 per group
+  s.full_barrier();
+  s.stats.clutTargetLoads++;
+  return true;
+}
+
+bool Gpu::MaterializeTarget(ImageId id, std::uint32_t tbp, std::uint32_t tbw, std::int32_t x0, std::int32_t y0,
+                            std::int32_t x1, std::int32_t y1, bool fullWord, std::string &error) {
+  Impl &s = *impl_;
+  const Image *image = s.image_of(id);
+  if (!image || x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0) {
+    error = "CORE2 GLM write of an image or rectangle that does not exist";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
+  VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},
+                                       {s.glmTables.buffer, 0, s.glmTableBytes},  // bindings 2 and 5 are not read
+                                       {s.clut, 0, 512 * 4}};
+  VkDescriptorImageInfo source{VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet writes[5]{};
+  const std::uint32_t bindingOf[5] = {0, 1, 2, 3, 5};
+  for (std::uint32_t i = 0; i < 5; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = bindingOf[i];
+    writes[i].descriptorCount = 1;
+    if (i == 3) {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &source;
+    } else {
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &buffers[i < 3 ? i : 3];
+    }
+  }
+  gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
+  const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
+  const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
+  const std::uint32_t push[8] = {tbp,   tbw, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width,
+                                 height, fullWord ? 1u : 0u, FloatBits(static_cast<float>(image->scale))};
+  gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.materializePipeline);
+  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
+  gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+  gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
+  s.full_barrier();
+  s.stats.materializations++;
+  return true;
+}
+
+bool Gpu::WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_t *halfwords, std::string &error) {
+  Impl &s = *impl_;
+  if (count == 0) return true;
+  if (first + count > 512) {
+    error = "CORE2 GPU CLUT write past its 512 halfwords";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  VkDeviceSize offset = 0;
+  if (!s.ring(s.staging, count * 4u, 16, offset, error)) return false;
+  auto *values = reinterpret_cast<std::uint32_t *>(static_cast<std::uint8_t *>(s.staging.mapped) + offset);
+  for (std::uint32_t i = 0; i < count; ++i) values[i] = halfwords[first + i];
+  s.outside_pass();
+  VkBufferCopy copy{offset, first * 4u, count * 4u};
+  gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.clut, 1, &copy);
+  s.full_barrier();
+  s.stats.clutWrites++;
+  return true;
+}
+
+bool Gpu::ReadClut(std::uint16_t halfwords[512], std::string &error) {
+  Impl &s = *impl_;
+  if (!s.begin_recording(error)) return false;
+  s.outside_pass();
+  VkBufferCopy copy{0, 0, 512 * 4};
+  gt4_hwd_vkCmdCopyBuffer(s.cmd, s.clut, s.readback.buffer, 1, &copy);
+  s.full_barrier();
+  if (!s.submit(true, error)) return false;
+  const auto *values = static_cast<const std::uint32_t *>(s.readback.mapped);
+  for (std::uint32_t i = 0; i < 512; ++i) halfwords[i] = static_cast<std::uint16_t>(values[i]);
+  s.stats.clutReads++;
   return true;
 }
 

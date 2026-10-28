@@ -21,7 +21,11 @@ VBlank at 3x, the GPU waits), no anti-aliasing, 480i deinterlace. Next steps in
 and FXAA in core 2, with an adaptive rule that keeps GT4's fast-scrolling ticker clean as in gt4-gs. Owner test 13:
 deinterlace clean like GSdx, but the race picture softer than GSdx's in the same 1080p window. Cause: the present
 halved the 3x frame to 960 x 672 and stretched it back (IN-390 rule); fixed in candidate 287 (IN-406, both cores), one
-bilinear reduction like the reference. Waiting for owner test 13b. Not merged; no pins.
+bilinear reduction like the reference. Owner test 13b: sharpness solved. Phase B (deep performance pass, owner goal:
+16.7 ms is the ceiling, beta gate a 2x i5-7200U/HD 620 laptop) started on a headless night B-Spec scene: palettes and
+textures over drawn targets now read on the GPU, indexed textures keep their indices, submissions every 96 batches
+(IN-407..IN-410, candidate 288): night race at 3x 20.8-26.4 -> 17.0-20.6 ms per VBlank, readbacks 6.9-8.7 -> 0.8-1.6 ms,
+frames byte-identical. Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
 

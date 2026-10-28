@@ -40,6 +40,15 @@ struct Core2Counters {
     std::uint64_t indexedFromTargetReadbacks = 0;  // interim 3.5: a T8/T4 texture over a drawn target
     std::uint64_t directFromTargetReadbacks = 0;   // a 16/24/32-bit memory texture over a drawn target (not a hit)
     std::uint64_t clutReadbacks = 0;
+    std::uint64_t downloadReadbacks = 0;       // EE downloads (local-to-host transfers) that read back a target
+    std::uint64_t cpuSpriteBatches = 0;        // IN-407: small untextured sprite batches drawn into GS memory
+    std::uint64_t clutTargetLoads = 0;         // IN-408: CLUT loads read from a drawn target on the GPU
+    std::uint64_t gpuPaletteDecodes = 0;       // IN-408: indexed textures expanded through the GPU CLUT
+    std::uint64_t clutReads = 0;               // IN-408: GPU CLUT read back for the CPU (the tone hook)
+    std::uint64_t materializations = 0;        // IN-408: drawn target rectangles written into the GLM on the GPU
+    std::uint64_t texturesOverTargets = 0;     // IN-408: textures decoded over drawn targets (through the GLM)
+    std::uint64_t paletteRowsWritten = 0;      // IN-409: palette rows filled (CPU palettes and GPU CLUT expansions)
+    std::uint64_t paletteRowHits = 0;          // IN-409: draws whose palette row was already filled
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
     std::uint64_t uploadCheckMismatches = 0;               // CLUT loads over a drawn target (GT4 draws palettes)
 };

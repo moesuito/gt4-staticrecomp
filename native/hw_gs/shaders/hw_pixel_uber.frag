@@ -65,7 +65,8 @@ layout(std140, set = 0, binding = 0) uniform PixelStateBlock {
     uint tex_on;
     uint tfx;
     uint tcc;
-    uint texel_kind;   // HW_TEXEL_RGBA8 (CPU-expanded) or raw CT16/CT24 copied from a target (IN-346)
+    uint texel_kind;   // HW_TEXEL_RGBA8 (CPU-expanded) or raw CT16/CT24 copied from a target (IN-346), or
+                       // (IN-409, CORE2) HW_TEXEL_INDEXED: a CLUT index, its colour in palette row tex_origin_y
     uint ta0;
     uint ta1;
     uint aem;
@@ -146,7 +147,16 @@ int wrap_texel(int texel, uint log2_size, uint mode, uint minimum, uint maximum)
 
 // Texel colour: RGBA8 words decoded on the CPU, or (IN-346) raw CT16/CT24 words copied from a resident target
 // on the GPU, expanded here with TEXA exactly as the CPU decode does (hw_texel_colour, verified bit-exact).
+//
+// IN-409 (CORE2): an indexed memory texture keeps its CLUT indices; the colour is the RGBA8 entry of palette row
+// tex_origin_y, an image bound where a target texture would be (binding 4, unused by memory textures). A palette that
+// changes then never needs the texture decoded again, and bilinear filtering blends looked-up colours, as the GS does.
 ivec4 fetch_texel(int x, int y) {
+    if (state.texel_kind == HW_TEXEL_INDEXED) {
+        uint index = imageLoad(hw_texels, ivec2(x, y)).x & 255u;
+        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
+        return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, state.aem != 0u);
+    }
     uint raw = imageLoad(hw_texels, ivec2(x + int(state.tex_origin_x), y + int(state.tex_origin_y))).x;
     return hw_texel_colour(state.texel_kind, raw, state.ta0, state.ta1, state.aem != 0u);
 }
