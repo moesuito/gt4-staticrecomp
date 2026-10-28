@@ -1,5 +1,22 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0: CORE2 rewrite and the shared scale defect (IN-401..IN-404, candidate 285)
+
+Branch `task/027-coregs2`. Owner baseline from 2026-10-28: a 1920 x 1080 window at 3x, 16:9, no ultrawide
+(`build\hwr-play-scale.ps1`, `GT4_HW_CORE=2` by default). The core was rewritten on the reference model (CORE2,
+`docs/hw-renderer-spec/CORE2-SPEC.md` and `CORE2-DESIGN.md`, `native/hw_gs/core2/`): one scaled image per target, GS
+memory only through readbacks, EE uploads as dirty rectangles patched on the GPU, textures decoded on the GPU from a GPU
+copy of GS memory, GT4's channel-shuffle tone as one pass (IN-401). Performance pass (IN-402): double-buffered command
+recording, cached descriptor sets, fast host-to-local uploads; headless race 26.5 -> 18.8 ms per VBlank at 3x; the
+owner measured stable 60 FPS in menus. The owner then saw the same defects as with the old core (ring notches in menus,
+horizon stripes, random shadows), so the cause was in shared code: the front end dropped every primitive whose box holds
+no pixel centre, which is right only at 1x (IN-403, found by black-box comparison with gt4-gs.exe final frames and
+synthetic GS streams in `scripts/hw_blackbox/`). Fixed for both cores: the 6x menu ring now equals gt4-gs's, the grey
+line across the road near the horizon is gone, race480p memory at 6x identical. Target heights round to page rows
+(IN-404, no more menu-field overlap with the texture memory). Open: 480i deinterlace in CORE2, the car shadow,
+frametime spikes at race start, CORE2 at 1x (HUD only), the remaining speed gap. Waiting for owner test of candidate
+`O:\gt4recomp-scratch\coregs2-candidate-285`. Not merged; no pins.
+
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
 
 Branch `task/027-coregs2`. First half of item 1 of `docs/hw-renderer-spec/PARITY-PLAN.md`: every scaled presentation
