@@ -128,6 +128,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑096 | Remove CoreGS 1.1 from the launcher (owner, 2026-10-22): GSdx only, CoreGS 2.0 shown as "Coming soon" (disabled), a stored CoreGS 1.1 choice migrates to GSdx, a GSdx failure shows a clear error instead of falling back; CoreGS 1.1 stays in the game executable, unused by the launcher. For launcher release 1.2.3 | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
+| TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🧪 Study done, waiting for owner review (2026-10-28) · research only, no code |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -1808,3 +1809,21 @@ Acceptance: target isolation, account/logout/HTTP cancellation regressions, cont
 preview consistency, full native/Python/Rust and en-US/pt-BR checks, both target builds/pins,
 installer+portable verification. New builds go to draft; owner gameplay/review before merge or
 publication. No code, builds, running agents or public rc7 authorized by this mapping step.
+
+### TASK-134 — Game-code optimization study (research and plan)
+
+State: study done, waiting for owner review (2026-10-28). Branch `task/134-game-code-optimization-study`, worktree
+`C:/Antigravity/gt4-wt-134-game-code-study`, from main 795cdc0. Research and documents only: no code, build, benchmark,
+profiler or game run (a CoreGS 2.0 session was measuring on the desktop). Agent status: not PCSX2-tainted.
+Follows the owner's CPU-parity objective (PCSX2 ~50% vs GT4Recomp 70-80% on the i5-7200U), recorded as "TASK-119" in
+commit 9226927 on `task/116-117-flare-perf` and in ai-memory `decisions/next-objective-cpu-parity-with-pcsx2`.
+
+Deliverable: [docs/GAME-CODE-OPTIMIZATION-STUDY.md](docs/GAME-CODE-OPTIMIZATION-STUDY.md). Evidence: 13 desktop F8
+blocks and the owner's laptop logs (6 race F8 intervals, ~200 periodic reports), copied to the worktree's ignored
+`private/laptop-i5-7200u-f8/` with hashes.
+
+Result: on the laptop race the four busy threads use ~35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3,
+gt4-gs CPU thread 3.4, gt4-gs GS thread ~11); half or more of the EE critical path (12.2 ms) is emulation plumbing, the
+rest translated game code; no large spinning wait exists. Ordered plan P0 (measure) .. P8 (IOP AOT), with gains, effort,
+risk and identity gates per step; GSdx-bridge costs are left to the CoreGS 2.0 intake (section 3.6).
+Next: owner answers the questions of section 7; implementation tasks are created per step after that.

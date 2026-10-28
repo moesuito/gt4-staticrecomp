@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-134: game-code optimization study for the i5-7200U laptop (2026-10-28)
+
+Research and plan only (no code, build, benchmark or game run): [GAME-CODE-OPTIMIZATION-STUDY](GAME-CODE-OPTIMIZATION-STUDY.md),
+branch task/134-game-code-optimization-study. From the owner's laptop logs (rc6, Spec II, 1x, D3D11) the four busy
+threads use about 35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3, gt4-gs CPU thread 3.4, gt4-gs GS thread
+~11); half or more of the EE critical path (12.2 ms) is emulation plumbing; syscalls and guest idle are negligible and
+no large spin-wait exists. Ordered plan P0 (measure) to P8 (IOP AOT); the GSdx bridge is left to the CoreGS 2.0
+intake, which must be zero-copy. Waiting for the owner's answers (study section 7).
+
+
 ## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)
 
 Owner requested mapping only: published rc6 is the fixed program baseline, with RetroAchievements
