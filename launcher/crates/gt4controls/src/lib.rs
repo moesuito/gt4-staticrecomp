@@ -800,6 +800,35 @@ mod tests {
     }
 
     #[test]
+    fn all_seven_curves_and_aliases_support_old_configs_and_monotonic_travel() {
+        // Old configs without curve option default to Linear.
+        let old_text = "schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.100\"]\n";
+        let old_controls = Controls::parse(old_text).unwrap();
+        assert_eq!(old_controls.trigger_tuning("l2").curve, Curve::Linear);
+
+        // All 7 canonical curves and their accepted aliases.
+        let cases = [
+            ("linear", Curve::Linear),
+            ("quadratic", Curve::Quadratic),
+            ("cubic", Curve::Cubic),
+            ("s_curve", Curve::SCurve),
+            ("scurve", Curve::SCurve),
+            ("s-curve", Curve::SCurve),
+            ("smooth_power", Curve::SmoothPower),
+            ("smooth", Curve::SmoothPower),
+            ("sublinear", Curve::Sublinear),
+            ("root", Curve::Sublinear),
+            ("logarithmic", Curve::Logarithmic),
+            ("log", Curve::Logarithmic),
+        ];
+        for (alias, expected_curve) in cases {
+            let text = format!("schema = 1\n[bindings]\nr2 = [\"xinput:RT | curve={alias}\"]\n");
+            let parsed = Controls::parse(&text).unwrap();
+            assert_eq!(parsed.trigger_tuning("r2").curve, expected_curve);
+        }
+    }
+
+    #[test]
     fn reset_all_and_is_default() {
         let mut controls = Controls::default();
         controls.assign("cross", "xinput:B", true).unwrap();

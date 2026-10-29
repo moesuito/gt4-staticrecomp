@@ -1,7 +1,14 @@
 // Round trips and library rules for TASK-025. The owner-card tests read a copy of the owner's
 // card (never the original) and skip when the copy is missing.
 
-use gt4saves::card::{Node, DirEntry, GAME_SAVE_NAME, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
+use gt4saves::SaveNames;
+#[allow(dead_code)]
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+#[allow(dead_code)]
+const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+#[allow(dead_code)]
+const GT4_GAME_SAVE: &str = "BASCUS-97328GAMEDATA";
+use gt4saves::card::{Node, DirEntry, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
 use gt4saves::library::slot_name;
 use gt4saves::{folder, psu, Card, CardError, Library};
 use std::fs;
@@ -33,7 +40,7 @@ fn directory(name: &str, children: Vec<Node>) -> Node {
 
 fn game_save(garage_seed: u8) -> Node {
     directory(
-        GAME_SAVE_NAME,
+        GT4_GAME_SAVE,
         vec![
             file("icon.sys", pattern(964, 1)),
             file("icon0.ico", pattern(9796, 2)),
@@ -55,12 +62,12 @@ fn owner_card() -> Option<Vec<u8>> {
 
 #[test]
 fn folder_card_round_trips_through_a_built_card() {
-    let lib = Library::open(&scratch("folder-card")).unwrap();
+    let lib = Library::open(&scratch("folder-card"), GT4).unwrap();
     let card_bytes = Card::build(&[game_save(7), replay()]).unwrap().to_image();
     let report = lib.import_card_image(&card_bytes).unwrap();
     assert_eq!(report.added, vec![slot_name(1), REPLAY.to_string()]);
     lib.activate_slot("Save 01").unwrap();
-    assert_eq!(lib.active_save().unwrap().as_deref(), Some(GAME_SAVE_NAME));
+    assert_eq!(lib.active_save().unwrap().as_deref(), Some(GT4_GAME_SAVE));
 
     let rebuilt = lib.build_card(&[REPLAY.to_string()]).unwrap();
     let back = Card::from_image(&rebuilt).unwrap();
@@ -82,7 +89,7 @@ fn psu_round_trip_keeps_every_file() {
 
 #[test]
 fn psu_import_into_a_second_library_and_export_again() {
-    let first = Library::open(&scratch("psu-first")).unwrap();
+    let first = Library::open(&scratch("psu-first"), GT4).unwrap();
     let psu_bytes = psu::write(&game_save(11)).unwrap();
     assert_eq!(first.import_psu(&psu_bytes).unwrap().added, vec![slot_name(1)]);
     let exported = first.export_psu("Save 01").unwrap();
@@ -91,7 +98,7 @@ fn psu_import_into_a_second_library_and_export_again() {
 
 #[test]
 fn harvest_replaces_a_changed_save_and_never_deletes() {
-    let lib = Library::open(&scratch("harvest")).unwrap();
+    let lib = Library::open(&scratch("harvest"), GT4).unwrap();
     let before = Card::build(&[game_save(20), replay()]).unwrap().to_image();
     lib.import_card_image(&before).unwrap();
     lib.activate_slot("Save 01").unwrap();
@@ -101,7 +108,7 @@ fn harvest_replaces_a_changed_save_and_never_deletes() {
     let after = Card::build(&[game_save(21)]).unwrap().to_image();
     let report = lib.harvest(&after).unwrap();
     assert!(report.replaced_active);
-    let kept = folder::import_item(&lib.active_dir().join(GAME_SAVE_NAME)).unwrap();
+    let kept = folder::import_item(&lib.active_dir().join(GT4_GAME_SAVE)).unwrap();
     assert!(gt4saves::card::same_contents(std::slice::from_ref(&kept), std::slice::from_ref(&game_save(21))));
     let backup_dirs: Vec<_> = fs::read_dir(lib.active_backup_dir()).unwrap().collect();
     assert_eq!(backup_dirs.len(), 1, "the previous save was copied to .backup");
@@ -110,7 +117,7 @@ fn harvest_replaces_a_changed_save_and_never_deletes() {
 
 #[test]
 fn import_dedupes_identical_saves_and_skips_other_games() {
-    let lib = Library::open(&scratch("dedupe")).unwrap();
+    let lib = Library::open(&scratch("dedupe"), GT4).unwrap();
     let foreign = directory("SLPS-00000GAMEDATA", vec![file("x.bin", pattern(10, 5))]);
     let card = Card::build(&[game_save(30), foreign]).unwrap().to_image();
     let first = lib.import_card_image(&card).unwrap();
@@ -127,7 +134,7 @@ fn owner_card_copy_lists_rebuilds_and_matches_byte_for_byte() {
         eprintln!("owner card copy not present; skipping");
         return;
     };
-    let lib = Library::open(&scratch("owner")).unwrap();
+    let lib = Library::open(&scratch("owner"), GT4).unwrap();
     let report = lib.import_card_image(&bytes).unwrap();
     assert_eq!(report.added, vec![slot_name(1)]);
     assert_eq!(lib.slots().unwrap(), vec![slot_name(1)]);
@@ -140,8 +147,8 @@ fn owner_card_copy_lists_rebuilds_and_matches_byte_for_byte() {
     let copy = Card::from_image(&rebuilt).unwrap().root().unwrap();
     assert!(gt4saves::card::same_contents(&copy, &original));
     // Each file of the game save is identical byte for byte.
-    let game_original = original.iter().find(|n| n.name() == GAME_SAVE_NAME).unwrap();
-    let game_copy = copy.iter().find(|n| n.name() == GAME_SAVE_NAME).unwrap();
+    let game_original = original.iter().find(|n| n.name() == GT4_GAME_SAVE).unwrap();
+    let game_copy = copy.iter().find(|n| n.name() == GT4_GAME_SAVE).unwrap();
     for file_original in &game_original.children {
         let file_copy = game_copy.children.iter().find(|f| f.name() == file_original.name()).unwrap();
         assert_eq!(file_copy.data, file_original.data, "{} differs", file_original.name());
@@ -150,7 +157,7 @@ fn owner_card_copy_lists_rebuilds_and_matches_byte_for_byte() {
 
 #[test]
 fn write_card_image_keeps_the_previous_card_as_a_backup() {
-    let lib = Library::open(&scratch("backups")).unwrap();
+    let lib = Library::open(&scratch("backups"), GT4).unwrap();
     let target = scratch("backups-target").join("card.ps2");
     fs::write(&target, b"previous").unwrap();
     lib.write_card_image(&target, &Card::blank().to_image()).unwrap();
@@ -200,7 +207,7 @@ fn owner_card_data_only_dump_round_trips() {
 
 #[test]
 fn library_refuses_unknown_names() {
-    let lib = Library::open(&scratch("unknown")).unwrap();
+    let lib = Library::open(&scratch("unknown"), GT4).unwrap();
     assert!(matches!(lib.export_psu("Save 09"), Err(gt4saves::LibraryError::NotFound(_))));
     assert!(matches!(lib.activate_slot("Save 09"), Err(gt4saves::LibraryError::NotFound(_))));
 }

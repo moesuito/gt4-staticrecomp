@@ -4,6 +4,7 @@
 //! (`launch::choose_renderer`). Setup installs GSdx itself (`setup.rs`), so a choice made during setup does not start
 //! a second install.
 
+use gt4l_core::messages;
 use gt4l_core::settings;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -12,7 +13,7 @@ use crate::state::{lock, Shared};
 use crate::{state, updates};
 
 /// Shown after a successful switch.
-pub const INSTALLED_NOTICE: &str = "GSdx installed successfully";
+pub const INSTALLED_NOTICE_ID: &str = "renderer.installed";
 
 /// Whether choosing the renderer asks for the GSdx install: the game is set up (setup installs it otherwise) and
 /// GSdx is missing or too old.
@@ -30,10 +31,7 @@ pub enum Outcome {
 
 /// The notice after a failed install: the reason, and what the player can do.
 pub fn failure_notice(message: &str) -> String {
-    format!(
-        "GSdx could not be installed ({message}). The game cannot start until GSdx is installed: check your internet \
-         connection and choose GSdx again to retry."
-    )
+    gt4l_core::messages::render("renderer.failure", crate::state::current_language(), &[("message", message)])
 }
 
 /// Runs the install when one is needed. `install` runs at most once; a failure is returned to the caller.
@@ -65,7 +63,7 @@ pub fn start(app: AppHandle, shared: Shared) {
         match outcome {
             Outcome::NotNeeded => {}
             Outcome::Installed => {
-                let _ = app.emit("renderer-switched", json!({ "ok": true, "renderer": settings::PCSX2_GS, "message": INSTALLED_NOTICE }));
+                let _ = app.emit("renderer-switched", json!({ "ok": true, "renderer": settings::PCSX2_GS, "message": gt4l_core::messages::text(INSTALLED_NOTICE_ID, crate::state::current_language()) }));
             }
             Outcome::Failed(message) => {
                 state::log(&dirs, &format!("GSdx not installed after the switch in Settings: {message}"));
@@ -112,6 +110,6 @@ mod tests {
         assert!(notice.contains("GSdx could not be installed (offline)"));
         assert!(notice.contains("cannot start until GSdx is installed"));
         assert!(!notice.contains("CoreGS"), "no CoreGS 1.1 fallback");
-        assert_eq!(INSTALLED_NOTICE, "GSdx installed successfully");
+        assert_eq!(gt4l_core::messages::text(INSTALLED_NOTICE_ID, gt4l_core::language::Language::fallback()), "GSdx installed successfully");
     }
 }

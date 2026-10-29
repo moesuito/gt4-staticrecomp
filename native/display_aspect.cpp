@@ -302,6 +302,10 @@ bool is_split_screen_hud_canvas(const std::uint32_t words[16]) {
 
 bool HudCanvasHook::apply(std::uint8_t *ram, std::uint32_t ram_size, std::uint32_t self, double ratio) {
   last_split_ = false;
+  if (!::gt4::target::available(::gt4::target::active().hooks.hud_matrix_offset)) {
+    ::gt4::target::note_hook_unavailable("HUD canvas (display aspect)");
+    return false;
+  }
   const std::uint64_t address = static_cast<std::uint64_t>(self) + kHudMatrixOffset;
   if ((self & 3u) != 0 || address + kMatrixBytes > ram_size)
     return false;
@@ -358,6 +362,9 @@ HudParameters hud_parameters(double ratio) {
 }
 
 bool write_hud_parameters(std::uint8_t *ram, std::uint32_t ram_size, const HudParameters &parameters) {
+  // The block is ours, but it only exists for the aspect profile of a target that has the HUD hook at all.
+  if (!::gt4::target::available(::gt4::target::active().hooks.race_display_render))
+    return false;
   if (static_cast<std::uint64_t>(kHudParameterBlock) + 4u * kHudParameterWords > ram_size)
     return false;
   bool written = false;
@@ -513,7 +520,8 @@ void at_guest_vblank(std::uint8_t *ram, std::uint32_t ram_size) {
   configured_setting();  // a headless run refuses an invalid value here
   ++r.vblank;
   DisplayRequest request;
-  if (static_cast<std::uint64_t>(kDisplayRequestState) + kRequestRowOffset + 4u <= ram_size) {
+  if (::gt4::target::available(kDisplayRequestState) &&
+      static_cast<std::uint64_t>(kDisplayRequestState) + kRequestRowOffset + 4u <= ram_size) {
     request.pending = read_le32(ram + kDisplayRequestState + kRequestPendingOffset);
     request.mode = read_le32(ram + kDisplayRequestState + kRequestModeOffset);
     request.row = read_le32(ram + kDisplayRequestState + kRequestRowOffset);

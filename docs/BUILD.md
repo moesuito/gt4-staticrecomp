@@ -2542,3 +2542,379 @@ A/B in the same scene, if wanted: `$env:GT4_MTVU_CHAIN="0"`, `$env:GT4_GIF_FASTP
   closing). Frame dumps and the session hash of full runs are unaffected.
 - The mode-3 (interlaced) and 3x cases are not re-measured here; the switches do not depend on the resolution.
 
+## Spec II S3 - target-aware host hooks (TASK-100, v2.00 byte-identical)
+
+Second target: [decision 0072](decisions/0072-spec2-second-target.md), plan [SPEC2-PLAN](SPEC2-PLAN.md). This slice
+changes only the host side of v2.00.
+
+### What changed
+
+- `native/game_target.hpp`: one per-target table. `HookAddresses` carries every guest address or offset that a host
+  hook touches: the TASK-079 16:9 hold (owner pointer, option/flag/record offsets, video system, presets, published
+  word), the TASK-080 race display 480p (index offset and its three values), the TASK-080 display aspect (initMonitor,
+  the camera call return label, RaceDisplay::render, the display request state and offsets, HUD matrix offset, HUD
+  parameter block) and the TASK-017 license guard (both loader entries and their return labels, loadDemoInputs, the
+  CRC table). `kV200Hooks` holds the qualified release values; `kSpec2Hooks` is empty, so every hook disables itself
+  and logs one line. `GT4_TARGET=v200|spec2` selects at build time (`GT4_TARGET_SPEC2`); the default is v200.
+- The four hook modules read their constants from the table instead of keeping private copies
+  (`race_widescreen.*`, `race_display.*`, `display_aspect.hpp`, `license_guard.hpp`). The public constant names stay,
+  so fixtures and the overlay capsules compile unchanged: `kCameraCallReturn` and `kRaceDisplayRender` become
+  `0xFFFFFFFF` ("never matches") when the target has no hook, which keeps the capsule text byte-identical.
+- Availability gates: `force_widescreen_at_vblank`, `force_race_480p_at_vblank`, `HudCanvasHook::apply`,
+  `write_hud_parameters` and the display request read return early (and log once) when the active target lacks the
+  hook. `license_guard::loader_for_return` returns 0, so the capsule never enters the guard.
+- HUD parameter block `0x7F00` stays a literal: it is our own scratch block in guest kernel RAM, not a game address,
+  and two `static_assert`s tie it to the v2.00 table entry.
+- New fixture `native/game_target_fixture.cpp` plus `native/game_target_spec2_fixture.cpp` (compiles the same header
+  with `GT4_TARGET_SPEC2`), CTest `native_game_target`.
+
+### Build (v2.00, slice262 recipe with the release capsules)
+
+```
+cmake -S C:\Antigravity\gt4-wt-100-spec2 -B O:\gt4recomp-scratch\spec2-s3-build\build -G Ninja ^
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" ^
+  -DGT4_EE_PROFILE=aspect -DGT4_ASSETS_ROOT=C:/Antigravity/gt4-staticrecomp -DGT4_TARGET=v200 ^
+  -DGT4_PYTHON=C:/Antigravity/gt4-staticrecomp/private/tooling-venv/Scripts/python.exe ^
+  -DGT4_PERF_RUNTIME_SOURCE=<assets>/private/slice262-frame-cost-runtime ^
+  -DGT4_LICENSE_GUARD_SOURCE=<assets>/private/slice262-license-guard-runtime ^
+  -DGT4_PORT_DIR=<assets>/private/slice200-port -DGT4_SHADER_DIR=<assets>/private/slice153-pacing-shaders ^
+  ... (the rest of the slice262 recipe) ... -DGT4_RELEASE_DISTRIBUTION=ON
+```
+
+### Checks
+
+- CTest 42 of 42 (`native_game_target` is new).
+- Python suite with `GT4_NATIVE_BUILD` = this build: 653 OK, 42 skipped, 1 failure:
+  `test_make_distribution` compares `gt4vulkan.exe` against the **release** slice268 pin, so any rebuilt executable
+  fails it (same size, different hash). A new pin set is a release decision, exactly as recorded for slice264.
+- The Spec II half of the fixture proves an empty table disables every hook; the v2.00 half checks every documented
+  value, so the release behaviour cannot drift silently.
+- Headless frame identity against slice268 (menus, day, night; `GT4_GS_STREAM_HASH=1`): results in the Progress
+  section of SPEC2-PLAN.
+
+## Spec II S4 - second target build (TASK-100)
+
+The target is a separate build that never replaces v2.00:
+
+- `-DGT4_TARGET=spec2` (compile-time `GT4_TARGET_SPEC2`, empty hook table) and `-DGT4_EE_PROFILE=spec2` (the Spec II
+  library, pinned by `docs/inputs/spec2-ee-libraries.json`). CMake refuses a mismatched pair.
+- The output is `gt4vulkan-spec2.exe`; `gt4vulkan.exe` and its pins are untouched.
+- The perf runtime capsule accepts the `spec2` profile (target-independent code); the license guard capsule is the
+  slice277 one (S8b).
+
+Library (S8c reseed): `private/slice278-spec2-ee-producer/game-build/ps2game.lib`, 80,229,124 bytes, sha256 `9a94c3ed…`, built from
+the 346 units in `O:\gt4recomp-scratch\spec2-s8c-generated-clean` with clang-cl 23.1.2:
+
+```
+cmake -S tools/ee_producer -B O:\gt4recomp-scratch\spec2-s8c-lib-build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_CXX_COMPILER=<assets>/private/tooling/llvm-23.1.2/bin/clang-cl.exe ^
+  -DGT4_DONOR=<assets>/private/references/ps2-web-recomp -DGT4_PYTHON=<assets>/private/tooling-venv/Scripts/python.exe ^
+  -DGT4_GENERATED=O:/gt4recomp-scratch/spec2-s8c-generated-clean -DGT4_BUILD_TRANSLATOR=OFF
+cmake --build O:\gt4recomp-scratch\spec2-s8c-lib-build --target ps2game --parallel 4
+```
+
+Executable recipe (worktree needs `-DGT4_PYTHON`): the slice262 capsule recipe with
+`-DGT4_EE_PROFILE=spec2 -DGT4_TARGET=spec2`, build dir `O:\gt4recomp-scratch\spec2-s4-build`.
+
+The units come from `scripts/spec2_ee_generate.py --entries private/slice278-spec2-ee-producer/entry-seeds.txt`; the
+seed file is produced by `scripts/spec2_entry_seeds.py --generated <previous units>` (wide `luipair` window 64,
+stack-frame fallthrough, executable-segment literal code entries). `native/CMakeLists.txt` accepts only the slice278
+library for the spec2 profile; `spec2-s4-generated` and slice274 stay as history.
+
+### S7b findings (blocked before the menus)
+
+- **Program-header overlap**: the plugin PT_LOAD sits inside the data PT_LOAD's address range. The runtime loads in
+  order (plugin wins); the translator reads the first containing segment (zeros). `scripts/spec2_elf_patch.py` splits
+  the data segment around the plugin, which keeps the loaded image identical and makes the lookup unambiguous.
+- **Plugin tables are inside the executable segment**, so the translator's `dataword` source cannot see the plugin's
+  own function pointers: 12 explicit entry seeds were needed (the five hook targets, the thunk, `0x68C7C4`,
+  `0x68C6E8`).
+- After both: 4,200 headless frames, **no "no translated code"**.
+- Open: the game draws nothing after the display init (8 primitives against v2.00's 2,524 at the same frame); all EE
+  threads wait and the IOP is idle. The original unpatched image behaves identically, so the stall is not from the
+  patch set. The game requests the IOP reboot with `DNAS310.IMG` (the beta's protected runtime) instead of
+  `IOPRP300.IMG`; the runtime only logs it. Next: semaphore trace, DNAS reboot overlay, IOP module A/B.
+
+## Spec II S7b - the IOP reboot image and the FILEIO protocol (TASK-100)
+
+The 2026-10-22 stall is fixed by one derived runtime source. The game reboots the IOP with
+`rom0:UDNL cdrom0:\DNAS310.IMG;1`; the runtime never loads either reboot image (IOPRP300.IMG included), it serves the
+16 system modules as native HLE. What the image selects is the **FILEIO protocol generation** through its own
+LOADFILE version (`PsIIloadfile` tag: IOPRP300 `3000`, DNAS310 `3100`). The asynchronous server 0x80000001 answers a
+`devctl` (method 23) with the SIF packet `0x80000011`; the synchronous fallback only sends the ordinary RPC end packet,
+so the game's fileio thread waits forever on its completion semaphore.
+
+Capsule (fresh `private/` child, never overwritten):
+
+```
+private/tooling-venv/Scripts/python.exe scripts/prepare_perf_runtime.py <assets>/private/slice276-spec2-iop-runtime ^
+  --assets-root <assets> --mtvu --gs-stream --frame-cost --vu0-aot --spec2-iop
+private/tooling-venv/Scripts/python.exe scripts/pin_frame_cost_runtime.py slice276-spec2-iop-runtime ^
+  --assets-root <assets>
+```
+
+- `scripts/spec2_iop_overlay.inc` + `native/spec2_iop.hpp`: a `DNAS310.IMG` (or `IOPRP*`) reboot selects the
+  asynchronous FILEIO server and logs the LOADFILE version. The derived `sif.cpp` is compiled from the capsule with
+  `runtime/src`-relative includes (`iop/sif.hpp`, `hw.hpp`). The first attempt (`private/slice275-spec2-iop-runtime`)
+  did not compile: its include block resolved `hw.hpp` to the IOP header; slice276 is the qualified capsule.
+- CMake: `GT4_FRAME_CAPSULE_RE` covers `slice260`..`slice279`; a `slice27x` capsule also carries `sif.cpp`; the pin is
+  `docs/inputs/<capsule name>.json`. A Spec II build also compiles `gt4_quickfix_v200_fixture` (the three hook modules
+  with `GT4_TARGET_FIXTURE_V200`) so the v2.00 hook fixtures still run against the v2.00 table.
+- CTest `native_spec2_iop` covers the reboot-image rule; `Spec2RuntimeCapsuleTests` and `IopRebootImageTests` in
+  `tests/python/test_spec2.py` cover the overlay derivation and the `inputs/spec2-dnas310.json` pin.
+
+Recipe (same as S4, with the new capsule), `O:\gt4recomp-scratch\spec2-s7d-build`:
+
+```
+cmake -S <worktree> -B O:\gt4recomp-scratch\spec2-s7d-build\build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" ^
+  -DGT4_EE_PROFILE=spec2 -DGT4_TARGET=spec2 -DGT4_ASSETS_ROOT=<assets> ^
+  -DGT4_PERF_RUNTIME_SOURCE=<assets>/private/slice276-spec2-iop-runtime ^
+  -DGT4_PORT_DIR=<assets>/private/slice200-port -DGT4_SHADER_DIR=<assets>/private/slice153-pacing-shaders ^
+  -DGT4_VU1_GENERATED_DIR=<assets>/private/slice157-vu1-all-gen ^
+  -DGT4_VU0_GENERATED_DIR=<assets>/private/slice160-vu0-gen-r3 ^
+  -DGT4_VU0_IMAGE_FILE=<assets>/private/slice160-vu0-image/vu0_image.bin ^
+  -DGT4_VU_CORPUS_DIR=<assets>/private/slice155-vu1-full-corpus ...
+```
+
+Run notes:
+
+- Configure **outside** a VS developer shell. Inside one, CMake picks the `cmake_llvm_rc` wrapper for the game .rc and
+  that wrapper fails here (silent exit 1); the plain environment uses the native RC rule. Builds still need
+  `PATH` with the LLVM bin folder.
+- Headless review runs (donor renderer writes PPM frames; create the frame folder first):
+  `gt4vulkan-spec2.exe <derived ELF> --ntsc --disc "<Spec II ISO>" --frames N --memcard <copy>.ps2 --misses misses.txt
+  --frames-dir <dir> --frame-every 200 --press <frame>:<button>:<frames> ...`
+- Boot press schedule found by hand (Spec II 1.10, seed card without GT data): `600:start`, `900:cross` (language),
+  `1500:left`,`1600:cross` (decline game data), `2200:right`,`2300:cross` (start game), `6200:start` (skip intro),
+  `8000:start` (main menu) → `9200:cross` (Arcade), `10000:cross` (Single Race), `11000/11200:down`, `11400:cross`
+  (City Courses), `12200:cross` (track), `13000:cross` (Normal), `14400:cross` (Ford), carousel `right` ×5,
+  `16400:cross` (car), `17200/18000:cross`, then hold `cross` to drive.
+  A night race at C.S. Route 5: `10600:down` (City Courses), `10800:cross`, `right` ×9 (11200…12800), `13000:cross`
+  (track), `13800:cross` (Normal), `14400:cross`, `15000:cross`, `right` ×5 (15600…16400), `17000/17800/18600:cross`,
+  `19400:cross:2600` (accelerate).
+
+## Spec II S7c - the shipping renderer (TASK-100)
+
+The Spec II target on the external PCSX2 GS process (`GT4_RENDERER=pcsx2`), which is the shipping renderer until
+CoreGS 2.0. Same launch path as the v2.00 pcsx2 mode, now with target overrides in
+`scripts/frame_cost_headless.py` (defaults are the v2.00 gate values):
+
+```
+private/tooling-venv/Scripts/python.exe scripts/frame_cost_headless.py ^
+  --assets-root <assets> --build <spec2 build> --exe gt4vulkan-spec2.exe --scene menus --frames 21000 ^
+  --elf <assets>/private/slice272-spec2-elf/SCUS_974.36 --iso "<Spec II ISO>" ^
+  --press 600:start:30 ... --keep-dumps
+```
+
+- `--exe` picks `gt4vulkan-spec2.exe`; `--elf`/`--iso` replace the v2.00 inputs; `--press` replaces the scene schedule
+  (repeatable, `FRAME:BUTTON:FRAMES`); `--gs-exe`/`--gs-sha256` choose the GS process and forward
+  `GT4_GS_PROCESS_SHA256`; `--textures <dir>` writes `[Folders] Textures` **and**
+  `[EmuCore/GS] LoadTextureReplacements = true` (PCSX2's loader switch defaults to off, the launcher always writes
+  both) and `--scale` is the gt4-gs multiplier.
+- Frame dumps come from the GS process (`DumpEvery`, `gs-frames/live_frameNNNNN.png`); the game process writes the
+  conditions, including `gs_exe_sha256` and `textures`.
+- The repo's pinned GS package is `private/slice203-gt4gs-release-pkg` (gt4-gs 1.0.1). Texture packs need gt4-gs
+  1.2.1 or later, so the texture check uses the launcher's installed 1.2.1 (`<install>\data\gs\1.2.1\gt4-gs.exe`) and
+  records its SHA-256; a release that ships packs must pin 1.2.1+.
+- The GT4 display crop is a fixed constant in gt4-gs (`GT4_DISPLAY_CROP = {0,0,1,2}`, `pcsx2-gt4gs/Main.cpp`; the
+  `[EmuCore/GS] Crop*` keys are refused) and applies to every live stream; the GS stderr logs
+  `gt4-gs: display crop left 0 top 0 right 1 bottom 2 (native pixels)`. The game announces `SCUS-97328` in the
+  handshake even for Spec II (`native/gs_stream/gs_stream_client.cpp`, `kGameSerial`), so gt4-gs selects the GT4
+  GameDB entry; gt4-gs has no SCUS-97436 entry (recorded for S8/S9).
+
+## Spec II S8 - host hooks for the Spec II image (TASK-100)
+
+The Spec II table in `native/game_target.hpp` is filled for the 16:9 hold, the 480p race display hold, the race
+camera aspect and the HUD canvas. The full address table and how each value was found are in the S8 Progress entry of
+[SPEC2-PLAN](SPEC2-PLAN.md); the short version:
+
+- option chain: owner word `0x664EDC`, option `owner + 0x680`, wide flag `+0x14`, record `+0x24` (44 bytes, width
+  `+0xC`, height `+0x10`), presets `0x664E20/50/80/B0`, published wide word `0x6655A0`, race display index `+0x1718`;
+- code: `RaceBase::initMonitor` `0x26BDB0` with camera return `0x26BE60`, `RaceDisplay::render` `0x1C5040` with the HUD
+  matrix at `this + 0x70`;
+- not mapped yet (rows stay 0 and the hook logs once): the display request struct (scene policy knows render activity,
+  not photo mode), the shape observer. The license demo guard is mapped in S8b below.
+
+The aspect overlay lives in the license guard capsule, so the Spec II build needs it. From S8b that capsule is
+`slice277-license-guard-runtime` (the same profile as slice262 plus the per-target license guard):
+
+```
+cmake -S <worktree> -B O:\gt4recomp-scratch\spec2-s7d-build\build ... ^
+  -DGT4_LICENSE_GUARD_SOURCE=<assets>/private/slice277-license-guard-runtime
+```
+
+Checks:
+
+- `native_spec2_hooks` (`native/spec2_hooks_fixture.cpp`, always built with `GT4_TARGET_SPEC2`) asserts every table
+  value and the write rules in synthetic 32 MiB RAM: the wide record is copied from `0x664E50`, the flag and
+  `0x6655A0` are set, the 480p hold writes 1 on the normal index and keeps 1080i.
+- Headless GSdx race (21,000 frames, Costa di Amalfi) at `GT4_DISPLAY_ASPECT=21:9`: the log shows the camera matrix
+  scaled (`x 0.761905`), `first RaceDisplay::render`, the HUD canvas (`left -240 right 880`) and the fill policy. The
+  16:9 hold logs the settled owner `0x009BD690`; it writes nothing because the game itself boots 16:9. The 480p hold
+  lives in `window.cpp`'s VBlank and is therefore not exercised by headless runs (fixture only).
+
+## Spec II S8b - license demo guard (TASK-100)
+
+The TASK-017 guard is on for Spec II. Table values (all in `native/game_target.hpp`; evidence in the S8b Progress
+entry of [SPEC2-PLAN](SPEC2-PLAN.md)):
+
+- `RaceSolitaire::loadDemoInputs` `0x2012C8` (vtbl `0x6B3130 + 0x510`), loaders `0x10CA18`/`0x10CBA8` with return
+  labels `0x10CB54`/`0x10CCE4` (vtbl `+0x510` and `+0x1C8`), `Manager::load` `0x207AA0`, game CRC-32 table `0x731DB0`;
+- `license_manager_add` `0x1A24` (the add inside `loadDemoInputs`) and `license_body_shift` `0x80` (the loader hands
+  the virtual a pointer 0x80 into the body; the decrypted demos keep the Manager stream at body `+0x1AA4` on all
+  discs). The overlay evaluates the CRC/layout at the header's body start and writes `n = 0xFFFFFFFF` at
+  `a1 + manager_add`, exactly where the virtual reads; a static assert keeps `add + shift == 0x1AA4`.
+
+The overlay text changed, so the guard capsule was re-derived (the slice262 profile, `--display-aspect
+--frame-counters`) and pinned:
+
+```
+private/tooling-venv/Scripts/python.exe scripts/prepare_license_guard.py ^
+  <assets>/private/slice277-license-guard-runtime --assets-root <assets> --display-aspect --frame-counters
+private/tooling-venv/Scripts/python.exe scripts/pin_frame_cost_guard.py slice277-license-guard-runtime --assets-root <assets>
+```
+
+`native/CMakeLists.txt` accepts a slice26x or slice27x guard capsule (`docs/inputs/<capsule>.json`); the Spec II
+build uses slice277, v2.00 keeps slice262.
+
+Checks: `native_license_guard` (v2.00 rule), the extended `native_spec2_hooks` (Spec II values, both loader labels
+key the guard and other labels do not, the shift/add maths, the rule), and the Python overlay harness compiled twice
+(v2.00 and `GT4_TARGET_SPEC2` with a shifted pointer). Oracle on the 256 Spec II demos with our FPU: 0 CRC passes,
+114 sane layouts, 142 demos guarded. A headless license demo is not reachable (GT mode needs game data), so the owner
+run remains the gate.
+
+## Spec II S8c - the Options-menu halt and the entry seeds (TASK-100)
+
+Owner test 1 halted on opening Options at `0x003CA690` (ra `0x0050D1B0`). Root cause: the callback is built by
+`lui s0,0x003D` at `0x003CC8EC` + `addiu s0,s0,-22896` at `0x003CC9C0` (53 instructions apart), so the translator's
+3-instruction `luipair` window missed it. `scripts/spec2_entry_seeds.py` now emits the missing classes (wide `luipair`
+window 64, stack-frame fallthrough, executable-segment literal code entries); 1,299 seeds produced 1,332,727
+instructions / 18,597 functions / 153,474 entries, library `private/slice278-spec2-ee-producer/game-build/ps2game.lib`
+(80,229,124 bytes, `9a94c3ed.`). The seed file stays in the slice (`entry-seeds.txt`, `041c1864.`); pins are
+`docs/inputs/spec2-ee-libraries.json` and `docs/inputs/spec2-ee-generated.json`. CMake accepts only the slice278
+library for the spec2 profile.
+
+Headless: the old exe halts at `0x003CA690` after 11,159 frames on the same schedule; the new exe opens Options (and
+all its submenus, Replay Theater, Save Game, Credits, GT Mode and the Arcade menu) with no halt. The new executable is
+`O:\gt4recomp-scratch\spec2-s7d-build\build\gt4vulkan-spec2.exe`, 104,475,136 bytes, sha256 `301bbb4a.`. The harness
+has `--card` for an owner-card copy; a license demo was still not reached headless.
+
+## Release 1.3.0 (candidate, not published)
+
+Merges on `task/101-multi-game`: `origin/main` `db5c559` (`63c110e`) and `origin/task/100-spec2` `9206af5` (`b8a6b5f`).
+Version 1.3.0 in `launcher/Cargo.toml`, the workspace crates of `launcher/Cargo.lock`, `tauri.conf.json` and the
+installer default. Release notes: `docs/release-notes/1.3.0.md` (full), `launcher/1.3.0.md` and
+`launcher/pt-BR/1.3.0.md` (written before the build; see AGENTS.md).
+
+Game builds (release distribution ON, fresh slices and pins):
+
+| Game | Exe | Size / sha256 | Pin |
+|---|---|---|---|
+| v2.00 | `private/slice279-build/build/gt4vulkan.exe` | 97,377,792 / `9dccb5a4…` | `docs/inputs/slice279-pcsx2.json` |
+| Spec II | `private/slice280-build/build/gt4vulkan-spec2.exe` | 104,612,352 / `174e7adf…` | `docs/inputs/slice280-spec2.json` |
+
+- v2.00 build: `O:\gt4recomp-scratch\slice278-build` from `task/101-multi-game`, capsules `slice262-frame-cost-runtime`
+  and `slice262-license-guard-runtime`, port `slice200`, shaders `slice153`, `GT4_EE_PROFILE=aspect`,
+  `GT4_RELEASE_DISTRIBUTION=ON`.
+- Spec II build: `O:\gt4recomp-scratch\spec2-130-build` from `task/101-multi-game`, `-DGT4_TARGET=spec2
+  -DGT4_EE_PROFILE=spec2`, perf runtime `slice276-spec2-iop-runtime`, license guard `slice277-license-guard-runtime`,
+  EE library `slice278` (`docs/inputs/spec2-ee-libraries.json`), port/shaders/VU1/VU0 as v2.00,
+  `GT4_RELEASE_DISTRIBUTION=ON`.
+- Pins: `scripts/pin_release_130.py <slice> --target gt4|spec2 --exe <path>` (new pin file, never edited; gs package
+  1.2.1 in `private/slice281-gt4gs-121`). `PERF_PROFILES['pcsx2']` -> slice279; slice268 stays as `pcsx2-slice268`;
+  `external_runtime_probe.SPEC2_RELEASE` holds slice280.
+- `scripts/make_distribution.py` gained `--second-exe/--second-runtime-manifest`, so one GAME_DIR carries both exes.
+
+Distribution, launcher and installer:
+
+```
+python scripts/make_distribution.py <assets>/private/slice282-dist-130 --assets-root <assets> ^
+  --exe <assets>/private/slice279-build/build/gt4vulkan.exe --runtime-manifest docs/inputs/slice279-pcsx2.json ^
+  --second-exe <assets>/private/slice280-build/build/gt4vulkan-spec2.exe ^
+  --second-runtime-manifest docs/inputs/slice280-spec2.json
+
+powershell -ExecutionPolicy Bypass -File launcher\tools\build-release.ps1 -Sdl3Root <assets>/private/tooling/sdl3-3.4.18
+powershell -ExecutionPolicy Bypass -File launcher\tools\build-release.ps1 -Sdl3Root <assets>/private/tooling/sdl3-3.4.18 -Portable
+
+makensis /DVERSION=1.3.0 /DLAUNCHER_EXE=<target>/release/GT4Recomp.exe /DGAME_DIR=<assets>/private/slice282-dist-130 ^
+  /DSDL3_DLL=<assets>/private/tooling/sdl3-3.4.18/runtime/SDL3.dll ^
+  /DWEBVIEW2_BOOTSTRAPPER=<assets>/private/release-100-webview2/MicrosoftEdgeWebview2Setup.exe ^
+  /DOUTFILE=<assets>/private/release-130-out/GT4Recomp-Setup-1.3.0.exe installer/gt4recomp.nsi
+
+python scripts/make_portable_zip.py <assets>/private/release-130-out --version 1.3.0 ^
+  --launcher-exe <target>-portable/release/GT4Recomp.exe --sdl3-dll <assets>/private/tooling/sdl3-3.4.18/runtime/SDL3.dll ^
+  --game-dir <assets>/private/slice282-dist-130 --sums-file <assets>/private/release-130-out/SHA256SUMS
+```
+
+Results: launcher release 17,038,336 bytes `69530dfa…`, portable 16,973,824 `a1a0ed0d…`; installer 51,373,344
+`d1569b35…` (7-Zip extraction: 24 files compared with their sources, 0 differences); portable zip 83,032,500
+`bfa3a08a…`; SHA256SUMS lists both assets.
+
+Checks: CTest 45/45 in the v2.00 and Spec II builds; Python 694 OK (42 skipped v2.00, 56 Spec II); `cargo test
+--workspace` clean; focus-check en-US 151/151, pt-BR 158/158 and nav-test 150/150 in headless Edge; the launcher's
+Rust Spec II derivation is byte-identical to `scripts/spec2_elf_patch.py` (`36f60b1a…`); v2.00 identity against
+slice268 exact in menus/day/night (dumps `463d455c…`/`992f1ac9…`/`c57e7d03…`, streams `1ccb97c5…`/`0c79dcf5…`/
+`c091716e…`). Not published: no PR, merge, tag or GitHub release before the owner tests.
+
+## Slice 278 - TASK-097 self-sufficient game, TASK-098 portable build (release 1.3.0)
+
+Build recipe: the slice268 / release 1.2.3 recipe (capsules `slice262-frame-cost-runtime`, `slice262-license-guard-runtime`,
+port `slice200`, shaders `slice153-pacing-shaders`, `GT4_EE_PROFILE=aspect`, `GT4_RELEASE_DISTRIBUTION=ON`) with
+`-S C:\Antigravity\gt4-wt-101-multi-game` and `-B O:\gt4recomp-scratch\slice278-build\build` (C: is short of space). No new
+capsule, no new pin file: the executable differs from every pinned one, so `test_make_distribution` (the release-pin check
+of `docs/inputs/slice268-pcsx2.json`) fails with this build, as with any rebuilt executable.
+
+Game side (`native/`):
+
+- `game_main.cpp` is the new `main`. The pinned donor `main.cpp` (port slice200, hash-checked, untouched) is compiled with the
+  source property `COMPILE_DEFINITIONS main=gt4_donor_main` and called from it. `bcrypt` is linked for the GSdx hash.
+- `standalone.hpp/.cpp`: the rules, with injected file and environment access. A start with no ELF argument (argc 1, or only
+  `--` options other than `--portable-check`) is *standalone*; an ELF argument is the *explicit mode*, which goes straight to the
+  donor main as before (launcher, harnesses, pins). Standalone finds `<install>\game\gt4vulkan*.exe` -> `<install>\data\games\<id>`
+  (fallback `%LOCALAPPDATA%\GT4Recomp`), checks the receipt like the launcher's `check_installed` (ELF size, disc copy size and
+  modified time), reads `gs\current.txt` and the recorded `sha256.txt` of gt4-gs.exe, takes the launcher's `launcher.lock`,
+  creates `data\sessions\standalone-<unix seconds>` (working directory, `game.log`, newest 20 kept), reads `game.ini` and
+  `gt4-gs.ini` from `<install>\user\config` (if `<install>\user` exists) or `%APPDATA%\GT4Recomp\config`, and builds the old
+  command line and environment. Order: argument or variable > `game.ini` > built-in default (GSdx, 480p, 16:9 hold, automatic
+  ultrawide, fullscreen, vsync). A missing piece shows a native message (exit 3); `GT4_STANDALONE_MESSAGE_FILE=<file>` writes the
+  text there instead (headless tests). `--no-window` (standalone only) leaves the window flag out.
+- CTest `native_standalone` (`standalone_fixture.cpp`, samples in `native/standalone_samples/`); the sample `game.ini` is also
+  compared with the launcher's output by `launch_contract.rs`.
+- Python: `tests/python/test_standalone_start.py` (7 tests: not installed, no prepared files, no GSdx, changed disc copy,
+  changed renderer, the explicit mode and `--portable-check` still reach the donor main).
+
+Checks (CTest 43 of 44 pass; the failing one is `python_native_contracts`, whose only error is the release-pin test above;
+Python with `GT4_NATIVE_BUILD` = slice278: 682 tests, 1 error, 42 skipped):
+
+| scene | build | dumps | dumps.sha256 (first 16) | GS stream hash |
+|---|---|---|---|---|
+| menus | slice268 | 41 | 463d455c3204cb56 | 1ccb97c58a6d2945 |
+| menus | slice278 | 41 | 463d455c3204cb56 | 1ccb97c58a6d2945 |
+| day | slice268 | 159 | 992f1ac9a6871901 | 0c79dcf5208e5e4d |
+| day | slice278 | 159 | 992f1ac9a6871901 | 0c79dcf5208e5e4d |
+| night | slice268 | 159 | c57e7d03accbb3aa | c091716e3cb40d79 |
+| night | slice278 | 159 | c57e7d03accbb3aa | c091716e3cb40d79 |
+
+Run with `scripts/frame_cost_headless.py ... --env GT4_GS_STREAM_HASH=1` (explicit arguments, 1x), run folders
+`O:\gt4recomp-scratch\slice278-runs\`. The per-dump lists (names and hashes) are byte-identical. A *standalone* headless start
+(a scratch install with `game\`, `user\config`, `data\games\gt4`, `data\gs\1.0.0`; `gt4vulkan.exe --no-window --frames N --disc
+<iso>` plus the scene's `--press` list, no ELF argument) gives the same results: menus `463d455c3204cb56` / `1ccb97c58a6d2945`,
+day `992f1ac9a6871901` / `0c79dcf5208e5e4d`, and a harness run with the defaults set as explicit variables (`GT4_FORCE_480P=1
+GT4_DISPLAY_ASPECT=auto GT4_FULLSCREEN=1 GT4_PRESENT_MODE=fifo`) has the same day dumps (`O:\gt4recomp-scratch\slice278-standalone-*`).
+The window, fullscreen, the message boxes and a double click were not run (no game window opens in this slice).
+
+Launcher side (`launcher/`): `launch::standalone_config_text`, `AppState::write_standalone_files` (at start, after every
+settings change, before every Play), tests in `launch_contract.rs` and `flow_audit.rs`; portable build: see TASKS.md TASK-098.
+Cargo: `cargo test --workspace` with `CARGO_TARGET_DIR=O:\gt4recomp-scratch\slice278-cargo-target` and `GT4_SDL3_ROOT`, in both builds
+(`--features portable`).
+
+## Distribution names (TASK-108, release 1.3.0)
+
+The build output keeps its names: `gt4vulkan.exe` and `gt4vulkan-spec2.exe` in the build directory, and the developer
+scripts (`play_performance.py`, `external_runtime_probe.py`, the harnesses) run them under those names.
+`scripts/make_distribution.py` copies them into the game folder as `gt4.exe` and `gt4-spec2.exe`, checking the same
+pins by hash, so the files are byte-identical and no pin changes. The installer (`installer/gt4recomp.nsi`) and the
+portable zip (`scripts/make_portable_zip.py`) ship the new names; the installer deletes the 1.2.x names
+(`game\gt4vulkan.exe`, `game\gt4vulkan-spec2.exe`) on install and update. The launcher starts `gt4.exe` and
+`gt4-spec2.exe` and detects both old and new names as running games.

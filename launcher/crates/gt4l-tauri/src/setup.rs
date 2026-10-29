@@ -5,14 +5,18 @@
 //! The command bodies are plain functions over [`Shared`] (`choose_disc_path`, `start_with`) so the flow test
 //! (`flow_audit.rs`) drives exactly the code the page drives, without a window.
 
+use gt4l_core::messages;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use gt4l_core::games::{self, Game, GT4, SPEC2};
 use gt4l_core::gs_release::Step;
 use gt4l_core::paths::DataDirs;
 use gt4l_core::LAUNCHER_VERSION;
-use gt4l_disc::setup::{self as disc_setup, SetupRequest, Stage};
+use gt4l_disc::identify::{identify, DiscGame};
+use gt4l_disc::setup::{self as disc_setup, SetupError, SetupRequest, Stage};
+use gt4l_disc::spec2::{self as disc_spec2, Spec2Request};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -49,36 +53,89 @@ pub struct DiscInfo {
     pub path: String,
     pub serial: String,
     pub version: String,
-    /// `Gran Turismo 4 · USA · v2.00`.
+    /// `Gran Turismo 4 (USA v2.00)`, or `Gran Turismo 4 Spec II v1.10 (PT-BR)`.
     pub name: String,
+    /// The game the disc is (`gt4`, `spec2`): the setup that follows installs this game.
+    pub game: String,
+    pub game_name: String,
+    /// The page asked for another game (`requested`) than the disc is: it offers to install the disc as the game it is,
+    /// or to pick another file. Nothing is installed until the page calls `setup_start`.
+    pub mismatch: bool,
+    pub requested: Option<String>,
 }
 
-/// The display name of an accepted disc.
-pub fn disc_display_name(version: &str) -> String {
-    format!("Gran Turismo 4 \u{b7} USA \u{b7} v{version}")
+/// The Spec II version the launcher supports (the only one; other versions have other hashes and are refused).
+pub const SPEC2_VERSION: &str = "1.10";
+
+/// The title of a game as the player sees it: Spec II names its supported version.
+pub fn game_title(game: &Game) -> String {
+    match DiscGame::from_id(game.id) {
+        Some(DiscGame::Spec2) => format!("{} v{SPEC2_VERSION}", game.display_name),
+        _ => game.display_name.to_string(),
+    }
+}
+
+/// What tells apart copies of one game, or an empty text: the region and version of Gran Turismo 4 (`USA v2.00`), and
+/// for Spec II the pinned image name (`PT-BR`; empty for the plain 1.10 image, and `other image` for an image with the
+/// known executable and an unpinned hash). `image_name` is the receipt's name, empty before the copy was checked.
+pub fn game_variant(game: &Game, version: &str, image_name: &str) -> String {
+    match DiscGame::from_id(game.id) {
+        Some(DiscGame::Spec2) => spec2_variant(image_name),
+        _ => format!("USA v{version}"),
+    }
+}
+
+/// The Spec II part of `game_variant`. The names are the pinned image names (`docs/inputs`), not file names.
+fn spec2_variant(image_name: &str) -> String {
+    let plain = format!("Spec II {SPEC2_VERSION}");
+    if image_name.is_empty() || image_name == plain {
+        return String::new();
+    }
+    let region = image_name
+        .strip_prefix(&format!("{plain} ("))
+        .and_then(|rest| rest.strip_suffix(')'));
+    match region {
+        Some(region) => region.to_string(),
+        None => messages::text("game.variant_other", state::current_language()).to_string(),
+    }
+}
+
+/// The name of an accepted disc of `game`, as the setup shows it: the title and the variant, for example
+/// `Gran Turismo 4 (USA v2.00)` or `Gran Turismo 4 Spec II v1.10 (PT-BR)`.
+pub fn game_disc_name(game: &Game, version: &str, image_name: &str) -> String {
+    let title = game_title(game);
+    let variant = game_variant(game, version, image_name);
+    if variant.is_empty() {
+        title
+    } else {
+        format!("{title} ({variant})")
+    }
 }
 
 /// Opens the file picker for a plain `.iso` and checks it. `None` means the picker was cancelled.
 /// A disc that is not accepted gives its plain-language reason as the error (and `app_state` says `wrong_disc`).
 #[tauri::command]
-pub async fn setup_choose_disc(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<DiscInfo>, String> {
+pub async fn setup_choose_disc(app: AppHandle, game: Option<String>, shared: State<'_, Shared>) -> Result<Option<DiscInfo>, String> {
     let shared: Shared = shared.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         if lock(&shared).setup_busy {
-            return Err("Setup is already running.".to_string());
+            return Err(messages::text("setup.already_running", state::current_language()).to_string());
         }
         refuse_unsupported_system(&shared)?;
         let picked = app
             .dialog()
             .file()
-            .set_title("Choose your Gran Turismo 4 disc image")
-            .add_filter("PlayStation 2 disc image", &["iso"])
+            .set_title(match game.as_deref().and_then(games::by_id) {
+                Some(requested) => messages::render("setup.picker_title_game", state::current_language(), &[("game", requested.display_name)]),
+                None => messages::text("setup.picker_title_any", state::current_language()).to_string(),
+            })
+            .add_filter(messages::text("setup.picker_filter", state::current_language()), &["iso"])
             .blocking_pick_file();
         let Some(picked) = picked else {
             return Ok(None);
         };
         let path: PathBuf = picked.into_path().map_err(|error| error.to_string())?;
-        choose_disc_path(&shared, &path).map(Some)
+        choose_disc_path_for(&shared, &path, game.as_deref()).map(Some)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -86,34 +143,54 @@ pub async fn setup_choose_disc(app: AppHandle, shared: State<'_, Shared>) -> Res
 
 /// The check behind `setup_choose_disc` for a path (the picker's result, or a path from the flow test).
 pub fn choose_disc_path(shared: &Shared, path: &Path) -> Result<DiscInfo, String> {
-    let pins = {
+    choose_disc_path_for(shared, path, None)
+}
+
+/// [`choose_disc_path`] when the page asked for a game (`requested`). The disc decides which game is installed; when it is
+/// another game than the one asked for, the answer says so (`mismatch`) and the page offers to install it as that game.
+pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str>) -> Result<DiscInfo, String> {
+    let (pins, spec2_pins) = {
         let state = lock(shared);
         if state.setup_busy {
-            return Err("Setup is already running.".into());
+            return Err(messages::text("setup.already_running", state::current_language()).into());
         }
         if state.migration.running {
-            return Err("GT4Recomp is moving its game files to the install folder. Wait until it has finished.".into());
+            return Err(messages::text("setup.migrating", state::current_language()).into());
         }
-        state.pins.clone()
+        (state.pins.clone(), state.spec2_pins.clone())
     };
-    match disc_setup::precheck(path, &pins) {
-        Ok(summary) => {
+    match identify(path, &pins, &spec2_pins) {
+        Ok(found) => {
+            let game: &'static Game = match found.game {
+                DiscGame::Gt4 => &GT4,
+                DiscGame::Spec2 => &SPEC2,
+            };
+            let summary = found.summary;
             let mut state = lock(shared);
             state.config.disc_path = Some(path.to_path_buf());
             state.setup_outcome = SetupOutcome::None;
+            state.setup_game = Some(game);
             state.save_config();
-            state::log(&state.dirs, &format!("disc accepted: {} v{} ({})", summary.serial, summary.version, path.display()));
+            state::log(
+                &state.dirs,
+                &format!("disc accepted as {}: {} v{} ({})", game.id, summary.serial, summary.version, path.display()),
+            );
+            let requested_game = requested.and_then(games::by_id);
             Ok(DiscInfo {
                 path: path.display().to_string(),
-                name: disc_display_name(&summary.version),
+                name: game_disc_name(game, &summary.version, ""),
                 serial: summary.serial,
                 version: summary.version,
+                game: game.id.to_string(),
+                game_name: game.display_name.to_string(),
+                mismatch: requested_game.is_some_and(|asked| asked != game),
+                requested: requested_game.map(|asked| asked.id.to_string()),
             })
         }
         Err(error) => {
-            let message = error.user_message();
+            let message = error.user_message_in(state::current_language());
             let mut state = lock(shared);
-            state::log(&state.dirs, &format!("disc rejected ({}): {error}", path.display()));
+            state::log_warn(&state.dirs, &format!("disc rejected ({}): {error}", path.display()));
             state.setup_outcome = if error.is_disc_refusal() {
                 SetupOutcome::Refused(message.clone())
             } else {
@@ -131,14 +208,15 @@ pub fn setup_start(app: AppHandle, shared: State<'_, Shared>) -> Result<(), Stri
     start_with(shared.inner(), notifier(&app), github_renderer()).map(|_| ())
 }
 
-/// TASK-081: the processor and Vulkan checks before setup (`gt4l_core::system_check`). A problem is shown on the
-/// setup page as a failed setup with its message, and logged.
+/// TASK-081: the processor check before setup (`gt4l_core::system_check`). Setup needs no GPU, so there is no Vulkan
+/// check here (TASK-108). A problem is shown on the setup page as a failed setup with its message, and logged.
 fn refuse_unsupported_system(shared: &Shared) -> Result<(), String> {
-    let Some(problem) = gt4l_platform::system::requirements_problem() else {
+    let language = state::language_of(&lock(shared));
+    let Some(problem) = gt4l_platform::system::processor_problem(language) else {
         return Ok(());
     };
     let mut state = lock(shared);
-    state::log(&state.dirs, &format!("system requirement not met: {problem}"));
+    state::log_error(&state.dirs, &format!("system requirement not met: {problem}"));
     state.setup_outcome = SetupOutcome::Failed(problem.clone());
     Err(problem)
 }
@@ -150,22 +228,51 @@ pub fn start_with(
     renderer: RendererInstaller,
 ) -> Result<std::thread::JoinHandle<()>, String> {
     let shared: Shared = shared.clone();
-    let (disc, pins, dirs, cancel) = {
+    // The image is identified in place again before anything is copied: a file that changed since it was picked, or one
+    // that is not a supported game, is refused here and not one byte reaches the data folder. The game installed is the one
+    // the image really is, whatever the page asked for.
+    let identified = {
+        let state = lock(&shared);
+        state.config.disc_path.clone().map(|disc| (disc, state.pins.clone(), state.spec2_pins.clone()))
+    };
+    let identified_game: Option<&'static Game> = match identified {
+        Some((disc, pins, spec2_pins)) => match identify(&disc, &pins, &spec2_pins) {
+            Ok(found) => Some(match found.game {
+                DiscGame::Gt4 => &GT4,
+                DiscGame::Spec2 => &SPEC2,
+            }),
+            Err(error) => {
+                let message = error.user_message_in(state::current_language());
+                let mut state = lock(&shared);
+                state::log_warn(&state.dirs, &format!("setup refused before copying ({}): {error}", disc.display()));
+                state.setup_outcome =
+                    if error.is_disc_refusal() { SetupOutcome::Refused(message.clone()) } else { SetupOutcome::Failed(message.clone()) };
+                return Err(message);
+            }
+        },
+        None => None,
+    };
+    let (disc, pins, spec2_pins, game, installed_before, dirs, cancel) = {
         let mut state = lock(&shared);
         if state.setup_busy {
-            return Err("Setup is already running.".into());
+            return Err(messages::text("setup.already_running", state::current_language()).into());
         }
         if state.migration.running {
-            return Err("GT4Recomp is moving its game files to the install folder. Wait until it has finished.".into());
+            return Err(messages::text("setup.migrating", state::current_language()).into());
         }
         let Some(disc) = state.config.disc_path.clone() else {
-            return Err("Choose your disc image first.".into());
+            return Err(messages::text("setup.choose_first", state::current_language()).into());
         };
+        let Some(game) = identified_game.or(state.setup_game) else {
+            return Err(messages::text("setup.choose_first", state::current_language()).into());
+        };
+        state.setup_game = Some(game);
+        let installed_before = state.installed_games();
         state.setup_busy = true;
         state.setup_outcome = SetupOutcome::None;
         state.setup_run = SetupRun { step: "copying".into(), ..SetupRun::default() };
         state.setup_cancel.store(false, Ordering::Relaxed);
-        (disc, state.pins.clone(), state.dirs.clone(), state.setup_cancel.clone())
+        (disc, state.pins.clone(), state.spec2_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone())
     };
     let handle = std::thread::spawn(move || {
         // Setup always writes the data folder's root, even when older game files are read from another folder.
@@ -176,49 +283,69 @@ pub fn start_with(
         let mut last: (Stage, i32) = (Stage::Copying, -1);
         let progress_shared = shared.clone();
         let progress_notify = notify.clone();
-        let result = disc_setup::run(
-            &SetupRequest {
-                disc: &disc,
-                disc_folder: &disc_folder,
-                prepared: &prepared,
-                staging: &staging,
-                pins: &pins,
-                launcher_version: LAUNCHER_VERSION,
-                cancel: &cancel,
-                free_space: &gt4l_platform::disk::free_space,
-            },
-            &mut |stage, fraction| {
-                let permille = (fraction * 1000.0) as i32;
-                if (stage, permille) == last {
-                    return;
-                }
-                last = (stage, permille);
-                let step = match stage {
-                    Stage::Copying => "copying",
-                    Stage::Checking => "checking",
-                    Stage::Preparing => "preparing",
-                };
-                let bytes_done = if stage == Stage::Copying { (fraction as f64 * total_bytes as f64) as u64 } else { 0 };
-                {
-                    let mut state = lock(&progress_shared);
-                    state.setup_run.step = step.into();
-                    state.setup_run.fraction = fraction;
-                    state.setup_run.bytes_done = bytes_done;
-                    state.setup_run.bytes_total = if stage == Stage::Copying { total_bytes } else { 0 };
-                }
-                if permille % 10 == 0 || fraction >= 1.0 {
-                    progress_notify(
-                        "setup-progress",
-                        json!({ "step": step, "percent": permille / 10, "bytesDone": bytes_done, "bytesTotal": total_bytes }),
-                    );
-                }
-            },
-        );
+        let mut report = |stage: Stage, fraction: f32| {
+            let permille = (fraction * 1000.0) as i32;
+            if (stage, permille) == last {
+                return;
+            }
+            last = (stage, permille);
+            let step = match stage {
+                Stage::Copying => "copying",
+                Stage::Checking => "checking",
+                Stage::Preparing => "preparing",
+            };
+            // Rc5 owner report: the Spec II copy bar stopped short. The figure is exact at the end of the copy, and the
+            // later steps keep the finished copy's size (done == total), so the page can draw the copy step full after it
+            // moved on (a poll can miss the last 100% value of a fast copy).
+            let copy_finished = stage != Stage::Copying || fraction >= 1.0;
+            let bytes_done = if copy_finished { total_bytes } else { (fraction as f64 * total_bytes as f64) as u64 };
+            {
+                let mut state = lock(&progress_shared);
+                state.setup_run.step = step.into();
+                state.setup_run.fraction = fraction;
+                state.setup_run.bytes_done = bytes_done;
+                state.setup_run.bytes_total = total_bytes;
+            }
+            if permille % 10 == 0 || fraction >= 1.0 {
+                progress_notify(
+                    "setup-progress",
+                    json!({ "step": step, "percent": permille / 10, "bytesDone": bytes_done, "bytesTotal": total_bytes }),
+                );
+            }
+        };
+        let result: Result<disc_setup::Receipt, SetupError> = match DiscGame::from_id(game.id) {
+            Some(DiscGame::Spec2) => disc_spec2::run(
+                &Spec2Request {
+                    disc: &disc,
+                    disc_folder: &disc_folder,
+                    prepared: &prepared,
+                    staging: &staging,
+                    pins: &spec2_pins,
+                    launcher_version: LAUNCHER_VERSION,
+                    cancel: &cancel,
+                    free_space: &gt4l_platform::disk::free_space,
+                },
+                &mut report,
+            ),
+            _ => disc_setup::run(
+                &SetupRequest {
+                    disc: &disc,
+                    disc_folder: &disc_folder,
+                    prepared: &prepared,
+                    staging: &staging,
+                    pins: &pins,
+                    launcher_version: LAUNCHER_VERSION,
+                    cancel: &cancel,
+                    free_space: &gt4l_platform::disk::free_space,
+                },
+                &mut report,
+            ),
+        };
         let receipt = match result {
             Ok(receipt) => receipt,
             Err(error) => {
-                state::log(&dirs, &format!("setup stopped: {error}"));
-                let message = error.user_message();
+                state::log_error(&dirs, &format!("setup stopped: {error}"));
+                let message = error.user_message_in(state::current_language());
                 let mut state = lock(&shared);
                 state.setup_busy = false;
                 state.setup_outcome = if error.is_disc_refusal() {
@@ -234,14 +361,19 @@ pub fn start_with(
         state::log(
             &dirs,
             &format!(
-                "setup complete: {} v{} image {} (qualified dump: {}) elf {}",
+                "setup complete ({}): {} v{} image {} ({}; known image: {}) elf {}",
+                game.id,
                 receipt.disc.serial,
                 receipt.disc.version,
                 receipt.image.as_ref().map(|image| image.file.as_str()).unwrap_or("?"),
+                if receipt.image_name.is_empty() { "-" } else { receipt.image_name.as_str() },
                 receipt.qualified_dump,
                 receipt.elf.sha256
             ),
         );
+        if game.id == SPEC2.id && !receipt.qualified_dump {
+            state::log(&dirs, "disc is accepted as a Spec II 1.10 variant: its executable is the known one but the image hash is not pinned");
+        }
 
         let renderer_note = prepare_renderer(&shared, &dirs, &notify, &renderer);
         {
@@ -250,6 +382,10 @@ pub fn start_with(
             state.setup_run.renderer_step = if renderer_note.is_empty() { "done" } else { "failed" }.into();
             state.home_message = renderer_note.clone();
             state.setup_outcome = SetupOutcome::Done { renderer_note };
+            // The first game installed is the stored choice, and the page stays on the game just set up.
+            state.config.selected_game = games::after_install(state.config.selected_game.as_deref(), &installed_before, game);
+            state.selected = game;
+            state.save_config();
         }
         notify("setup-finished", json!({ "ok": true, "message": "" }));
     });
@@ -305,10 +441,9 @@ fn prepare_renderer(shared: &Shared, dirs: &DataDirs, notify: &Notify, renderer:
             String::new()
         }
         Err(message) => {
-            state::log(dirs, &format!("GSdx not installed during setup: {message}"));
+            state::log_warn(dirs, &format!("GSdx not installed during setup: {message}"));
             notify("renderer-progress", json!({ "step": "failed", "message": message }));
-            "GSdx could not be downloaded, so the game cannot start yet. GT4Recomp tries again at the next start."
-                .to_string()
+            messages::text("renderer.not_installed_note", state::current_language()).to_string()
         }
     }
 }

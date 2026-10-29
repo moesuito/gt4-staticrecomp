@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -198,6 +199,46 @@ void check_trigger_readings() {
     }
   }
 
+  // Default deadzone (30/255): endpoints, representative middle vector at raw 142, and monotonicity.
+  const struct { const char *name; std::uint8_t middle; } default_dz_curves[] = {
+      {"linear", 126}, {"quadratic", 63}, {"cubic", 31}, {"s_curve", 126},
+      {"smooth_power", 89}, {"sublinear", 179}, {"logarithmic", 188}};
+  for (const auto &curve : default_dz_curves) {
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=") +
+                                    curve.name + "\"]\n");
+    const auto &binding = only_binding(controls, "l2");
+    require(read_trigger(binding, 0).pressure == 0, "every default-deadzone curve rests at zero");
+    require(read_trigger(binding, 30).pressure == 0, "every default-deadzone curve rests at threshold");
+    require(read_trigger(binding, 142).pressure == curve.middle, "quantized default-deadzone curve middle vector");
+    require(read_trigger(binding, 255).pressure == 255, "every default-deadzone curve reaches full pressure");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto pressure = read_trigger(binding, static_cast<std::uint8_t>(raw)).pressure;
+      require(pressure >= prior, "default-deadzone curve pressure bytes are monotone");
+      prior = pressure;
+    }
+  }
+
+  // Representative half deadzone (0.5): endpoints, middle vector at raw 192, and monotonicity.
+  const struct { const char *name; std::uint8_t middle; } half_dz_curves[] = {
+      {"linear", 128}, {"quadratic", 64}, {"cubic", 32}, {"s_curve", 129},
+      {"smooth_power", 91}, {"sublinear", 181}, {"logarithmic", 189}};
+  for (const auto &curve : half_dz_curves) {
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.5 curve=") +
+                                    curve.name + "\"]\n");
+    const auto &binding = only_binding(controls, "l2");
+    require(read_trigger(binding, 0).pressure == 0, "half-deadzone curve rests at zero");
+    require(read_trigger(binding, 128).pressure == 0, "half-deadzone curve rests at threshold");
+    require(read_trigger(binding, 192).pressure == curve.middle, "quantized half-deadzone curve middle vector");
+    require(read_trigger(binding, 255).pressure == 255, "half-deadzone curve reaches full pressure");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto pressure = read_trigger(binding, static_cast<std::uint8_t>(raw)).pressure;
+      require(pressure >= prior, "half-deadzone curve pressure bytes are monotone");
+      prior = pressure;
+    }
+  }
+
   // Scale 0.5 halves full travel; scale 2 is clamped at full pressure.
   const Binding half_scale = only_binding(
       parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=0.5\"]\n"), "r2");
@@ -233,6 +274,100 @@ void check_axis_readings() {
   require(read_axis(custom_y, 32767) < 128, "inverted stick: full up reads low");
   std::fprintf(stderr, "PASS: stick readings equal slice 157 for all 65536 raw values\n");
 }
+
+void check_stick_curves_and_signed_endpoints() {
+  const char *curve_names[] = {
+      "linear", "quadratic", "cubic", "s_curve", "smooth_power", "sublinear", "logarithmic"
+  };
+  for (const char *curve_name : curve_names) {
+    for (bool invert : {false, true}) {
+      const std::string text = std::string("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | deadzone=0.2 curve=") +
+                               curve_name + " invert=" + (invert ? "true" : "false") + "\"]\n";
+      const ControlMap map = parse_text(text);
+      const Binding &binding = only_binding(map, "lstick_x");
+
+      // 1. Neutral (raw = 0) is always 128 (PS2 stick center)
+      require(read_axis(binding, 0) == 128, std::string(curve_name) + " stick neutral is 128");
+
+      // 2. Deadzone: deadzone = 0.2 of 32767 is 6553.
+      // Values within [-6553, 6553] must yield exactly 128.
+      require(read_axis(binding, 6553) == 128, std::string(curve_name) + " stick deadzone upper boundary");
+      require(read_axis(binding, -6553) == 128, std::string(curve_name) + " stick deadzone lower boundary");
+      if (!invert) {
+        require(read_axis(binding, 6554) >= 128, std::string(curve_name) + " stick positive step past deadzone");
+        require(read_axis(binding, -6554) <= 128, std::string(curve_name) + " stick negative step past deadzone");
+      } else {
+        require(read_axis(binding, 6554) <= 128, std::string(curve_name) + " stick inverted positive step");
+        require(read_axis(binding, -6554) >= 128, std::string(curve_name) + " stick inverted negative step");
+      }
+
+      // 3. Signed endpoints:
+      // Positive full (32767): non-inverted -> 255, inverted -> 0
+      // Negative full (-32768): non-inverted -> 0, inverted -> 255
+      if (!invert) {
+        require(read_axis(binding, 32767) == 255, std::string(curve_name) + " stick pos endpoint 255");
+        require(read_axis(binding, -32768) == 0, std::string(curve_name) + " stick neg endpoint 0");
+      } else {
+        require(read_axis(binding, 32767) == 0, std::string(curve_name) + " stick pos inverted endpoint 0");
+        require(read_axis(binding, -32768) == 255, std::string(curve_name) + " stick neg inverted endpoint 255");
+      }
+
+      // 4. Monotonicity across all 65536 raw values from -32768 to 32767
+      std::uint8_t prior = read_axis(binding, -32768);
+      for (int raw = -32768; raw <= 32767; ++raw) {
+        std::uint8_t current = read_axis(binding, static_cast<std::int16_t>(raw));
+        if (!invert) {
+          require(current >= prior, std::string(curve_name) + " non-inverted stick monotonic");
+        } else {
+          require(current <= prior, std::string(curve_name) + " inverted stick monotonic");
+        }
+        prior = current;
+      }
+    }
+  }
+  std::fprintf(stderr, "PASS: stick curves: neutral 128, signed endpoints, deadzones, monotonicity\n");
+}
+
+void dump_curve_vectors(const std::string &path) {
+  const struct { const char *name; } curves[] = {
+      {"linear"}, {"quadratic"}, {"cubic"}, {"s_curve"},
+      {"smooth_power"}, {"sublinear"}, {"logarithmic"}};
+  const double deadzones[] = {0.0, 30.0 / 255.0, 0.25, 0.5, 0.75};
+
+  std::ofstream out(path, std::ios::binary);
+  if (!out)
+    throw std::runtime_error("cannot open vector output path: " + path);
+
+  out << "{\n";
+  out << "  \"curves\": [\"linear\", \"quadratic\", \"cubic\", \"s_curve\", \"smooth_power\", \"sublinear\", \"logarithmic\"],\n";
+  out << "  \"deadzones\": [0.0, 0.11764705882352941, 0.25, 0.5, 0.75],\n";
+  out << "  \"vectors\": {\n";
+
+  bool first_entry = true;
+  for (std::size_t c = 0; c < 7; ++c) {
+    for (std::size_t d = 0; d < 5; ++d) {
+      if (!first_entry) out << ",\n";
+      first_entry = false;
+
+      std::ostringstream conf;
+      conf << "schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=" << deadzones[d]
+           << " curve=" << curves[c].name << "\"]\n";
+      const ControlMap map = parse_text(conf.str());
+      const Binding &b = only_binding(map, "l2");
+
+      out << "    \"" << curves[c].name << "_dz" << d << "\": [";
+      for (int raw = 0; raw <= 255; ++raw) {
+        if (raw > 0) out << ",";
+        const auto reading = read_trigger(b, static_cast<std::uint8_t>(raw));
+        out << static_cast<int>(reading.pressure);
+      }
+      out << "]";
+    }
+  }
+  out << "\n  }\n}\n";
+  std::fprintf(stderr, "Wrote vector dump to %s\n", path.c_str());
+}
+
 
 void check_remaps() {
   const ControlMap remap = parse_text(
@@ -347,12 +482,22 @@ void check_environment_selection() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc >= 3 && std::string(argv[1]) == "--dump-vectors") {
+    try {
+      dump_curve_vectors(argv[2]);
+      return 0;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL: %s\n", error.what());
+      return 1;
+    }
+  }
   try {
     check_default_keyboard_table();
     check_defaults_and_example_files();
     check_trigger_readings();
     check_axis_readings();
+    check_stick_curves_and_signed_endpoints();
     check_remaps();
     check_invalid_files();
     check_environment_selection();

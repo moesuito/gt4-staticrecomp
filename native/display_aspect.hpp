@@ -44,6 +44,8 @@
 #include <cstdint>
 #include <string>
 
+#include "game_target.hpp"
+
 namespace gt4::display_aspect {
 
 inline constexpr double kGameRatio = 16.0 / 9.0;
@@ -55,17 +57,21 @@ inline constexpr double kMinFovExtra = 0.5;
 inline constexpr double kMaxFovExtra = 3.0;
 
 // Guest addresses (Confirmed, docs/ULTRAWIDE-NATIVE-STUDY.md section 3.1 and the slice208 translation unit_00A2.cpp).
-inline constexpr std::uint32_t kInitMonitor = 0x00388A80u;       // RaceBase::initMonitor
-inline constexpr std::uint32_t kCameraCallReturn = 0x00388B38u;  // return label of the camera virtual call (jalr 0x388B30)
+// TASK-100 S3: the numbers live in native/game_target.hpp; a target without the hook gets kNeverMatch, which no guest
+// PC or return address can equal.
+inline constexpr std::uint32_t kInitMonitor = ::gt4::target::active().hooks.init_monitor;
+inline constexpr std::uint32_t kCameraCallReturn =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.camera_call_return);
 inline constexpr std::uint32_t kMatrixBytes = 64u;               // 16 x f32 on the stack at a1 = sp
 // RaceDisplay::render (the race HUD, every race frame), reached only through vtables 0x67E294 / 0x680D1C (study
 // section 2.2; unit_00A7 entry 413 in the slice208 translation, no direct call site).
-inline constexpr std::uint32_t kRaceDisplayRender = 0x0039F498u;
+inline constexpr std::uint32_t kRaceDisplayRender =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.race_display_render);
 // Display request state written by func_001074D0 (docs/INGAME-SETTINGS-STUDY.md section 1.4).
-inline constexpr std::uint32_t kDisplayRequestState = 0x006184D0u;
-inline constexpr std::uint32_t kRequestPendingOffset = 0x24u;
-inline constexpr std::uint32_t kRequestModeOffset = 0x2Cu;
-inline constexpr std::uint32_t kRequestRowOffset = 0x30u;
+inline constexpr std::uint32_t kDisplayRequestState = ::gt4::target::active().hooks.display_request_state;
+inline constexpr std::uint32_t kRequestPendingOffset = ::gt4::target::active().hooks.display_request_pending_offset;
+inline constexpr std::uint32_t kRequestModeOffset = ::gt4::target::active().hooks.display_request_mode_offset;
+inline constexpr std::uint32_t kRequestRowOffset = ::gt4::target::active().hooks.display_request_row_offset;
 
 enum class Source { automatic, fixed, output_size };
 
@@ -185,7 +191,8 @@ bool is_new_request(const DisplayRequest &previous, const DisplayRequest &curren
 //       (scripts/aspect_elf_patch.py, re-translated library profile "aspect") turns each one into a load from the HUD
 //       parameter block below. The host fills the block at every guest VBlank; at 16:9 it holds the original constants,
 //       so the patched code computes exactly what the original did.
-inline constexpr std::uint32_t kHudMatrixOffset = 0x70u;  // RaceDisplay + 0x70: 16 x f32, setProjectionMatrix layout
+inline constexpr std::uint32_t kHudMatrixOffset =
+    ::gt4::target::active().hooks.hud_matrix_offset;  // RaceDisplay + this: 16 x f32, setProjectionMatrix layout
 
 struct HudCanvas {
   double left, right, top, bottom;
@@ -244,6 +251,10 @@ class HudCanvasHook {
 // holds the same table; CTest checks the old words against the pinned ELF.
 inline constexpr std::uint32_t kHudParameterBlock = 0x00007F00u;
 inline constexpr std::uint32_t kHudParameterWords = 2u;
+// TASK-100 S3: our own scratch block, not a game address, so it stays a literal for every target; the v2.00 table
+// documents the same values for the hooks that are game addresses.
+static_assert(kHudParameterBlock == ::gt4::target::kV200Hooks.hud_parameter_block, "HUD block differs from the v2.00 table");
+static_assert(kHudParameterWords == ::gt4::target::kV200Hooks.hud_parameter_words, "HUD word count differs from the v2.00 table");
 // +0x00 f32: race HUD font x scale (RaceDisplay::render 0x0039F554, `lui at,0x3F40` = 0.75 = (4/3) / (16/9)).
 // +0x04 s32: rear-view mirror horizontal divisor (0x0033EF98, `addiu t0,zero,640`): the mirror rectangle is
 //            260 x width / divisor frame pixels wide, centred on the frame; 640 x s keeps its 16:9 shape.

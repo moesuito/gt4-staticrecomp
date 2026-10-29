@@ -67,6 +67,25 @@ bool queue_privileged(std::uint32_t address, std::uint64_t value);
 // EE wait of the last blocking gs_privileged sync in microseconds, then 0 (per-register accounting).
 std::uint64_t take_privileged_wait_us();
 
+// TASK-116 step 1 (rc6): the download sync without the VU1 drain. In pcsx2 mode with Performance mode on, the per-frame
+// flare readback is answered locally, so sync("download") only closes the VIF1 batch and returns; the READ_FIFO that
+// follows is queued in the journal (queue_readback) and posted at its stream position without waiting, and the blocking
+// drain runs only for the readbacks that still need accurate data (drain_download) or at the VBlank. Every pointer
+// starts null: with nothing registered sync("download") drains exactly as before (donor mode, CoreGS 1.1).
+struct DownloadOrdering {
+  // EE thread: true when the readback that follows is answered locally by the GS stream.
+  bool (*defer)() = nullptr;
+  // EE thread: posts the queued READ_FIFO at its journal position (no wait for the reply).
+  void (*post_readback)(std::uint32_t qwords) = nullptr;
+};
+void set_download_ordering(const DownloadOrdering &ordering);
+// EE thread: queues a READ_FIFO behind the journal entries already queued. False when the worker does not run or the
+// consumer is not registered: the caller then takes the accurate path.
+bool queue_readback(std::uint32_t qwords);
+// EE thread: the blocking drain a readback that needs accurate data performs before its READ_FIFO. No-op when the
+// journal is empty (nothing deferred); counted as "download" for the F8 report.
+void drain_download();
+
 // Donor operations. The worker callbacks run on the worker thread; render_gs runs on the EE thread.
 // Every callback starts null (1.2.2 bug, TASK-092): donor mode never sets post_vsync, and an uninitialised pointer
 // sent vblank_sync into the TASK-084 deferred path and a call through stack garbage at the first VBlank.

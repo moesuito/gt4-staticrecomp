@@ -16,7 +16,8 @@
 //! never deletes; the card built for Play holds exactly one game save and the chosen replays.
 //! Every item is written to a staging folder and renamed into place (`folder::export_item`).
 
-use crate::card::{self, Card, CardError, Node, GAME_SAVE_NAME};
+use crate::card::{self, Card, CardError, Node};
+use crate::names::SaveNames;
 use crate::folder::{self, FolderError};
 use crate::psu;
 use std::fmt;
@@ -33,6 +34,10 @@ pub enum LibraryError {
     NotFound(String),
     /// The item is not something this library stores (for example another game's save).
     NotGtSave(String),
+    /// A card with no Gran Turismo 4 save or replay on it; `found` lists the names it holds.
+    NoGtSave { found: Vec<String> },
+    /// A display name that cannot be used (empty after cleaning).
+    Name(String),
 }
 
 impl From<io::Error> for LibraryError {
@@ -61,6 +66,10 @@ impl fmt::Display for LibraryError {
             LibraryError::Folder(error) => write!(f, "{error}"),
             LibraryError::NotFound(name) => write!(f, "not in the library: {name}"),
             LibraryError::NotGtSave(name) => write!(f, "not a Gran Turismo 4 save: {name}"),
+            LibraryError::NoGtSave { found } => {
+                write!(f, "no Gran Turismo 4 save on this card (found: {})", found.join(", "))
+            }
+            LibraryError::Name(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -91,6 +100,43 @@ pub const ACTIVE_FOLDER: &str = "Active";
 pub const ACTIVE_BACKUP_FOLDER: &str = ".backup";
 /// Prefix of an inactive slot folder (`Save 01`, `Save 02`, ...).
 pub const SLOT_PREFIX: &str = "Save ";
+/// The display name of a save, kept next to the save's game folder (`<slot>/name.txt`, or `Active/name.txt`).
+/// The folder names do not change when a save is renamed.
+pub const NAME_FILE: &str = "name.txt";
+/// Longest display name, in characters.
+pub const NAME_MAX_CHARS: usize = 40;
+
+/// A display name made safe to store and show: control characters and the characters Windows refuses in file
+/// names are dropped, runs of spaces become one space, the ends are trimmed and the text is cut to
+/// [`NAME_MAX_CHARS`]. An empty result is an error.
+pub fn clean_name(text: &str) -> Result<String, LibraryError> {
+    let kept: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .collect();
+    let spaced = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = spaced.chars().take(NAME_MAX_CHARS).collect();
+    let cut = cut.trim_end().to_string();
+    if cut.is_empty() {
+        return Err(LibraryError::Name("the name is empty".to_string()));
+    }
+    Ok(cut)
+}
+
+/// Moves `<from>/name.txt` to `<to>/name.txt` (replacing one there). Nothing happens when `from` has no name.
+fn move_name_file(from: &Path, to: &Path) -> Result<(), LibraryError> {
+    let source = from.join(NAME_FILE);
+    if !source.is_file() {
+        return Ok(());
+    }
+    let target = to.join(NAME_FILE);
+    if target.exists() {
+        fs::remove_file(&target)?;
+    }
+    fs::rename(&source, &target)?;
+    Ok(())
+}
 
 /// Where the three parts of the library live.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,20 +154,28 @@ impl LibraryPaths {
     pub fn under(root: &Path) -> LibraryPaths {
         LibraryPaths { saves: root.join("Saves"), replays: root.join("Replays"), backups: root.join("backups") }
     }
+
+    /// The library of one game (TASK-101): `<root>/games/<game id>/{Saves,Replays,backups}`. Two games never share a
+    /// folder, so a save of one can never be harvested into, or built onto the card of, the other (each game has its
+    /// own item names, see [`SaveNames`]).
+    pub fn for_game(root: &Path, game_id: &str) -> LibraryPaths {
+        LibraryPaths::under(&root.join("games").join(game_id))
+    }
 }
 
 pub struct Library {
     paths: LibraryPaths,
+    names: SaveNames,
 }
 
 impl Library {
-    /// Opens a library kept under one folder (see [`LibraryPaths::under`]).
-    pub fn open(root: &Path) -> Result<Library, LibraryError> {
-        Library::open_paths(&LibraryPaths::under(root))
+    /// Opens a library kept under one folder (see [`LibraryPaths::under`]) for the game `names` describes.
+    pub fn open(root: &Path, names: SaveNames) -> Result<Library, LibraryError> {
+        Library::open_paths(&LibraryPaths::under(root), names)
     }
 
     /// Opens (and creates, if needed) a library at `paths`.
-    pub fn open_paths(paths: &LibraryPaths) -> Result<Library, LibraryError> {
+    pub fn open_paths(paths: &LibraryPaths, names: SaveNames) -> Result<Library, LibraryError> {
         let folders = [
             paths.saves.join(ACTIVE_FOLDER),
             paths.saves.join(ACTIVE_BACKUP_FOLDER),
@@ -131,11 +185,16 @@ impl Library {
         for folder in folders {
             fs::create_dir_all(folder)?;
         }
-        Ok(Library { paths: paths.clone() })
+        Ok(Library { paths: paths.clone(), names })
     }
 
     pub fn paths(&self) -> &LibraryPaths {
         &self.paths
+    }
+
+    /// The item names of the game this library belongs to.
+    pub fn names(&self) -> SaveNames {
+        self.names
     }
 
     /// Folder that holds the active game save.
@@ -164,15 +223,15 @@ impl Library {
 
     /// Name of the active game save, if any.
     pub fn active_save(&self) -> Result<Option<String>, LibraryError> {
-        let game = self.active_dir().join(GAME_SAVE_NAME);
-        Ok(if game.is_dir() { Some(GAME_SAVE_NAME.to_string()) } else { None })
+        let game = self.active_dir().join(self.names.game_save);
+        Ok(if game.is_dir() { Some(self.names.game_save.to_string()) } else { None })
     }
 
     /// `Save NN` folders that hold a game save, sorted by slot number.
     pub fn slots(&self) -> Result<Vec<String>, LibraryError> {
         let mut slots: Vec<String> = fs::read_dir(self.saves_dir())?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().join(GAME_SAVE_NAME).is_dir())
+            .filter(|e| e.path().join(self.names.game_save).is_dir())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with(SLOT_PREFIX))
             .collect();
@@ -186,7 +245,7 @@ impl Library {
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| card::is_replay_name(n))
+            .filter(|n| self.names.is_replay(n))
             .collect();
         names.sort();
         Ok(names)
@@ -194,9 +253,9 @@ impl Library {
 
     /// True when the active save or a slot already holds these exact contents.
     fn holds_identical_game_save(&self, node: &Node) -> Result<bool, LibraryError> {
-        let mut candidates = vec![self.active_dir().join(GAME_SAVE_NAME)];
+        let mut candidates = vec![self.active_dir().join(self.names.game_save)];
         for slot in self.slots()? {
-            candidates.push(self.saves_dir().join(slot).join(GAME_SAVE_NAME));
+            candidates.push(self.saves_dir().join(slot).join(self.names.game_save));
         }
         for path in candidates.into_iter().filter(|p| p.is_dir()) {
             let existing = folder::import_item(&path)?;
@@ -210,7 +269,7 @@ impl Library {
     /// First unused replay name `BASCUS-97328Rnnnn` in the replays folder (letter R, four digits).
     fn next_free_replay_name(&self) -> Result<String, LibraryError> {
         for number in 1..=9999 {
-            let name = format!("{}R{number:04}", card::GAME_PREFIX);
+            let name = self.names.full_replay_name(number);
             if !self.replays_dir().join(&name).exists() {
                 return Ok(name);
             }
@@ -232,7 +291,7 @@ impl Library {
     /// Adds `node` (a game save or replay) to the library. Returns the name it was stored under.
     fn add_item(&self, node: &Node, report: &mut Report) -> Result<(), LibraryError> {
         let name = node.name();
-        if card::is_game_save_name(&name) {
+        if self.names.is_game_save(&name) {
             if self.holds_identical_game_save(node)? {
                 report.unchanged.push(name);
                 return Ok(());
@@ -243,7 +302,7 @@ impl Library {
             fs::create_dir_all(&slot_dir)?;
             folder::export_item(&slot_dir, node)?;
             report.added.push(slot);
-        } else if card::is_replay_name(&name) {
+        } else if self.names.is_replay(&name) {
             let existing = self.replays_dir().join(&name);
             if existing.is_dir() && card::same_contents(std::slice::from_ref(&folder::import_item(&existing)?), std::slice::from_ref(node)) {
                 report.unchanged.push(name);
@@ -259,49 +318,108 @@ impl Library {
                 report.added.push(name);
             }
         } else {
-            report.skipped.push(format!("{name}: not a Gran Turismo 4 save"));
+            report.skipped.push(name);
         }
         Ok(())
     }
 
-    /// Imports every item of a card image (`.ps2`, `.mcd`, `.bin`, with or without spare bytes).
-    pub fn import_card_image(&self, bytes: &[u8]) -> Result<Report, LibraryError> {
-        let card = Card::from_image(bytes)?;
+    /// Imports the items this library owns (its game save and replays) from `items`. Items of other games, and items no
+    /// game knows, are not stored: they come back in `Report::skipped` by name. When none of the items is this game's,
+    /// the import fails with [`LibraryError::NoGtSave`].
+    pub fn import_items(&self, items: &[Node]) -> Result<Report, LibraryError> {
+        if !items.iter().any(|item| self.names.owns(&item.name())) {
+            return Err(LibraryError::NoGtSave { found: items.iter().map(Node::name).collect() });
+        }
         let mut report = Report::default();
-        for item in card.root()? {
-            self.add_item(&item, &mut report)?;
+        for item in items {
+            self.add_item(item, &mut report)?;
         }
         Ok(report)
+    }
+
+    /// Imports every item of a card image (`.ps2`, `.mcd`, `.bin`, with or without spare bytes).
+    pub fn import_card_image(&self, bytes: &[u8]) -> Result<Report, LibraryError> {
+        self.import_items(&items_of_card_image(bytes)?)
     }
 
     /// Imports a `.psu` save file.
     pub fn import_psu(&self, bytes: &[u8]) -> Result<Report, LibraryError> {
-        let item = psu::read(bytes)?;
-        let mut report = Report::default();
-        self.add_item(&item, &mut report)?;
-        Ok(report)
+        self.import_items(&[psu::read(bytes)?])
     }
 
     /// Imports a PCSX2 folder memory card: each save sub-folder is a raw directory.
     pub fn import_folder_card(&self, folder_card: &Path) -> Result<Report, LibraryError> {
-        let mut report = Report::default();
-        let mut dirs: Vec<PathBuf> = fs::read_dir(folder_card)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            let item = folder::import_raw_directory(&dir)?;
-            self.add_item(&item, &mut report)?;
-        }
-        Ok(report)
+        self.import_items(&items_of_folder_card(folder_card)?)
     }
 
-    /// `.psu` bytes of a library item (a slot name such as "Save 02", or a replay name).
+    /// The folder a save's name file lives in: the active save's folder for the game save, a slot's for `Save NN`.
+    fn save_folder(&self, name: &str) -> Option<PathBuf> {
+        if name == self.names.game_save {
+            Some(self.active_dir())
+        } else if name.starts_with(SLOT_PREFIX) {
+            Some(self.slot_dir(name))
+        } else {
+            None
+        }
+    }
+
+    /// The display name a player gave a save, if any. `name` is the library name (`Save NN` or the game save name).
+    pub fn display_name(&self, name: &str) -> Option<String> {
+        let file = self.save_folder(name)?.join(NAME_FILE);
+        let text = fs::read_to_string(file).ok()?;
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned.to_string())
+        }
+    }
+
+    /// Gives a save (`Save NN` or the active save) a display name. The folder names do not change. Returns the name
+    /// as stored, after [`clean_name`].
+    pub fn rename_save(&self, name: &str, new_name: &str) -> Result<String, LibraryError> {
+        let cleaned = clean_name(new_name)?;
+        let folder_path = self.save_folder(name).ok_or_else(|| LibraryError::NotFound(name.to_string()))?;
+        if !folder_path.join(self.names.game_save).is_dir() {
+            return Err(LibraryError::NotFound(name.to_string()));
+        }
+        let file = folder_path.join(NAME_FILE);
+        let temporary = folder_path.join("name.tmp");
+        fs::write(&temporary, cleaned.as_bytes())?;
+        if file.exists() {
+            fs::remove_file(&file)?;
+        }
+        fs::rename(&temporary, &file)?;
+        Ok(cleaned)
+    }
+
+    /// Starts a new save: the active save (if any) is parked in a new `Save NN` slot and `Active` is left empty.
+    /// The next Play builds a card without a game save, so the game creates a new profile. Returns the slot the
+    /// old save went to, or `None` when there was no active save.
+    pub fn new_save(&self) -> Result<Option<String>, LibraryError> {
+        let target = self.active_dir().join(self.names.game_save);
+        if !target.is_dir() {
+            // Nothing to park; a name left behind by a removed save must not stick to the next one.
+            let stale = self.active_dir().join(NAME_FILE);
+            if stale.is_file() {
+                fs::remove_file(stale)?;
+            }
+            return Ok(None);
+        }
+        let parked = self.next_slot_name()?;
+        let parked_dir = self.saves_dir().join(&parked);
+        fs::create_dir_all(&parked_dir)?;
+        fs::rename(&target, parked_dir.join(self.names.game_save))?;
+        move_name_file(&self.active_dir(), &parked_dir)?;
+        Ok(Some(parked))
+    }
+
+    /// `.psu` bytes of a library item (`Active` for the active save, a slot name such as "Save 02", or a replay name).
     pub fn export_psu(&self, name: &str) -> Result<Vec<u8>, LibraryError> {
-        let folder_path = if name.starts_with(SLOT_PREFIX) {
-            self.slot_dir(name).join(GAME_SAVE_NAME)
+        let folder_path = if name == self.names.game_save {
+            self.active_dir().join(self.names.game_save)
+        } else if name.starts_with(SLOT_PREFIX) {
+            self.slot_dir(name).join(self.names.game_save)
         } else {
             self.replays_dir().join(name)
         };
@@ -314,19 +432,22 @@ impl Library {
 
     /// Makes `slot` the active game save. The current active save (if any) gets a new slot.
     pub fn activate_slot(&self, slot: &str) -> Result<(), LibraryError> {
-        let source = self.saves_dir().join(slot).join(GAME_SAVE_NAME);
+        let source = self.saves_dir().join(slot).join(self.names.game_save);
         if !source.is_dir() {
             return Err(LibraryError::NotFound(slot.to_string()));
         }
-        let target = self.active_dir().join(GAME_SAVE_NAME);
+        let target = self.active_dir().join(self.names.game_save);
         if target.is_dir() {
             let parked = self.next_slot_name()?;
             let parked_dir = self.saves_dir().join(&parked);
             fs::create_dir_all(&parked_dir)?;
-            fs::rename(&target, parked_dir.join(GAME_SAVE_NAME))?;
+            fs::rename(&target, parked_dir.join(self.names.game_save))?;
+            move_name_file(&self.active_dir(), &parked_dir)?;
         }
         fs::rename(&source, &target)?;
-        fs::remove_dir(self.saves_dir().join(slot))?; // now empty
+        // The display name goes with its save; the slot folder is then empty.
+        move_name_file(&self.saves_dir().join(slot), &self.active_dir())?;
+        fs::remove_dir(self.saves_dir().join(slot))?;
         Ok(())
     }
 
@@ -335,7 +456,7 @@ impl Library {
     pub fn build_card(&self, replays: &[String]) -> Result<Vec<u8>, LibraryError> {
         let mut items = Vec::new();
         if self.active_save()?.is_some() {
-            items.push(folder::import_item(&self.active_dir().join(GAME_SAVE_NAME))?);
+            items.push(folder::import_item(&self.active_dir().join(self.names.game_save))?);
         }
         for name in replays {
             let path = self.replays_dir().join(name);
@@ -361,7 +482,7 @@ impl Library {
         let mut report = Report::default();
         for item in card.root()? {
             let name = item.name();
-            if card::is_game_save_name(&name) {
+            if self.names.is_game_save(&name) {
                 let current = self.active_dir().join(&name);
                 if current.is_dir() {
                     let before = folder::import_item(&current)?;
@@ -378,10 +499,10 @@ impl Library {
                 }
                 folder::export_item(&self.active_dir(), &item)?;
                 report.added.push(name);
-            } else if card::is_replay_name(&name) {
+            } else if self.names.is_replay(&name) {
                 self.add_item(&item, &mut report)?;
             } else {
-                report.skipped.push(format!("{name}: not a Gran Turismo 4 save"));
+                report.skipped.push(name);
             }
         }
         Ok(report)
@@ -400,6 +521,27 @@ impl Library {
         fs::rename(&temporary, path)?;
         Ok(())
     }
+}
+
+/// The items of a card image (`.ps2`, `.mcd`, `.bin`, with or without spare bytes), whichever game they belong to.
+pub fn items_of_card_image(bytes: &[u8]) -> Result<Vec<Node>, LibraryError> {
+    Ok(Card::from_image(bytes)?.root()?)
+}
+
+/// The item of a `.psu` save file.
+pub fn items_of_psu(bytes: &[u8]) -> Result<Vec<Node>, LibraryError> {
+    Ok(vec![psu::read(bytes)?])
+}
+
+/// The items of a PCSX2 folder memory card: each save sub-folder is a raw directory.
+pub fn items_of_folder_card(folder_card: &Path) -> Result<Vec<Node>, LibraryError> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(folder_card)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.iter().map(|dir| Ok(folder::import_raw_directory(dir)?)).collect()
 }
 
 fn file_name(path: &Path) -> String {

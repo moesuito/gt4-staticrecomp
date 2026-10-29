@@ -68,8 +68,9 @@ add_test(NAME native_controls COMMAND $<TARGET_FILE:controls_fixture>)
 add_test(NAME native_pad_mapping COMMAND $<TARGET_FILE:pad_mapping_fixture>)
 add_test(NAME native_pacing COMMAND $<TARGET_FILE:pacing_fixture>)
 add_test(NAME native_achievements COMMAND $<TARGET_FILE:achievements_fixture>)
+add_test(NAME native_achievements_spec2 COMMAND $<TARGET_FILE:achievements_spec2_fixture>)
 add_test(NAME native_achievements_http COMMAND $<TARGET_FILE:achievements_http_fixture>)
-set_tests_properties(native_achievements native_achievements_http PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
+set_tests_properties(native_achievements native_achievements_spec2 native_achievements_http PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
 add_test(NAME native_quickfix COMMAND $<TARGET_FILE:quickfix_fixture>)
 add_test(NAME native_race_display COMMAND $<TARGET_FILE:race_display_fixture>)
 add_test(NAME native_race_widescreen COMMAND $<TARGET_FILE:race_widescreen_fixture>)
@@ -95,6 +96,10 @@ add_test(NAME native_gs_stream_client
     COMMAND $<TARGET_FILE:gs_stream_client_fixture> $<TARGET_FILE:gs_stream_record> "${CMAKE_BINARY_DIR}/gs-stream-client-scratch")
 set_tests_properties(native_gs_stream_ipc native_gs_stream_client PROPERTIES RUN_SERIAL TRUE TIMEOUT 300
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+# TASK-116 step 0: the READ_FIFO probe of the flare readback (GT4_GS_READBACK_LOG): ini parse, hash, aggregation.
+add_test(NAME native_gs_readback_probe
+    COMMAND $<TARGET_FILE:gs_readback_probe_fixture> "${CMAKE_BINARY_DIR}/gs-readback-probe-work")
+set_tests_properties(native_gs_readback_probe PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 add_test(NAME native_shape_capture_export COMMAND $<TARGET_FILE:shape_capture_export_fixture>)
 add_test(NAME native_shape_capture_control COMMAND $<TARGET_FILE:shape_capture_control_fixture>)
 add_test(NAME python_native_contracts
