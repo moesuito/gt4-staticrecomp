@@ -29,7 +29,9 @@ frames byte-identical. Owner test of 288: lighter at night, but the title backdr
 reads kept a target alive past its ageing); fixed in candidate 289 (IN-411), night 17.8-22.2 ms per VBlank headless. Owner test of 289: title clean; night
 race 57.0 VBlanks/s over 192 s (frame time p95 20.6 ms, p99 23.4 ms). Measured next: the GLM page copies cost only
 0.3-0.5 ms per night VBlank, the CPU swizzle of EE uploads 2.3-2.8 ms; page-row runs cut it to 0.9 ms (IN-414,
-candidate 290), and the new upload fixture found and fixed wrong T8H/T4HL/T4HH uploads.
+candidate 290), and the new upload fixture found and fixed wrong T8H/T4HL/T4HH uploads. Most IN-411 store waits
+were for nothing (GT4's streamed textures replace whole pages under its night render): skipped in candidate 291
+(IN-415), GPU waits 2.3-3.4 -> 1.1-2.0 ms and GS thread 16-22 -> 14-19 ms per night VBlank.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)

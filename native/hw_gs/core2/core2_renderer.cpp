@@ -152,6 +152,36 @@ bool SpansOverlap(const BlockSpan &a, const BlockSpan &b) {
     return ab < a.count || ba < b.count;
 }
 
+// Whether every block of `inner` lies in `outer` (modulo the 16384 blocks of GS memory).
+bool SpanContains(const BlockSpan &outer, const BlockSpan &inner) {
+    if (inner.count == 0 || outer.count >= kAllBlocks) return true;
+    if (outer.count == 0) return false;
+    const std::uint32_t offset = (inner.begin + kAllBlocks - outer.begin) % kAllBlocks;
+    return static_cast<std::uint64_t>(offset) + inner.count <= outer.count;
+}
+
+// IN-415: the blocks of the whole pages a write of `rect` in `view` replaces in every bit. That needs a format that
+// stores each pixel in a whole storage unit (not CT24, Z24, T8H, T4HL or T4HH), a rectangle over the whole buffer
+// width, and only complete page rows count. Empty when the write replaces no whole page.
+BlockSpan WholePagesWritten(const BufferView &view, const PixelRect &rect) {
+    const memory::PsmInfo &info = memory::psmInfo(view.psm);
+    if (info.storageBits != info.transferBpp) return BlockSpan{};
+    // The Z block swap stays inside a page only when the base pointer is page aligned.
+    if (info.isDepth && view.basePointer % memory::kBlocksPerPage != 0) return BlockSpan{};
+    const std::uint32_t width = view.bufferWidth * 64u;
+    if (width == 0 || width > 2048u || width % info.pageWidth != 0) return BlockSpan{};
+    if (rect.x0 != 0 || rect.x1 + 1 != static_cast<std::int32_t>(width) || rect.y0 < 0 || rect.y1 >= 2048) {
+        return BlockSpan{};
+    }
+    const std::uint32_t firstRow = (static_cast<std::uint32_t>(rect.y0) + info.pageHeight - 1u) / info.pageHeight;
+    const std::uint32_t endRow = (static_cast<std::uint32_t>(rect.y1) + 1u) / info.pageHeight;
+    if (endRow <= firstRow) return BlockSpan{};
+    const std::uint32_t perRow = width / info.pageWidth;
+    const std::uint64_t count = static_cast<std::uint64_t>(endRow - firstRow) * perRow * memory::kBlocksPerPage;
+    return BlockSpan{(view.basePointer + firstRow * perRow * memory::kBlocksPerPage) % kAllBlocks,
+                     static_cast<std::uint32_t>(std::min<std::uint64_t>(count, kAllBlocks))};
+}
+
 std::uint64_t FieldOf(std::uint64_t value, unsigned shift, unsigned width) {
     return (value >> shift) & ((1ull << width) - 1ull);
 }
@@ -298,6 +328,19 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     std::optional<LocalToHostSetup> pendingRead_;
     const char *readbackReason_ = "other";  // diagnostics (GT4_CORE2_READBACK_TRACE): why the next readback runs
+    // B1: GPU fence wait and readback count per readback reason, between two [core2] lines.
+    struct ReasonWait {
+        const char *reason;
+        std::uint64_t waitNs = 0;
+        std::uint64_t readbacks = 0;
+    };
+    std::array<ReasonWait, 5> reasonWaits_{{{"download"}, {"before write"}, {"keep"}, {"clut"}, {"other"}}};
+    ReasonWait &WaitOf(const char *reason) {
+        for (ReasonWait &w : reasonWaits_) {
+            if (std::strcmp(w.reason, reason) == 0) return w;
+        }
+        return reasonWaits_.back();
+    }
 
     // IN-408: CLUT loads from drawn targets on the GPU. GT4 draws and filters palettes on the GPU (night races: several
     // per VBlank) and loads a CLUT from them right away; a readback of each was a submit and a full wait. Such a load
@@ -1150,10 +1193,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (!ApplyDirty(*t)) return false;
             std::vector<std::uint32_t> words;
             std::string error;
+            const std::uint64_t waitBefore = gpu_.Stats().waitNs;
             if (!gpu_.Reduce(t->image, area.x0, area.y0, area.x1, area.y1, words, error)) {
                 Fail(error);
                 return false;
             }
+            ReasonWait &reasonWait = WaitOf(readbackReason_);
+            reasonWait.waitNs += gpu_.Stats().waitNs - waitBefore;
+            reasonWait.readbacks++;
             // A 32/24 target that was only ever drawn as 24-bit leaves the top byte to memory.
             Psm psm = t->view.psm;
             if (!t->fullWordWritten) {
@@ -1195,6 +1242,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // that GPU read had stored them. The whole drawn area goes, so the target needs this once per round of reads.
     // A write in the target's own view patches only the written rectangle and needs nothing.
     // GT4_CORE2_STORE_BEFORE_WRITE=0 turns it off (A/B).
+    // IN-415: no store when the write replaces every bit of the whole pages under the target's drawn area: the stored
+    // pixels would all be overwritten. GT4 uploads its streamed textures (64 x 1440 to 64 x 1728 CT32) over the memory
+    // of its night render and palette targets once per VBlank, so each store was a GPU wait for nothing.
+    // GT4_CORE2_STORE_SKIP_WHOLE=0 stores anyway (A/B).
+    const bool storeSkipWhole_ = std::getenv("GT4_CORE2_STORE_SKIP_WHOLE") == nullptr ||
+                                 std::strcmp(std::getenv("GT4_CORE2_STORE_SKIP_WHOLE"), "0") != 0;
+    std::uint64_t storesSkipped_ = 0;  // since the last [core2] line
     bool StoreDrawnBeforeWrite(const BufferView &view, const PixelRect &rect) {
         static const bool enabled = std::getenv("GT4_CORE2_STORE_BEFORE_WRITE") == nullptr ||
                                     std::strcmp(std::getenv("GT4_CORE2_STORE_BEFORE_WRITE"), "0") != 0;
@@ -1202,12 +1256,26 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const bool outOfRange = rect.x1 >= 2048 || rect.y1 >= 2048;
         const BlockSpan span = outOfRange ? BlockSpan{0, kAllBlocks} : WriteSpan(view, rect);
         const FormatClass cls = ClassOf(view.psm);
+        const BlockSpan wholePages = storeSkipWhole_ && !outOfRange ? WholePagesWritten(view, rect) : BlockSpan{};
         for (Target &t : targets_) {
             if (!t.alive || !t.readOnGpu || t.drawn.Empty()) continue;
             const bool sameView =
                 view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls;
             if (sameView && !outOfRange) continue;
             if (!SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (wholePages.count != 0 && SpanContains(wholePages, TargetSpan(t, t.drawn))) {
+                storesSkipped_++;
+                continue;
+            }
+            static const bool trace = std::getenv("GT4_CORE2_STORE_TRACE") != nullptr;  // diagnostics only
+            if (trace) {
+                std::fprintf(stderr,
+                             "[core2] store vblank=%llu write bp=%u bw=%u psm=%02x rect=%d,%d,%d,%d target bp=%u bw=%u "
+                             "size=%ux%u drawn=%d,%d,%d,%d\n",
+                             static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth,
+                             static_cast<unsigned>(view.psm), rect.x0, rect.y0, rect.x1, rect.y1, t.view.basePointer,
+                             t.view.bufferWidth, t.width, t.height, t.drawn.x0, t.drawn.y0, t.drawn.x1, t.drawn.y1);
+            }
             readbackReason_ = "before write";
             const bool ok = Readback(TargetSpan(t, t.drawn));
             readbackReason_ = "other";
@@ -2267,6 +2335,23 @@ void Renderer::Flush() {
                      p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f, p.spriteCheck / f,
                      static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6, p.glm / f, p.glmCalls / 600.0,
                      p.glmPages / 600.0, p.swizzle / f, p.swizzleBytes / 600.0 / 1024.0);
+        std::string byReason;
+        std::uint64_t attributed = 0;
+        for (Impl::ReasonWait &w : s.reasonWaits_) {
+            char part[96];
+            std::snprintf(part, sizeof part, " %s=%.2f (%.2f)", w.reason, static_cast<double>(w.waitNs) / 600.0e6,
+                          static_cast<double>(w.readbacks) / 600.0);
+            byReason += part;
+            attributed += w.waitNs;
+            w.waitNs = 0;
+            w.readbacks = 0;
+        }
+        const std::uint64_t allWaits = s.gpu_.Stats().waitNs - s.lastWaitNs_;
+        std::fprintf(stderr, "[core2] gpu_wait ms/vblank by readback reason (readbacks/vblank):%s not_readback=%.2f "
+                     "stores_skipped=%.2f/vblank\n",
+                     byReason.c_str(), static_cast<double>(allWaits - std::min(allWaits, attributed)) / 600.0e6,
+                     static_cast<double>(s.storesSkipped_) / 600.0);
+        s.storesSkipped_ = 0;
         s.lastWaitNs_ = s.gpu_.Stats().waitNs;
         s.times_ = PhaseTimes{};
     }

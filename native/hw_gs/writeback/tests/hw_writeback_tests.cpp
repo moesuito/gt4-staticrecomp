@@ -3538,6 +3538,77 @@ cpuref::CaptureWriter Core2GpuReadAgeingCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-415 (GT4's streamed textures over its night render): a CT32 target drawn on the GPU and read as a T8 texture
+// (a GPU read, no readback), then an EE upload in another base pointer over its memory. Even frames upload 64 x 64
+// CT32 over pages 21-22, replacing the whole target page: no store is needed. Odd frames upload 64 x 16 over the
+// middle of the target page only: its drawn pixels must be stored first (IN-411). The T8 sprite then shows memory.
+cpuref::CaptureWriter Core2StreamOverRenderCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSource = 16, kUpload = 21, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    auto blit = [](uint64_t dbp, uint64_t dpsm) { return (dbp << 32) | (uint64_t{1} << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    auto tex0 = [](uint64_t blocks, uint64_t psm, uint64_t log2, uint64_t tfx) {
+        return blocks | (uint64_t{1} << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) |
+               (tfx << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // A grey ramp palette at page 14 and the source texture, as in the ageing stream.
+    ad({blit(14 * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> entries;
+        for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t a = 2 * i, b = 2 * i + 1;
+            entries.push_back(uint64_t{0x80000000u | (a * 0x010101u)} | (uint64_t{0x80000000u | (b * 0x010101u)} << 32));
+        }
+        image(entries);
+    }
+    ad({blit(kSource * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> texels;
+        for (uint32_t i = 0; i < 128; ++i) texels.push_back(uint64_t{0x80123456u + i * 0x00010203u} * 0x100000001ull);
+        image(texels);
+    }
+    const uint64_t readRender = tex0(kRender * 32, 0x13, 5, 0) | (uint64_t{14 * 32} << 37) | (uint64_t{1} << 61);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        // the render page drawn on the GPU, then A cleared and the render page read as a T8 texture
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            frameReg(kRender), 0x4C, tex0(kSource * 32, 0x00, 4, 1), 0x06, kSprite | kTme | kFst, 0x00,
+            rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(frame, 0), 0x05, uv(16, 16), 0x03, xyz(32 + frame, 32), 0x05,
+            frameReg(kA), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05, readRender,
+            0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(32, 32),
+            0x03, xyz(32, 32), 0x05});
+        // the upload from page 21: whole pages 21-22 (even frames) or 16 rows inside page 22 (odd frames)
+        const bool whole = frame % 2 == 0;
+        const uint32_t rows = whole ? 64 : 16;
+        ad({blit(kUpload * 32, 0x00), 0x50, whole ? 0 : uint64_t{40} << 48, 0x51, uint64_t{64} | (uint64_t{rows} << 32),
+            0x52, 0, 0x53});
+        std::vector<uint64_t> words;
+        for (uint32_t i = 0; i < 64 * rows / 2; ++i) {
+            words.push_back(uint64_t{0x80F0E0D0u - i - frame * 77u} | (uint64_t{0x80203040u + i + frame} << 32));
+        }
+        image(words);
+        // the render page read again, next to the first sprite
+        ad({readRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(32, 0), 0x05,
+            uv(32, 32), 0x03, xyz(64, 32), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -3632,6 +3703,18 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                             : 1;
                              },
                              true);
+    // IN-415: an upload replacing every page under a GPU-read target needs no store; a partial one still stores.
+    failures += CheckCore2Ab(handles, "stream over a GPU-read render", Core2StreamOverRenderCapture(4), 4,
+                             "GT4_CORE2_STORE_SKIP_WHOLE", true,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  stream over a GPU-read render: stores before write %llu / %llu, "
+                                             "targets replaced %llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                             static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                             static_cast<unsigned long long>(off.stats.targetsReplaced),
+                                             static_cast<unsigned long long>(on.stats.targetsReplaced));
+                                 return off.stats.storesBeforeWrite == 4 && on.stats.storesBeforeWrite == 2 ? 0 : 1;
+                             });
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
