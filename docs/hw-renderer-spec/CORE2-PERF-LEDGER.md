@@ -66,6 +66,7 @@ wall time of the whole emulator.
 | IN-432 | present resampling (Lanczos-2 down, FSR1 EASU up, optional RCAS) | quality feature; three small compute passes at the window size | yes | 303 |
 | IN-433 | forced bilinear option (forced, forced_no_sprite) | option, off by default | yes | 304 |
 | IN-434 | anisotropic filtering of mipmapped draws (GT4_CORE2_ANISO) | option, off by default; GPU time unchanged within noise at 16x | yes | 304 |
+| IN-435 | display reads in bands (12x dumps) | 12x: 1.6 GB of images, GPU 27 ms per VBlank | yes | 305 |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
 ## What we learned

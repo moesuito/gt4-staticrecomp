@@ -326,6 +326,13 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
    - the i5-7200U / HD 620 at 2x at full speed (owner F7/F8 over the laptop share);
    - D1 (hardware raster path) moves into the beta only if that GPU is the limit there.
 
+**Beta status (2026-10-29 night, candidate 305):** items 1-7 done (IN-427..IN-434), 12x checked (IN-435). Item 8,
+the laptop gate, waits for the owner. Decided to leave out of the beta (autonomous decision on the owner's "if it
+makes sense"): fractional scales (the integer scale is in every image size, patch, reduction and shader: a large
+refactor with a high risk of subtle faults, and the window resampling of IN-432 already gives an exact output size),
+GSdx-compatible texture replacement (needs the hash and naming from the TASK-026 specification team), D1 (only if the
+laptop's GPU is the limit). Frame skipping stays out (owner).
+
 **After the beta, for release 2.0.0** (owner requirements of 2026-10-27; the owner decides if any moves into the
 beta):
 - fractional scales and 12x (the scale is an integer everywhere today: a large refactor);

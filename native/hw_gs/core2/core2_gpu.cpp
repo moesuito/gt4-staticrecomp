@@ -2590,23 +2590,30 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
   const Image &source = presentScaled ? s.presentOut : fxaa ? s.fxaa : s.display;
   width = std::min(width, source.width);
   height = std::min(height, source.height);
-  const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes == 0 || bytes > kReadbackBytes) {
+  const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4u;
+  if (rowBytes == 0 || height == 0 || rowBytes > kReadbackBytes) {
     error = "CORE2 display read outside the readback buffer";
     return false;
   }
-  if (!s.begin_recording(error)) return false;
-  s.flush_draws();
-  s.end_render_pass();
-  s.full_barrier();  // a host read or a rare pass: ordered at once
-  VkBufferImageCopy region{};
-  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.imageExtent = {width, height, 1};
-  gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, source.image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
-  s.full_barrier();
-  if (!s.submit(true, error)) return false;
+  // IN-435: frames larger than the readback buffer (7680 x 5376 at 12x is 165 MB) are read in bands of rows.
+  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, kReadbackBytes / rowBytes));
   pixels.resize(static_cast<std::size_t>(width) * height);
-  std::memcpy(pixels.data(), s.readback.mapped, static_cast<std::size_t>(bytes));
+  for (std::uint32_t top = 0; top < height; top += bandRows) {
+    const std::uint32_t rows = std::min(bandRows, height - top);
+    if (!s.begin_recording(error)) return false;
+    s.flush_draws();
+    s.end_render_pass();
+    s.full_barrier();  // a host read or a rare pass: ordered at once
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageOffset = {0, static_cast<std::int32_t>(top), 0};
+    region.imageExtent = {width, rows, 1};
+    gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, source.image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
+    s.full_barrier();
+    if (!s.submit(true, error)) return false;
+    std::memcpy(pixels.data() + static_cast<std::size_t>(top) * width, s.readback.mapped,
+                static_cast<std::size_t>(rowBytes * rows));
+  }
   return true;
 }
 

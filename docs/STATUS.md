@@ -1,5 +1,29 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 beta candidate 305 (2026-10-29, waiting for the owner test)
+
+Branch `task/027-coregs2`, `build\hwr-play-scale.ps1` points at `O:\gt4recomp-scratch\coregs2-candidate-305`
+(gt4vulkan.exe sha256 b10cefd8...). Done overnight on the owner's beta list (`decisions/coregs2-beta-scope`):
+- 1x fixed (IN-427): the 3D scene shows at 1x (was HUD only).
+- Mipmapping and LOD (IN-428): GS mip levels and trilinear; distant asphalt less noisy. `GT4_CORE2_MIPMAP=0` A/B.
+- Pre-race camera-cut spike reduced (IN-429 batched readbacks, IN-430 merged dirty rectangles): 46 -> 40 ms once per
+  race start; in the race the only readback left is the game's own download.
+- Image memory budget (IN-431): texture cache 192 MiB on integrated GPUs (768 discrete); at 192 MiB the night race
+  needs 507 MB of images instead of 621 MB.
+- Presentation resampling to the exact window rectangle (IN-432): Lanczos-2 when shrinking (3x+ into 1080p, sharper
+  than the old blit), FSR1 EASU when growing (1x, 2x); FSR1 RCAS sharpening optional (`-Sharpen 0.2`).
+- Forced bilinear `GT4_HW_FILTER=forced|forced_no_sprite` (IN-433) and anisotropic filtering of mipmapped textures
+  `GT4_CORE2_ANISO=2..16` (IN-434), both off by default (`-Filter`, `-Aniso`).
+- 12x checked on the night race (1.6 GB of images, 27 ms of GPU per VBlank on the RX 9060 XT); frame dumps above the
+  64 MB readback buffer read in bands (IN-435).
+- Not in this beta (decided, see CORE2-ROADMAP "Beta closing plan"): fractional scales (integer scale everywhere, a
+  large refactor; the window resampling already gives an exact output size), texture replacement (needs the
+  GSdx-compatible hash and naming from the specification team), D1 hardware raster (only if the laptop's GPU is the
+  limit), frame skipping (owner).
+- Checks: CTest 252/253 in both interlock modes (python_native_contracts, the pin); night race 3x frames equal 301's
+  except a few wheel and road-marking pixels that vary run to run (a run with both new switches off varies the same);
+  title identical to 287; 1x renders; windowed run equals the forced-size headless frame.
+
 ## TASK-027 CoreGS 2.0: CORE2 rewrite and the shared scale defect (IN-401..IN-404, candidate 285)
 
 Branch `task/027-coregs2`. Owner baseline from 2026-10-28: a 1920 x 1080 window at 3x, 16:9, no ultrawide
