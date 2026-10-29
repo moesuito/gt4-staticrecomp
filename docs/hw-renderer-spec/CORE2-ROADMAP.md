@@ -197,7 +197,16 @@ proves otherwise.
     - read only the requested rectangle, never the target's whole drawn area;
     - copy into a persistently mapped buffer and wait on that copy's timeline value;
     - submit the frame's work in steady chunks, so that at a download the GPU has little left to do.
-- **B2. Texture cache** (2.5-3.9 ms):
+- **B2. Texture cache** (2.5-3.9 ms). **Measured 2026-10-28: not the bottleneck.**
+  - A content-keyed cache cut decodes from 200 to 15 per VBlank but cost more CPU than it saved (journal; IN-412/413
+    reverted).
+  - The texture and target time is mostly GLM page copies: EE uploads are swizzled on the CPU, and the changed pages
+    are then copied again into the GLM.
+  - Next instead:
+    - EE uploads written into the GLM on the GPU from the raw bytes (one copy);
+    - the IN-411 stores replaced by a GPU merge;
+    - the GS thread split in two (B5).
+  - Original item, kept for the record:
   - Find out why 236 textures are decoded per VBlank against 97 hits: page versions bumped by uploads or dirty
     patches that do not touch the texture, or palette changes.
   - Key the cache to the content that really changed.
