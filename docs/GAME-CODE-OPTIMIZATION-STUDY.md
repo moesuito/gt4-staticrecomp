@@ -6,6 +6,11 @@ fork, no `private/tooling/pcsx2-*`, no `private/slice189-pcsx2-ref` was opened; 
 black-box behaviour or as the owner's measured baseline). Nothing under `native/hw_gs/`, the `task/027-*` branches
 or the CoreGS 2.0 worktree was read or touched.
 
+**Code baseline (2026-10-29, owner request):** this branch is synced with the newest build, 1.3.0-rc7
+(`task/133-rc7-ra-controls` at `c21e934`): every program file is byte-identical to it. The study read the runtime at tag
+`v1.3.0-rc6`; rc7 is rc6 plus RetroAchievements and controller changes, and the only per-frame difference is the
+RetroAchievements hook (section 3.8). Every other finding applies to rc7 unchanged.
+
 Labels: **Confirmed** (measured in a log or read in code), **High confidence**, **Hypothesis**, **Unknown**.
 Times are ms per guest VBlank (one 60 Hz frame, budget 16.68 ms) unless stated.
 
@@ -418,6 +423,26 @@ on `gs_stream_ipc.cpp` or gt4-gs beyond bug fixes is planned here.
 - `std::map<std::string, std::uint64_t> syncs` is updated by name on every MTVU sync and deferral
   (`mtvu_runtime.cpp:141,445,604-616,699`), a string build and tree lookup per call (small, Confirmed in code).
 
+### 3.8 New in rc7: RetroAchievements on the EE thread
+
+Read at `c21e934` (Confirmed in code; costs Unknown, nothing was run):
+
+- `on_vblank()` now calls `gt4::achievements::on_vblank` on the EE thread, inside the `host_vblank` scope, after the
+  audio pump and before the present (`native/window.cpp` near line 365). When the player is not signed in to
+  RetroAchievements, or the game is Spec II, it returns after one atomic load (`native/achievements.cpp:182-184`).
+- Signed in on v2.00, it runs `rc_client_do_frame` every VBlank, which evaluates every active achievement condition
+  against guest RAM, then `overlay_.tick` (`achievements.cpp:190-198`). Network requests run on a separate worker
+  thread (`achievements.cpp:155`), so HTTP never blocks the EE.
+- The overlay is a layered window drawn with GDI+ over the **whole client area**, then `UpdateLayeredWindow` with
+  per-pixel alpha (`native/achievements_overlay.cpp:342-388,391-606`). It redraws on every VBlank while a toast animates
+  (an unlock, a progress notice) and whenever its content is dirty. At 1366x768 that is a software-rendered 4 MB ARGB
+  frame plus its upload to the desktop compositor every frame of the toast, on the EE critical path (Hypothesis:
+  several ms per frame on the laptop, so a visible hitch at every unlock; at 3440x1440 about 20 MB per frame).
+- Plan impact: P0 gives `achievements` its own scope (M13, M14); P1 gains item (g): draw the toast only in its own
+  rectangle (a small layered window sized to the toast) and render it off the EE thread, keeping the
+  `rc_client_do_frame` call where it is (it must read guest RAM at the VBlank). Both are host-only and invisible to
+  the game.
+
 ## 4. Ordered plan
 
 Every step is one variable with an A/B switch or a separate pinned build, as AGENTS.md requires. Gains are
@@ -428,7 +453,7 @@ unchanged. Effort is agent days, not counting builds.
 | Step | What | Laptop gain (Hypothesis) | Effort | Risk | Identity proof |
 |---|---|---|---|---|---|
 | **P0** | Measurement first: sub-scopes for `kernel_service` (delivery vs guest handlers), `host_vblank`, `iop_run` (interpreter / SPU2 mix / HLE); counters for run-loop iterations, IOP syncs, `dispatch()` calls and scope entries; a per-VBlank guest-state hash (EE RAM, IOP RAM, SPU2 RAM, CPU state) behind a switch; `--cpu-mask` for 2-core/4-thread runs; one WPR CPU profile on the desktop (M3) | none (diagnostics) | 2-3 | low | stream hash and frame dumps equal with the new counters on and off |
-| **P1** | Host quick wins, each behind its own switch: (a) build runtime, native and VU AOT code with `-msse4.1` (plus one `x86-64-v3` experiment build for M9, never shipped); (b) doorbell diet: statistics counters per thread instead of a locked add on the shared line, cache-line padding of both bells, power-of-two ring masks; (c) worker reads VIF batches in place (`try_peek`) instead of copying into a `std::vector`; (d) probe: one VIF scope per DMA chain, `SyscallScope` timing only inside F7..F8 intervals (counts kept), a cheaper clock; (e) pacing tail spin 0.5 ms -> about 0.15 ms with `_mm_pause` (measure timer lateness first); (f) MMCSS "Games" for the EE thread, EE and VU1 threads steered to different physical cores | EE 0.3-0.8; VU1 worker 0.5-1.5 (mostly 1a); ~0.1-0.3 W | 3-5 | low | stream hash, frame dumps, `GT4_MTVU_VERIFY=1` 0 mismatches, CTest/Python, laptop F8 |
+| **P1** | Host quick wins, each behind its own switch: (a) build runtime, native and VU AOT code with `-msse4.1` (plus one `x86-64-v3` experiment build for M9, never shipped); (b) doorbell diet: statistics counters per thread instead of a locked add on the shared line, cache-line padding of both bells, power-of-two ring masks; (c) worker reads VIF batches in place (`try_peek`) instead of copying into a `std::vector`; (d) probe: one VIF scope per DMA chain, `SyscallScope` timing only inside F7..F8 intervals (counts kept), a cheaper clock; (e) pacing tail spin 0.5 ms -> about 0.15 ms with `_mm_pause` (measure timer lateness first); (f) MMCSS "Games" for the EE thread, EE and VU1 threads steered to different physical cores; (g) RetroAchievements toast drawn only in its own small window and off the EE thread (section 3.8) | EE 0.3-0.8; VU1 worker 0.5-1.5 (mostly 1a); ~0.1-0.3 W | 3-5 | low | stream hash, frame dumps, `GT4_MTVU_VERIFY=1` 0 mismatches, CTest/Python, laptop F8 |
 | **P2** | Kernel delivery and run loop hygiene in a runtime overlay (section 3.2): no `std::vector` copy of the handler list per interrupt (copy only when the list changed), alarms in a small sorted array, flat thread and semaphore tables, the event queue without `std::function` calls per event, GetThreadId answered inline and the ChangeThreadPriority raise-self fast path; then whatever the P0 split of `kernel_service` shows outside the guest handlers. Never fewer iterations or larger slices: only cheaper ones | 0.1-0.4 (the guest handler code itself speeds up with P4 and P8) | 1-2 | medium | guest-state hash every 500 VBlanks, stream hash, syscall trace equal on a short schedule |
 | **P3** | IOP and SPU2, chosen by the P0 split: interpreter hygiene overlay (inline RAM fast path and the switch check, no `std::function` copy per event, no `std::map` scan per switch); if the mix dominates, a vectorised SPU2 mixer with identical integer output | 0.3-0.8 of the 1.27 ms | 2-4 | medium (audio timing, SIF) | audio PCM hash of the headless schedules, guest-state hash, card bytes after a save |
 | **P4** | Build-level speed for the translated code (`ee_dispatch` 4.9 ms in races, 6-8 ms in 3D menus), no change to the generated C++: (a) one compiler version for library and executable, then ThinLTO, then PGO from the headless schedules; (b) EE library rebuilt with `-msse4.1`; (c) `dispatch()` division -> shift | 5-15% of EE CPU (Hypothesis) | 3-5 | low | guest-state hash every VBlank on all schedules, stream hash, frame dumps; new library pin |
@@ -460,8 +485,10 @@ rule; `docs/FRAME-COST-STUDY.md` section 1.1 has the checker that waits for `nin
 
 **Desktop, per candidate (agent, headless, about 1 hour per variant):**
 
-1. Build the candidate in a fresh `private/sliceNNN-*` directory with its own pin; the baseline is the rc6 recipe
-   (pin `docs/inputs/slice303-pcsx2.json` at `v1.3.0-rc6`) or the newest pinned release.
+1. Build the candidate in a fresh `private/sliceNNN-*` directory with its own pin; the baseline is the rc7 build
+   (pins `docs/inputs/slice335-pcsx2.json` for v2.00 and `slice336-spec2.json` for Spec II; same EE library
+   `private/slice217-ee-aspect-producer` as rc6, so section 3.3 holds), measured with RetroAchievements signed out
+   unless the run measures section 3.8.
 2. **Main scene (owner, 2026-10-28): one fixed night race in Arcade Mode**, same car and same track every run; Arcade
    goes straight to the race and is predictable, while GT Mode needs a car bought on the card and many menu steps. The
    existing Arcade night schedule fits: Arcade > Single Race > City Courses > **Clubman Stage Route 5 (night)**, Ford
@@ -526,6 +553,8 @@ inferred (section 2.4).
 | M10 | Split of `kernel_service` (delivery overhead vs guest handler code) | P0 sub-scope |
 | M11 | Split of `host_vblank` (message pump, keyboard, SDL, audio pump, present) | P0 sub-scopes |
 | M12 | Whether clang really reloads guest registers after every guest store in the generated units | disassembly of two hot units (`llvm-objdump` of the pinned library), P0 |
+| M13 | Cost of `rc_client_do_frame` per VBlank with a real achievement set (signed in, v2.00) | P0 `achievements` scope, F8 with RetroAchievements on and off |
+| M14 | EE time per frame while an achievement toast animates, at 1366x768 and at the owner's 3440x1440 | same scope, an unlock or a test toast in a headless-like run |
 
 ## 7. Owner decisions (2026-10-28)
 

@@ -2,6 +2,9 @@
 
 ## TASK-134: game-code optimization study for the i5-7200U laptop (2026-10-28)
 
+2026-10-29: the branch is synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934; program files identical);
+the only per-frame change since rc6, the RetroAchievements hook on the EE thread, is in study section 3.8.
+
 Research and plan only (no code, build, benchmark or game run): [GAME-CODE-OPTIMIZATION-STUDY](GAME-CODE-OPTIMIZATION-STUDY.md),
 branch task/134-game-code-optimization-study. From the owner's laptop logs (rc6, Spec II, 1x, D3D11) the four busy
 threads use about 35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3, gt4-gs CPU thread 3.4, gt4-gs GS thread

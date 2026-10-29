@@ -2565,5 +2565,6 @@ done; v2.00 is already on the laptop; no more work on the GSdx bridge, the game-
 Test method: one fixed headless Arcade night race on the desktop (Clubman Stage Route 5, Ford Ka, 5 AI, plus its
 replay for the varied cameras; B-Spec exists only in GT Mode, which the owner ruled out); laptop runs by the owner with F7/F8 on builds the agent copies to the laptop's
 portable folder over the network, logs collected the same way.
-Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
+2026-10-29: branch synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934, program files identical); the
+RetroAchievements per-frame hook added to the study (section 3.8, P1g). Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
 task or branch as it starts.
