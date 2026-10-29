@@ -58,6 +58,12 @@ struct Core2Counters {
     std::uint64_t paletteRowsWritten = 0;      // IN-409: palette rows filled (CPU palettes and GPU CLUT expansions)
     std::uint64_t paletteRowHits = 0;          // IN-409: draws whose palette row was already filled
     std::uint64_t clutMultiTargetLoads = 0;    // IN-417: GPU CLUT loads read from the GLM over several or depth targets
+    std::uint64_t mipDraws = 0;           // C1: textured draws with TEX1.MXL > 0 and MMIN 2..5
+    std::uint64_t trilinearDraws = 0;     // C1: ... of which MMIN 3 or 5 (mip-linear)
+    std::uint64_t mipConstantLod = 0;     // C1: ... of which LCM = 1 (constant LOD K)
+    std::uint64_t mipMaxLevels = 0;       // C1: the largest MXL seen
+    std::uint64_t mipTextures = 0;        // IN-428: memory textures decoded with their mip levels
+    std::uint64_t mipLevelsDecoded = 0;   // IN-428: mip levels (1..MXL) decoded
     std::uint64_t pageExactDirties = 0;        // IN-416: writes turned into page-exact dirty rectangles
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
     std::uint64_t uploadCheckMismatches = 0;   // ... of which differed (also printed per upload)

@@ -1582,7 +1582,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   std::memcpy(static_cast<std::uint8_t *>(s.vertices.mapped) + vertexOffset, batch.vertices->data(),
               static_cast<std::size_t>(vertexBytes));
   gpu::GpuPixelState state = batch.state;
-  state.fields[gpu::gpufield::TexOriginX] = 0u;
+  state.fields[gpu::gpufield::TexOriginX] = batch.mipInfo;  // IN-428: the mip parameters (0 without mips)
   state.fields[gpu::gpufield::TexOriginY] = paletted ? static_cast<std::uint32_t>(batch.paletteRow) : 0u;
   if (paletted) state.fields[gpu::gpufield::TexelKind] = 3u;  // HW_TEXEL_INDEXED
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
@@ -1633,7 +1633,8 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // tex_scale: s for a texture sampled from a target (binding 4) with bit 24 set (IN-427: at 1x the scale alone could
   // not tell it from the atlas), 1 for the atlas; at scale the fine dither (8.6) and the floored rasteriser depth (1.6)
   // are on.
-  record.push[7] = (batch.texture != kNoImage ? (sc | 0x01000000u) : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u);
+  record.push[7] = (batch.texture != kNoImage ? (sc | 0x01000000u) : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u) |
+                   (batch.mipInfo != 0 ? 0x00800000u : 0u);  // IN-428: tex_origin_x holds the mip parameters
   record.textureFromTarget = batch.texture != kNoImage;
   if (s.profiling) {
     namespace g = gpu::gpufield;
@@ -1769,10 +1770,11 @@ bool Gpu::UploadGlm(const std::uint8_t *memory,
 }
 
 bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
-                        std::uint32_t height, const std::uint32_t *palette, std::string &error) {
+                        std::uint32_t height, const std::uint32_t *palette, std::string &error, std::uint32_t originX,
+                        std::uint32_t originY) {
   Impl &s = *impl_;
   const Image *image = s.image_of(id);
-  if (!image || width > image->width || height > image->height) {
+  if (!image || originX + width > image->width || originY + height > image->height) {
     error = "CORE2 texture decode outside its image";
     return false;
   }
@@ -1817,6 +1819,8 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   push[3] = width;
   push[4] = height;
   push[5] = palette ? 1u : 0u;
+  push[12] = originX;  // IN-428: a mip level's place in the texture image
+  push[13] = originY;
   push[20] = windowBase;  // IN-422
   push[21] = windowWords;
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodePipeline);
@@ -1896,10 +1900,11 @@ void Gpu::SetDecodeWindow(const std::uint8_t *memory, std::uint32_t firstPage, s
 }
 
 bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
-                               std::uint32_t height, const GpuPalette &palette, std::string &error) {
+                               std::uint32_t height, const GpuPalette &palette, std::string &error, std::uint32_t originX,
+                               std::uint32_t originY) {
   Impl &s = *impl_;
   const Image *image = s.image_of(id);
-  if (!image || width > image->width || height > image->height) {
+  if (!image || originX + width > image->width || originY + height > image->height) {
     error = "CORE2 texture decode outside its image";
     return false;
   }
@@ -1944,6 +1949,8 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
   push[9] = static_cast<std::uint32_t>(palette.texa & 0xFFu);          // TEXA.TA0
   push[10] = static_cast<std::uint32_t>((palette.texa >> 32) & 0xFFu); // TEXA.TA1
   push[11] = static_cast<std::uint32_t>((palette.texa >> 15) & 1u);    // TEXA.AEM
+  push[12] = originX;  // IN-428
+  push[13] = originY;
   push[20] = windowBase;  // IN-422
   push[21] = windowWords;
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodePipeline);

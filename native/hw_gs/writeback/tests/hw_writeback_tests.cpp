@@ -3723,6 +3723,111 @@ cpuref::CaptureWriter Core2TargetTextureCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-428 (C1): a 16 x 16 CT32 texture whose levels are solid red (level 0), green (level 1, 8 x 8, MIPTBP1) and blue
+// (level 2, 4 x 4), MXL 2, drawn as five 16 x 16 FST sprites into page 0 with constant LOD K (LCM = 1):
+//   x 0-15: MMIN 2 (nearest mip nearest), K = 1.0 -> level 1 (green);
+//   x 16-31: MMIN 2, K = 2.0 -> level 2 (blue);
+//   x 32-47: MMIN 3 (nearest mip linear), K = 0.5 -> levels 0 and 1 blended half and half;
+//   x 48-63: MMIN 1 (linear, no mip levels), K = 1.0 -> level 0 (red);
+//   x 0-15, y 16-31: MMIN 2, K = -1.0 (magnification) -> level 0 (red).
+cpuref::CaptureWriter Core2MipCapture() {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kLevel0 = 16, kLevel1 = 17, kLevel2 = 18;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto blit = [](uint64_t dbp) { return (dbp << 32) | (uint64_t{1} << 48); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    auto solid = [&](uint64_t page, uint32_t side, uint32_t colour) {
+        ad({blit(page * 32), 0x50, 0, 0x51, uint64_t{side} | (uint64_t{side} << 32), 0x52, 0, 0x53});
+        image(std::vector<uint64_t>(side * side / 2, uint64_t{colour} * 0x100000001ull));
+    };
+    solid(kLevel0, 16, 0x800000FFu);
+    solid(kLevel1, 8, 0x8000FF00u);
+    solid(kLevel2, 4, 0x80FF0000u);
+    const uint64_t tex0 = uint64_t{kLevel0 * 32} | (uint64_t{1} << 14) | (uint64_t{4} << 26) | (uint64_t{4} << 30) |
+                          (uint64_t{1} << 34) | (uint64_t{1} << 35);  // CT32 16 x 16, TCC, decal
+    const uint64_t miptbp1 = uint64_t{kLevel1 * 32} | (uint64_t{1} << 14) | (uint64_t{kLevel2 * 32} << 20) |
+                             (uint64_t{1} << 34);
+    auto tex1 = [](uint64_t mmin, int k16) {
+        return 1u | (uint64_t{2} << 2) | (mmin << 6) | (static_cast<uint64_t>(static_cast<uint32_t>(k16) & 0xFFFu) << 32);
+    };
+    std::vector<uint64_t> w = {(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,
+                               uint64_t{1} << 32, 0x4E, kA | (uint64_t{1} << 16), 0x4C, tex0, 0x06, miptbp1, 0x34};
+    auto sprite = [&](uint32_t x, uint32_t y, uint64_t mmin, int k16) {
+        w.insert(w.end(), {tex1(mmin, k16), 0x14, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03,
+                           xyz(x, y), 0x05, uv(16, 16), 0x03, xyz(x + 16, y + 16), 0x05});
+    };
+    sprite(0, 0, 2, 16);
+    sprite(16, 0, 2, 32);
+    sprite(32, 0, 3, 8);
+    sprite(48, 0, 1, 16);
+    sprite(0, 16, 2, -16);
+    ad(w);
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_mipmaps (IN-428): the five sprites above at 1x and 3x, every pixel the expected level colour; with
+// GT4_CORE2_MIPMAP=0 every sprite shows level 0.
+int TestCore2Mipmaps(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    struct Expect {
+        uint32_t x0, y0;
+        uint32_t colour;
+        const char* what;
+    };
+    const Expect expected[] = {{0, 0, 0x8000FF00u, "MMIN 2, LOD 1: level 1"},
+                               {16, 0, 0x80FF0000u, "MMIN 2, LOD 2: level 2"},
+                               {32, 0, 0x80007F7Fu, "MMIN 3, LOD 0.5: levels 0 and 1 half and half"},
+                               {48, 0, 0x800000FFu, "MMIN 1: level 0"},
+                               {0, 16, 0x800000FFu, "LOD -1: level 0 (magnification)"}};
+    for (uint32_t scale : {1u, 3u}) {
+        for (bool mips : {true, false}) {
+            Core2AbRun run;
+            std::string error;
+            if (!ReplayCore2Ab(handles, Core2MipCapture(), "GT4_CORE2_MIPMAP", mips, run, error, 0, scale) ||
+                run.memory.empty() || run.memory.back().empty()) {
+                std::printf("  mipmaps %ux: replay failed: %s\n", scale, error.c_str());
+                ++failures;
+                continue;
+            }
+            memory::LocalMemory local;
+            std::memcpy(local.bytes().data(), run.memory.back().data(), kGsMemoryBytes);
+            const memory::BufferView frame{0, 1, memory::Psm::Ct32};
+            for (const Expect& e : expected) {
+                const uint32_t want = mips ? e.colour : 0x800000FFu;
+                uint32_t wrong = 0, sample = 0;
+                for (uint32_t y = e.y0; y < e.y0 + 16; ++y) {
+                    for (uint32_t x = e.x0; x < e.x0 + 16; ++x) {
+                        const uint32_t got = local.readPixel(frame, x, y);
+                        if (got != want) {
+                            if (wrong == 0) sample = got;
+                            ++wrong;
+                        }
+                    }
+                }
+                std::printf("  mipmaps %ux %s: %s: %u of 256 pixels wrong%s\n", scale, mips ? "on" : "off", e.what, wrong,
+                            wrong ? (" (first " + std::to_string(sample) + ")").c_str() : "");
+                if (wrong) ++failures;
+            }
+        }
+    }
+    std::printf("hw_core2_mipmaps: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -4530,6 +4635,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
+    if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     std::printf("unknown test: %s\n", name.c_str());
     return 2;
 }

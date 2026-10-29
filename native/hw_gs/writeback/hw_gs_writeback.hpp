@@ -219,6 +219,7 @@ struct TextureKey {
     uint32_t tbp = 0, tbw = 0, psm = 0, width = 0, height = 0;
     uint32_t ta0 = 0, ta1 = 0, aem = 0;
     uint64_t paletteHash = 0;
+    uint64_t mipHash = 0;  // IN-428 (CORE2): the mip levels decoded next to level 0, 0 = level 0 only
     bool operator==(const TextureKey&) const = default;
 };
 

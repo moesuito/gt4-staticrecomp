@@ -108,6 +108,15 @@ uint g_tex_scale = 1u;  // pc.tex_scale without the filter/dither bits
 // (1) also meant "the 1x texel atlas", so core 2 read the atlas instead of the target and GT4's scene copies came out
 // black (only the HUD showed).
 bool g_texture_from_target = false;
+// IN-428 (CORE2, C1): bit 23 says tex_origin_x holds the mip parameters of a memory texture whose levels 1..MXL sit
+// right of level 0 in the same image (level n >= 1 at x = 2^TW, y = 2^TH - (2^TH >> (n - 1)), max(1, size >> n)):
+// bits 0-2 MXL, 3-5 MMIN, 6 LCM, 7-8 L, 9-20 K (signed, 4 fraction bits). Spec 3.6 "full" mode, base level 0.
+bool g_mip = false;
+uint g_mip_mxl = 0u;
+uint g_mip_mmin = 0u;
+bool g_mip_lcm = false;
+uint g_mip_l = 0u;
+int g_mip_k = 0;
 // IN-384 follow-up (Q-GSDX-COMPARISON section 2): the reference indexes the dither matrix with the raw fragment
 // coordinate (one cell = 4x4 OUTPUT pixels) and only offers the per-native-pixel pattern as an option; ours always
 // divided by the scale, so one cell covered s x s output pixels (24x24 at 6x, doubled vertically on a 480i field:
@@ -185,6 +194,83 @@ ivec4 fetch_texel_scaled(int x, int y, int s) {
     return hw_texel_colour(state.texel_kind, raw, state.ta0, state.ta1, state.aem != 0u);
 }
 
+// IN-428: one texel of mip level `level` (0..MXL) of a memory texture laid out as described at g_mip.
+ivec4 fetch_level(int level, int x, int y) {
+    int ox = 0;
+    int oy = 0;
+    if (level > 0) {
+        int h = 1 << int(state.tex_log2_h);
+        ox = 1 << int(state.tex_log2_w);
+        oy = h - (h >> (level - 1));
+    }
+    if (state.texel_kind == HW_TEXEL_INDEXED) {
+        uint index = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x & 255u;
+        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
+        return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, state.aem != 0u);
+    }
+    uint raw = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x;
+    return hw_texel_colour(state.texel_kind, raw, state.ta0, state.ta1, state.aem != 0u);
+}
+
+// IN-428: SampleTexture on mip level `level`: coordinates, sizes and clamp bounds halved once per level (03.6).
+ivec4 sample_level(int level, int uvs, int uvt, bool linear) {
+    uint lw = uint(max(int(state.tex_log2_w) - level, 0));
+    uint lh = uint(max(int(state.tex_log2_h) - level, 0));
+    uint min_s = state.wrap_min_s >> level, max_s = state.wrap_max_s >> level;
+    uint min_t = state.wrap_min_t >> level, max_t = state.wrap_max_t >> level;
+    int s = uvs >> level;
+    int t = uvt >> level;
+    if (!linear) {
+        int x = wrap_texel(s >> 4, lw, state.wrap_s, min_s, max_s);
+        int y = wrap_texel(t >> 4, lh, state.wrap_t, min_t, max_t);
+        return fetch_level(level, x, y);
+    }
+    int bs = s - 8;
+    int bt = t - 8;
+    int x0 = wrap_texel(bs >> 4, lw, state.wrap_s, min_s, max_s);
+    int x1 = wrap_texel((bs >> 4) + 1, lw, state.wrap_s, min_s, max_s);
+    int y0 = wrap_texel(bt >> 4, lh, state.wrap_t, min_t, max_t);
+    int y1 = wrap_texel((bt >> 4) + 1, lh, state.wrap_t, min_t, max_t);
+    int fx = bs & 15;
+    int fy = bt & 15;
+    ivec4 c00 = fetch_level(level, x0, y0);
+    ivec4 c10 = fetch_level(level, x1, y0);
+    ivec4 c01 = fetch_level(level, x0, y1);
+    ivec4 c11 = fetch_level(level, x1, y1);
+    return (c00 * ((16 - fx) * (16 - fy)) + c10 * (fx * (16 - fy)) + c01 * ((16 - fx) * fy) + c11 * (fx * fy)) >> 8;
+}
+
+// IN-428: the GS LOD (01.5): LCM = 0 gives log2(1/|Q|) * 2^L + K/16, LCM = 1 (or FST) K/16. LOD <= 0 uses MMAG at
+// level 0; otherwise MMIN: 2/4 the nearest level (round half up), 3/5 a blend of the two levels around the LOD
+// (weight in 1/256 steps, Hypothesis); 0/1 level 0. Levels clamp to [0, MXL].
+ivec4 sample_mipmapped(int uvs, int uvt, float q) {
+    float lod = float(g_mip_k) / 16.0;
+    if (!g_mip_lcm && state.tex_fst == 0u) {
+        float magnitude = abs(q);
+        lod = magnitude > 0.0 ? lod - log2(magnitude) * float(1u << g_mip_l) : 1.0e9;
+    }
+    if (lod <= 0.0 || g_mip_mmin < 2u) {
+        bool linear = lod <= 0.0 ? state.tex_linear != 0u : (g_mip_mmin & 1u) != 0u;
+        return sample_level(0, uvs, uvt, linear);
+    }
+    float top = float(g_mip_mxl);
+    lod = min(lod, top);
+    bool linear_in_level = g_mip_mmin >= 4u;
+    if (g_mip_mmin == 2u || g_mip_mmin == 4u) {
+        int level = int(min(floor(lod + 0.5), top));
+        return sample_level(level, uvs, uvt, linear_in_level);
+    }
+    int level0 = int(floor(lod));
+    int level1 = min(level0 + 1, int(g_mip_mxl));
+    int weight = int(floor((lod - float(level0)) * 256.0));
+    ivec4 a = sample_level(level0, uvs, uvt, linear_in_level);
+    if (level1 == level0 || weight == 0) {
+        return a;
+    }
+    ivec4 b = sample_level(level1, uvs, uvt, linear_in_level);
+    return (a * (256 - weight) + b * weight) >> 8;
+}
+
 // The texture at s x s texels per native texel: the coordinate times s, the same 4-bit weights.
 ivec4 sample_texture_scaled(int uvs, int uvt, int s) {
     if (state.tex_linear == 0u && !g_force_linear) {
@@ -248,8 +334,17 @@ void main() {
     g_dither_fine = (pc.tex_scale & 0x40000000u) != 0u;
     // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale; IN-392: bit 28 asks for the
     // position depth below.
-    g_tex_scale = pc.tex_scale & 0x00FFFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    g_tex_scale = pc.tex_scale & 0x007FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
     g_texture_from_target = (pc.tex_scale & 0x01000000u) != 0u;
+    g_mip = (pc.tex_scale & 0x00800000u) != 0u;
+    if (g_mip) {
+        uint info = state.tex_origin_x;
+        g_mip_mxl = info & 7u;
+        g_mip_mmin = (info >> 3) & 7u;
+        g_mip_lcm = ((info >> 6) & 1u) != 0u;
+        g_mip_l = (info >> 7) & 3u;
+        g_mip_k = int(info << 11) >> 20;  // bits 9-20, sign extended
+    }
     const bool depth_from_position = (pc.tex_scale & 0x10000000u) != 0u;
 
     HwPixelState s;
@@ -296,8 +391,9 @@ void main() {
             uvs = to_texel_104((in_st.x / q) * scale_s);
             uvt = to_texel_104((in_st.y / q) * scale_t);
         }
-        ivec4 texel = (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
-                                                                  : sample_texture(uvs, uvt);
+        ivec4 texel = g_mip ? sample_mipmapped(uvs, uvt, in_q)
+                      : (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
+                                                                     : sample_texture(uvs, uvt);
         if ((pc.tex_scale & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
         colour = hw_texture_function(state.tfx, state.tcc != 0u, texel, frag);
     }

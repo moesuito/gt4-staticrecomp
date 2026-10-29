@@ -22,6 +22,7 @@
 #include "hw_gs_display.hpp"
 #include "hw_gs_registers.hpp"
 #include "hw_gs_types.hpp"
+#include "hw_gs_lod.hpp"
 #include "hw_memory.hpp"
 #include "../cpuref/cpuref_draw.hpp"
 #include "../cpuref/cpuref_memory.hpp"
@@ -284,7 +285,7 @@ struct TextureEntry {
 constexpr std::uint64_t kTextureCacheBytes = static_cast<std::uint64_t>(768) << 20;  // 1x texels kept on the GPU
 
 std::uint64_t KeyHash(const writeback::TextureKey &k) {
-    const std::uint64_t words[] = {k.tbp, k.tbw, k.psm, k.width, k.height, k.ta0, k.ta1, k.aem, k.paletteHash};
+    const std::uint64_t words[] = {k.tbp, k.tbw, k.psm, k.width, k.height, k.ta0, k.ta1, k.aem, k.paletteHash, k.mipHash};
     std::uint64_t hash = 1469598103934665603ull;
     for (std::uint64_t w : words) {
         hash ^= w;
@@ -1020,7 +1021,60 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // A texture from GS memory (3.7): decoded on the GPU into a 1x image, kept while its pages are unchanged; the
     // least recently used textures go when the cache is over its budget.
-    ImageId MemoryTexture(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa) {
+    // IN-428: the smallest circular block range holding both spans.
+    static BlockSpan UnionSpans(const BlockSpan &a, const BlockSpan &b) {
+        if (a.count >= kAllBlocks || b.count >= kAllBlocks) return BlockSpan{0, kAllBlocks};
+        if (a.count == 0) return b;
+        if (b.count == 0) return a;
+        const std::uint64_t fromA = std::max<std::uint64_t>(a.count, ((b.begin + kAllBlocks - a.begin) % kAllBlocks) + std::uint64_t{b.count});
+        const std::uint64_t fromB = std::max<std::uint64_t>(b.count, ((a.begin + kAllBlocks - b.begin) % kAllBlocks) + std::uint64_t{a.count});
+        if (fromA <= fromB) return BlockSpan{a.begin, static_cast<std::uint32_t>(std::min<std::uint64_t>(fromA, kAllBlocks))};
+        return BlockSpan{b.begin, static_cast<std::uint32_t>(std::min<std::uint64_t>(fromB, kAllBlocks))};
+    }
+
+    // IN-428 (C1, spec 3.6 "full" mode with base level 0): a mip draw's levels 1..MXL, decoded right of level 0 in the
+    // same image (level n >= 1 at x = 2^TW, y = 2^TH - (2^TH >> (n - 1))), and the parameters the pixel shader needs.
+    // Only for memory textures without region wrap (their extent is 2^TW x 2^TH); the rest keep level 0.
+    // GT4_CORE2_MIPMAP=0 samples level 0 only (A/B).
+    const bool mipmap_ = std::getenv("GT4_CORE2_MIPMAP") == nullptr || std::strcmp(std::getenv("GT4_CORE2_MIPMAP"), "0") != 0;
+    struct MipPlan {
+        std::uint32_t levels = 0;  // 0: level 0 only
+        std::uint32_t info = 0;    // the shader's packed parameters
+        std::uint32_t imageWidth = 0, imageHeight = 0;
+        std::uint64_t hash = 0;
+        std::array<lod::MipLevelAddress, 7> address{};
+        std::array<lod::MipSize, 7> size{};
+    };
+    MipPlan PlanMips(const writeback::BatchTranslation &t, std::uint64_t tex1, std::uint64_t miptbp1,
+                     std::uint64_t miptbp2) const {
+        MipPlan plan;
+        if (!mipmap_) return plan;
+        const lod::Tex1Fields f = lod::decode_tex1(tex1);
+        if (f.mxl == 0 || f.mmin < 2 || f.mmin > 5) return plan;
+        const std::uint32_t tw = t.state.fields[gpu::gpufield::TexLog2W];
+        const std::uint32_t th = t.state.fields[gpu::gpufield::TexLog2H];
+        if (tw > 10 || th > 10 || t.texWidth != (1u << tw) || t.texHeight != (1u << th)) return plan;
+        const std::uint32_t levels = std::min<std::uint32_t>(f.mxl, 6u);
+        const bool packed = lod::mtba_applies(f.mtba, tw, t.glmPsm);
+        const std::array<lod::MipLevelAddress, 3> packedLevels =
+            packed ? lod::mtba_levels(t.glmBp, tw, t.glmPsm) : std::array<lod::MipLevelAddress, 3>{};
+        std::uint64_t hash = 0x6D69705F6C76ull ^ levels;
+        for (std::uint32_t n = 1; n <= levels; ++n) {
+            plan.address[n] = packed && n <= 3 ? packedLevels[n - 1] : lod::mip_level_address(n, t.glmBp, t.glmBw, miptbp1, miptbp2);
+            plan.size[n] = lod::mip_level_size(tw, th, n);
+            hash = (hash ^ (static_cast<std::uint64_t>(plan.address[n].tbp) << 8 | plan.address[n].tbw)) * 1099511628211ull;
+        }
+        plan.levels = levels;
+        plan.imageWidth = (1u << tw) + std::max(1u, (1u << tw) >> 1);
+        plan.imageHeight = 1u << th;
+        plan.hash = hash | 1u;
+        plan.info = levels | (f.mmin << 3) | ((f.lcm ? 1u : 0u) << 6) | ((f.l & 3u) << 7) |
+                    ((static_cast<std::uint32_t>(f.k_raw) & 0xFFFu) << 9);
+        return plan;
+    }
+
+    ImageId MemoryTexture(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa, std::uint64_t tex1,
+                          std::uint64_t miptbp1, std::uint64_t miptbp2, std::uint32_t &mipInfo) {
         ScopedUs timer(times_.texture);
         writeback::TextureKey key;
         key.tbp = t.glmBp;
@@ -1041,12 +1095,25 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 key.aem = static_cast<std::uint32_t>((texa >> 15) & 1u);
             }
         }
+        const MipPlan mip = PlanMips(t, tex1, miptbp1, miptbp2);
+        mipInfo = mip.info;
+        if (mip.levels > 0) {
+            key.width = mip.imageWidth;
+            key.height = mip.imageHeight;
+            key.mipHash = mip.hash;
+            stats.mipTextures++;
+        }
         const std::uint64_t hash = KeyHash(key);
         const auto texturePsm = memory::decodePsm(t.glmPsm);
         if (!texturePsm) return kNoImage;
-        const BlockSpan textureSpan =
+        BlockSpan textureSpan =
             SpanOfRect(BufferView{t.glmBp, t.glmBw, *texturePsm}, 0, 0, static_cast<std::int32_t>(t.texWidth) - 1,
                        static_cast<std::int32_t>(t.texHeight) - 1);
+        for (std::uint32_t n = 1; n <= mip.levels; ++n) {  // IN-428: every level's blocks
+            textureSpan = UnionSpans(textureSpan, SpanOfRect(BufferView{mip.address[n].tbp, mip.address[n].tbw, *texturePsm}, 0,
+                                                             0, static_cast<std::int32_t>(mip.size[n].width) - 1,
+                                                             static_cast<std::int32_t>(mip.size[n].height) - 1));
+        }
         // IN-408: a texture over drawn targets reads them through the GLM, written on the GPU; such a decode is not
         // kept, since the targets change without GS memory page versions changing.
         bool overTargets = false;
@@ -1087,13 +1154,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (found != textures_.end()) ForgetTexture(found);
         const auto psm = memory::decodePsm(t.glmPsm);
         if (!psm) return kNoImage;
-        const BufferView view{t.glmBp, t.glmBw, *psm};
-        const BlockSpan span = SpanOfRect(view, 0, 0, static_cast<std::int32_t>(t.texWidth) - 1,
-                                          static_cast<std::int32_t>(t.texHeight) - 1);
+        const BlockSpan span = textureSpan;  // level 0, and every mip level (IN-428)
         // IN-422: a texture over no drawn target reads a copy of its pages taken from CPU memory (current for them)
         // instead of the GLM: no GLM upload, and no barrier between that upload and the decode.
         std::uint32_t windowFirst = 0, windowPages = 0;
-        const bool window = decodeWindow_ && !overTargets && span.count < kAllBlocks && span.count != 0 &&
+        const bool window = decodeWindow_ && !overTargets && mip.levels == 0 && span.count < kAllBlocks && span.count != 0 &&
                             [&] {
                                 windowFirst = span.begin / memory::kBlocksPerPage;
                                 const std::uint32_t lastPage = (span.begin + span.count - 1u) / memory::kBlocksPerPage;
@@ -1106,36 +1171,46 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (!MaterializeTargets(span, any)) return kNoImage;
             stats.texturesOverTargets++;
         }
-        const ImageId image = TextureImage(t.texWidth, t.texHeight);
+        const ImageId image = TextureImage(key.width, key.height);
         if (image == kNoImage) return kNoImage;
         if (window) gpu_.SetDecodeWindow(memory_.Local().bytes().data(), windowFirst, windowPages);
         std::string error;
-        if (t.glmIndexed && paletteRows_) {
-            if (!gpu_.DecodeTexture(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight, nullptr, error)) {
-                Fail(error);
-                return kNoImage;
+        if (gpuPalette != 0 && !(t.glmIndexed && paletteRows_) && !FlushClutMirror()) return kNoImage;
+        // One level (level 0, or a mip level at its place right of level 0, IN-428), decoded the way the texture needs.
+        auto decodeLevel = [&](std::uint32_t bp, std::uint32_t bw, std::uint32_t width, std::uint32_t height,
+                               std::uint32_t originX, std::uint32_t originY) {
+            if (t.glmIndexed && paletteRows_) {
+                return gpu_.DecodeTexture(image, bp, bw, t.glmPsm, width, height, nullptr, error, originX, originY);
             }
-        } else if (gpuPalette != 0) {
-            if (!FlushClutMirror()) return kNoImage;
-            GpuPalette palette;
-            palette.cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
-            palette.csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
-            palette.texa = texa;
-            if (!gpu_.DecodeTextureGpuClut(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight, palette, error)) {
-                Fail(error);
-                return kNoImage;
+            if (gpuPalette != 0) {
+                GpuPalette palette;
+                palette.cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
+                palette.csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
+                palette.texa = texa;
+                stats.gpuPaletteDecodes++;
+                return gpu_.DecodeTextureGpuClut(image, bp, bw, t.glmPsm, width, height, palette, error, originX, originY);
             }
-            stats.gpuPaletteDecodes++;
-        } else if (!gpu_.DecodeTexture(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight,
-                                       t.glmIndexed ? t.palette.data() : nullptr, error)) {
+            return gpu_.DecodeTexture(image, bp, bw, t.glmPsm, width, height, t.glmIndexed ? t.palette.data() : nullptr,
+                                      error, originX, originY);
+        };
+        if (!decodeLevel(t.glmBp, t.glmBw, t.texWidth, t.texHeight, 0, 0)) {
             Fail(error);
             return kNoImage;
+        }
+        for (std::uint32_t n = 1; n <= mip.levels; ++n) {
+            const std::uint32_t originY = t.texHeight - (t.texHeight >> (n - 1));
+            if (!decodeLevel(mip.address[n].tbp, mip.address[n].tbw, mip.size[n].width, mip.size[n].height, t.texWidth,
+                             originY)) {
+                Fail(error);
+                return kNoImage;
+            }
+            stats.mipLevelsDecoded++;
         }
         if (overTargets) {
             // IN-408: decoded from targets' pixels written into the GLM, which change without GS memory page versions
             // changing: never kept (a later hit would show the targets as they were, GT4's title backdrop after GT
             // Mode). The image goes back to the pool at the next VBlank, after every draw that sampled it.
-            uncachedTextures_.push_back({image, SizeKey(t.texWidth, t.texHeight)});
+            uncachedTextures_.push_back({image, SizeKey(key.width, key.height)});
             return image;
         }
         TextureEntry entry;
@@ -1143,7 +1218,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         entry.span = span;
         entry.sequence = writeSequence_;
         entry.image = image;
-        entry.bytes = static_cast<std::uint64_t>(t.texWidth) * t.texHeight * 4u;
+        entry.bytes = static_cast<std::uint64_t>(key.width) * key.height * 4u;
         entry.lastUse = ++textureUses_;
         textureBytes_ += entry.bytes;
         textures_[hash] = entry;
@@ -2144,7 +2219,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
         if (t.hasTexture && draw.texture == kNoImage) {
             if (!t.glmTexture) return;  // every memory texture is decoded on the GPU (the hook above)
-            draw.memoryTexture = MemoryTexture(t, batch.state.ctx.tex0, batch.state.env.texa);
+            draw.memoryTexture = MemoryTexture(t, batch.state.ctx.tex0, batch.state.env.texa, batch.state.ctx.tex1,
+                                               batch.state.ctx.miptbp1, batch.state.ctx.miptbp2, draw.mipInfo);
             if (draw.memoryTexture == kNoImage) return;
             if (t.glmIndexed && paletteRows_) {
                 draw.paletteRow = PaletteRow(t, batch.state.ctx.tex0, batch.state.env.texa);
@@ -2278,6 +2354,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         if (d1Stats_) NoteD1Class(t, draw);
+        if (t.hasTexture) {  // C1 survey: draws that ask for mip levels (TEX1.MXL > 0 and MMIN 2..5)
+            const std::uint64_t tex1 = batch.state.ctx.tex1;
+            const std::uint32_t mxl = static_cast<std::uint32_t>((tex1 >> 2) & 7u);
+            const std::uint32_t mmin = static_cast<std::uint32_t>((tex1 >> 6) & 7u);
+            if (mxl > 0 && mmin >= 2 && mmin <= 5) {
+                stats.mipDraws++;
+                if (mmin == 3 || mmin == 5) stats.trilinearDraws++;
+                if ((tex1 & 1u) != 0) stats.mipConstantLod++;
+                stats.mipMaxLevels = std::max<std::uint64_t>(stats.mipMaxLevels, mxl);
+            }
+        }
         std::string error;
         bool drawn = false;
         {
@@ -2582,7 +2669,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
-                 "waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f\n",
+                 "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
                  (unsigned long long)c.texturesFromTargets, (unsigned long long)c.texturesFromMemory,
@@ -2601,7 +2688,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
-                 (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
+                 (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
 }
 
 }  // namespace

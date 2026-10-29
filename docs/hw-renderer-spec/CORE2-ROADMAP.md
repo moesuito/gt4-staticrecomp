@@ -308,7 +308,7 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
 
 **Beta (must):**
 1. **Core 2 at 1x:** done (IN-427, candidate 300).
-2. **C1 mipmapping and LOD** (a GS feature GT4 uses): less shimmer on the track and trees, the map's thin lines.
+2. **C1 mipmapping and LOD:** done (IN-428, candidate 301).
 3. **Phase E spec step 3 audit:** T8 from a target, the 16-from-32 shuffle, depth as a texture, GPU local-to-local
    moves, the alpha-only tone variant. Find which paths GT4 still takes through CPU fallbacks or readbacks; fix the
    wrong ones, count the slow ones.
@@ -318,8 +318,8 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
    - the IN-411 stores in the owner's menus.
 5. **A memory budget** for target and texture images: about 630 MB at 3x now, and the HD 620 laptop shares system
    memory.
-6. **C3 CAS sharpening** (the launcher already offers it for GSdx). Written from AMD's MIT FidelityFX CAS, never a
-   GPL copy.
+6. **C3 FSR1 sharpening** (owner, 2026-10-29: FSR1 replaces CAS). Written from AMD's MIT FidelityFX FSR1 (EASU and
+   RCAS), never a GPL copy.
 7. **C2 present resampling:** a sharper downscale when the internal size is above the window (supersampling).
 8. **The laptop gate:**
    - the i5-7200U / HD 620 at 2x at full speed (owner F7/F8 over the laptop share);

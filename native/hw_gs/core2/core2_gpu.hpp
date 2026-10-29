@@ -37,6 +37,8 @@ struct DrawBatch {
     // IN-409: memoryTexture holds CLUT indices; their colours are row `paletteRow` of image `palettes` (-1: none).
     ImageId palettes = kNoImage;
     std::int32_t paletteRow = -1;
+    // IN-428: the mip parameters of memoryTexture (0: level 0 only), packed as hw_pixel_uber.frag g_mip describes.
+    std::uint32_t mipInfo = 0;
 };
 
 // Diagnostics for the F8 report and the replay summary.
@@ -139,7 +141,8 @@ public:
     // Decodes a texture from the GLM into a 1x image (texel (0, 0) at its origin): stored words for direct formats
     // (the pixel shader expands CT16/CT24), RGBA8 through `palette` (256 entries) for indexed ones.
     bool DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
-                       std::uint32_t height, const std::uint32_t *palette, std::string &error);
+                       std::uint32_t height, const std::uint32_t *palette, std::string &error, std::uint32_t originX = 0,
+                       std::uint32_t originY = 0);
     // IN-422: the next DecodeTexture or DecodeTextureGpuClut reads GS memory pages [firstPage, firstPage + pageCount)
     // (modulo 512) from `memory` (the CPU copy, current for them) instead of the GLM. Cleared by that decode.
     void SetDecodeWindow(const std::uint8_t *memory, std::uint32_t firstPage, std::uint32_t pageCount);
@@ -148,7 +151,8 @@ public:
     bool ProfileReport(std::string &error);
     // IN-408: the same decode, indexed formats expanded through the GPU CLUT buffer.
     bool DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
-                              std::uint32_t height, const GpuPalette &palette, std::string &error);
+                              std::uint32_t height, const GpuPalette &palette, std::string &error,
+                              std::uint32_t originX = 0, std::uint32_t originY = 0);
 
     // IN-408: the GPU copy of the CLUT buffer (512 halfwords, one per uint). ClutFromTarget records a CLUT load
     // read from target image `target` (GLM current for the entries outside it); WriteClut records halfwords
