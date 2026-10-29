@@ -3212,13 +3212,13 @@ struct Core2AbRun {
 constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
 
 bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, const char* abSwitch,
-                   bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0) {
+                   bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0, uint32_t scale = 2) {
     _putenv_s(abSwitch, on ? "" : "0");
     _putenv_s("GT4_HW_CORE", "2");
     writeback::Renderer renderer;
     _putenv_s("GT4_HW_CORE", "");
     _putenv_s(abSwitch, "");
-    renderer.SetScale(2, 2.0f);
+    renderer.SetScale(scale, static_cast<float>(scale));
     if (!renderer.Init(handles, error)) return false;
     if (!renderer.Core2()) {
         error = "GT4_HW_CORE=2 did not select core 2";
@@ -3252,13 +3252,13 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
 int CheckCore2Ab(const gpu::VulkanHandles& handles, const char* name, const cpuref::CaptureWriter& capture,
                  uint32_t frames, const char* abSwitch, bool exact,
                  const std::function<int(const Core2AbRun& off, const Core2AbRun& on)>& counters,
-                 bool memoryLastOnly = false) {
+                 bool memoryLastOnly = false, uint32_t scale = 2) {
     Core2AbRun off, on;
     std::vector<std::vector<uint8_t>> reference;
     std::string error;
     const uint32_t memoryFrom = memoryLastOnly ? frames - 1 : 0;
-    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom) &&
-              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom);
+    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom, scale) &&
+              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom, scale);
     if (ok) {
         cpuref::CpuRenderer renderer;
         cpuref::ReplaySummary summary;
@@ -3687,6 +3687,42 @@ cpuref::CaptureWriter Core2MultiTargetClutCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-427: a CT32 page drawn on the GPU (a colour sprite), then sampled as a texture in its own view (CORE2-SPEC 3.2:
+// a texture taken from a target) by a sprite into page 0, as GT4 copies its 3D scene through its tone pass. At 1x the
+// copy read the texel atlas instead of the target, so page 0 stayed black; memory must equal the CPU reference.
+cpuref::CaptureWriter Core2TargetTextureCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kScene = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{127} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            // the scene: two colour sprites into page 22 at FBW 2, 128 x 64 (more than 64 x 64 pixels, so the GPU draws
+            // it: IN-407 draws smaller untextured sprites into memory on the CPU)
+            kScene | (uint64_t{2} << 16), 0x4C, kSprite, 0x00, rgbaq(0x80204060u + frame * 0x00030201u), 0x01,
+            xyz(0, 0), 0x05, xyz(128, 64), 0x05, rgbaq(0x80C08040u), 0x01, xyz(8, 4), 0x05, xyz(100, 28), 0x05,
+            // the copy: page 22 as a CT32 texture (128 x 64, TBW 2, decal), its left 64 x 32 over page 0
+            frameReg(kA), 0x4C,
+            uint64_t{kScene * 32} | (uint64_t{2} << 14) | (uint64_t{7} << 26) | (uint64_t{6} << 30) | (uint64_t{1} << 34) |
+                (uint64_t{1} << 35),
+            0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(64, 32),
+            0x03, xyz(64, 32), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -3847,6 +3883,21 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              "GT4_CORE2_SLOTS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     failures += CheckCore2Ab(handles, "submission slots, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_SLOTS",
                              true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // IN-427: a texture taken from a target at 1x gives the CPU reference's memory exactly (at 2x the scaled raster is not
+    // bit-identical to the 1x reference by design: no new deviation between the runs).
+    for (uint32_t scale : {1u, 2u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "texture from a target at 1x" : "texture from a target at 2x",
+                                 Core2TargetTextureCapture(3), 3, "GT4_CORE2_DEFER_DRAWS", scale == 1,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  texture from a target: from targets %llu / %llu, from memory %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.texturesFromTargets),
+                                                 static_cast<unsigned long long>(on.stats.texturesFromTargets),
+                                                 static_cast<unsigned long long>(off.stats.texturesFromMemory),
+                                                 static_cast<unsigned long long>(on.stats.texturesFromMemory));
+                                     return off.stats.texturesFromTargets > 0 && on.stats.texturesFromTargets > 0 ? 0 : 1;
+                                 },
+                                 false, scale);
+    }
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

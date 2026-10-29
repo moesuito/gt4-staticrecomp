@@ -307,7 +307,7 @@ frametime variation waits for the EE/VU0/VU1 optimisation. After the beta: the 1
 lands on it), the PR goes to the code optimisation branch, and the launcher entry is added there.
 
 **Beta (must):**
-1. **Core 2 at 1x:** today only the HUD shows (the 3D scene is black). 2x and above are correct.
+1. **Core 2 at 1x:** done (IN-427, candidate 300).
 2. **C1 mipmapping and LOD** (a GS feature GT4 uses): less shimmer on the track and trees, the map's thin lines.
 3. **Phase E spec step 3 audit:** T8 from a target, the 16-from-32 shuffle, depth as a texture, GPU local-to-local
    moves, the alpha-only tone variant. Find which paths GT4 still takes through CPU fallbacks or readbacks; fix the

@@ -104,6 +104,10 @@ layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D hw_texels;
 // IN-384 follow-up: set from the top bit of the tex_scale push word (the GPU drawer's GT4_HW_SCALED_FILTER=linear).
 bool g_force_linear = false;
 uint g_tex_scale = 1u;  // pc.tex_scale without the filter/dither bits
+// IN-427 (CORE2): bit 24 says the texture is a target sampled at binding 4, whatever the scale. At 1x the scale alone
+// (1) also meant "the 1x texel atlas", so core 2 read the atlas instead of the target and GT4's scene copies came out
+// black (only the HUD showed).
+bool g_texture_from_target = false;
 // IN-384 follow-up (Q-GSDX-COMPARISON section 2): the reference indexes the dither matrix with the raw fragment
 // coordinate (one cell = 4x4 OUTPUT pixels) and only offers the per-native-pixel pattern as an option; ours always
 // divided by the scale, so one cell covered s x s output pixels (24x24 at 6x, doubled vertically on a 480i field:
@@ -244,7 +248,8 @@ void main() {
     g_dither_fine = (pc.tex_scale & 0x40000000u) != 0u;
     // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale; IN-392: bit 28 asks for the
     // position depth below.
-    g_tex_scale = pc.tex_scale & 0x01FFFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    g_tex_scale = pc.tex_scale & 0x00FFFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    g_texture_from_target = (pc.tex_scale & 0x01000000u) != 0u;
     const bool depth_from_position = (pc.tex_scale & 0x10000000u) != 0u;
 
     HwPixelState s;
@@ -291,7 +296,8 @@ void main() {
             uvs = to_texel_104((in_st.x / q) * scale_s);
             uvt = to_texel_104((in_st.y / q) * scale_t);
         }
-        ivec4 texel = g_tex_scale > 1u ? sample_texture_scaled(uvs, uvt, int(g_tex_scale)) : sample_texture(uvs, uvt);
+        ivec4 texel = (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
+                                                                  : sample_texture(uvs, uvt);
         if ((pc.tex_scale & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
         colour = hw_texture_function(state.tfx, state.tcc != 0u, texel, frag);
     }

@@ -1630,9 +1630,10 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   record.push[4] = 0;  // the batch vertices already carry XYOFFSET
   record.push[5] = 0;
   record.push[6] = batch.zMax;
-  // tex_scale: s for a texture sampled from a target (binding 4), 1 for the atlas; at scale the fine dither (8.6)
-  // and the floored rasteriser depth (1.6) are on.
-  record.push[7] = (batch.texture != kNoImage ? sc : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u);
+  // tex_scale: s for a texture sampled from a target (binding 4) with bit 24 set (IN-427: at 1x the scale alone could
+  // not tell it from the atlas), 1 for the atlas; at scale the fine dither (8.6) and the floored rasteriser depth (1.6)
+  // are on.
+  record.push[7] = (batch.texture != kNoImage ? (sc | 0x01000000u) : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u);
   record.textureFromTarget = batch.texture != kNoImage;
   if (s.profiling) {
     namespace g = gpu::gpufield;
