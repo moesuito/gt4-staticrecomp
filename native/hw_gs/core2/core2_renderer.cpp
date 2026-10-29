@@ -418,7 +418,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool clutMirrorAnyPending_ = false;
     bool clutFromTargetPending_ = false;
     std::uint64_t lastWaitNs_ = 0;
-    std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0;  // B4: GPU time at the last timing line
+    std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;  // B4: GPU time at the last timing line
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -2433,7 +2433,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
-                 "waits=%llu recycled_images=%llu full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu image_mb=%.1f\n",
+                 "waits=%llu recycled_images=%llu full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
                  (unsigned long long)c.texturesFromTargets, (unsigned long long)c.texturesFromMemory,
@@ -2452,7 +2452,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
-                 (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
+                 (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
 }
 
 }  // namespace
@@ -2609,13 +2609,15 @@ void Renderer::Flush() {
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
                      "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f glm=%.2f (%.0f calls, "
-                     "%.0f pages) swizzle=%.2f (%.0f KiB) gpu_busy=%.2f (%.1f submits)\n",
+                     "%.0f pages) swizzle=%.2f (%.0f KiB) gpu_busy=%.2f (%.1f submits) gpu_draw_passes=%.2f\n",
                      p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
                      p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f, p.spriteCheck / f,
                      static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6, p.glm / f, p.glmCalls / 600.0,
                      p.glmPages / 600.0, p.swizzle / f, p.swizzleBytes / 600.0 / 1024.0,
                      static_cast<double>(s.gpu_.Stats().gpuNs - s.lastGpuNs_) / 600.0e6,
-                     static_cast<double>(s.gpu_.Stats().timedSubmissions - s.lastTimedSubmissions_) / 600.0);
+                     static_cast<double>(s.gpu_.Stats().timedSubmissions - s.lastTimedSubmissions_) / 600.0,
+                     static_cast<double>(s.gpu_.Stats().drawPassNs - s.lastDrawPassNs_) / 600.0e6);
+        s.lastDrawPassNs_ = s.gpu_.Stats().drawPassNs;
         s.lastGpuNs_ = s.gpu_.Stats().gpuNs;
         s.lastTimedSubmissions_ = s.gpu_.Stats().timedSubmissions;
         std::string byReason;

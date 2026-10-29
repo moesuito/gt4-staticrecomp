@@ -62,11 +62,13 @@ struct Core2GpuStats {
     std::uint64_t paletteRows = 0;      // IN-409: palette rows expanded from the GPU CLUT
     std::uint64_t waitNs = 0;           // B0: time the CPU spent waiting for GPU fences
     std::uint64_t gpuNs = 0;            // B4: GPU time of finished submissions (timestamps, first to last command)
-    std::uint64_t timedSubmissions = 0; // B4: submissions whose GPU time is in gpuNs
+    std::uint64_t timedSubmissions = 0;
+    std::uint64_t drawPassNs = 0;       // B4: GPU time inside the deferred draw passes (IN-420), part of gpuNs // B4: submissions whose GPU time is in gpuNs
     std::uint64_t fullBarriers = 0;      // B4: all-commands barriers (each drains the GPU)
     std::uint64_t barriersSkipped = 0;   // IN-419: commands recorded without a barrier (no dependency)
     std::uint64_t fragmentBarriers = 0;  // B4: fragment-to-fragment barriers inside the render pass
     std::uint64_t renderPasses = 0;      // B4: render pass begins (one after every compute or transfer break)
+    std::uint64_t drawFlushes = 0;       // IN-420: groups of deferred draw batches recorded in one render pass
     std::uint64_t midFrameSubmissions = 0;  // IN-410: submissions after a number of draw batches
 };
 

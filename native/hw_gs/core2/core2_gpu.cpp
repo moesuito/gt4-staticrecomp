@@ -104,10 +104,14 @@ struct Gpu::Impl {
     VkFence fence = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     bool inFlight = false;
+    std::uint32_t passTimestamps = 0;  // B4: draw pass timestamp pairs written in this slot's recording
     std::vector<Image> doomed;  // released once this slot's submission is complete
   };
   Slot slots[2];
-  // B4: two timestamps per slot (start and end of its command buffer), read when the slot's fence has signalled.
+  // B4: per slot, the start and end of its command buffer, then up to kPassTimestampPairs draw passes (start, end);
+  // read when the slot's fence has signalled.
+  static constexpr std::uint32_t kPassTimestampPairs = 64;
+  static constexpr std::uint32_t kTimestampsPerSlot = 2u + 2u * kPassTimestampPairs;
   VkQueryPool timestamps = VK_NULL_HANDLE;
   double timestampNs = 0.0;  // nanoseconds per timestamp tick (0: no timestamps)
   std::uint32_t slot = 0;           // the slot being recorded
@@ -487,49 +491,200 @@ struct Gpu::Impl {
     stats.fullBarriers++;
     drewSinceBarrier = false;
     pendingBufferReads = pendingBufferWrites = 0;  // everything before is ordered against everything after
-    pendingImageReads.clear();
-    pendingImageWrites.clear();
+    pendingReads.clear();
+    pendingWrites.clear();
   }
 
   // IN-419: the accesses recorded since the last full barrier, so a compute or transfer command gets a barrier only
   // when it depends on one of them: it reads or writes what an earlier command wrote, or writes what one read. Core 2
   // recorded a barrier before and after every one (about 2000 per night VBlank, each draining the GPU), though most
   // touch unrelated things (two texture decodes write two different images). Buffers: the GLM and the GPU CLUT;
-  // images by serial. GT4_CORE2_LAZY_BARRIERS=0 records a barrier around every command again (A/B).
+  // images by serial, whole or one row (the palette rows, IN-420). GT4_CORE2_LAZY_BARRIERS=0 records a barrier around
+  // every command again (A/B).
   enum : unsigned { kGlmBuffer = 1u, kClutBuffer = 2u };
+  static constexpr std::uint32_t kWholeImage = 0xFFFFFFFFu;
+  struct Use {
+    std::uint32_t serial = 0;  // 0: no image
+    std::uint32_t region = kWholeImage;
+    Use(const Image *image) : serial(image ? image->serial : 0u) {}
+    Use(const Image *image, std::uint32_t row) : serial(image ? image->serial : 0u), region(row) {}
+  };
+  struct AccessSet {
+    struct Entry {
+      bool whole = false;
+      std::vector<std::uint32_t> rows;
+    };
+    std::unordered_map<std::uint32_t, Entry> images;
+    void add(std::uint32_t serial, std::uint32_t region) {
+      if (serial == 0) return;
+      Entry &entry = images[serial];
+      if (region == kWholeImage) {
+        entry.whole = true;
+      } else if (!entry.whole && std::find(entry.rows.begin(), entry.rows.end(), region) == entry.rows.end()) {
+        entry.rows.push_back(region);
+      }
+    }
+    bool conflicts(std::uint32_t serial, std::uint32_t region) const {
+      if (serial == 0) return false;
+      const auto found = images.find(serial);
+      if (found == images.end()) return false;
+      const Entry &entry = found->second;
+      return entry.whole || region == kWholeImage ||
+             std::find(entry.rows.begin(), entry.rows.end(), region) != entry.rows.end();
+    }
+    void merge(const AccessSet &other) {
+      for (const auto &[serial, entry] : other.images) {
+        if (entry.whole) add(serial, kWholeImage);
+        for (std::uint32_t row : entry.rows) add(serial, row);
+      }
+    }
+    void clear() { images.clear(); }
+  };
   bool lazyBarriers =
       std::getenv("GT4_CORE2_LAZY_BARRIERS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_LAZY_BARRIERS"), "0") != 0;
   unsigned pendingBufferReads = 0, pendingBufferWrites = 0;
-  std::vector<std::uint32_t> pendingImageReads, pendingImageWrites;
+  AccessSet pendingReads, pendingWrites;
 
-  static bool holds(const std::vector<std::uint32_t> &serials, std::uint32_t serial) {
-    return std::find(serials.begin(), serials.end(), serial) != serials.end();
-  }
-
-  // Declares the accesses of the command about to be recorded; records a barrier first when it depends on earlier ones.
-  void touch(std::initializer_list<const Image *> reads, std::initializer_list<const Image *> writes,
-             unsigned bufferReads, unsigned bufferWrites) {
-    if (!lazyBarriers) return;  // outside_pass and after_op already order every command
+  // Records a barrier first when accesses depend on the pending ones, then adds them.
+  void order(std::initializer_list<Use> reads, std::initializer_list<Use> writes, unsigned bufferReads,
+             unsigned bufferWrites) {
     bool hazard = ((bufferReads | bufferWrites) & pendingBufferWrites) != 0 || (bufferWrites & pendingBufferReads) != 0;
-    for (const Image *image : reads) hazard = hazard || (image && holds(pendingImageWrites, image->serial));
-    for (const Image *image : writes) {
-      hazard = hazard || (image && (holds(pendingImageWrites, image->serial) || holds(pendingImageReads, image->serial)));
+    for (const Use &use : reads) hazard = hazard || pendingWrites.conflicts(use.serial, use.region);
+    for (const Use &use : writes) {
+      hazard = hazard || pendingWrites.conflicts(use.serial, use.region) || pendingReads.conflicts(use.serial, use.region);
     }
-    if (hazard || pendingImageReads.size() + pendingImageWrites.size() > 256) full_barrier();
-    else stats.barriersSkipped++;
+    if (hazard || pendingReads.images.size() + pendingWrites.images.size() > 512) {
+      full_barrier();
+    } else {
+      stats.barriersSkipped++;
+    }
     pendingBufferReads |= bufferReads;
     pendingBufferWrites |= bufferWrites;
-    for (const Image *image : reads) {
-      if (image) pendingImageReads.push_back(image->serial);
+    for (const Use &use : reads) pendingReads.add(use.serial, use.region);
+    for (const Use &use : writes) pendingWrites.add(use.serial, use.region);
+  }
+
+  // Declares the accesses of the compute or transfer command about to be recorded. With IN-420 the deferred draws are
+  // recorded first when the command depends on them (reads what they write, writes what they read or write).
+  void touch(std::initializer_list<Use> reads, std::initializer_list<Use> writes, unsigned bufferReads,
+             unsigned bufferWrites) {
+    if (!lazyBarriers) return;  // outside_pass and after_op already order every command
+    if (!deferred.empty()) {
+      bool dependsOnDraws = false;
+      for (const Use &use : reads) dependsOnDraws = dependsOnDraws || drawWrites.conflicts(use.serial, use.region);
+      for (const Use &use : writes) {
+        dependsOnDraws = dependsOnDraws || drawWrites.conflicts(use.serial, use.region) ||
+                         drawReads.conflicts(use.serial, use.region);
+      }
+      if (dependsOnDraws) flush_draws();
     }
-    for (const Image *image : writes) {
-      if (image) pendingImageWrites.push_back(image->serial);
-    }
+    order(reads, writes, bufferReads, bufferWrites);
   }
 
   // After a compute or transfer command: a barrier at once only without IN-419 (touch orders it otherwise).
   void after_op() {
     if (!lazyBarriers) full_barrier();
+  }
+
+  // IN-420: draw batches recorded later, in one render pass. Core 2 recorded each batch at once, so every texture
+  // decode, dirty patch or GLM upload between two batches ended the render pass (250-310 render pass begins per night
+  // VBlank, a fixed GPU cost each). Now a batch's commands wait here, and compute and transfer work that does not depend
+  // on the waiting batches is recorded before them; work that does records them first, as do submissions, host reads
+  // and the rare passes. GT4_CORE2_DEFER_DRAWS=0 records each batch at once (A/B; needs IN-419).
+  struct DeferredCommand {
+    VkRect2D scissor{};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    std::uint32_t first = 0, count = 0;
+    bool barrierFirst = false;  // without the pixel interlock every primitive waits for the one before
+  };
+  struct DeferredDraw {
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::uint32_t uniformOffset = 0;
+    VkDeviceSize vertexOffset = 0;
+    VkViewport viewport{};
+    std::uint32_t push[8] = {};
+    bool textureFromTarget = false;
+    std::uint32_t firstCommand = 0, commandCount = 0;
+  };
+  bool deferDraws = lazyBarriers && (std::getenv("GT4_CORE2_DEFER_DRAWS") == nullptr ||
+                                     std::strcmp(std::getenv("GT4_CORE2_DEFER_DRAWS"), "0") != 0);
+  std::vector<DeferredDraw> deferred;
+  std::vector<DeferredCommand> deferredCommands;
+  AccessSet drawReads, drawWrites;  // what the deferred batches read and write
+
+  void begin_draw_pass() {
+    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    begin.renderPass = renderPass;
+    begin.framebuffer = framebuffer;
+    begin.renderArea = {{0, 0}, {framebufferWidth, framebufferHeight}};
+    gt4_hwd_vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    stats.renderPasses++;
+    renderPassOpen = true;
+  }
+
+  // One batch's commands, inside the open render pass; `first` is the pass's first batch (no barrier before it).
+  void record_draw(const DeferredDraw &draw, bool first) {
+    if (!first && drewSinceBarrier && (!interlock || draw.textureFromTarget)) {
+      // A texture taken from a target reads pixels other than its own (no interlock order); without pixel interlock
+      // every batch waits for the one before.
+      fragment_barrier();
+    }
+    gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawLayout, 0, 1, &draw.set, 1,
+                                    &draw.uniformOffset);
+    gt4_hwd_vkCmdBindVertexBuffers(cmd, 0, 1, &vertices.buffer, &draw.vertexOffset);
+    gt4_hwd_vkCmdSetViewport(cmd, 0, 1, &draw.viewport);
+    gt4_hwd_vkCmdPushConstants(cmd, drawLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof draw.push, draw.push);
+    for (std::uint32_t i = 0; i < draw.commandCount; ++i) {
+      const DeferredCommand &command = deferredCommands[draw.firstCommand + i];
+      if (command.barrierFirst && drewSinceBarrier) fragment_barrier();
+      gt4_hwd_vkCmdSetScissor(cmd, 0, 1, &command.scissor);
+      gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, command.pipeline);
+      gt4_hwd_vkCmdDraw(cmd, command.count, 1, command.first, 0);
+      stats.draws++;
+      drewSinceBarrier = true;
+    }
+  }
+
+  // Records the deferred batches in one render pass, ordered against the pending compute and transfer accesses.
+  void flush_draws() {
+    if (deferred.empty()) return;
+    bool hazard = false;
+    for (const auto &[serial, entry] : drawReads.images) {
+      if (entry.whole) hazard = hazard || pendingWrites.conflicts(serial, kWholeImage);
+      for (std::uint32_t row : entry.rows) hazard = hazard || pendingWrites.conflicts(serial, row);
+    }
+    for (const auto &[serial, entry] : drawWrites.images) {
+      if (entry.whole) {
+        hazard = hazard || pendingWrites.conflicts(serial, kWholeImage) || pendingReads.conflicts(serial, kWholeImage);
+      }
+      for (std::uint32_t row : entry.rows) {
+        hazard = hazard || pendingWrites.conflicts(serial, row) || pendingReads.conflicts(serial, row);
+      }
+    }
+    if (hazard) {
+      full_barrier();
+    } else {
+      stats.barriersSkipped++;
+    }
+    const std::uint32_t pair = slots[slot].passTimestamps;
+    const bool timed = timestamps && pair < kPassTimestampPairs;
+    const std::uint32_t query = slot * kTimestampsPerSlot + 2u + 2u * pair;
+    if (timed) gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, query);
+    begin_draw_pass();
+    for (std::size_t i = 0; i < deferred.size(); ++i) record_draw(deferred[i], i == 0);
+    end_render_pass();
+    if (timed) {
+      gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, query + 1u);
+      slots[slot].passTimestamps = pair + 1u;
+    }
+    pendingReads.merge(drawReads);
+    pendingWrites.merge(drawWrites);
+    drawReads.clear();
+    drawWrites.clear();
+    deferred.clear();
+    deferredCommands.clear();
+    stats.drawFlushes++;
   }
 
   // Inside the render pass (the subpass self-dependency): later fragments see earlier fragment stores.
@@ -566,12 +721,23 @@ struct Gpu::Impl {
     stats.waits++;
     if (timestamps) {
       std::uint64_t ticks[2] = {};
-      if (gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * 2u, 2, sizeof ticks, ticks, sizeof(std::uint64_t),
-                                        VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+      if (gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * kTimestampsPerSlot, 2, sizeof ticks, ticks,
+                                        sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
           ticks[1] >= ticks[0]) {
         stats.gpuNs += static_cast<std::uint64_t>(static_cast<double>(ticks[1] - ticks[0]) * timestampNs);
         stats.timedSubmissions++;
       }
+      std::uint64_t pass[2 * kPassTimestampPairs] = {};
+      if (s.passTimestamps != 0 &&
+          gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * kTimestampsPerSlot + 2u, 2u * s.passTimestamps,
+                                        sizeof pass, pass, sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+        for (std::uint32_t i = 0; i < s.passTimestamps; ++i) {
+          if (pass[2 * i + 1] >= pass[2 * i]) {
+            stats.drawPassNs += static_cast<std::uint64_t>(static_cast<double>(pass[2 * i + 1] - pass[2 * i]) * timestampNs);
+          }
+        }
+      }
+      s.passTimestamps = 0;
     }
     for (Image &image : s.doomed) retire(image);
     s.doomed.clear();
@@ -595,8 +761,9 @@ struct Gpu::Impl {
     if (!check(gt4_hw_vkBeginCommandBuffer(cmd, &begin), "vkBeginCommandBuffer", error)) return false;
     if (!check(gt4_hwd_vkResetDescriptorPool(device, transientPool, 0), "vkResetDescriptorPool", error)) return false;
     if (timestamps) {
-      gt4_hwd_vkCmdResetQueryPool(cmd, timestamps, slot * 2u, 2);
-      gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, slot * 2u);
+      gt4_hwd_vkCmdResetQueryPool(cmd, timestamps, slot * kTimestampsPerSlot, kTimestampsPerSlot);
+      gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, slot * kTimestampsPerSlot);
+      slots[slot].passTimestamps = 0;
     }
     transientSetsUsed = 0;
     drawSets.clear();
@@ -617,8 +784,11 @@ struct Gpu::Impl {
     if (!recording) {
       return wait ? wait_all(error) : true;
     }
+    flush_draws();
     end_render_pass();
-    if (timestamps) gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, slot * 2u + 1u);
+    if (timestamps) {
+      gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, slot * kTimestampsPerSlot + 1u);
+    }
     if (!check(gt4_hw_vkEndCommandBuffer(cmd), "vkEndCommandBuffer", error)) return false;
     recording = false;
     if (!check(gt4_hw_vkResetFences(device, 1, &fence), "vkResetFences", error)) return false;
@@ -762,7 +932,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    queryInfo.queryCount = 4;
+    queryInfo.queryCount = 2u * Impl::kTimestampsPerSlot;
     if (gt4_hwd_vkCreateQueryPool(s.device, &queryInfo, nullptr, &s.timestamps) == VK_SUCCESS) {
       s.timestampNs = s.limits.timestampPeriod;
     }
@@ -1046,6 +1216,7 @@ bool Gpu::GrowImage(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeH
   }
   Image &old = s.images[static_cast<std::size_t>(id)];
   if (nativeWidth <= old.nativeWidth && nativeHeight <= old.nativeHeight) return true;
+  s.flush_draws();
   Image grown;
   if (!s.make_image(grown, std::max(nativeWidth, old.nativeWidth), std::max(nativeHeight, old.nativeHeight), old.scale,
                     error)) {
@@ -1237,49 +1408,23 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
   }
 
-  // IN-419: the batch reads its textures and reads and writes its frame and depth. A new render pass orders them
-  // against pending compute and transfer accesses; inside an open pass draws order among themselves (interlock or
-  // fragment barriers) and only add their accesses.
-  const Image *drawWrites[2] = {frame, depth};
-  if (!s.renderPassOpen) {
-    s.touch({texels, texture, frame, depth}, {frame, depth}, 0, 0);
-  } else if (s.lazyBarriers) {
-    for (const Image *image : {texels, texture, frame, depth}) s.pendingImageReads.push_back(image->serial);
-    for (const Image *image : drawWrites) s.pendingImageWrites.push_back(image->serial);
-  }
-  if (!s.renderPassOpen) {
-    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    begin.renderPass = s.renderPass;
-    begin.framebuffer = s.framebuffer;
-    begin.renderArea = {{0, 0}, {s.framebufferWidth, s.framebufferHeight}};
-    gt4_hwd_vkCmdBeginRenderPass(s.cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
-    s.stats.renderPasses++;
-    s.renderPassOpen = true;
-  } else if (s.drewSinceBarrier && (!s.interlock || batch.texture != kNoImage)) {
-    // A texture taken from a target reads pixels other than its own (no interlock order); without pixel interlock
-    // every batch waits for the one before.
-    s.fragment_barrier();
-  }
   const std::uint32_t sc = s.scale;
-  const std::uint32_t uniformDynamic = static_cast<std::uint32_t>(uniformOffset);
-  gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.drawLayout, 0, 1, &set, 1, &uniformDynamic);
-  VkDeviceSize bindOffset = vertexOffset;
-  gt4_hwd_vkCmdBindVertexBuffers(s.cmd, 0, 1, &s.vertices.buffer, &bindOffset);
-  const VkViewport viewport{0.0f, 0.0f, static_cast<float>(frame->width), static_cast<float>(frame->height), 0.0f, 1.0f};
-  gt4_hwd_vkCmdSetViewport(s.cmd, 0, 1, &viewport);
-  std::uint32_t push[8];
-  push[0] = FloatBits(static_cast<float>(frame->width));
-  push[1] = FloatBits(static_cast<float>(frame->height));
-  push[2] = FloatBits(static_cast<float>(sc));
-  push[3] = FloatBits(s.shift);
-  push[4] = 0;  // the batch vertices already carry XYOFFSET
-  push[5] = 0;
-  push[6] = batch.zMax;
+  Impl::DeferredDraw record;
+  record.set = set;
+  record.uniformOffset = static_cast<std::uint32_t>(uniformOffset);
+  record.vertexOffset = vertexOffset;
+  record.viewport = VkViewport{0.0f, 0.0f, static_cast<float>(frame->width), static_cast<float>(frame->height), 0.0f, 1.0f};
+  record.push[0] = FloatBits(static_cast<float>(frame->width));
+  record.push[1] = FloatBits(static_cast<float>(frame->height));
+  record.push[2] = FloatBits(static_cast<float>(sc));
+  record.push[3] = FloatBits(s.shift);
+  record.push[4] = 0;  // the batch vertices already carry XYOFFSET
+  record.push[5] = 0;
+  record.push[6] = batch.zMax;
   // tex_scale: s for a texture sampled from a target (binding 4), 1 for the atlas; at scale the fine dither (8.6)
   // and the floored rasteriser depth (1.6) are on.
-  push[7] = (batch.texture != kNoImage ? sc : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u);
-  gt4_hwd_vkCmdPushConstants(s.cmd, s.drawLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                             sizeof push, push);
+  record.push[7] = (batch.texture != kNoImage ? sc : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u);
+  record.textureFromTarget = batch.texture != kNoImage;
   const std::int32_t limitX = static_cast<std::int32_t>(std::min(frame->width, s.framebufferWidth));
   const std::int32_t limitY = static_cast<std::int32_t>(std::min(frame->height, s.framebufferHeight));
   // 8.3: the GS scissor and the primitive's box (one native pixel of slack) times s.
@@ -1299,6 +1444,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     x1 = own ? draw.scaledX1 : draw.x1;
     y1 = own ? draw.scaledY1 : draw.y1;
   };
+  record.firstCommand = static_cast<std::uint32_t>(s.deferredCommands.size());
   const std::uint32_t vertexCount = static_cast<std::uint32_t>(batch.vertices->size());
   bool allTriangles = s.interlock;
   for (const gpu::GpuDraw &draw : *batch.draws) allTriangles = allTriangles && draw.topology == gpu::GpuTopology::Triangles;
@@ -1316,31 +1462,55 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       first = std::min(first, draw.first);
       end = std::max(end, draw.first + draw.count);
     }
-    VkRect2D scissor{};
-    if (end > first && scissorOf(x0, y0, x1, y1, scissor)) {
-      gt4_hwd_vkCmdSetScissor(s.cmd, 0, 1, &scissor);
-      gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.interlockTriangles);
-      gt4_hwd_vkCmdDraw(s.cmd, end - first, 1, first, 0);
-      s.stats.draws++;
-      s.drewSinceBarrier = true;
+    Impl::DeferredCommand command;
+    if (end > first && scissorOf(x0, y0, x1, y1, command.scissor)) {
+      command.pipeline = s.interlockTriangles;
+      command.first = first;
+      command.count = end - first;
+      s.deferredCommands.push_back(command);
     }
   } else {
     for (const gpu::GpuDraw &draw : *batch.draws) {
       if (draw.count == 0 || draw.first + draw.count > vertexCount) continue;
       std::int32_t a, b, c, d;
       boundsOf(draw, a, b, c, d);
-      VkRect2D scissor{};
-      if (!scissorOf(a, b, c, d, scissor)) continue;
-      if (s.drewSinceBarrier) s.fragment_barrier();
-      gt4_hwd_vkCmdSetScissor(s.cmd, 0, 1, &scissor);
+      Impl::DeferredCommand command;
+      if (!scissorOf(a, b, c, d, command.scissor)) continue;
       const std::size_t pipeline = draw.topology == gpu::GpuTopology::Points  ? 0
                                    : draw.topology == gpu::GpuTopology::Lines ? 1
                                                                               : 2;
-      gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipelines[pipeline]);
-      gt4_hwd_vkCmdDraw(s.cmd, draw.count, 1, draw.first, 0);
-      s.stats.draws++;
-      s.drewSinceBarrier = true;
+      command.pipeline = s.pipelines[pipeline];
+      command.first = draw.first;
+      command.count = draw.count;
+      command.barrierFirst = true;
+      s.deferredCommands.push_back(command);
     }
+  }
+  record.commandCount = static_cast<std::uint32_t>(s.deferredCommands.size()) - record.firstCommand;
+
+  // IN-419: the batch reads its textures (one palette row) and reads and writes its frame and depth.
+  const Impl::Use textureUse = paletted ? Impl::Use(texture, static_cast<std::uint32_t>(batch.paletteRow)) : Impl::Use(texture);
+  if (s.deferDraws) {
+    // IN-420: recorded with the next render pass.
+    for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
+      s.drawReads.add(use.serial, use.region);
+    }
+    for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.drawWrites.add(use.serial, use.region);
+    s.deferred.push_back(record);
+  } else {
+    bool first = false;
+    if (!s.renderPassOpen) {
+      if (s.lazyBarriers) s.order({texels, textureUse, frame, depth}, {frame, depth}, 0, 0);
+      s.begin_draw_pass();
+      first = true;
+    } else if (s.lazyBarriers) {
+      for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
+        s.pendingReads.add(use.serial, use.region);
+      }
+      for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.pendingWrites.add(use.serial, use.region);
+    }
+    s.record_draw(record, first);
+    s.deferredCommands.resize(record.firstCommand);
   }
   s.stats.batches++;
   if (s.submitEvery != 0 && ++s.batchesSinceSubmit >= s.submitEvery) {
@@ -1492,7 +1662,7 @@ bool Gpu::PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch({image}, {image}, s.kClutBuffer, 0);
+  s.touch({Impl::Use(image, row)}, {Impl::Use(image, row)}, s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1667,6 +1837,7 @@ bool Gpu::WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_
 bool Gpu::ReadClut(std::uint16_t halfwords[512], std::string &error) {
   Impl &s = *impl_;
   if (!s.begin_recording(error)) return false;
+  s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
   VkBufferCopy copy{0, 0, 512 * 4};
@@ -1745,7 +1916,9 @@ bool Gpu::Patch(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, s
   if (!s.ring(s.staging, bytes, align, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, words.data(), static_cast<std::size_t>(bytes));
   s.outside_pass();
-  s.touch({image}, {image}, 0, 0);
+  // One row is tracked as a row (the palette rows of IN-409; IN-420), anything else as the whole image.
+  const std::uint32_t region = y0 == y1 ? static_cast<std::uint32_t>(y0) : Impl::kWholeImage;
+  s.touch({Impl::Use(image, region)}, {Impl::Use(image, region)}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, offset, bytes, image->view, image->view, image->view, set, error)) return false;
   const std::uint32_t push[7] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
@@ -1771,6 +1944,7 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
     return false;
   }
   if (!s.begin_recording(error)) return false;
+  s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
   VkDescriptorSet set = VK_NULL_HANDLE;
@@ -1859,6 +2033,7 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
       !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) {
     return false;
   }
+  s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
   VkImageCopy region{};
@@ -1920,6 +2095,7 @@ bool Gpu::Fxaa(std::uint32_t width, std::uint32_t height, std::string &error) {
   if (!s.begin_recording(error)) return false;
   bool fresh = false;
   if (!s.post_image(s.fxaa, s.display.width, s.display.height, fresh, error)) return false;
+  s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
   VkDescriptorSet set = VK_NULL_HANDLE;
@@ -1960,6 +2136,7 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
     return false;
   }
   if (!s.begin_recording(error)) return false;
+  s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
   VkBufferImageCopy region{};
@@ -1989,6 +2166,7 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
     return false;
   }
   if (!s.begin_recording(error)) return false;
+  s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
   VkBufferImageCopy region{};

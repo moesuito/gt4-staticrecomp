@@ -3824,6 +3824,14 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                             ? 0
                                             : 1;
                              });
+    // IN-419/IN-420: barriers only on dependencies and draw batches deferred into one render pass must give the same
+    // images and memory as a barrier around every command and each batch recorded at once.
+    failures += CheckCore2Ab(handles, "deferred draws, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_DEFER_DRAWS",
+                             true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    failures += CheckCore2Ab(handles, "deferred draws, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
+                             "GT4_CORE2_DEFER_DRAWS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    failures += CheckCore2Ab(handles, "lazy barriers, stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
+                             "GT4_CORE2_LAZY_BARRIERS", true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

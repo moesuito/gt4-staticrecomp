@@ -214,9 +214,11 @@ proves otherwise.
     cameras.
   - GPU timestamps (IN-419): 6.6-9.1 ms of GPU time per night VBlank at 3x but 4.3-7.3 ms at 1x, a fixed cost per
     command (the owner saw the GPU at 45 W of 180 W). Barriers only where needed halved them; GPU time 3-13% less.
+  - IN-420 deferred the draws into one render pass (4-8 per VBlank instead of 106-312; GPU time 5-13% less) and
+    split the GPU time: drawing 3.8-4.5 ms at 3x (1.3-1.5 ms at 1x), compute and transfer a fixed 1.4-3.8 ms.
   - Next:
-    - fewer render pass breaks: record draws into one pass and put the compute and transfer work that does not
-      depend on them before it (deferred draws), then D1 (hardware raster path);
+    - D1 (hardware raster path) for the drawing, which scales with the pixels;
+    - the compute chain: GLM uploads and the decodes that read them (one barrier pair per streamed texture);
     - the flare download (0.4-1.2 readbacks, 0.7-2.1 ms per VBlank) if it stays on top;
     - translate and decode recording (B4);
     - the GS thread split in two (B5).

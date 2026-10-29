@@ -40,7 +40,9 @@ Owner test of 293: 59.3 VBlanks/s, EE critical path 14.0 ms per frame. No alloca
 size (IN-418, candidate 294): GS thread 5.5-8.9 ms per VBlank; the GPU side now shows up as the next limit. Owner
 test of 294: 59.1 VBlanks/s, GPU-limited in the window (the GPU at 45 W of 180 W). GPU timestamps show a fixed cost
 per command (1x 4.3-7.3 ms against 3x 6.6-9.1 ms); barriers only where a command depends on another (IN-419,
-candidate 295) halved them, GPU time 3-13% less; the 250-310 render pass breaks per VBlank are next.
+candidate 295) halved them, GPU time 3-13% less. Draw batches deferred into one render pass (IN-420, candidate
+296): 4-8 render passes per VBlank instead of 106-312, GPU time 5-13% less; timestamps split the GPU time into
+drawing 3.8-4.5 ms at 3x (scales with pixels, D1's target) and a fixed 1.4-3.8 ms of compute and transfer work.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
