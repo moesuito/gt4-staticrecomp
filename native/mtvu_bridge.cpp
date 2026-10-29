@@ -37,6 +37,13 @@ std::uint64_t vif1_state_hash(bool worker_side) { return ps2::vif::verify_hash(w
 #ifdef GT4_GS_STREAM_CLIENT
 // TASK-084 step 3: posts the VSYNC the client held at the guest VBlank, from the journal drain.
 bool post_vsync() { return gt4::gs_stream::post_pending_vsync(); }
+
+// TASK-116 step 1: the flare readback answered locally in Performance mode. sync("download") defers while the client
+// answers the readback, the journal posts the READ_FIFO in stream order (without waiting), and the accurate path drains
+// through the client's hook.
+bool defer_download() { return gt4::gs_stream::readback_local_active(); }
+
+void post_readback(std::uint32_t qwords) { gt4::gs_stream::post_read_fifo_nowait(qwords); }
 #endif
 
 }  // namespace
@@ -60,6 +67,9 @@ void start_with_donor(const Settings &settings) {
     // TASK-084 step 3: the VSYNC becomes a journal entry after the frame's VU1 output (GT4_MTVU_VBLANK_JOURNAL).
     gt4::gs_stream::set_vsync_deferral(vblank_journal_active(settings));
     donor.post_vsync = &post_vsync;
+    // TASK-116 step 1: the local flare readback (Performance mode) and the journal services it needs.
+    gt4::mtvu::set_download_ordering({&defer_download, &post_readback});
+    gt4::gs_stream::set_readback_journal({&gt4::mtvu::queue_readback, &gt4::mtvu::drain_download});
   }
 #endif
   start(settings, donor);

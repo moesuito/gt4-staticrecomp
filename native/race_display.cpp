@@ -34,6 +34,8 @@ bool parse_force_480p(const char *value) {
 }
 
 std::uint32_t race_display_index_address(std::uint32_t owner_pointer, std::uint32_t ram_size) {
+  if (!::gt4::target::available(race_display_index_offset))
+    return 0;
   if (owner_pointer == 0)
     return 0;
   if (!word_in_ram(race_owner_pointer_address, ram_size))
@@ -51,6 +53,11 @@ bool should_force_480p_index(std::uint32_t index_value) {
 }
 
 bool force_race_480p_at_vblank(std::uint8_t *ram, std::uint32_t ram_size, Force480pState &state) {
+  if (!::gt4::target::available(race_display_index_offset) ||
+      !::gt4::target::available(race_owner_pointer_address)) {
+    ::gt4::target::note_hook_unavailable("race display 480p (GT4_FORCE_480P)");
+    return false;
+  }
   if (!word_in_ram(race_owner_pointer_address, ram_size))
     return false;
   const std::uint32_t owner_pointer = read_le32(ram + race_owner_pointer_address);

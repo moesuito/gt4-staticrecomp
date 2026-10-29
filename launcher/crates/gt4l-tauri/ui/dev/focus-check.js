@@ -13,13 +13,21 @@
  *                       first Advanced row inside Graphics)
  *   ?scenario=render    only sets the state for docs/launcher/shots/graphics-sections.png (pad focus on Render scale,
  *                       the Graphics section in view)
+ *   ?scenario=general, ?scenario=graphics  only open that Settings tab (screenshots at 1280x720; no checks run)
+ *   Dropdown values (rc6): no .row .select value on General or Graphics wraps, in every language
  */
 (function (root) {
   "use strict";
   var GT4 = root.GT4;
-  var TABS = ["graphics", "controls", "saves", "replays", "achievements", "about"];
+  var TABS = ["graphics", "controls", "games", "saves", "replays", "achievements", "about"];
   var lines = [];
   var failures = 0;
+
+  // The text of a locale key in the current language. The checks compare against keys, so the same checks run in
+  // every language (ui/locales/*.json).
+  function T(key, params) {
+    return GT4.t(key, params);
+  }
 
   function wait(ms) {
     return new Promise(function (resolve) {
@@ -78,6 +86,21 @@
     return wait(250);
   }
 
+  // TASK-114 rc5: a tab read before opens from memory, so its rows are there at once and no loading line shows (the
+  // loading line waits 300 ms and only shows with no data). The check reads the page 40 ms after the hash changes.
+  async function loadedTabChecks() {
+    await setHash("#/settings/graphics");
+    root.location.hash = "#/settings/general";
+    await wait(40);
+    var rows = document.querySelectorAll(".stage .content .row").length;
+    check("a loaded tab shows its rows at once, with no loading line", !document.querySelector(".stage .loading") && rows > 0, "rows " + rows);
+    // The Saves list (TASK-114 rc5, item 8 extension): read before, so its header is drawn at once.
+    root.location.hash = "#/settings/saves";
+    await wait(40);
+    check("a loaded Saves tab shows its list at once, with no loading line", !document.querySelector(".stage .loading") && !!document.querySelector(".stage .content .lib-head"), "no list header");
+    await wait(250);
+  }
+
   // The tab list has focus, the shown tab is the highlighted one, and nothing in the rows has focus.
   function sideStepOk(tab) {
     return sideTab() === tab && shownTab() === tab && !focusInContent() && sideLevel();
@@ -115,7 +138,7 @@
   async function enterChecks() {
     await setHash("#/settings/graphics");
     var expected = {
-      saves: "01",
+      saves: "gt4:Save 01",
       replays: "01"
     };
     for (var i = 0; i < TABS.length; i++) {
@@ -146,7 +169,46 @@
     press("ArrowRight");
     await wait(200);
     var active = document.activeElement;
-    check("Saves never auto-selects Import", !(active && active.textContent && active.textContent.indexOf("Import") >= 0), active ? active.textContent : "none");
+    check("Saves never auto-selects Import", !(active && active.textContent && active.textContent.indexOf(T("library.import_saves")) >= 0), active ? active.textContent : "none");
+  }
+
+  // New save, Rename and Export (TASK-104), in the page's language: the buttons exist with their texts; New save asks
+  // first (Cancel closes it); Rename opens a text box of up to 40 characters that takes the focus, and Escape closes it.
+  async function libraryActionChecks() {
+    await setHash("#/settings/saves");
+    await wait(400);
+    var newButton = Array.prototype.filter.call(document.querySelectorAll(".lib-actions button"), function (b) {
+      return b.textContent === T("library.new_save");
+    })[0];
+    check("Saves has a New save button", !!newButton, "no New save button");
+    var renameButton = document.querySelector(".slot-row .iconbtn[title=\"" + T("library.rename") + "\"]");
+    var exportButton = document.querySelector(".slot-row .iconbtn[title=\"" + T("library.export") + "\"]");
+    check("each save row has Rename and Export buttons", !!renameButton && !!exportButton, "rename " + !!renameButton + " export " + !!exportButton);
+    if (newButton) {
+      newButton.click();
+      await wait(150);
+      var askDialog = document.querySelector(".modal");
+      check("New save asks first with its confirm button", !!askDialog && askDialog.textContent.indexOf(T("library.new_save_confirm")) >= 0,
+        askDialog ? askDialog.textContent : "no dialog");
+      if (askDialog) {
+        GT4.ui.topDialog().close();
+      }
+      await wait(100);
+      check("Cancel leaves the save list as it was", !document.querySelector(".modal"), "a dialog is still open");
+    }
+    if (renameButton) {
+      renameButton.click();
+      await wait(150);
+      var box = document.querySelector(".modal input.modal-input");
+      check("Rename opens a text box of up to 40 characters", !!box && box.getAttribute("maxlength") === "40",
+        box ? "maxlength " + box.getAttribute("maxlength") : "no text box");
+      check("the text box takes the focus", !!box && document.activeElement === box, "focus " + (document.activeElement && document.activeElement.tagName));
+      press("Escape");
+      await wait(150);
+      check("Escape closes the rename box", !document.querySelector(".modal"), "a dialog is still open");
+    }
+    await setHash("#/settings/saves");
+    await wait(200);
   }
 
   // Changed values show on screen at once and stay after the table is read again.
@@ -251,16 +313,16 @@
     var heads = Array.prototype.map.call(document.querySelectorAll(".content .section-head"), function (item) {
       return item.textContent;
     }).join("|");
-    check("Graphics shows the Display, Graphics and Advanced sections in order", heads === "Display|Graphics|Advanced", heads);
+    check("Graphics shows the Display, Graphics and Advanced sections in order", heads === T("settings.section_display") + "|" + T("settings.section_graphics") + "|" + T("settings.section_advanced"), heads);
     var displayIds = Array.prototype.map.call(document.querySelectorAll("[data-section=\"display\"] .row"), function (item) {
       return item.getAttribute("data-row");
     }).join("|");
     check("the Display section holds Monitor, Resolution, Fullscreen and VSync", displayIds === "monitor|resolution|fullscreen|vsync", displayIds);
     var graphicsSection = document.querySelector("[data-section=\"graphics\"]");
-    var inGraphics = !!graphicsSection && ["renderer", "render_scale", "fxaa"].every(function (id) {
+    var inGraphics = !!graphicsSection && ["renderer", "graphics_api", "render_scale", "fxaa"].every(function (id) {
       return !!graphicsSection.querySelector("[data-row=\"" + id + "\"]");
     });
-    check("the Graphics section holds Renderer, Render scale and FXAA", inGraphics, "missing rows");
+    check("the Graphics section holds Renderer, Graphics API, Render scale and FXAA", inGraphics, "missing rows");
     var looseRows = document.querySelectorAll(".content > .row").length;
     check("every Graphics row sits in a section", looseRows === 0, looseRows + " loose rows");
     var firstAdvanced = document.querySelector("[data-section=\"advanced\"] [data-setting]");
@@ -299,7 +361,7 @@
     check("D-pad down from the Display rows passes through the Graphics rows", passedGraphics, "walk " + walk.join(" > "));
     check("D-pad down from the Graphics rows reaches the Advanced rows", reached, "walk " + walk.join(" > "));
     check("D-pad down reaches Reset to defaults at the end of the section", reset, "focus " + focusedSetting());
-    check("the Graphics content footer offers Y Reset", /Reset/.test(footerText()), footerText());
+    check("the Graphics content footer offers Y Reset", new RegExp(T("hint.reset")).test(footerText()), footerText());
     var inSection = document.querySelector("[data-section=\"advanced\"] [data-setting=\"perf_overlay\"]");
     check("our performance overlay row is in the Advanced section", !!inSection, "no perf_overlay row");
     var osd = document.querySelector(".content [data-setting=\"osd_fps\"], .content [data-setting=\"aspect\"], " +
@@ -376,7 +438,7 @@
     press("ArrowRight");
     await wait(200);
     check("entering Controls focuses Cross on the drawing", focusedControl() === "cross", "focus " + focusedControl());
-    check("the Controls footer offers Rebind, Reset button and Reset all", /Rebind/.test(footerText()) && /Reset button/.test(footerText()) && /Reset all/.test(footerText()), footerText());
+    check("the Controls footer offers Rebind, Reset button and Reset all", footerText().indexOf(T("controls.rebind")) >= 0 && footerText().indexOf(T("hint.reset_button")) >= 0 && footerText().indexOf(T("hint.reset_all")) >= 0, footerText());
 
     press("ArrowUp");
     await wait(120);
@@ -386,7 +448,7 @@
     press("ArrowLeft");
     await wait(120);
     check("D-pad left from Cross reaches Square", focusedControl() === "square", "focus " + focusedControl());
-    check("the selection follows focus (panel shows Square)", cardName() === "Square", cardName());
+    check("the selection follows focus (panel shows Square)", cardName() === T("controls.button.square"), cardName());
     press("ArrowLeft");
     await wait(120);
     check("D-pad left from Square reaches Start", focusedControl() === "start", "focus " + focusedControl());
@@ -397,7 +459,7 @@
     GT4.nav.activate();
     await wait(200);
     check("A on a DS2 button opens the rebind overlay", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
-    check("the overlay names the button", /Square/.test((document.querySelector(".modal.is-capture h3") || {}).textContent || ""), "no title");
+    check("the overlay names the button", new RegExp(T("controls.button.square")).test((document.querySelector(".modal.is-capture h3") || {}).textContent || ""), "no title");
     check("the rebind footer shows only B Cancel", footerText() === "BCancel", footerText());
     press("Escape");
     await wait(200);
@@ -420,7 +482,7 @@
     GT4.nav.activate();
     await wait(2600);
     var dialogTitle = (document.querySelector(".modal h3") || {}).textContent || "";
-    check("a pad button already on R1 opens the conflict dialog", /already on R1/.test(dialogTitle), dialogTitle);
+    check("a pad button already on R1 opens the conflict dialog", /already on R1|já está em R1/.test(dialogTitle), dialogTitle);
     press("Escape");
     await wait(200);
     check("cancelling the conflict changes nothing", (await controlsOf("square")).xinput === "X" && (await controlsOf("r1")).xinput === "RB", "square/r1 changed");
@@ -429,7 +491,7 @@
     GT4.nav.activate();
     await wait(2600);
     var swap = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) {
-      return button.textContent === "Swap";
+      return button.textContent === T("controls.swap");
     })[0];
     check("the conflict dialog offers Swap", !!swap, "no Swap button");
     if (swap) {
@@ -440,7 +502,7 @@
     var r1 = await controlsOf("r1");
     check("Swap gives Square RB and R1 X", square.xinput === "RB" && r1.xinput === "X", square.xinput + "/" + r1.xinput);
     check("the chips show the swap (controller view)", badgeLabel("square") === "RB" && badgeLabel("r1") === "X", badgeLabel("square") + "/" + badgeLabel("r1"));
-    check("a swapped button reads Changed in the panel", (document.querySelector(".cx-card .cx-state") || {}).textContent === "Changed", "state");
+    check("a swapped button reads Changed in the panel", (document.querySelector(".cx-card .cx-state") || {}).textContent === T("controls.changed"), "state");
 
     // Live input from the pad events (a still dev pad, sent by the mock like the Rust service): Cross lights from A,
     // L2 fills to 60%.
@@ -471,7 +533,7 @@
     GT4.hooks.x();
     await wait(150);
     var resetAll = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) {
-      return button.textContent === "Reset all";
+      return button.textContent === T("controls.reset_all_hint");
     })[0];
     check("X asks before resetting everything", !!resetAll, "no confirmation");
     if (resetAll) {
@@ -483,53 +545,6 @@
     await wait(150);
     check("B returns Controls to the tab list", sideStepOk("controls"), sideDetail());
     delete GT4.devGamepads;
-  }
-
-  async function achievementsChecks() {
-    await setHash("#/settings/achievements");
-    var page = document.querySelector(".ra-page");
-    check("Achievements has a signed-out account state", !!page && page.textContent.indexOf("Not signed in") >= 0, "no signed-out state");
-    var signIn = page.querySelector("button.primary");
-    signIn.click();
-    await wait(60);
-    var modal = document.querySelector(".modal");
-    check("Achievements opens the account login dialog", !!modal && !!modal.querySelector("input[type=password]"), "no password field");
-    modal.querySelector("input[type=text]").value = "TestDriver";
-    modal.querySelector("input[type=password]").value = "test-only-password";
-    modal.querySelector("button.primary").click();
-    await wait(150);
-    page = document.querySelector(".ra-page");
-    check("Achievements paints the signed-in account", page.textContent.indexOf("TestDriver") >= 0, "no account name");
-    check("Achievements paints the synthetic progress list", page.querySelectorAll(".ra-ach-row").length === 3, "missing sample rows");
-    page.querySelector("button[aria-label=\"Hardcore mode\"]").click();
-    await wait(100);
-    var saved = await GT4.backend.call("ra_status", {});
-    check("Achievements saves the Hardcore toggle", saved.hardcore === true, "option was not saved");
-
-    // Hold an old signed-in status response while a real UI logout completes.
-    var originalCall = GT4.backend.call;
-    var release = null;
-    var deferStatus = true;
-    GT4.backend.call = function (command, args) {
-      if (command === "ra_status" && deferStatus) {
-        deferStatus = false;
-        return new Promise(function (resolve) { release = function () { resolve(saved); }; });
-      }
-      return originalCall(command, args);
-    };
-    try {
-      GT4.hooks.x();
-      page.querySelector("button.danger").click();
-      await wait(40);
-      document.querySelector(".modal button.danger").click();
-      await wait(100);
-      check("Achievements logout clears the account", !(await originalCall("ra_status", {})).signedIn, "mock still signed in");
-      release();
-      await wait(100);
-      check("a late status response cannot undo UI logout", document.querySelector(".ra-page").textContent.indexOf("Not signed in") >= 0, "old account reappeared");
-    } finally {
-      GT4.backend.call = originalCall;
-    }
   }
 
   // The screenshot state (scenario "4k", name kept for the screenshot list): Graphics with Render scale at 200%, the
@@ -552,7 +567,632 @@
     await wait(400);
   }
 
+  // Two games (TASK-101): the version switch under Play (the name between two arrows, an endless loop; owner, 2026-10-23),
+  // Play or Install, Settings > Games and the game on the Saves title. The mock starts with Gran Turismo 4 installed and
+  // Spec II not (?games=gt4).
+  async function achievementsChecks() {
+    await setHash("#/settings/achievements");
+    await wait(100);
+    var page = document.querySelector(".ra-page");
+    check("Achievements has a signed-out account state", !!page && page.textContent.indexOf(T("ra.not_signed_in")) >= 0, "no signed-out state");
+    var signIn = page.querySelector("button.primary");
+    check("Achievements has a Sign in button", !!signIn, "no sign-in button");
+    signIn.click();
+    await wait(60);
+    var modal = document.querySelector(".modal");
+    check("Achievements opens the account login dialog", !!modal && !!modal.querySelector("input[type=password]"), "no password field");
+    modal.querySelector("input[type=text]").value = "TestDriver";
+    modal.querySelector("input[type=password]").value = "test-only-password";
+    modal.querySelector("button.primary").click();
+    await wait(150);
+    page = document.querySelector(".ra-page");
+    check("Achievements paints the signed-in account", page.textContent.indexOf("TestDriver") >= 0, "no account name");
+    check("Achievements paints the synthetic progress list", page.querySelectorAll(".ra-ach-row").length === 3, "missing sample rows");
+    var hcBtn = page.querySelector("button[aria-label=\"" + T("ra.opt_hardcore") + "\"]");
+    if (hcBtn) {
+      hcBtn.click();
+      await wait(100);
+      var saved = await GT4.backend.call("ra_status", {});
+      check("Achievements saves the Hardcore toggle", saved.hardcore === true, "option was not saved");
+    }
+
+    // Hold an old signed-in status response while a real UI logout completes.
+    var originalCall = GT4.backend.call;
+    var release = null;
+    var deferStatus = true;
+    var currentSaved = await originalCall("ra_status", {});
+    GT4.backend.call = function (command, args) {
+      if (command === "ra_status" && deferStatus) {
+        deferStatus = false;
+        return new Promise(function (resolve) { release = function () { resolve(currentSaved); }; });
+      }
+      return originalCall(command, args);
+    };
+    try {
+      page.querySelector("button.danger").click();
+      await wait(40);
+      document.querySelector(".modal button.danger").click();
+      await wait(100);
+      check("Achievements logout clears the account", !(await originalCall("ra_status", {})).signedIn, "mock still signed in");
+      if (release) release();
+      await wait(100);
+      check("a late status response cannot undo UI logout", document.querySelector(".ra-page").textContent.indexOf(T("ra.not_signed_in")) >= 0, "old account reappeared");
+    } finally {
+      GT4.backend.call = originalCall;
+    }
+
+    // Target isolation check: when Spec II is selected, achievement set is NOT shown and unsupported banner is present
+    await setHash("#/settings/games");
+    await GT4.games.select("spec2");
+    await wait(100);
+    await setHash("#/settings/achievements");
+    await wait(150);
+    page = document.querySelector(".ra-page");
+    check("Spec II shows unsupported banner", !!page && !!page.querySelector(".ra-unsupported-banner"), "no unsupported banner");
+    check("Spec II does not show GT4 achievements list", page.querySelectorAll(".ra-ach-row").length === 0, "achievements list shown on Spec II");
+
+    // Restore GT4 target
+    await GT4.games.select("gt4");
+    await wait(100);
+  }
+
+  async function gamesChecks() {
+    await setHash("#/home");
+    await wait(500);
+    var arrows = document.querySelectorAll(".version-arrow");
+    // The name that is shown (a leaving name may still be sliding out beside it).
+    var currentName = function () {
+      var names = document.querySelectorAll(".version-name:not(.is-leaving)");
+      return names[names.length - 1];
+    };
+    var nameText = function () {
+      var names = document.querySelectorAll(".version-name:not(.is-leaving)");
+      return names.length ? names[names.length - 1].textContent : "";
+    };
+    var playText = function () { return document.querySelector(".play").textContent; };
+    check("Home has the version switch: two arrows around Normal", arrows.length === 2 && nameText() === T("home.normal"),
+      arrows.length + " " + nameText());
+    check("Gran Turismo 4 is selected first and shows Play", playText() === T("common.play"), playText());
+    check("the logo is the Gran Turismo 4 logo, with no Spec II line", !document.querySelector(".home-logo-spec2") &&
+      !!document.querySelector(".home-logo"), "");
+    arrows[1].click();
+    await wait(400);
+    check("the right arrow switches to Spec II and shows Install (no other not-installed mark)", nameText() === "Spec II" &&
+      playText() === T("common.install") && !document.querySelector(".version-note"), nameText() + " " + playText());
+    check("the new name came in from the right", currentName().classList.contains("enter-from-right"), "");
+    arrows[1].click();
+    await wait(400);
+    check("the loop is endless: right again comes back to Normal", nameText() === T("home.normal") && playText() === T("common.play"), nameText());
+    arrows[0].click();
+    await wait(400);
+    check("the left arrow switches too, sliding in from the left", nameText() === "Spec II" &&
+      currentName().classList.contains("enter-from-left"), nameText());
+    GT4.hooks.tabs(-1);
+    await wait(400);
+    check("LB / RB switches back to Normal and Play", playText() === T("common.play") && nameText() === T("home.normal"), nameText());
+    var notes = document.querySelector(".home-notes");
+    check("the patch notes card shows this version's notes (TASK-099)", !!notes && !notes.hidden &&
+      !!notes.querySelector(".home-notes-body .md-h2") && notes.querySelectorAll(".home-notes-body li").length > 0 &&
+      document.querySelector(".home-notes-version").textContent.length > 0, notes ? "card" : "none");
+    check("the notes title line is not repeated", !notes.querySelector(".md-h1"), "");
+    // Safety of js/markdown.js on its own (not shown in the mock): HTML in the notes stays plain text.
+    var sample = document.createElement("div");
+    sample.appendChild(GT4.markdown.render("- <b>raw HTML</b> and <img src=x> stay text", {}));
+    check("HTML written in release notes shows as plain text", !sample.querySelector("b") && !sample.querySelector("img") &&
+      /<b>raw HTML<\/b>/.test(sample.textContent), sample.textContent);
+    check("the notes card has no footer link", !notes.querySelector(".home-notes-more"), "");
+    // The 1.3.0 intro (js/intro.js): it covers the screen, a key skips it without reaching the page, and it shows once
+    // per version.
+    GT4.intro.play();
+    check("the intro covers the screen with spec-II", !!document.querySelector(".intro") &&
+      document.querySelector(".intro-spec").textContent === "spec-II" && GT4.intro.isPlaying(), "");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await wait(800);
+    check("a key skips the intro and does not press Play", !GT4.intro.isPlaying() && !document.querySelector(".intro") &&
+      document.querySelector(".play").textContent === T("common.play"), "");
+    try { localStorage.removeItem("gt4recomp.intro.seen"); } catch (error) { /* storage off */ }
+    var first = GT4.intro.maybePlay("1.3.0");
+    GT4.intro.skip();
+    var second = GT4.intro.maybePlay("1.3.0");
+    var other = GT4.intro.maybePlay("1.2.3");
+    await wait(800);
+    check("the intro plays once for 1.3.0 and never for a version without one", first && !second && !other, [first, second, other].join(" "));
+    var support = document.querySelector(".support");
+    check("Support the project with the Ko-fi cup sits on the home screen", !!support && !!support.querySelector(".support-cup") &&
+      new RegExp(T("home.support")).test(support.textContent), "");
+    var credit = document.querySelector(".home-version");
+    check("the version line credits Moesuito as a link", /GT4Recomp .* - Made with passion, by Moesuito$/.test(credit.textContent) &&
+      !!credit.querySelector(".home-author"), credit.textContent);
+    var older = notes.querySelectorAll(".notes-arrow")[0];
+    var newer = notes.querySelectorAll(".notes-arrow")[1];
+    var shownVersion = function () { return document.querySelector(".home-notes-version").textContent; };
+    check("the notes open on the newest release; newer is disabled at the start", shownVersion() === "1.3.0" &&
+      newer.disabled && !older.disabled, shownVersion());
+    older.click();
+    await wait(100);
+    check("the left arrow shows an older release, sliding in from the left", shownVersion() === "1.2.3" &&
+      !!notes.querySelector(".home-notes-page.enter-from-left") && !newer.disabled, shownVersion());
+    for (var step = 0; step < 10 && !older.disabled; step++) {
+      older.click();
+    }
+    await wait(100);
+    check("no loop: the oldest release disables the left arrow", shownVersion() === "1.0.0" && older.disabled, shownVersion());
+    older.click();
+    await wait(100);
+    check("an extra click at the oldest stays there", shownVersion() === "1.0.0", shownVersion());
+    newer.click();
+    await wait(100);
+    check("the right arrow goes back to a newer release", shownVersion() === "1.1.0" &&
+      !!notes.querySelector(".home-notes-page.enter-from-right"), shownVersion());
+    check("the pad hints name the game switch", /LB \/ RB/.test(document.getElementById("hints").textContent), document.getElementById("hints").textContent);
+
+    await setHash("#/settings/games");
+    await wait(400);
+    var rows = document.querySelectorAll(".game-row");
+    check("Settings > Games lists both games", rows.length === 2, String(rows.length));
+    var labels = Array.prototype.map.call(rows[0].querySelectorAll("button"), function (b) { return b.textContent; });
+    check("an installed game offers Update and Remove", labels.join("|") === T("games.update") + "|" + T("common.remove"), labels.join("|"));
+    var installedDetail = rows[0].querySelector(".val").textContent;
+    check("an installed game names its copy: status, USA v2.00 and size, not the title again",
+      installedDetail.indexOf(T("games.installed") + " · USA v2.00 · ") === 0 && installedDetail.indexOf("Gran Turismo") < 0, installedDetail);
+    check("Spec II is titled with its supported version", rows[1].querySelector(".k span").textContent === "Gran Turismo 4 Spec II v1.10",
+      rows[1].querySelector(".k span").textContent);
+    var other = Array.prototype.map.call(rows[1].querySelectorAll("button"), function (b) { return b.textContent; });
+    check("a game that is not installed offers Install", other.join("|") === T("common.install"), other.join("|"));
+    rows[0].querySelectorAll("button")[1].click();
+    await wait(200);
+    var dialog = document.querySelector(".modal");
+    check("Remove asks first and says the saves are kept", !!dialog && /saves and replays are kept|Seus saves e replays são mantidos/i.test(dialog.textContent), dialog ? dialog.textContent : "no dialog");
+    if (dialog) {
+      GT4.ui.topDialog().close();
+    }
+
+    await setHash("#/settings/saves");
+    await wait(400);
+    // One Saves list for both games (TASK-101 item 2): each row carries its game's tag, and the list does not change
+    // with the game shown; the Replays title still names the game.
+    var rowTag = document.querySelector(".slot-row .game-tag");
+    check("the Saves rows carry the game tag", !!rowTag && rowTag.textContent === T("home.normal"), rowTag ? rowTag.textContent : "no tag");
+    check("the Saves list shows the Spec II save too", !!document.querySelector(".slot-row[data-item-id^=\"spec2:\"]"), "no spec2 row");
+    await GT4.games.select("spec2");
+    await setHash("#/settings/replays");
+    await wait(400);
+    var tag = document.querySelector(".game-tag");
+    check("the Replays title names the game", !!tag && tag.textContent === "Gran Turismo 4 Spec II", tag ? tag.textContent : "no tag");
+    await setHash("#/settings/saves");
+    await wait(400);
+    check("the Spec II save row is tagged Spec II", !!document.querySelector(".slot-row[data-item-id^=\"spec2:\"] .game-tag") &&
+      document.querySelector(".slot-row[data-item-id^=\"spec2:\"] .game-tag").textContent === T("home.spec2"), "spec2 tag");
+    await GT4.games.select("gt4");
+  }
+
+
+  // ---------- Locales (TASK-102): every language has the keys of en-US; index.json lists only files that exist ----------
+  function fetchJson(name) {
+    return fetch("locales/" + name, { cache: "no-cache" }).then(function (response) {
+      return response.ok ? response.json() : null;
+    }, function () {
+      return null;
+    });
+  }
+
+  function placeholdersOf(text) {
+    return (String(text).match(/\{[A-Za-z0-9_]+\}/g) || []).slice().sort().join(",");
+  }
+
+  async function localeChecks() {
+    var index = await fetchJson("index.json");
+    check("index.json lists the languages", Array.isArray(index) && index.length >= 2, String(index && index.length));
+    var english = await fetchJson("en-US.json");
+    check("en-US.json exists (the fallback)", !!english, "missing");
+    if (!Array.isArray(index) || !english) {
+      return;
+    }
+    for (var i = 0; i < index.length; i++) {
+      var tag = index[i].tag;
+      var file = await fetchJson(tag + ".json");
+      check("index.json lists " + tag + " and its file exists", !!file, "no locales/" + tag + ".json");
+      if (!file || tag === "en-US") {
+        continue;
+      }
+      var missing = Object.keys(english).filter(function (key) { return !Object.prototype.hasOwnProperty.call(file, key); });
+      var extra = Object.keys(file).filter(function (key) { return !Object.prototype.hasOwnProperty.call(english, key); });
+      check(tag + " has every key of en-US", missing.length === 0, "missing " + missing.slice(0, 5).join(", "));
+      check(tag + " has no keys that en-US lacks", extra.length === 0, "extra " + extra.slice(0, 5).join(", "));
+      var badPlaceholder = Object.keys(english).filter(function (key) {
+        return typeof file[key] === "string" && placeholdersOf(file[key]) !== placeholdersOf(english[key]);
+      });
+      check(tag + " keeps the {placeholders} of en-US", badPlaceholder.length === 0, badPlaceholder.slice(0, 5).join(", "));
+      var empty = Object.keys(file).filter(function (key) { return typeof file[key] !== "string" || !file[key].trim(); });
+      check(tag + " has no empty texts", empty.length === 0, empty.slice(0, 5).join(", "));
+    }
+    check("the Auto rule picks pt-BR for pt-BR, pt_BR and pt", GT4.i18n.resolve("auto", "pt-BR") === "pt-BR" &&
+      GT4.i18n.resolve("auto", "pt_BR") === "pt-BR" && GT4.i18n.resolve("auto", "pt") === "pt-BR", "rule");
+    check("the Auto rule picks en-US for es-ES, fr and empty text", GT4.i18n.resolve("auto", "es-ES") === "en-US" &&
+      GT4.i18n.resolve("auto", "fr") === "en-US" && GT4.i18n.resolve("auto", "") === "en-US", "rule");
+    check("an explicit language wins over the OS", GT4.i18n.resolve("en-US", "pt-BR") === "en-US" &&
+      GT4.i18n.resolve("pt-BR", "en-US") === "pt-BR", "rule");
+  }
+
+  // The live switch (Settings > General > Language): the whole UI changes at once, in both directions.
+  async function languageSwitchChecks() {
+    var before = GT4.i18n.current();
+    var beforeSetting = GT4.i18n.setting();
+    var other = before === "pt-BR" ? "en-US" : "pt-BR";
+    await routeTo("#/settings/general");
+    await wait(400);
+    var select = document.querySelector("[data-setting=\"language\"]");
+    check("Settings > General shows the Language row", !!select, "no row");
+    if (!select) {
+      return;
+    }
+    select.focus({ preventScroll: true });
+    select.click();
+    await wait(300);
+    var option = Array.prototype.filter.call(document.querySelectorAll(".option-list .option"), function (button) {
+      return button.textContent.indexOf(other === "pt-BR" ? "Portugu" : "English") >= 0;
+    })[0];
+    check("the Language list offers " + other, !!option, "no option");
+    if (option) {
+      option.click();
+      await wait(900);
+    }
+    check("the page is in " + other + " after the choice (no restart)", GT4.i18n.current() === other &&
+      document.documentElement.getAttribute("lang") === other, GT4.i18n.current());
+    var sideGeneral = document.querySelector("nav.side [data-tab=\"general\"]");
+    check("the tab list names the General tab in " + other, !!sideGeneral && sideGeneral.textContent === GT4.t("tab.general"),
+      sideGeneral ? sideGeneral.textContent : "no tab");
+    // Back to the language the run started in.
+    await GT4.backend.call("set_setting", { id: "language", value: beforeSetting });
+    GT4.i18n.setSetting(beforeSetting);
+    await wait(400);
+  }
+
+  async function routeTo(hash) {
+    root.location.hash = hash;
+    await wait(500);
+  }
+
+  // Portuguese checks (run in pt-BR): the fixed terms, the notes card and the English credit line.
+  async function portugueseChecks() {
+    await routeTo("#/home");
+    var play = document.querySelector(".play");
+    check("pt-BR: the home button reads Jogar", !!play && play.textContent === "Jogar", play ? play.textContent : "no play");
+    var support = document.querySelector(".support");
+    check("pt-BR: the support button reads Ajude o projeto", !!support && support.textContent.indexOf("Ajude o projeto") >= 0,
+      support ? support.textContent : "no support");
+    var credit = document.querySelector(".home-version");
+    check("pt-BR: the credit line stays in English", !!credit && credit.textContent.indexOf("Made with passion, by Moesuito") >= 0,
+      credit ? credit.textContent : "no credit");
+    var notesTitle = document.querySelector(".home-notes-title");
+    check("pt-BR: the What's new card reads Novidades", !!notesTitle && notesTitle.textContent === "Novidades",
+      notesTitle ? notesTitle.textContent : "no card");
+    var notesBody = document.querySelector(".home-notes-body");
+    check("pt-BR: the release notes come in Portuguese", !!notesBody && notesBody.textContent.indexOf("Novidades") >= 0,
+      notesBody ? notesBody.textContent.slice(0, 60) : "no notes");
+    await routeTo("#/settings/general");
+    await wait(400);
+    var row = document.querySelector("[data-row=\"language\"] .k span");
+    check("pt-BR: the General tab row reads Idioma", !!row && row.textContent === "Idioma", row ? row.textContent : "no row");
+    var tableNow = await GT4.backend.call("get_settings_table");
+    var languageRow = (tableNow.rows || []).filter(function (item) { return item.id === "language"; })[0];
+    var ctl = document.querySelector("[data-setting=\"language\"]");
+    check("pt-BR: the language choice shows Português (Brasil)", !!ctl && ctl.textContent.indexOf("Português (Brasil)") >= 0,
+      (ctl ? ctl.textContent : "no choice") + " table " + (languageRow && languageRow.current) + " setting " + GT4.i18n.setting());
+  }
+
+  // ---------- Update channel and version picker (TASK-109), in the page's language ----------
+  function versionOptionTags() {
+    return Array.prototype.map.call(document.querySelectorAll(".modal .option-list .option"), function (button) {
+      return button.getAttribute("data-tag");
+    });
+  }
+
+  function topModalTitle() {
+    var modals = document.querySelectorAll(".modal");
+    var top = modals[modals.length - 1];
+    var title = top && top.querySelector("h3");
+    return title ? title.textContent : "";
+  }
+
+  function closeModals() {
+    var dialog = GT4.ui.topDialog();
+    while (dialog) {
+      dialog.close();
+      dialog = GT4.ui.topDialog();
+    }
+  }
+
+  async function openVersionList() {
+    var select = document.querySelector("[data-setting=\"launcher_version\"]");
+    select.focus({ preventScroll: true });
+    select.click();
+    await wait(150);
+    return versionOptionTags();
+  }
+
+  async function chooseVersion(tag) {
+    var button = document.querySelector(".modal .option[data-tag=\"" + tag + "\"]");
+    if (button) {
+      button.click();
+    }
+    await wait(150);
+    return !!button;
+  }
+
+  async function chooseChannel(value) {
+    var select = document.querySelector("[data-setting=\"update_channel\"]");
+    select.focus({ preventScroll: true });
+    select.click();
+    await wait(150);
+    var wanted = T("choice.update_channel." + value);
+    var option = Array.prototype.filter.call(document.querySelectorAll(".modal .option-list .option"), function (button) {
+      return button.textContent.indexOf(wanted) === 0;
+    })[0];
+    if (option) {
+      option.click();
+    }
+    await wait(600);
+    return !!option;
+  }
+
+  async function versionChecks() {
+    var dev = GT4.devVersions;
+    dev.installed = "1.3.0-rc6";
+    dev.installs.length = 0;
+    dev.failList = false;
+    await GT4.backend.call("set_setting", { id: "update_channel", value: "stable" });
+    await routeTo("#/settings/general");
+    await wait(500);
+
+    // The rows: Language, Channel, Version, in that order.
+    var order = Array.prototype.map.call(document.querySelectorAll(".content .row"), function (row) {
+      return row.getAttribute("data-row");
+    });
+    check("General lists Language, Channel, Discord Rich Presence, Version and GPU acceleration in that order", order.join(",") === "language,update_channel,discord_rich_presence,launcher_version,launcher_gpu", order.join(","));
+    var channelSelect = document.querySelector("[data-setting=\"update_channel\"]");
+    check("the Channel row shows Stable", !!channelSelect && channelSelect.textContent.indexOf(T("choice.update_channel.stable")) === 0,
+      channelSelect ? channelSelect.textContent : "no row");
+    var versionSelect = document.querySelector("[data-setting=\"launcher_version\"]");
+    check("the Version row shows the installed version", !!versionSelect && versionSelect.textContent.indexOf("1.3.0-rc6") === 0,
+      versionSelect ? versionSelect.textContent : "no row");
+    var note = document.querySelector("[data-action=\"versions-note\"]");
+    check("the Version row says older versions are not listed", !!note && note.textContent.indexOf(T("versions.older_note")) >= 0,
+      note ? note.textContent : "no note");
+    check("the Version row has a refresh button", !!document.querySelector("[data-action=\"versions-refresh\"]"), "none");
+
+    var tags = await openVersionList();
+    // The running test build (1.3.0-rc6) is not a Stable release, so it comes first, marked Installed (rc5 owner report).
+    check("Stable lists the running build, then the stable releases by version, without a draft or a version below rc5",
+      tags.join(",") === "v1.3.0-rc6,v1.3.2,v1.3.0", tags.join(","));
+    closeModals();
+
+    // Choosing Beta applies at once and refreshes the list.
+    check("the Beta choice is in the Channel list", await chooseChannel("beta"), "no Beta option");
+    var saved = (await GT4.backend.call("get_settings_table")).rows.filter(function (row) { return row.id === "update_channel"; })[0];
+    check("the channel is saved at once", !!saved && saved.current === "beta", saved ? saved.current : "no row");
+    tags = await openVersionList();
+    check("Beta lists a newer stable on top, then candidates by date, no draft", tags.join(",") === "v1.3.2,v1.3.1-rc2,v1.3.0-rc6,v1.3.0-rc5", tags.join(","));
+    var installedOption = document.querySelector(".modal .option[data-tag=\"v1.3.0-rc6\"]");
+    check("the installed version is marked", !!installedOption && installedOption.textContent.indexOf(T("versions.installed")) >= 0 &&
+      installedOption.getAttribute("aria-selected") === "true", installedOption ? installedOption.textContent : "none");
+
+    // An older version: the strong warning, Cancel first, nothing changes on No.
+    await chooseVersion("v1.3.0-rc5");
+    var warning = document.querySelector(".modal .version-warning");
+    check("an older version opens the downgrade warning", topModalTitle() === T("versions.downgrade_title") && !!warning &&
+      warning.textContent.indexOf(T("versions.downgrade_warning")) >= 0, topModalTitle());
+    var active = document.activeElement;
+    check("the downgrade dialog does not focus the install button", !!active && active.textContent === T("versions.cancel"),
+      active ? active.textContent : "none");
+    var olderButton = Array.prototype.filter.call(document.querySelectorAll(".modal-actions .btn"), function (button) {
+      return button.textContent === T("versions.install_older");
+    })[0];
+    check("the downgrade dialog has an explicit Install older version button and a saves folder button", !!olderButton &&
+      Array.prototype.some.call(document.querySelectorAll(".modal-actions .btn"), function (button) {
+        return button.textContent === T("versions.open_saves_folder");
+      }), "missing");
+    versionSelect = document.querySelector("[data-setting=\"launcher_version\"]");
+    check("the dropdown shows the picked version while the question is open", versionSelect.textContent.indexOf("1.3.0-rc5") === 0, versionSelect.textContent);
+    active.click();
+    await wait(150);
+    versionSelect = document.querySelector("[data-setting=\"launcher_version\"]");
+    check("No puts the dropdown back on the installed version and installs nothing", versionSelect.textContent.indexOf("1.3.0-rc6") === 0 &&
+      dev.installs.length === 0, versionSelect.textContent + " installs " + dev.installs.join(","));
+
+    // A newer version: the plain question, Install is the default; No restores.
+    await openVersionList();
+    await chooseVersion("v1.3.2");
+    check("a newer version opens the plain question", topModalTitle() === T("versions.confirm_title", { version: "1.3.2" }) &&
+      !document.querySelector(".modal .version-warning"), topModalTitle());
+    active = document.activeElement;
+    check("the plain question focuses Install", !!active && active.textContent === T("versions.install"), active ? active.textContent : "none");
+    var cancel = Array.prototype.filter.call(document.querySelectorAll(".modal-actions .btn"), function (button) {
+      return button.textContent === T("versions.cancel");
+    })[0];
+    cancel.click();
+    await wait(150);
+    versionSelect = document.querySelector("[data-setting=\"launcher_version\"]");
+    check("Cancel on the plain question restores the dropdown", versionSelect.textContent.indexOf("1.3.0-rc6") === 0 && dev.installs.length === 0,
+      versionSelect.textContent);
+
+    // Yes calls the update path with the exact tag.
+    await openVersionList();
+    await chooseVersion("v1.3.2");
+    document.activeElement.click();
+    await wait(200);
+    check("Yes calls the install path for that exact version", dev.installs.join(",") === "v1.3.2", dev.installs.join(","));
+    await openVersionList();
+    await chooseVersion("v1.3.0-rc5");
+    olderButton = Array.prototype.filter.call(document.querySelectorAll(".modal-actions .btn"), function (button) {
+      return button.textContent === T("versions.install_older");
+    })[0];
+    olderButton.click();
+    await wait(200);
+    check("Install older version calls the same path", dev.installs.join(",") === "v1.3.2,v1.3.0-rc5", dev.installs.join(","));
+    closeModals();
+
+    // Keyboard: Enter on the focused dropdown opens the list.
+    versionSelect = document.querySelector("[data-setting=\"launcher_version\"]");
+    versionSelect.focus({ preventScroll: true });
+    versionSelect.click();
+    await wait(150);
+    check("the version list opens from the keyboard focus and holds the focus", !!document.querySelector(".modal .option-list") &&
+      document.activeElement.classList.contains("option"), "none");
+    closeModals();
+
+    // Offline or a GitHub error: a plain message, the current version stays.
+    dev.failList = true;
+    document.querySelector("[data-action=\"versions-refresh\"]").click();
+    await wait(400);
+    versionSelect = document.querySelector("[data-setting=\"launcher_version\"]");
+    note = document.querySelector("[data-action=\"versions-note\"]");
+    check("a failed list read shows a plain message and keeps the current version", versionSelect.textContent.indexOf("1.3.0") === 0 &&
+      !!note && note.classList.contains("is-warning") && note.textContent.length > 0, (versionSelect.textContent) + " / " + (note ? note.textContent : "none"));
+    dev.failList = false;
+
+    // Stable while a newer candidate runs: nothing to list above it, said plainly.
+    await GT4.backend.call("set_setting", { id: "update_channel", value: "stable" });
+    dev.installed = "1.3.3-rc1";
+    await routeTo("#/home");
+    await routeTo("#/settings/general");
+    await wait(500);
+    note = document.querySelector("[data-action=\"versions-note\"]");
+    var expected = T("versions.nothing_newer", { channel: T("choice.update_channel.stable") });
+    check("a newer build than any Stable release says updates resume later", !!note && note.textContent.indexOf(expected) >= 0,
+      note ? note.textContent : "no note");
+
+    dev.installed = "1.3.0-rc6";
+    dev.installs.length = 0;
+    await GT4.backend.call("set_setting", { id: "update_channel", value: "stable" });
+  }
+
+  // TASK-114 rc6 (pt-BR owner screenshot): no dropdown value on General or Graphics wraps. A value is one line when it
+  // is nowrap and its box is no taller than its line height (app.css fixes the line height at 16 px). The Language
+  // value is also measured with the longest text it can show, "Automático (Português (Brasil))", in place of its own.
+  function selectValueInfo(select) {
+    var value = select.firstElementChild;
+    var style = getComputedStyle(value);
+    return {
+      text: value.textContent,
+      height: value.getBoundingClientRect().height,
+      line: parseFloat(style.lineHeight),
+      nowrap: style.whiteSpace === "nowrap"
+    };
+  }
+
+  function oneLineProblems(selects) {
+    var problems = [];
+    selects.forEach(function (select) {
+      var info = selectValueInfo(select);
+      if (!info.nowrap || !(info.line > 0) || info.height > info.line + 0.5) {
+        problems.push(info.text + " (" + info.height + "px, line " + info.line + "px)");
+      }
+    });
+    return problems;
+  }
+
+  async function selectValueChecks() {
+    var tabs = ["general", "graphics"];
+    for (var i = 0; i < tabs.length; i++) {
+      await setHash("#/settings/" + tabs[i]);
+      await wait(300);
+      var selects = Array.prototype.slice.call(document.querySelectorAll(".row .select"));
+      var problems = oneLineProblems(selects);
+      check(tabs[i] + " tab: every dropdown value is one line (" + selects.length + " dropdowns)",
+        selects.length > 0 && problems.length === 0, problems.join("; ") || "no dropdowns");
+      if (tabs[i] === "general") {
+        var language = document.querySelector(".row .select[data-setting=\"language\"]");
+        if (language) {
+          var span = language.firstElementChild;
+          var saved = span.textContent;
+          span.textContent = T("choice.language.auto", { language: T("choice.language.pt-BR") });
+          await wait(50);
+          var longProblems = oneLineProblems([language]);
+          span.textContent = saved;
+          check("the Language value stays on one line with its longest text", longProblems.length === 0,
+            longProblems.join("; "));
+        }
+      }
+    }
+  }
+
+  async function languageChecks() {
+    await localeChecks();
+    await languageSwitchChecks();
+    if (GT4.i18n.current() === "pt-BR") {
+      await portugueseChecks();
+    }
+  }
+
+  // The setup page against a stubbed backend: the first-run page names no game, and the copy step ends at a full bar.
+  async function setupChecks() {
+    var realCall = GT4.backend.call;
+    var current = null;
+    GT4.backend.call = function (command) {
+      return command === "app_state" ? Promise.resolve({ setup: current, any_installed: false, games: [] }) : realCall.apply(null, arguments);
+    };
+    var scratch = document.createElement("div");
+    document.body.appendChild(scratch);
+    var handle = null;
+    try {
+      current = { state: "needed", step: "copying", progress: 0, bytes_done: 0, bytes_total: 0, renderer_step: "", disc_name: "", problem: "", note: "", game: null };
+      handle = GT4.pages.setup.mount(scratch);
+      await wait(700);
+      var title = scratch.querySelector("h1").textContent;
+      var sub = scratch.querySelector(".sub").textContent;
+      check("the first-run setup page is generic: no game is named before the disc is read",
+        title === T("setup.set_up") && sub === T("setup.choose_text") && title.indexOf("Spec") < 0, title + " / " + sub);
+      current = { state: "checking", step: "checking", progress: 0, bytes_done: 3683418112, bytes_total: 3683418112, renderer_step: "",
+        disc_name: "Gran Turismo 4 Spec II v1.10", problem: "", note: "", game: { id: "spec2", name: "Gran Turismo 4 Spec II" } };
+      await wait(900);
+      var named = scratch.querySelector("h1").textContent;
+      check("after the disc is identified the steps name the game", named === T("setup.checking_title_named", { game: "Gran Turismo 4 Spec II" }), named);
+      var discStep = scratch.querySelector(".steps li .d");
+      check("step 1 says what the disc was recognised as", !!discStep && discStep.textContent === T("setup.recognised", { name: "Gran Turismo 4 Spec II v1.10" }),
+        discStep ? discStep.textContent : "no detail");
+      var stepLabels = Array.prototype.map.call(scratch.querySelectorAll(".steps li .t"), function (node) { return node.textContent; });
+      check("the copy step says it also checks the image, and the step after it is the final check",
+        stepLabels[1] === T("setup.step_copying") && stepLabels[2] === T("setup.step_checking"), stepLabels.join(" | "));
+      var copyBar = scratch.querySelector(".steps li .bar i");
+      check("the copy step ends at a full bar after the page moved on to checking",
+        !!copyBar && copyBar.style.width === "100%" && copyBar.style.transition === "none", copyBar ? copyBar.style.width + " " + copyBar.style.transition : "no bar");
+    } finally {
+      if (handle) {
+        handle.destroy();
+      }
+      scratch.remove();
+      GT4.backend.call = realCall;
+    }
+  }
+
+  // The 1.3.0 intro is looked up by the base version: 1.3.0-rc5 plays it, once, and 1.3.0 then does not.
+  async function introChecks() {
+    var key = "gt4recomp.intro.seen";
+    var before = null;
+    try { before = root.localStorage.getItem(key); root.localStorage.removeItem(key); } catch (error) { return; }
+    try {
+      check("the intro base version drops the rc suffix", GT4.intro.baseVersion("1.3.0-rc5") === "1.3.0" && GT4.intro.baseVersion("1.3.0") === "1.3.0", "");
+      if (document.hidden) {
+        check("a hidden page does not start the intro", GT4.intro.maybePlay("1.3.0-rc5") === false && !GT4.intro.isPlaying(), "");
+        return;
+      }
+      var first = GT4.intro.maybePlay("1.3.0-rc5");
+      var playing = GT4.intro.isPlaying();
+      GT4.intro.skip();
+      await wait(800);
+      var second = GT4.intro.maybePlay("1.3.0-rc6");
+      var third = GT4.intro.maybePlay("1.3.0");
+      check("1.3.0-rc5 plays the 1.3.0 intro once", first === true && playing && second === false && third === false && !GT4.intro.isPlaying(),
+        first + " " + playing + " " + second + " " + third);
+      check("a version without an intro plays nothing", GT4.intro.maybePlay("1.2.9") === false, "");
+    } finally {
+      try { if (before === null) { root.localStorage.removeItem(key); } else { root.localStorage.setItem(key, before); } } catch (error) { /* none */ }
+    }
+  }
+
   async function run() {
+    await GT4.i18n.ready;
     await wait(300);
     var scenario = new URLSearchParams(root.location.search).get("scenario") || "";
     try {
@@ -568,14 +1208,28 @@
         await scenarioRender();
         return;
       }
+      if (scenario === "general" || scenario === "graphics") {
+        // The screenshot states of slice 295 (TASK-114 rc6): the tab at 1280x720, nothing focused.
+        await setHash("#/settings/" + scenario);
+        await wait(400);
+        return;
+      }
       await routeChecks();
+      await loadedTabChecks();
       await sideWalk();
       await enterChecks();
       await importEntryCheck();
+      await libraryActionChecks();
       await valueChecks();
       await advancedSectionChecks();
       await controlsChecks();
+      await gamesChecks();
       await achievementsChecks();
+      await setupChecks();
+      await introChecks();
+      await versionChecks();
+      await languageChecks();
+      await selectValueChecks();
     } catch (err) {
       check("the checks ran to the end", false, String(err && err.message ? err.message : err));
     }

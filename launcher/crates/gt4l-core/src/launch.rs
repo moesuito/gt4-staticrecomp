@@ -1,4 +1,4 @@
-//! Builds the exact command line and environment for `gt4vulkan.exe`.
+//! Builds the exact command line and environment for `gt4.exe`.
 //!
 //! Contract (from `scripts/external_runtime_probe.py::run_probe` and `gs_stream_environment`):
 //! - arguments: `<elf> --ntsc --disc <iso> --frames 0 --memcard <card> --misses <session>\misses.txt --window`
@@ -9,11 +9,15 @@
 //! [`pcsx2_environment`], decision 0070). CoreGS 1.1 is still inside the game executable, but the launcher never
 //! starts it (TASK-096, owner 2026-10-22). Only the child process gets these variables. Nothing is written to the
 //! user or system environment.
+use crate::language::Language;
+use crate::messages;
+
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::display::{self, DisplayTarget};
+use crate::games::Game;
 use crate::gs_release::Installed;
 use crate::gs_table;
 use crate::settings::Settings;
@@ -31,10 +35,21 @@ pub const GSDX_NOT_INSTALLED: &str = "GSdx is not installed yet";
 /// The reason shown when GSdx stopped and asked for a restart with CoreGS 1.1.
 pub const GSDX_RESTART_REQUESTED: &str = "GSdx stopped while playing";
 
+/// The executable of a game inside the game folder (`<program folder>\game`, TASK-101: one program per game).
+pub fn game_program(game: &Game, game_dir: &Path) -> PathBuf {
+    game_dir.join(game.executable)
+}
+
+/// The prepared ELF of a game. Its file name stays `SCUS_973.28` / `SCUS_974.36` (the argv0 rule: the donor derives the
+/// boot name from it).
+pub fn game_elf(game: &Game, prepared: &Path) -> PathBuf {
+    prepared.join(game.elf_name)
+}
+
 /// Everything needed to start one game session.
 #[derive(Clone, Debug)]
 pub struct LaunchInputs<'a> {
-    /// `gt4vulkan.exe`.
+    /// `gt4.exe`.
     pub game_executable: &'a Path,
     /// The rebuilt ELF in the prepared folder. Its file name must stay `SCUS_973.28` (argv0 rule).
     pub elf: &'a Path,
@@ -45,7 +60,7 @@ pub struct LaunchInputs<'a> {
 }
 
 /// The planned launch. `removed_inherited` lists variables to remove from the child environment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LaunchPlan {
     pub program: PathBuf,
     pub arguments: Vec<String>,
@@ -54,6 +69,42 @@ pub struct LaunchPlan {
     pub working_directory: PathBuf,
     pub log_path: PathBuf,
     pub misses_path: PathBuf,
+}
+
+impl LaunchPlan {
+    /// Safe environment view with sensitive values (_TOKEN, _PASSWORD) masked as `[REDACTED]`.
+    pub fn safe_environment(&self) -> Vec<(String, String)> {
+        self.environment
+            .iter()
+            .map(|(k, v)| {
+                let upper = k.to_ascii_uppercase();
+                if upper.ends_with("_TOKEN")
+                    || upper.ends_with("_PASSWORD")
+                    || upper == "GT4_RA_TOKEN"
+                    || upper == "GT4_RA_PASSWORD"
+                {
+                    (k.clone(), "[REDACTED]".to_string())
+                } else {
+                    (k.clone(), v.clone())
+                }
+            })
+            .collect()
+    }
+}
+
+impl std::fmt::Debug for LaunchPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let safe_env = self.safe_environment();
+        f.debug_struct("LaunchPlan")
+            .field("program", &self.program)
+            .field("arguments", &self.arguments)
+            .field("environment", &safe_env)
+            .field("removed_inherited", &self.removed_inherited)
+            .field("working_directory", &self.working_directory)
+            .field("log_path", &self.log_path)
+            .field("misses_path", &self.misses_path)
+            .finish()
+    }
 }
 
 /// The files and pins of the PCSX2 GS process for one session.
@@ -97,9 +148,20 @@ pub fn choose_renderer<'a>(installed: Option<&'a Installed>, log_folder: &Path) 
 /// The message of a session GSdx cannot run: the reason, what to do, and the log folder. Shown on the home page and in
 /// the tray, so the player is never left without a reason.
 pub fn gsdx_unavailable_message(reason: &str, log_folder: &Path) -> String {
-    format!(
-        "GSdx could not run the game: {reason}. Check your internet connection and try again. Details are in the log folder: {}.",
-        log_folder.display()
+    gsdx_unavailable_message_in(reason, log_folder, Language::fallback())
+}
+
+/// [`gsdx_unavailable_message`] in `language`. The two known reasons are translated; any other reason is shown as it is.
+pub fn gsdx_unavailable_message_in(reason: &str, log_folder: &Path, language: Language) -> String {
+    let reason_text = match reason {
+        GSDX_NOT_INSTALLED => messages::text("game.gs_not_installed", language).to_string(),
+        GSDX_RESTART_REQUESTED => messages::text("game.gs_restart", language).to_string(),
+        other => other.to_string(),
+    };
+    messages::render(
+        "game.gs_could_not_run",
+        language,
+        &[("reason", &reason_text), ("folder", &log_folder.display().to_string())],
     )
 }
 
@@ -167,8 +229,10 @@ pub fn display_environment(display: Option<&DisplayTarget>) -> Vec<(String, Stri
 }
 
 /// The render plan of a session (TASK-080 addendum): the output size of the display target (1920 x 1080 when none is
-/// known) and the Render scale, for the PCSX2 GS. Never fails: an output the plan refuses falls back to 1920 x 1080.
-pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>) -> display::DisplayPlan {
+/// known) and the Render scale, for the PCSX2 GS. `integrated_gpu` is true when the game renders on an integrated GPU
+/// (issue #89): the untouched default scale then plays at 1x. Never fails: an output the plan refuses falls back to
+/// 1920 x 1080.
+pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool) -> display::DisplayPlan {
     let scale = settings.get("render_scale").parse::<u32>().unwrap_or(display::RENDER_SCALE_DEFAULT);
     let output = display.map(|target| target.output).unwrap_or(display::FALLBACK_OUTPUT);
     let fallback = || {
@@ -180,7 +244,8 @@ pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>) -> dis
         )
         .expect("1920x1080 at 100% is a valid plan")
     };
-    display::display_plan(output.width, output.height, scale, display::PCSX2_GS_CAPS).unwrap_or_else(|_| fallback())
+    display::display_plan_on(output.width, output.height, scale, display::PCSX2_GS_CAPS, integrated_gpu)
+        .unwrap_or_else(|_| fallback())
 }
 
 /// The gt4-gs.ini text of a session, rendered from the table (`gs_table::render_ini`, same rules as
@@ -188,9 +253,23 @@ pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>) -> dis
 /// fifo writes both true, mailbox writes mailbox false, immediate writes vsync false. `upscale_multiplier` comes from
 /// the session plan ([`session_plan`]); a stored `upscale` value is never used (there is no such setting). With no
 /// display known and Render scale 100% the plan gives 3x, the table default, so that INI is unchanged.
-pub fn gs_config_text(settings: &Settings, paths: &Pcsx2Paths, display: Option<&DisplayTarget>) -> Result<String, String> {
+pub fn gs_config_text(
+    settings: &Settings,
+    paths: &Pcsx2Paths,
+    display: Option<&DisplayTarget>,
+    integrated_gpu: bool,
+) -> Result<String, String> {
     let mut user: BTreeMap<String, String> = settings.gs_overrides().clone();
-    user.insert("upscale".to_string(), session_plan(settings, display).multiplier.to_string());
+    // TASK-108: the Adapter (the chosen graphics card's name) is written by the launcher, not by the table: its row is
+    // not settable from a value yet (status resolved). It is added below the table's render, in its section.
+    let adapter = user.remove("adapter").filter(|name| !name.is_empty());
+    user.insert("upscale".to_string(), session_plan(settings, display, integrated_gpu).multiplier.to_string());
+    // TASK-118 (owner, 2026-10-26): Performance Mode is a preset. Blending accuracy is not a player row any more:
+    // Minimum with Performance Mode on, High otherwise (Minimum measured about 1.5 ms less per frame on the weak laptop).
+    user.insert(
+        "blending".to_string(),
+        if settings.gs_value("performance_mode") == "no-readbacks" { "minimum" } else { "high" }.to_string(),
+    );
     let present = match settings.get("vsync") {
         "fast" => "mailbox",
         "off" => "immediate",
@@ -204,7 +283,59 @@ pub fn gs_config_text(settings: &Settings, paths: &Pcsx2Paths, display: Option<&
     launcher.insert("cache_folder".to_string(), paths.cache.display().to_string());
     launcher.insert("data_root".to_string(), paths.data_root.display().to_string());
     launcher.insert("textures_folder".to_string(), paths.textures.display().to_string());
-    gs_table::render_ini(&user, &launcher).map_err(|error| error.to_string())
+    let text = gs_table::render_ini(&user, &launcher).map_err(|error| error.to_string())?;
+    match adapter {
+        None => Ok(text),
+        Some(name) => {
+            let header = "[EmuCore/GS]
+";
+            if !text.contains(header) {
+                return Err("gt4-gs.ini has no [EmuCore/GS] section for the Adapter".to_string());
+            }
+            Ok(text.replacen(header, &format!("{header}Adapter = {name}
+"), 1))
+        }
+    }
+}
+
+/// Name of the file the game reads for a direct start (TASK-097), in the user config folder.
+pub const STANDALONE_CONFIG_FILE: &str = "game.ini";
+
+/// Name of the gt4-gs.ini the launcher keeps in the user config folder for a direct start (TASK-097). A Play still writes
+/// its own copy into the session folder.
+pub const STANDALONE_GS_INI_FILE: &str = "gt4-gs.ini";
+
+/// The `game.ini` text (TASK-097): the player's choices that the launcher turns into variables at Play, so a direct start of
+/// the game (no launcher) honours them. `key=value` lines read by `native/standalone.cpp`:
+/// `fullscreen`, `present_mode`, `monitor`, `output_size` (only when a monitor is known), `async_gs`, `performance_report`
+/// and `check_vu_code`. Each key stands for the variable [`add_common`] and [`display_environment`] set (the mapping is
+/// tested against them). Anything the game defaults itself (GSdx, 480p, 16:9, automatic ultrawide) is not written.
+pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarget>) -> String {
+    let present = match settings.get("vsync") {
+        "fast" => "mailbox",
+        "off" => "immediate",
+        _ => "fifo",
+    };
+    let check_vu_code = match settings.get("check_vu_code") {
+        "100" => "100",
+        "1000" => "1000",
+        _ => "0",
+    };
+    let mut text = String::from(
+        "# GT4Recomp: what the launcher chose for a direct start of the game (TASK-097).\n\
+         # Written by the launcher whenever a setting changes and before every Play. Do not edit by hand.\n\
+         version=1\n",
+    );
+    text.push_str(&format!("fullscreen={}\n", flag(settings.is_on("fullscreen"))));
+    text.push_str(&format!("present_mode={present}\n"));
+    if let Some(target) = display {
+        text.push_str(&format!("monitor={}\n", target.device));
+        text.push_str(&format!("output_size={}\n", target.output.text()));
+    }
+    text.push_str(&format!("async_gs={}\n", flag(settings.is_on("async_gs"))));
+    text.push_str(&format!("performance_report={}\n", flag(settings.is_on("performance_report"))));
+    text.push_str(&format!("check_vu_code={check_vu_code}\n"));
+    text
 }
 
 /// Whether the game asked for a restart with the built-in renderer (its log holds the marker line). The launcher
@@ -225,7 +356,9 @@ pub const PASSED_THROUGH: &[&str] = &["GT4_ASPECT_FOV_EXTRA"];
 
 /// Whether an inherited variable must be removed for the game process.
 pub fn is_scrubbed(name: &str) -> bool {
-    !PASSED_THROUGH.contains(&name) && SCRUBBED_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+    let upper = name.to_ascii_uppercase();
+    !PASSED_THROUGH.iter().any(|p| p.eq_ignore_ascii_case(name))
+        && SCRUBBED_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
 
 /// Plans one PCSX2 GS launch. Pure: the caller writes `paths.config` (see [`gs_config_text`]) before starting.
@@ -236,7 +369,8 @@ pub fn plan_pcsx2_launch(
     display: Option<&DisplayTarget>,
     inherited_names: &[String],
 ) -> LaunchPlan {
-    plan_with(inputs, with_display(pcsx2_environment(settings, paths), display), inherited_names)
+    let environment = pcsx2_environment(settings, paths);
+    plan_with(inputs, with_display(environment, display), inherited_names)
 }
 
 fn with_display(mut environment: Vec<(String, String)>, display: Option<&DisplayTarget>) -> Vec<(String, String)> {

@@ -17,14 +17,17 @@
   var GT4 = (root.GT4 = root.GT4 || {});
   var h = GT4.ui.h;
 
+  // The tab names are keys (tab.<id>), read when the list is drawn, so a language change applies.
   var TABS = [
-    { id: "graphics", label: "Graphics" },
-    { id: "controls", label: "Controls" },
-    { id: "saves", label: "Saves" },
-    { id: "replays", label: "Replays" },
-    { id: "achievements", label: "Achievements" },
-    { id: "mods", label: "Mods" },
-    { id: "about", label: "About" }
+    { id: "general", key: "tab.general" },
+    { id: "graphics", key: "tab.graphics" },
+    { id: "controls", key: "tab.controls" },
+    { id: "games", key: "tab.games" },
+    { id: "saves", key: "tab.saves" },
+    { id: "replays", key: "tab.replays" },
+    { id: "achievements", key: "tab.achievements" },
+    { id: "mods", key: "tab.mods" },
+    { id: "about", key: "tab.about" }
   ];
   GT4.TABS = TABS;
   GT4.tabPages = GT4.tabPages || {};
@@ -52,6 +55,77 @@
 
   var model = GT4.settingsModel;
 
+  // TASK-114 rc5: the Settings tabs open from memory. `cache` keeps the last settings table, About info and launcher
+  // version list that were read; prefetchSettings fills it when the home screen is up, and every read refreshes it.
+  var cache = { table: null, about: null, versions: null, games: null, library: { saves: null, replays: null } };
+  // "Loading settings..." shows only when there is no data yet and only after this many ms, so it never flashes.
+  var LOADING_DELAY_MS = 300;
+  // The entrance of a tab's items: each one starts ENTER_STEP_MS after the previous, and none later than ENTER_CAP_MS.
+  var ENTER_STEP_MS = 18;
+  var ENTER_CAP_MS = 150;
+
+  function sameData(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  // Shows the loading line in content after LOADING_DELAY_MS, unless hasData() is true by then. Returns cancel().
+  function loadingLater(content, hasData) {
+    var timer = root.setTimeout(function () {
+      timer = null;
+      if (!hasData()) {
+        content.appendChild(h("p", { class: "loading", text: GT4.t("settings.loading") }));
+      }
+    }, LOADING_DELAY_MS);
+    return function cancel() {
+      if (timer !== null) {
+        root.clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }
+
+  // The rows, headings and notes of a tab fade in and rise (CSS .enter-item in app.css). Called once per tab drawn.
+  function enterAnimation(content) {
+    var items = content.querySelectorAll("h1, h2, p.note, .row, .group, .about-notice, .advanced-foot");
+    Array.prototype.forEach.call(items, function (item, index) {
+      item.classList.add("enter-item");
+      item.style.setProperty("--enter-delay", Math.min(index * ENTER_STEP_MS, ENTER_CAP_MS) + "ms");
+    });
+  }
+
+  // The helpers the other tab pages (games-page.js, library.js) share with this one.
+  GT4.cache = cache;
+  GT4.sameData = sameData;
+  GT4.loadingLater = loadingLater;
+  GT4.enterAnimation = enterAnimation;
+
+  // Reads what the Settings tabs show once, so the first tab opened draws at once: the settings table, About info,
+  // the Games list and the Saves and Replays lists. Fills only empty slots: a tab that already read its data keeps it.
+  var prefetched = false;
+  GT4.prefetchSettings = function () {
+    if (prefetched) {
+      return;
+    }
+    prefetched = true;
+    call("get_settings_table").then(function (table) {
+      cache.table = cache.table || table;
+    }, function () {
+      prefetched = false;
+    });
+    call("about_info").then(function (info) {
+      cache.about = cache.about || info;
+    }, function () {});
+    call("games_list").then(function (view) {
+      cache.games = cache.games || view;
+    }, function () {});
+    call("saves_list").then(function (view) {
+      cache.library.saves = cache.library.saves || view;
+    }, function () {});
+    call("replays_list").then(function (view) {
+      cache.library.replays = cache.library.replays || view;
+    }, function () {});
+  };
+
   // Mod and texture rows never show in this build (rowVisible in js/settings-model.js).
   function rowVisible(table, row) {
     return model.rowVisible(table, row, !!GT4.features.mods);
@@ -63,14 +137,70 @@
   function commit(ctx, id, value) {
     return call("set_setting", { id: id, value: value }).then(
       function () {
+        if (id === "language") {
+          // TASK-102: the whole launcher changes language at once (app.js re-draws the page).
+          GT4.i18n.setSetting(value);
+          return;
+        }
         model.applyChange(ctx.table, id, value);
-        ctx.refresh(id);
+        ctx.refresh(id, true);
       },
       function (err) {
         GT4.ui.toast(errorText(err), true);
-        ctx.refresh(id);
+        ctx.refresh(id, true);
       }
     );
+  }
+
+  // Row texts (TASK-102): setting.<id>.label / .help and choice.<id>.<value> from the locale files; the table's text
+  // (Rust) is the fallback. Trigger and stick rows share one help text each.
+  function helpKeyOf(row) {
+    if (/^[lr]2_deadzone$/.test(row.id)) {
+      return "setting.trigger_deadzone.help";
+    }
+    if (/^[lr]2_curve$/.test(row.id)) {
+      return "setting.trigger_curve.help";
+    }
+    if (/stick_deadzone$/.test(row.id)) {
+      return "setting.stick_deadzone.help";
+    }
+    return "setting." + row.id + ".help";
+  }
+
+  function languageParams() {
+    return { language: GT4.i18n.name(GT4.i18n.detected()) };
+  }
+
+  function rowLabel(row) {
+    var key = "setting." + row.id + ".label";
+    return GT4.i18n.has(key) ? GT4.t(key) : row.label;
+  }
+
+  function rowHelp(row) {
+    var key = helpKeyOf(row);
+    return GT4.i18n.has(key) ? GT4.t(key) : row.help;
+  }
+
+  // TASK-108: an Automatic choice names the API it resolves to ({api}); the product names are not translated.
+  function choiceParams(option) {
+    var params = languageParams();
+    if (option.api_label) {
+      params.api = option.api_label;
+    }
+    return params;
+  }
+
+  function choiceLabel(row, option) {
+    var keys = ["choice." + row.id + "." + option.value];
+    if (/_curve$/.test(row.id)) {
+      keys.push("choice.curve." + option.value);
+    }
+    for (var i = 0; i < keys.length; i++) {
+      if (GT4.i18n.has(keys[i])) {
+        return GT4.t(keys[i], choiceParams(option));
+      }
+    }
+    return option.label;
   }
 
   function sliderSpec(row, table) {
@@ -103,7 +233,7 @@
       max: spec.max,
       step: spec.step,
       value: row.current,
-      "aria-label": row.label,
+      "aria-label": rowLabel(row),
       "aria-valuetext": format(row.current),
       disabled: !!row.disabled,
       data: { setting: row.id, adjust: "1" }
@@ -171,7 +301,7 @@
       class: "toggle" + (row.current ? " on" : ""),
       role: "switch",
       "aria-checked": String(!!row.current),
-      "aria-label": row.label,
+      "aria-label": rowLabel(row),
       disabled: !!row.disabled,
       data: { setting: row.id },
       on: {
@@ -197,17 +327,17 @@
     var currentText = String(row.current);
     options.forEach(function (option) {
       if (String(option.value) === String(row.current)) {
-        currentText = option.label;
+        currentText = choiceLabel(row, option);
       }
     });
     var button = h("button", {
       class: "select",
       type: "button",
       "aria-haspopup": "listbox",
-      "aria-label": row.label,
+      "aria-label": rowLabel(row),
       disabled: !!row.disabled,
       data: { setting: row.id, adjust: "1" }
-    }, [h("span", { text: currentText }), h("span", { class: "chev" })]);
+    }, [h("span", { text: currentText, title: currentText }), h("span", { class: "chev" })]);
     var label = button.querySelector("span");
 
     // A chosen value shows its own label at once; the table is read again after the write.
@@ -215,6 +345,7 @@
       row.current = value;
       currentText = text;
       label.textContent = text;
+      label.title = text;
       commit(ctx, row.id, value);
     }
 
@@ -229,8 +360,9 @@
       });
       var next = enabled[(index + event.detail.delta + enabled.length) % enabled.length];
       row.current = next.value;
-      currentText = next.label;
-      label.textContent = next.label;
+      currentText = choiceLabel(row, next);
+      label.textContent = currentText;
+      label.title = currentText;
       commit(ctx, row.id, next.value);
     });
 
@@ -252,16 +384,16 @@
             }
           }
         }, [
-          h("span", { text: option.label }),
+          h("span", { text: choiceLabel(row, option) }),
           option.disabled
-            ? h("span", { class: "tag", text: option.note || "Coming soon" })
-            : (selected ? h("span", { class: "tick", text: "Current" }) : null)
+            ? h("span", { class: "tag", text: option.note || GT4.t("settings.coming_soon") })
+            : (selected ? h("span", { class: "tick", text: GT4.t("settings.current") }) : null)
         ]);
       }));
       dialog = GT4.ui.openDialog({
-        title: row.label,
+        title: rowLabel(row),
         body: list,
-        buttons: [{ label: "Cancel" }]
+        buttons: [{ label: GT4.t("common.cancel") }]
       });
     });
     return { node: [button] };
@@ -272,7 +404,7 @@
     var button = h("button", {
       class: "info",
       type: "button",
-      "aria-label": "About " + row.label,
+      "aria-label": GT4.t("settings.about_row", { label: rowLabel(row) }),
       "aria-expanded": "false",
       "aria-describedby": tipId,
       on: {
@@ -283,8 +415,8 @@
     }, [
       "i",
       h("span", { class: "tip", id: tipId, role: "tooltip" }, [
-        h("b", { text: row.label }),
-        row.help || ""
+        h("b", { text: rowLabel(row) }),
+        rowHelp(row) || ""
       ])
     ]);
     return button;
@@ -301,9 +433,9 @@
     } else {
       return null;
     }
-    var keyNodes = [h("span", { text: row.label }), infoButton(row)];
+    var keyNodes = [h("span", { text: rowLabel(row) }), infoButton(row)];
     if (control.limited) {
-      keyNodes.push(h("span", { class: "hint-text", text: "Limited to " + control.limited + " on this GPU" }));
+      keyNodes.push(h("span", { class: "hint-text", text: GT4.t("settings.limited", { value: control.limited }) }));
     }
     if (row.note) {
       // A row that is shown but not available now (the launcher sends `note` only for such a row).
@@ -343,12 +475,13 @@
   // Generic settings tab: loads the table, filters rows, renders them.
   // spec = {title, note, filter(row, table), extra(ctx), hooks(ctx)}
   function settingsTab(content, host, spec) {
-    var ctx = { content: content, table: null, refresh: null };
+    // entering: the next draw is the tab's first, so its items get the entrance animation (once per tab).
+    var ctx = { content: content, table: null, refresh: null, entering: true };
 
     function paint(focusId) {
       GT4.ui.clear(content);
       content.appendChild(h("h1", { text: spec.title }));
-      content.appendChild(h("p", { class: "note", text: spec.note || "Changes apply the next time you play." }));
+      content.appendChild(h("p", { class: "note", text: spec.note || GT4.t("settings.note_default") }));
       var rows = ctx.table.rows.filter(function (row) {
         return spec.filter(row, ctx.table);
       });
@@ -357,16 +490,27 @@
         spec.extra(ctx, host);
       }
       restoreFocus(ctx, focusId);
+      if (ctx.entering) {
+        ctx.entering = false;
+        enterAnimation(content);
+      }
     }
 
+    // Reads the table and draws it when it is new or when `force` is set (a setting was just written). A read that
+    // finds the same table as on screen draws nothing, so a background refresh never redraws the tab.
     var reads = model.readGate();
-    ctx.refresh = function (focusId) {
+    ctx.refresh = function (focusId, force) {
       var ticket = reads.ticket();
       return call("get_settings_table").then(function (table) {
         if (!reads.isLatest(ticket)) {
           return;
         }
+        var changed = force || !ctx.table || !sameData(ctx.table, table);
+        cache.table = table;
         ctx.table = table;
+        if (!changed) {
+          return;
+        }
         // Focus moves back to the row only while it is still inside this tab (the user may have moved to the tab list).
         paint(content.contains(document.activeElement) ? focusId : undefined);
       }, function (err) {
@@ -374,8 +518,21 @@
       });
     };
 
-    content.appendChild(h("p", { class: "loading", text: "Loading settings..." }));
+    if (cache.table) {
+      // Drawn from memory at once (no loading line); the table is read again behind it.
+      ctx.table = cache.table;
+      paint();
+      if (spec.hooks) {
+        spec.hooks(ctx, host);
+      }
+      ctx.refresh();
+      return Promise.resolve();
+    }
+    var cancelLoading = loadingLater(content, function () {
+      return !!ctx.table;
+    });
     return ctx.refresh().then(function () {
+      cancelLoading();
       if (spec.hooks) {
         spec.hooks(ctx, host);
       }
@@ -383,6 +540,225 @@
   }
   GT4.settingsTab = settingsTab;
   GT4.settingsRows = { rowNode: rowNode };
+
+  // General: the Version row (TASK-109). A dropdown filled from GitHub each time the page opens (list_launcher_versions),
+  // with a small refresh button. Picking a version other than the installed one asks first:
+  //   newer or the same lineage -> "Install version X?" (Install is the default button);
+  //   older (a downgrade, any channel) -> a strong warning, Cancel first (the default), "Install older version" explicit.
+  // Yes runs install_launcher_version (the normal update path: download, SHA256SUMS check, setup, the launcher closes).
+  // No (or Cancel, B, outside) puts the dropdown back on the installed version; nothing changes.
+  function versionRow(ctx) {
+    var row = { id: "launcher_version", label: GT4.t("versions.label"), help: GT4.t("versions.help") };
+    // TASK-114 rc5: the last list read is shown at once; a read behind it refreshes the dropdown.
+    var model = {
+      loading: !cache.versions,
+      data: cache.versions,
+      error: "",
+      installedText: cache.versions ? cache.versions.installed || "" : ""
+    };
+    var select = h("button", {
+      class: "select",
+      type: "button",
+      "aria-haspopup": "listbox",
+      "aria-label": row.label,
+      disabled: true,
+      data: { setting: row.id }
+    }, [h("span", { text: GT4.t("versions.loading") }), h("span", { class: "chev" })]);
+    var label = select.querySelector("span");
+    var refresh = h("button", {
+      class: "btn small",
+      type: "button",
+      "aria-label": GT4.t("versions.refresh"),
+      title: GT4.t("versions.refresh"),
+      data: { action: "versions-refresh" }
+    }, "↻");
+    var note = h("p", { class: "note version-note", role: "status", data: { action: "versions-note" }, text: "" });
+    var node = h("div", { class: "row", data: { row: row.id } }, [
+      h("div", { class: "k" }, [h("span", { text: row.label }), infoButton(row)]),
+      h("div", { class: "ctl" }, [select, refresh])
+    ]);
+    var block = h("div", { class: "version-block" }, [node, note]);
+
+    function channelName() {
+      var channel = (model.data && model.data.channel) || "stable";
+      return GT4.t("choice.update_channel." + channel);
+    }
+
+    // The text of the dropdown and the note under the row, from the model.
+    function paint() {
+      select.disabled = model.loading;
+      label.textContent = model.loading ? GT4.t("versions.loading") : model.installedText;
+      label.title = label.textContent;
+      var text = "";
+      var warn = false;
+      if (model.error) {
+        text = model.error;
+        warn = true;
+      } else if (model.data) {
+        text = model.data.nothingNewer ? GT4.t("versions.nothing_newer", { channel: channelName() }) : "";
+        text = (text ? text + " " : "") + GT4.t("versions.older_note");
+      }
+      note.textContent = text;
+      note.classList.toggle("is-warning", warn);
+    }
+
+    function load() {
+      model.loading = !model.data;
+      model.error = "";
+      paint();
+      return call("list_launcher_versions").then(function (data) {
+        if (!block.isConnected) {
+          return;
+        }
+        cache.versions = data;
+        model.data = data;
+        model.installedText = data.installed || "";
+        model.loading = false;
+        paint();
+      }, function (err) {
+        if (!block.isConnected) {
+          return;
+        }
+        model.loading = false;
+        model.error = errorText(err);
+        // The current version stays on the dropdown.
+        return call("about_info").then(function (info) {
+          model.installedText = (info && info.version) || "";
+        }, function () {}).then(paint);
+      });
+    }
+
+    function restore() {
+      label.textContent = model.installedText;
+    }
+
+    function startInstall(entry) {
+      GT4.ui.toast(GT4.t("versions.starting", { version: entry.version }));
+      call("install_launcher_version", { tag: entry.tag }).then(null, function (err) {
+        GT4.ui.toast(errorText(err), true);
+        restore();
+      });
+    }
+
+    function confirmInstall(entry) {
+      var confirmed = false;
+      var older = !!entry.downgrade;
+      var buttons;
+      var body = null;
+      if (older) {
+        body = h("div", { class: "version-warning", role: "alert" }, [
+          h("span", { class: "warn-icon", "aria-hidden": "true", text: "⚠" }),
+          h("span", { text: GT4.t("versions.downgrade_warning") })
+        ]);
+        // Cancel is the first button and has no "primary": it takes the focus. Installing needs an explicit choice.
+        buttons = [
+          { label: GT4.t("versions.cancel") },
+          {
+            label: GT4.t("versions.open_saves_folder"),
+            closes: false,
+            run: function () {
+              call("open_saves_folder").then(null, function (err) { GT4.ui.toast(errorText(err), true); });
+            }
+          },
+          {
+            label: GT4.t("versions.install_older"),
+            danger: true,
+            run: function () { confirmed = true; startInstall(entry); }
+          }
+        ];
+      } else {
+        buttons = [
+          { label: GT4.t("versions.install"), primary: true, run: function () { confirmed = true; startInstall(entry); } },
+          { label: GT4.t("versions.cancel") }
+        ];
+      }
+      GT4.ui.openDialog({
+        title: older ? GT4.t("versions.downgrade_title") : GT4.t("versions.confirm_title", { version: entry.version }),
+        text: older
+          ? GT4.t("versions.downgrade_text", { installed: model.installedText, version: entry.version })
+          : GT4.t("versions.confirm_text", { version: entry.version }),
+        body: body,
+        wide: older,
+        dismissable: true,
+        buttons: buttons,
+        onClose: function () {
+          if (!confirmed) {
+            restore();
+          }
+        }
+      });
+    }
+
+    select.addEventListener("click", function () {
+      var entries = ((model.data && model.data.entries) || []).slice();
+      var dialog = null;
+      // The running build is always on the list, even when GitHub does not list it (a draft test build, or a Stable list
+      // while a newer test build runs), so the dialog never comes up empty (rc5 owner report).
+      var others = entries.filter(function (entry) { return !entry.installed; }).length;
+      if (model.installedText && entries.length === others) {
+        entries.unshift({ tag: "v" + model.installedText, version: model.installedText, date: "", installed: true,
+          candidate: model.installedText.indexOf("-") >= 0 });
+      }
+      var items = entries.map(function (entry) {
+        return h("button", {
+          class: "option",
+          role: "option",
+          "aria-selected": String(!!entry.installed),
+          data: Object.assign({ tag: entry.tag }, entry.installed ? { default: "1" } : {}),
+          on: {
+            click: function () {
+              dialog.close();
+              if (entry.installed) {
+                return;
+              }
+              label.textContent = entry.version;
+              confirmInstall(entry);
+            }
+          }
+        }, [
+          h("span", { text: entry.version + (entry.date ? "  ·  " + entry.date : "") }),
+          entry.installed
+            ? h("span", { class: "tick", text: GT4.t("versions.installed") })
+            : (entry.candidate ? h("span", { class: "tag", text: GT4.t("versions.candidate") }) : null)
+        ]);
+      });
+      var list = entries.length
+        ? h("div", { class: "option-list", role: "listbox" }, items)
+        : h("p", { class: "modal-text", text: GT4.t("versions.none") });
+      if (!others) {
+        list = h("div", null, [list, h("p", { class: "modal-text", text: GT4.t("versions.only_installed") })]);
+      }
+      dialog = GT4.ui.openDialog({
+        title: row.label,
+        body: list,
+        buttons: [{ label: GT4.t("common.cancel") }]
+      });
+    });
+    refresh.addEventListener("click", function () {
+      load();
+    });
+    paint();
+    load();
+    return block;
+  }
+
+  // General (TASK-102, TASK-109): the launcher's language and update channel (rows from the table, group "general"),
+  // then the Version row, which reads GitHub when the page is drawn (a channel change draws it again).
+  GT4.tabPages.general = function (content, host) {
+    return settingsTab(content, host, {
+      title: GT4.t("settings.general_title"),
+      // TASK-118 (owner, 2026-10-26): the launcher GPU acceleration sits at the very bottom, under Version.
+      filter: function (row) {
+        return row.group === "general" && row.id !== "launcher_gpu";
+      },
+      extra: function (ctx) {
+        content.appendChild(versionRow(ctx));
+        renderRows(ctx, ctx.table.rows.filter(function (row) {
+          return row.id === "launcher_gpu";
+        }), content);
+      }
+    });
+  };
 
   // Graphics: three sections in one tab (owner, 2026-10-21; there is no Display tab any more):
   //   Display   page=basic rows in the display group (Monitor, Resolution, Fullscreen, VSync);
@@ -392,19 +768,20 @@
   GT4.tabPages.graphics = function (content, host) {
     function resetDefaults(ctx) {
       GT4.ui.openDialog({
-        title: "Reset to defaults?",
-        text: "Graphics settings go back to their defaults. Changes apply the next time you play.",
+        title: GT4.t("settings.reset_title"),
+        text: GT4.t("settings.reset_text"),
         buttons: [
-          { label: "Cancel" },
+          { label: GT4.t("common.cancel") },
           {
-            label: "Reset",
+            label: GT4.t("common.reset"),
             primary: true,
             danger: true,
             run: function () {
               call("reset_gs_settings_to_defaults").then(function (table) {
                 ctx.table = table;
-                ctx.refresh();
-                GT4.ui.toast("Graphics settings reset");
+                cache.table = table;
+                ctx.refresh(undefined, true);
+                GT4.ui.toast(GT4.t("settings.reset_done"));
               }, function (err) {
                 GT4.ui.toast(errorText(err), true);
               });
@@ -431,7 +808,7 @@
     }
 
     return settingsTab(content, host, {
-      title: "Graphics",
+      title: GT4.t("tab.graphics"),
       // All rows are drawn by the sections below.
       filter: function () {
         return false;
@@ -440,10 +817,10 @@
         var basic = ctx.table.rows.filter(function (row) {
           return row.page === "basic";
         });
-        section(ctx, "display", "Display", basic.filter(function (row) {
+        section(ctx, "display", GT4.t("settings.section_display"), basic.filter(function (row) {
           return row.group === "display";
         }));
-        var graphics = section(ctx, "graphics", "Graphics", basic.filter(function (row) {
+        var graphics = section(ctx, "graphics", GT4.t("settings.section_graphics"), basic.filter(function (row) {
           return (row.group || "graphics") === "graphics";
         }));
         // TASK-088: opens <install>\data\Textures (TASK-091; made first, TASK-093: no replacements subfolder). Next to the texture options.
@@ -457,24 +834,29 @@
             type: "button",
             data: { action: "open-textures-folder" },
             on: { click: function () { call("open_textures_folder").catch(function (err) { GT4.ui.toast(errorText(err), true); }); } }
-          }, "Open textures folder");
+          }, GT4.t("settings.open_textures"));
           graphics.appendChild(h("div", { class: "advanced-foot" }, [textures]));
         }
-        var advanced = section(ctx, "advanced", "Advanced", ctx.table.rows.filter(function (row) {
-          return row.page === "advanced";
+        section(ctx, "advanced", GT4.t("settings.section_advanced"), ctx.table.rows.filter(function (row) {
+          return row.page === "advanced" && row.group !== "rc";
         }), true);
+        // TASK-118: the release-candidate settings always come last (owner, 2026-10-26); a final build does not ship them.
+        section(ctx, "rc", GT4.t("settings.section_rc"), ctx.table.rows.filter(function (row) {
+          return row.group === "rc";
+        }));
         var button = h("button", {
           class: "btn danger",
           type: "button",
           data: { action: "reset-defaults" },
           on: { click: function () { resetDefaults(ctx); } }
-        }, "Reset to defaults");
-        advanced.appendChild(h("div", { class: "advanced-foot" }, [button]));
+        }, GT4.t("settings.reset_defaults"));
+        // The reset stays at the very bottom, after the RC section.
+        content.appendChild(h("div", { class: "advanced-foot" }, [button]));
       },
       hooks: function (ctx, tabHost) {
         tabHost.setHooks({ y: function () { resetDefaults(ctx); } });
         tabHost.hints([
-          { key: "Y", label: "Reset", run: function () { resetDefaults(ctx); } }
+          { key: "Y", label: GT4.t("common.reset"), run: function () { resetDefaults(ctx); } }
         ]);
       }
     });
@@ -484,21 +866,59 @@
   // Registered only when the feature flag is on (release 1.1.0).
   if (GT4.features.mods) {
     GT4.tabPages.mods = function (content) {
-      content.appendChild(h("h1", { text: "Mods" }));
+      content.appendChild(h("h1", { text: GT4.t("tab.mods") }));
       content.appendChild(h("div", { class: "placeholder" }, [
-        h("h2", { text: "Texture packs and mods — coming soon" }),
-        h("p", { text: "Planned in TASK-048." })
+        h("h2", { text: GT4.t("settings.mods_title") }),
+        h("p", { text: GT4.t("settings.mods_planned") })
       ]));
       return Promise.resolve();
     };
   }
 
   // About: version, notice, disc path, log folder.
+  // TASK-114 rc5: drawn from the About info read before (cache.about) at once, then read again; drawn again only when
+  // the info changed and the focus is not inside the page.
   GT4.tabPages.about = function (content) {
+    var entering = true;
+    function draw(info) {
+      GT4.ui.clear(content);
+      drawAbout(content, info);
+      if (entering) {
+        entering = false;
+        enterAnimation(content);
+      }
+    }
+    var shownInfo = null;
+    if (cache.about) {
+      shownInfo = cache.about;
+      draw(shownInfo);
+    }
+    var cancelLoading = loadingLater(content, function () {
+      return !!shownInfo;
+    });
     return call("about_info").then(function (info) {
-      content.appendChild(h("h1", { text: "About" }));
+      cancelLoading();
+      var changed = !shownInfo || !sameData(shownInfo, info);
+      cache.about = info;
+      if (!changed || content.contains(document.activeElement)) {
+        return;
+      }
+      shownInfo = info;
+      draw(info);
+    }, function (err) {
+      cancelLoading();
+      if (!shownInfo) {
+        content.appendChild(h("p", { class: "loading", text: errorText(err) }));
+      }
+    });
+  };
+
+  // The About rows of the given info (the page's content, drawn by draw()).
+  function drawAbout(content, info) {
+      content.appendChild(h("h1", { text: GT4.t("tab.about") }));
       content.appendChild(h("p", { class: "note", text: "GT4Recomp " + (info.gt4recomp || info.version || "") }));
-      content.appendChild(h("p", { class: "note", text: "gt4-gs " + (info.gt4gs || "not installed") }));
+      content.appendChild(h("p", { class: "note", text: GT4.t("about.gt4gs", { version: info.gt4gs || GT4.t("common.not_installed") }) }));
+      content.appendChild(h("p", { class: "note", text: GT4.t("about.build", { build: info.build || "Installer" }) }));
       var checkButton = h("button", {
         class: "btn small",
         type: "button",
@@ -507,16 +927,25 @@
             GT4.updates.checkNow();
           }
         }
-      }, "Check for updates");
+      }, GT4.t("about.check_updates"));
       content.appendChild(h("div", { class: "row" }, [
-        h("div", { class: "k", text: "Updates" }),
+        h("div", { class: "k", text: GT4.t("about.updates") }),
         h("div", { class: "ctl" }, [checkButton])
       ]));
       content.appendChild(h("div", { class: "about-notice" }, [
-        h("p", { text: "GT4Recomp is an unofficial fan project. It is not affiliated with, endorsed by or sponsored by Sony Interactive Entertainment or Polyphony Digital." }),
-        h("p", { text: "Gran Turismo and the Gran Turismo 4 logo are trademarks of Sony Interactive Entertainment Inc. and Polyphony Digital Inc. They are used here only to identify the game. You need your own copy of the game to play." })
+        h("p", { text: GT4.t("about.disclaimer") }),
+        h("p", { text: GT4.t("about.trademarks") })
       ]));
-      content.appendChild(h("div", { class: "group", text: "More" }));
+      // The people behind Gran Turismo 4 Spec II: one localized line and the full credit list (owner 2026-10-23).
+      var spec2Credit = GT4.t("about.spec2_credit");
+      var creditText = GT4.t("rust.about.credits") || info.credits;
+      var creditLines = [];
+      if (spec2Credit) creditLines.push(h("p", { text: spec2Credit }));
+      if (creditText) creditLines.push(h("p", { class: "note", text: creditText }));
+      if (creditLines.length) {
+        content.appendChild(h("div", { class: "about-notice about-credits" }, creditLines));
+      }
+      content.appendChild(h("div", { class: "group", text: GT4.t("about.more") }));
       // The game runs from GT4Recomp's own copy of the disc image (the file chosen at setup is not needed any more,
       // so its path is not shown; it is in prepare.json and the log for support).
       var openGameFiles = h("button", {
@@ -529,10 +958,10 @@
             });
           }
         }
-      }, "Open folder");
+      }, GT4.t("common.open_folder"));
       content.appendChild(h("div", { class: "row" }, [
         h("div", { class: "k" }, [
-          h("span", { text: "Game files" }),
+          h("span", { text: info.game_name ? GT4.t("about.game_files_of", { game: info.game_name }) : GT4.t("about.game_files") }),
           h("span", { class: "val", text: info.game_files || "" })
         ]),
         h("div", { class: "ctl" }, [openGameFiles])
@@ -548,10 +977,10 @@
             });
           }
         }
-      }, "Open folder");
+      }, GT4.t("common.open_folder"));
       content.appendChild(h("div", { class: "row" }, [
         h("div", { class: "k" }, [
-          h("span", { text: "Saves and replays" }),
+          h("span", { text: GT4.t("about.saves_replays") }),
           h("span", { class: "val", text: info.saves_folder || "" })
         ]),
         h("div", { class: "ctl" }, [openSaves])
@@ -566,15 +995,32 @@
             });
           }
         }
-      }, "Open log folder");
+      }, GT4.t("about.open_log"));
+      var exportLogs = h("button", {
+        class: "btn small",
+        type: "button",
+        on: {
+          click: function () {
+            GT4.exportLogs();
+          }
+        }
+      }, GT4.t("about.export_logs"));
+      var openLatest = h("button", {
+        class: "btn small",
+        type: "button",
+        on: {
+          click: function () {
+            call("open_latest_log").catch(function (err) {
+              GT4.ui.toast(errorText(err), true);
+            });
+          }
+        }
+      }, GT4.t("about.open_latest_log"));
       content.appendChild(h("div", { class: "row" }, [
-        h("div", { class: "k", text: "Logs" }),
-        h("div", { class: "ctl" }, [openLog])
+        h("div", { class: "k", text: GT4.t("about.logs") }),
+        h("div", { class: "ctl buttons" }, [openLog, openLatest, exportLogs])
       ]));
-    }, function (err) {
-      content.appendChild(h("p", { class: "loading", text: errorText(err) }));
-    });
-  };
+  }
 
   // The settings shell: a tab list and the tab's rows, with the two focus levels of js/focus-levels.js.
   //   side     focus on the tab list; the content shows the highlighted tab (preview).
@@ -610,12 +1056,12 @@
       var content = h("div", { class: "content" });
       var pill = h("span", { class: "side-pill", "aria-hidden": "true" });
       var version = h("div", { class: "side-version", text: "" });
-      var side = h("nav", { class: "side", "aria-label": "Settings" }, [
+      var side = h("nav", { class: "side", "aria-label": GT4.t("common.settings") }, [
         h("button", {
           class: "back",
           type: "button",
           on: { click: function () { GT4.go("#/home"); } }
-        }, [h("span", { "aria-hidden": "true", text: "‹" }), "Back"]),
+        }, [h("span", { "aria-hidden": "true", text: "‹" }), GT4.t("common.back")]),
         h("img", { class: "side-logo", src: "assets/logo-gt4-white.png", alt: "Gran Turismo 4" }),
         pill,
         tabs.map(function (tab) {
@@ -624,7 +1070,7 @@
             type: "button",
             data: { tab: tab.id },
             on: { click: onTabClick }
-          }, tab.label);
+          }, GT4.t(tab.key));
         }),
         version
       ]);
@@ -876,7 +1322,7 @@
       });
 
       call("about_info").then(function (info) {
-        version.textContent = "Version " + (info.version || "");
+        version.textContent = GT4.t("settings.version", { version: info.version || "" });
       }).catch(function () {});
 
       // Dev harness only (ui/dev/index.html?focus=...): sets the focus state for screenshots and checks.

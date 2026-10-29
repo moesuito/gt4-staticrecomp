@@ -1,5 +1,31 @@
 # Current Status
 
+## TASK-134: game-code optimization study for the i5-7200U laptop (2026-10-28)
+
+2026-10-29: the branch is synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934; program files identical);
+the only per-frame change since rc6, the RetroAchievements hook on the EE thread, is in study section 3.8.
+
+Research and plan only (no code, build, benchmark or game run): [GAME-CODE-OPTIMIZATION-STUDY](GAME-CODE-OPTIMIZATION-STUDY.md),
+branch task/134-game-code-optimization-study. From the owner's laptop logs (rc6, Spec II, 1x, D3D11) the four busy
+threads use about 35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3, gt4-gs CPU thread 3.4, gt4-gs GS thread
+~11); half or more of the EE critical path (12.2 ms) is emulation plumbing; syscalls and guest idle are negligible and
+no large spin-wait exists. Ordered plan P0 (measure) to P8 (IOP AOT); the GSdx bridge is left to the CoreGS 2.0
+intake, which must be zero-copy. Owner decisions recorded the same day (study section 7): cheapest steps first,
+SSE4.1 only, translator last, no GSdx bridge work, game-side gains ship with CoreGS 2.0. P0 baselines (headless Arcade
+night race and its replay, WPR profile) start when the owner says the CoreGS 2.0 build has freed the desktop.
+
+## Local rc7 owner test candidate (2026-10-27)
+
+Codex built an unpublished installer including the current Discord changes and verified extracted game and launcher hashes. Automated Rust tests passed; real Discord and gameplay remain untested. Important lifecycle and transport edge-case validation remains open; see docs/tasks/TASK-115-CODEX-LOCAL-KIT.md. This supersedes any earlier readiness claim.
+
+## TASK-115 rc7 Discord Rich Presence review corrections (2026-10-27)
+
+Superseded by the second review below; the earlier "corrected" wording was premature. The feature remains unreviewed by the owner and the Discord client is not yet validated.
+
+## TASK-115 rc7 Discord Rich Presence second review (2026-10-27)
+
+Second review corrections on branch `task/133-rc7-ra-controls`: `FILE_FLAG_OVERLAPPED`, safe completion waiting, protocol ack/error handling, generation fencing, non-blocking stop, and real Windows named-pipe tests (`windows_pipe_roundtrip`, `windows_pipe_read_timeout`) plus 6 manager tests, flow_audit and UI checks. Live Discord still pending owner authorization. Game Bar/GPU recognition remains future scope.
+
 ## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)
 
 Owner requested mapping only: published rc6 is the fixed program baseline, with RetroAchievements
@@ -128,6 +154,316 @@ Real-account login, online unlocks, gameplay notifications and installer executi
 Owner-approved scope: legacy English UI, en-US/pt-BR notes, installer-only distribution.
 Spec II remains unsupported here; RA must stay disabled for it in the later 1.3.0 port.
 ai-memory MCP unavailable; see TASK-119 and the daily journal.
+## rc6 performance, TASK-116 step 1 and TASK-117 (2026-10-25, `task/116-117-flare-perf`)
+
+Implemented and tested headless, owner test pending; nothing merged or released.
+
+- **TASK-116 step 1 (both targets' code, no new ELF):** in Performance mode only the 128-qword flare readback is answered
+  locally with the previous reply (one frame old, never a zero table); `sync("download")` no longer drains the VU1 worker
+  for it, the READ_FIFO is still posted in stream order (one record per readback, the night record counts equal the
+  rc5 Performance-mode run), and every other readback keeps the blocking drain and the wait. Result (night race, headless
+  1x): blocking drains 5,026 -> 29, the readback wait total 4,596.6 (Accurate) / 2,329.1 (rc5 Performance) -> 46.1 ms,
+  4,997 of 4,998 flare replies from the cache. The Accurate run still hashes `c091716e3cb40d79` (release 1.3.0 pin). The
+  P0 probe (`GT4_GS_READBACK_LOG=1`) answered the gate: in Performance mode gt4-gs returns stale real pixels, not zeros
+  (139 distinct replies against 2,161), so the local answer can only be one frame late; the launcher help text of
+  Performance Mode was corrected in both languages.
+- **TASK-117 (GT4 v2.00 only): built, NOT shipped in rc6.** The derived ELF with four `jal` redirects and our own
+  helpers in the zero padding (`scripts/flare_limits_elf_patch.py`, pinned table and verify mode), the new EE library
+  profile `flare` (8 units differ from the slice208 library) and the host block at 0x7F10 are implemented and tested, but
+  the switch-off identity gate failed: with every helper taking the original path, the night race still diverges from rc5
+  from the first frame that draws flares (dumps from frame 10000; 27,246,609 records against 27,259,715). The rc6 v2.00
+  build keeps the `aspect` library and the launcher sends no flare switch until the cause is found.
+- **Checks:** CTest 46/46 and 47/47 (new `native_gs_readback_probe` and `native_flare_limits`), Python 697 tests OK
+  (43 skipped) plus the new ELF patch test, `cargo test -p gt4l-core` 313 passed, MTVU verify 11,000 frames 0 mismatches.
+  The Accurate identity vs rc5 holds (night stream hash `c091716e3cb40d79`). Next: the rc6 builds (v2.00 on the `aspect`
+  library, Spec II with step 1 only), the pins and the draft.
+
+## rc5 Settings open at once, TASK-114 item 8 (2026-10-24, `task/101-multi-game`, 1.3.0-rc5)
+
+Implemented, owner test pending; nothing merged or released. The graphics cards are probed once and kept (Play refreshes
+them once), and the Settings tabs open from memory: the settings table, About info, the launcher version list, the Games list and the Saves and Replays lists are read
+when the home screen is up and drawn again only when something changed. "Loading settings..." appears only with no data
+and after 300 ms. A tab's rows fade in once. Probes per action (code paths): start 1 (unchanged), open a Settings tab 2 to 0,
+save a setting 2 to 0, Play 3 to 1, export logs 1 to 0. Checks: `cargo test --workspace` 556 passed, 0 failed, 5 ignored;
+focus-check en-US 195/195 and pt-BR 202/202; nav-test 150/150 (headless Edge, own server stopped). The monitor list stays
+live (not measured as slow). Not verified: the animation's feel on the owner's machine.
+
+## rc5 polish, TASK-114 items 5-7 (2026-10-24, `task/101-multi-game`)
+
+Implemented, owner test pending; nothing merged or released. Settings > Games names the version (Spec II v1.10) and shows
+the variant and size; the button is Update; the setup steps say what they do (recognised, copying and checking, final
+check); the launcher is denser on every page (CSS in app.css, changed in place); the launcher icon is the emblem on a white
+rounded square. Checks: `cargo test --workspace` 550 passed, 0 failed, 5 ignored; focus-check en-US 193/193 and pt-BR
+200/200; nav-test 150/150 (headless Edge, own server stopped). Screenshots pt-BR in `O:\gt4recomp-scratch\slice292-shots\`
+(each page at 1280x720 and 1440x900). The launcher executable with the new icon is built at the next release build.
+
+## rc5 hotfixes, TASK-114 (2026-10-23, `task/101-multi-game`)
+
+Implemented, owner test pending: setup identifies the disc before copying and the first-run page is generic; the copy bar ends
+full; the GPU list merges identical integrated entries and the log shows the raw entries; the 1.3.0 intro is looked up by base
+version and hardened (the black window cause is not confirmed). Details in TASKS (TASK-114) and the journal.
+
+## rc5 TASK-109: update channels and version picker (2026-10-23, `task/101-multi-game`, 1.3.0-rc5)
+
+Implemented, owner test pending; nothing merged or released. Settings > General has Channel (Stable or Beta) and Version
+(list read from GitHub on open, refresh button). The launcher version carries `-rcN` (`build-release.ps1 -Label rc5`).
+Beta offers candidates and stable releases by version, Stable never offers a candidate and never downgrades, the picker lists
+1.3.0-rc5 and newer, and an older target gets the strong downgrade warning. The real GitHub fetch and a real install of a
+chosen version are not verified here (fake release JSON only).
+
+Checks: `cargo test --workspace` 544 passed, 0 failed (`a_1_2_x_install_moves_into_games_gt4_at_the_first_start` failed
+in 2 of 5 full runs and passed alone and in later runs: a timing flake on a shared machine; the cause was not
+investigated and the code touched does not feed it); focus-check en-US 183/183 and pt-BR 190/190, nav-test 150/150 (headless Edge, server
+stopped); Python `make_portable_zip` 9 tests OK. No installer built, no game launched.
+
+## rc4 (2026-10-23, `task/101-multi-game`, 1.3.0-rc4): owner test 1 fixes and TASK-111, TASK-112
+
+Implemented in the working tree, owner test pending; nothing merged or released. Items:
+- **Saves per game (TASK-101 item 1).** Spec II's game data is `BASCUS-97436GAMEDATA` (the rc3 harvest dropped it).
+  `gt4saves::SaveNames` per game; each library takes its own items; a mixed card is split by game; the import routes by
+  name. The Spec II replay prefix `BASCUS-97436` is not verified with a real replay.
+- **One Saves list (item 2).** Both games in one list, tagged; actions go to the item's game; New save asks the game when
+  two are installed. Replays stay per game.
+- **GPU list (item 3).** Vulkan and DXGI merged per physical card (LUID, else PCI ids, else name). The Vulkan probe now reads
+  deviceID, driverVersion and the LUID; checked on this machine (AMD RX 9060 XT, LUID read). NVIDIA not checked.
+- **Copy bar (item 4).** The bar uses the same byte total as its figure. The owner's exact case was not reproduced here.
+- **Launcher logs (TASK-112).** One file per launch with INFO/WARN/ERROR, the last 20 kept, `latest.log` with the earlier
+  errors, the 1.2.x log migrated once, game session folders capped at 20; About > Open latest log.
+- **Export logs (TASK-111).** About and the crash / lost-card dialog; the zip with masked user names and paths; the system
+  report; Open the folder and Report a problem (named link `report_problem`).
+
+Checks: `cargo test --workspace` 519 passed, 0 failed; focus-check en-US 160/160 and pt-BR 167/167, nav-test 150/150
+(headless Edge, server stopped); `cargo check --features visual-check` OK; the language check (keys, placeholders, bullets)
+passes, with three identical pt-BR values that are product or language names. No game launched. Not done: owner tests
+(Spec II save recovery, export, the crash dialog), the installer build (not asked).
+
+
+
+## TASK-108 launcher: automatic graphics API and card; game programs gt4.exe and gt4-spec2.exe (2026-10-23, on `task/101-multi-game`, release 1.3.0)
+
+Implemented in the working tree, not committed until the checks below pass; owner test pending. Graphics API has an
+Automatic choice (default; Vulkan when the chosen card reports Vulkan 1.2, else Direct3D 11), resolved at every start and
+Play. A Graphics card row picks the card (Automatic = discrete before integrated, then most video memory); its name goes
+to the game's Adapter key (written by the launcher under `[EmuCore/GS]`). Explicit Vulkan without Vulkan 1.2 runs with
+Direct3D 11, with a note in both languages. The game programs ship as `gt4.exe` and `gt4-spec2.exe` (installer, portable zip,
+game folder, launcher, process detection for both names). Build output names unchanged; pins unchanged. Planned, no code: TASK-109
+(update channels, 1.3.1) and TASK-110 (controller tuning, 1.3.1). Checks: `cargo test --workspace` 494 passed, 0 failed,
+4 ignored; focus-check en-US 158/158 and pt-BR 165/165, nav-test 150/150 (headless Edge); `test_gs_settings` OK (72),
+`test_make_distribution` OK (5), `test_make_portable_zip` OK (7), `test_gs_osd` / `test_gs_window` / `test_gs_nojit` OK.
+`test_portable_install` skipped (no `GT4_NATIVE_BUILD` here). Open: owner test on NVIDIA + integrated, and on a machine
+without Vulkan 1.2; the installer is built by the main agent.
+
+## TASK-105 integrated GPUs: lighter default and GPU-lost message (#89) (2026-10-23, on `task/101-multi-game`, release 1.3.0)
+
+Implemented, not merged; owner in-game test pending. Issue #89 (Intel UHD only, 1440 x 900): the default Render scale gave 3x
+and GSdx lost the device. On an integrated GPU the untouched default scale (100%) now plays at 1x (640 x 448); a changed scale
+keeps its choice; discrete machines are unchanged. A session that ends with GSdx's device-lost text in `game.log` shows a plain
+message in en-US and pt-BR. Saves dates follow the interface language. Checks: `cargo test --workspace` 487 passed, 0 failed,
+4 ignored; focus-check 158/158 (en-US) and 165/165 (pt-BR), nav-test 150/150. Open: owner test on an integrated GPU; the real
+device-lost line in `game.log` is not yet confirmed.
+
+## TASK-104 launcher saves: crash-proof card import, New save, Export, Rename (2026-10-23, on `task/101-multi-game`, release 1.3.0)
+
+Implemented, not merged; owner test pending. Issue #86 (importing a PCSX2 `Mcd001.ps2` closed the launcher): the card reader
+now reads the layout from the superblock (8 to 64 MB, with or without spare bytes), bounds directory depth (8), visits each
+directory once, checks every length before allocating, and the import runs under a panic guard that logs the file name and
+size. The Saves page gets New save (confirmed; the current save is kept as a new slot), Export of the active save as `.psu`
+and Rename (40 characters, `name.txt` beside the save). Checks: `cargo test --workspace` 474 passed, 0 failed, 4 ignored;
+focus-check 158/158 (en-US) and 165/165 (pt-BR), nav-test 150/150. Open: owner test with a real card and in-game New save.
+
+## TASK-103 Graphics API for GSdx (2026-10-23, on `task/101-multi-game`, release 1.3.0)
+
+Implemented, not merged; owner in-game test pending. Settings > Graphics offers "Graphics API (GSdx)" (table row `graphics_api`,
+`[EmuCore/GS] Renderer` = 14, 15, 3): Vulkan (recommended, default), Direct3D 12 (recommended), Direct3D 11 (older PCs). The
+engine setting stays `renderer`. A missing or unknown value falls back to Vulkan. Checks: `cargo test --workspace` 453 passed,
+Python `test_gs_*` 168 OK, focus-check 151/151 (en-US) and 158/158 (pt-BR), nav-test 150/150; screenshots in
+`O:\gt4recomp-scratch\slice280-shots`. Open: owner test on Direct3D 11 and 12 against Vulkan.
+
+## TASK-102 launcher language: en-US and pt-BR (2026-10-23, on `task/101-multi-game`)
+
+Implemented, not merged; owner test pending. The launcher follows the Windows language (Auto); Settings > General > Language
+changes it at once. The texts are data: `launcher/crates/gt4l-tauri/ui/locales/<tag>.json` and `index.json` (the UI and the
+launcher's own messages under `rust.*`, generated into a table by `gt4l-core/build.rs`), the release notes under
+`docs/release-notes/launcher/<tag>/`. Adding a language is documented in `docs/TRANSLATING.md`. The CSP allows the page to
+read its own locale files (`connect-src 'self'`). Checks: focus-check 151 of 151 (en-US) and 158 of 158 (pt-BR), nav-test
+150 of 150, `cargo test --workspace` 450 passed. Gaps: the PCSX2 GS rows that are not in the UI keys show English, and the
+XInput and key names in the controller chips stay English.
+
+## TASK-098 portable build and TASK-097 self-sufficient game (2026-10-23, slice 278, on `task/101-multi-game`)
+
+Release 1.3.0 (both moved from 1.2.4). **TASK-098:** a second launcher build from one source (Cargo feature `portable`):
+`user\` and `data\` beside `GT4Recomp.exe`, no registry value and no system folder (the web view profile goes to
+`data\launcher-webview`), per-folder single-instance lock, self-update from `GT4Recomp-<version>-portable.zip` by a
+rename swap that never touches `user\` or `data\` and rolls back on failure; `scripts/make_portable_zip.py` and
+`build-release.ps1 -Portable`. `cargo test --workspace` 431 passed in each build. **TASK-097:** the game executable starts
+on its own (no ELF argument): paths from `<install>\game\gt4vulkan*.exe`, built-in defaults (GSdx, 480p, 16:9 hold,
+automatic ultrawide, fullscreen, vsync), the launcher's `game.ini` and `gt4-gs.ini` from the user config folder, and a
+native message that says to open the launcher once when a piece is missing. With an ELF argument (the launcher, the
+harnesses) nothing changed: headless identity against slice268 is exact (see docs/BUILD.md "Slice 278"). Not tested by the
+owner yet: the portable zip on a real PC (none was built), a direct double click of the game.
+
+## TASK-101 multi-game launcher on branch (2026-10-23)
+
+Branch `task/101-multi-game` (from `task/100-spec2` and main). The launcher now holds two games: a game table, per-game
+disc copy, prepared files, runtime card, saves and replays (`games\<id>`), identification by serial and the pinned
+executable hash (Spec II 1.10, the PT-BR image and unknown images with the known executable accepted; the unmodified
+Public Beta and other SCUS-97436 programs refused), the Spec II setup (Rust port of the ELF patch, byte-identical to
+`scripts/spec2_elf_patch.py`), per-game launch, the 1.2.x to `games\gt4` migration and the UI (selector, Install, Settings >
+Games). `cargo test --workspace`: 405 passed, 4 ignored; the dev mock checks pass headless (121 DOM checks, 150 model
+checks). Open: the look on a real window, the authors' logo and names, the installer build. Plan progress:
+[MULTI-GAME-LAUNCHER-PLAN](MULTI-GAME-LAUNCHER-PLAN.md).
+
+## Release 1.3.0 candidate built (2026-10-23, NOT published)
+
+Branch `task/101-multi-game`, merges `63c110e` (origin/main `db5c559`) and `b8a6b5f` (origin/task/100-spec2
+`9206af5`, S8c). Version 1.3.0 in `launcher/Cargo.toml`, the workspace crates of `Cargo.lock`, `tauri.conf.json` and
+the installer default. No PR, merge, tag or GitHub release yet (owner approval first).
+
+- **Two game builds, fresh slices:** v2.00 `private/slice279-build/build/gt4vulkan.exe` 97,377,792 bytes, sha256
+  `9dccb5a4…` (pin `inputs/slice279-pcsx2.json`); Spec II `private/slice280-build/build/gt4vulkan-spec2.exe`
+  104,612,352 bytes, sha256 `174e7adf…` (pin `inputs/slice280-spec2.json`). The Spec II pin records the S7b IOP
+  runtime (`slice276`), the S8b guard (`slice277`) and the S8c EE library (`slice278`); the v2.00 pin keeps the
+  slice262 capsules and the slice217 aspect library. `PERF_PROFILES['pcsx2']` now points at slice279 (slice268 kept
+  as `pcsx2-slice268`); `SPEC2_RELEASE` holds slice280. The release gt4-gs pin moved to **1.2.1**
+  (`private/slice281-gt4gs-121`, `gt4-gs.exe` 11,347,456 bytes `887f5bf9…`, zip 13,025,171 bytes `7eb7e4a3…`).
+- **Release notes written before the build:** `docs/release-notes/1.3.0.md` (full), launcher `1.3.0.md` (en-US) and
+  `pt-BR/1.3.0.md`. They cover Spec II 1.10 and same-executable variants side by side, separate per-game saves, the
+  multi-game launcher, What's new, automatic language, the Graphics API choice, the portable build and the standalone
+  game executable. **Owner decision 2026-10-23: no permission from the Spec II authors is needed**; they are credited
+  by name in the full notes, the About page (both languages) and README, and the notes state that GT4Recomp ships no
+  Spec II files (the player supplies the disc image).
+- **Distribution/installer/portable:** `GAME_DIR` `private/slice282-dist-130` (both exes, shaders, CRT DLLs, SDL3,
+  licences, MANIFEST; 24 files). Launcher release `GT4Recomp.exe` 17,038,336 bytes `69530dfa…` and portable
+  `GT4Recomp.exe` 16,973,824 bytes `a1a0ed0d…`, both without user/build paths. Installer
+  `private/release-130-out/GT4Recomp-Setup-1.3.0.exe` 51,373,344 bytes sha256 `d1569b35…`; 7-Zip extraction compared
+  24 files with their sources (0 differences). Portable `GT4Recomp-1.3.0-portable.zip` 83,032,500 bytes sha256
+  `bfa3a08a…`; `SHA256SUMS` lists both.
+- **Checks:** CTest 45/45 in both builds; Python 694 OK (42 skipped with the v2.00 build, 56 with Spec II);
+  `cargo test --workspace` clean (new relocate retry test); launcher focus-check en-US 151/151 and pt-BR 158/158,
+  nav-test 150/150 in headless Edge; the launcher's Rust Spec II derivation is byte-identical to
+  `scripts/spec2_elf_patch.py` (`36f60b1a…`) and both real-image tests pass. **v2.00 identity against slice268 is
+  exact** in menus/day/night dumps and stream hashes (`463d455c…`/`1ccb97c5…`, `992f1ac9…`/`0c79dcf5…`,
+  `c57e7d03…`/`c091716e…`).
+- **Flaky migration test:** a scanner/indexer can hold a freshly written file, so the rename failed transiently. The
+  move now retries sharing/lock/access-denied errors five times (20-100 ms apart) before reporting a failure; the
+  test policy is covered by `only_scanner_and_lock_errors_are_retried`. The migration test passed 10/10 in isolation
+  and in the full workspace run.
+- **Owner test checklist** (not yet done): fresh install; update over 1.2.3 with the owner data in `%APPDATA%`
+  kept; Spec II install from the ISO; Spec II GT mode and a license DEMO watched (log must show `[license-guard]`);
+  Options menu; saves separate both ways; Graphics API Vulkan/D3D12/D3D11 in game; language switch; standalone exe;
+  portable build on another PC.
+
+## TASK-100 Spec II on branch (2026-10-22, S1 done)
+
+Branch `task/100-spec2`. The owner supplied the Public Beta ISO and it is confirmed as the exact base of Spec II 1.10
+(the community `.xdelta` decodes to the owner's Spec II ISO byte for byte). The beta's game image was rebuilt from its
+encrypted `CORE.GT4` (Salsa20/20, key `PolyphonyDigital`, CRC-32C trailer) into
+`private/slice271-spec2-beta-elf` (ELF `2e5621ed…`), which makes the static patch set measurable: Spec II changes
+**one word** of the beta's own code (`0x001001E8`, a trampoline into the plugin) and adds the `.plugin` segment at
+`0x0068A480` (0x2CCC bytes) over zero-filled data; everything else is byte-identical. All other behaviour changes are
+written at boot by the injector: 35 word stores (18 text, 17 data), unconditional, recovered by executing the init on
+an EE-RAM image. Next: S3 (target-aware host hooks, v2.00 byte-identical), S5/S6, S2/S4. Report:
+[SPEC2-PATCHES](SPEC2-PATCHES.md). Nothing merged.
+
+S3 is done: `native/game_target.hpp` holds every guest address of the host hooks per target; v2.00 keeps the release
+values, and a target without an address disables the hook (one log line) with the capsule text unchanged. CTest 42/42
+(new `native_game_target`); the Python suite passes except the release-pin distribution test, which any rebuilt
+executable fails. Headless identity against the 1.2.3 build (slice268) is exact in all three scenes, dumps and GS
+stream hashes (menus `463d455c…`/`1ccb97c5…`, day `992f1ac9…`/`0c79dcf5…`, night `c57e7d03…`/`c091716e…`), on the
+final code state. S5: the VU1 blob decrypts to the v2.00 image (`ae6b6cb3…`), so the AOT table carries over; the VU0
+upload differs (0x920 vs 0xA80, 1,050 bytes) and uses the counted interpreter fallback. S6: 35 IOP files mapped with
+per-module policy (6 new, inherited from the beta lineage).
+
+S2 is done too: `scripts/spec2_elf_patch.py` applies the 35 injector stores to `SCUS_974.36` from the ISO and writes
+`private/slice272-spec2-elf` (`10a794df…`; `--revert` reproduces the original `db08421b…`). The trampoline at
+`0x001001E8` is deliberately kept: the plugin's init calls the beta's boot initialiser and one more game function, so
+only the stores are reproduced ahead of time. Pins `inputs/spec2-iso.json` and `inputs/spec2-elf.json`. S4 (its own
+translated library and executable) and S7b (first boot) are next.
+
+The Spec II translation now runs: `scripts/spec2_ee_generate.py` feeds the derived ELF to the pinned donor translator
+(plain-ELF path, no CORE) and produces 346 units (1,286,297 instructions, 17,061 functions, 148,522 entries, 2 rejected
+seeds), pinned in `inputs/spec2-ee-generated.json`; the generated C++ stays in scratch. Still open: the Spec II library
+and its own executable (a second CMake profile), then the first boot.
+
+S4 is now built: `-DGT4_TARGET=spec2 -DGT4_EE_PROFILE=spec2` links the Spec II library
+(`private/slice274-spec2-ee-producer/game-build/ps2game.lib`, `5e483768…`) into `gt4vulkan-spec2.exe`, with v2.00
+untouched. Two S7b fixes landed on the way: the plugin PT_LOAD sits inside the data PT_LOAD, so the derived ELF now
+splits the data segment around the plugin (the translator otherwise read zeros for it), and 12 plugin entry seeds
+cover the plugin's own pointer tables.
+
+**S7b is unblocked, and the Spec II target boots to the menus and into a race (2026-10-23).** The stall was the FILEIO
+protocol generation: the Spec II disc reboots the IOP with `DNAS310.IMG` instead of `IOPRP300.IMG`, and the donor
+selected its asynchronous FILEIO server (the one that answers `devctl`, method 23, with the SIF packet `0x80000011`)
+only for a path containing `IOPRP`. On the synchronous fallback the game's fileio thread waited forever on its
+completion semaphore. The reboot image itself needs no loading: DNAS310.IMG is the same romdir as IOPRP300.IMG with
+the same 16 Sony system modules in the same order, all served as HLE (`docs/IOP-MAP.md`, `inputs/spec2-dnas310.json`).
+Fix: capsule `private/slice276-spec2-iop-runtime` (`--spec2-iop`, `scripts/spec2_iop_overlay.inc` +
+`native/spec2_iop.hpp`); v2.00 keeps its capsule and is unchanged. Headless evidence: 4,200 menu frames with 1.8 M
+primitives, the language menu, the main menu, Arcade Mode, track and car selection, and a 21,000-frame race at Costa
+di Amalfi (169.7 M primitives, HUD and lap timer), with no "no translated code". CTest 43/43 in the Spec II build; the
+Python suite passes with the Spec II build (668 tests) and keeps only the expected release-pin failure with the v2.00
+build. v2.00 identity re-run: menus `463d455c…`/`1ccb97c5…`, day `992f1ac9…`/`0c79dcf5…`, night
+`c57e7d03…`/`c091716e…`, all equal to the 1.2.3 build.
+
+**S7c is done: Spec II runs on GSdx**, the shipping external PCSX2 GS process (`GT4_RENDERER=pcsx2`). Headless:
+menus 4,200 frames, a Costa di Amalfi race (21,000 frames, 12 readbacks), a night race at C.S. Route 5 (2,928
+readbacks, one 483 ms outlier), 3x upscale (1920x1440 dumps) and the owner's `!_HD HUD & UI` texture pack
+(`[Folders] Textures` + `LoadTextureReplacements`; needs gt4-gs 1.2.1, the repo pin is 1.0.1), all clean (protocol
+1.2, no stream errors or back-pressure stalls). The GT4 display crop is a fixed gt4-gs constant (`{0,0,1,2}`) that
+logs for both games; the game still announces the v2.00 serial SCUS-97328 in the GS handshake and gt4-gs has no
+SCUS-97436 GameDB entry (recorded for S8/S9). `scripts/frame_cost_headless.py` gained `--exe/--elf/--iso/--press/
+--textures/--gs-sha256` with the v2.00 gate defaults unchanged.
+
+**S8 is done for the main hooks (2026-10-23).** The Spec II table now has the option chain (owner `0x664EDC`, option
+`+0x680`, wide flag `+0x14`, record `+0x24` with width/height at `+0xC`/`+0x10`, presets `0x664E20/50/80/B0`,
+published wide word `0x6655A0`, race display index `+0x1718`), `RaceBase::initMonitor` `0x26BDB0` with the camera
+return label `0x26BE60`, `RaceDisplay::render` `0x1C5040` and the HUD matrix at `+0x70`. Values were found from the
+v2.00 code shapes in the derived ELF and confirmed with a runtime RAM dump of the Spec II menus. New fixture
+`native_spec2_hooks` asserts every value and the write rules in synthetic RAM; a headless GSdx race at 21:9 shows the
+camera matrix scaled (`x 0.761905`), the first `RaceDisplay::render`, the centred HUD canvas and the fill policy. The
+16:9 hold finds the settled owner (the game already boots 16:9, so it writes nothing); the 480p hold is a
+`window.cpp` VBlank hook, so headless runs cover its Spec II rule through the fixture only. Still open, rows left 0
+and the hook logs once: the display request struct (photo mode), the license demo guard (Spec II has the feature; the
+loaders are not mapped) and the shape observer. CTest 44/44 in the Spec II build; Python 671 tests clean on the Spec
+II build (51 skipped) and only the expected release-pin failure on v2.00; v2.00 identity against slice268 exact.
+Next: S9 (launcher, installer, credits).
+
+**S8b is done: the license demo guard is on for Spec II (2026-10-23).** `kSpec2Hooks` now has loadDemoInputs
+`0x2012C8` (RaceSolitaire vtable `0x6B3130 + 0x510`, the same virtual v2.00 has at `+0x4D8`), loaders
+`0x10CA18`/`0x10CBA8` with return labels `0x10CB54`/`0x10CCE4` (each calls the `license/%s` helper `0x1A8BE8` and
+makes one vtable call), `Manager::load` `0x207AA0`, the game CRC-32 table `0x731DB0`, the Manager add `0x1A24` and a
+loader body pointer shift `0x80`. The cipher is unchanged (`0x459E90`, FT at `0x667048`, T8 at `0x731C98`); the Spec
+II volume's 256 `replay/license` demos are the retail files (171 shared with v2.00, 170 bodies byte-identical) and
+CRC-confirmed plaintexts keep the single-Recorder stream at body `+0x1AA4`, so the layout and CRC rule are unchanged
+and the code's `0x1A24` add applies to a pointer 0x80 into the body (High confidence; not observed at runtime).
+The guard now evaluates the header's body and writes `n = 0xFFFFFFFF` at `a1 + manager_add`, exactly where the
+virtual reads (a static assert keeps add + shift = 0x1AA4); the overlay was re-derived into the fresh capsule
+`private/slice277-license-guard-runtime` (slice262 profile), pinned in `inputs/slice277-license-guard-runtime.json`,
+and CMake accepts slice27x guard capsules (v2.00 keeps slice262). Oracle on the Spec II set with our FPU: 0/256 CRC
+passes, 114 sane layouts, **142 demos guarded**. Headless license test not reachable (GT mode needs game data; the
+seed cards have none), so the owner run remains the gate; its log prints `demo`, `body` and `manager`. CTest 44/44 and
+Python 675 OK (51 skipped) on the Spec II build, including the overlay harness compiled for `GT4_TARGET_SPEC2`;
+v2.00 identity against slice268 exact in all three scenes (dumps `463d455c.`/`992f1ac9.`/`c57e7d03.`, streams
+`1ccb97c5.`/`0c79dcf5.`/`c091716e.`). Next: S9 (launcher, installer, credits).
+
+**S8c fixes the owner's Options-menu halt and widens the Spec II entry seeds (2026-10-23).** The owner's first Spec
+II test halted twice opening Options (`missing code at 0x003CA690`, ra `0x0050D1B0`). The callback is built by the
+Options page itself: `lui s0,0x003D` at `0x003CC8EC` + `addiu s0,s0,-22896` 53 instructions later, stored in the
+descriptor; the translator's `luipair` window is 3 instructions and no dataword points at it, so it never became an
+entry. New `scripts/spec2_entry_seeds.py` seeds the missing classes (wide `luipair` window 64, stack-frame
+fallthrough, executable-segment literal code entries) as a 1,299-entry delta; the regenerated translation has
+1,332,727 instructions, 18,597 functions and 153,474 entries, and the new library
+`private/slice278-spec2-ee-producer/game-build/ps2game.lib` (80,229,124 bytes, `9a94c3ed.`) is pinned in
+`inputs/spec2-ee-libraries.json` / `inputs/spec2-ee-generated.json` (CMake accepts only slice278 for the spec2
+profile). After the reseed the sweep finds no real missing entries in the luipair/fallthrough/dataword/executable
+classes (only plugin strings/zeros remain). Headless: the old exe reproduces the halt after 11,159 frames; the new
+exe opens Options and every submenu (Race, Replay, Screen 16:9, Picture Quality, Sound, Arcade Mode, LAN Connection
+Settings, Photo Lab), Replay Theater, Save Game, Credits, GT Mode and the Arcade menu with no halt. The harness gained
+`--card` for an owner-card copy; a license demo was still not reached headless (the mod's "Spec II Settings" dialog
+blocks the GT map in the current schedule), so the `[license-guard]` confirmation stays with the owner. New executable:
+`O:\gt4recomp-scratch\spec2-s7d-build\build\gt4vulkan-spec2.exe`, 104,475,136 bytes, sha256 `301bbb4a.`. CTest 44/44
+and Python 678 OK (51 skipped) on the Spec II build; v2.00 identity against slice268 unchanged (menus/day/night dumps
+and stream hashes). Next: S9 (launcher, installer, credits).
 
 ## Release 1.2.3 published (2026-10-22, hotfix: TASK-092, 093, 094, 096)
 

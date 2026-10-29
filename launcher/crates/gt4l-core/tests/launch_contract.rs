@@ -64,7 +64,7 @@ fn default_settings_send_the_main_profile_variables_plus_the_launcher_defaults()
 fn argument_list_matches_run_probe_order() {
     let session = Path::new(r"C:\Users\me\AppData\Local\GT4Recomp\sessions\session-1");
     let inputs = LaunchInputs {
-        game_executable: Path::new(r"C:\Program Files\GT4Recomp\game\gt4vulkan.exe"),
+        game_executable: Path::new(r"C:\Program Files\GT4Recomp\game\gt4.exe"),
         elf: Path::new(r"C:\Users\me\AppData\Local\GT4Recomp\prepared\SCUS_973.28"),
         disc: Path::new(r"D:\Games\GT4 (USA) (v2.00).iso"),
         card: Path::new(r"C:\Users\me\AppData\Local\GT4Recomp\runtime\card.ps2"),
@@ -89,13 +89,13 @@ fn argument_list_matches_run_probe_order() {
     );
     assert_eq!(plan.working_directory, session);
     assert_eq!(plan.log_path, session.join("game.log"));
-    assert_eq!(plan.program, Path::new(r"C:\Program Files\GT4Recomp\game\gt4vulkan.exe"));
+    assert_eq!(plan.program, Path::new(r"C:\Program Files\GT4Recomp\game\gt4.exe"));
 }
 
 #[test]
 fn inherited_gt4_and_ps2_variables_are_scrubbed_and_others_kept() {
     let inputs = LaunchInputs {
-        game_executable: Path::new("gt4vulkan.exe"),
+        game_executable: Path::new("gt4.exe"),
         elf: Path::new("SCUS_973.28"),
         disc: Path::new("disc.iso"),
         card: Path::new("card.ps2"),
@@ -242,13 +242,13 @@ fn pcsx2_plan_keeps_the_probe_argument_list_and_scrubs_inherited_names() {
 #[test]
 fn session_ini_matches_the_python_writer_for_the_default_settings() {
     let paths = pcsx2_paths();
-    let text = launch::gs_config_text(&Settings::default(), &paths, None).unwrap();
+    let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
     let bytes = gt4l_core::gs_table::ini_file_bytes(&text);
     let expected = include_bytes!("fixtures/gs/default-session.ini");
     assert_eq!(bytes.as_slice(), expected.as_slice(), "Rust gt4-gs.ini differs from scripts/gs_settings.py");
     // A 1920x1080 output at 100% is the same 3x: the default INI did not change with the display plan.
     let full_hd = display_target(r"\\.\DISPLAY1", 1920, 1080);
-    assert_eq!(launch::gs_config_text(&Settings::default(), &paths, Some(&full_hd)).unwrap(), text);
+    assert_eq!(launch::gs_config_text(&Settings::default(), &paths, Some(&full_hd), false).unwrap(), text);
 }
 
 fn display_target(device: &str, width: u32, height: u32) -> DisplayTarget {
@@ -270,20 +270,34 @@ fn the_internal_resolution_follows_the_output_size_and_the_render_scale() {
         (2560, 1440, "100", "4"),
         (2560, 1440, "200", "8"),
         (3440, 1440, "100", "6"),
-        (3440, 1440, "200", "12"),
+        (3440, 1440, "200", "10"),
         (3088, 1440, "100", "5"),
         (3840, 2160, "75", "5"),
         (1280, 720, "100", "2"),
     ] {
         settings.set("render_scale", scale).unwrap();
         let target = display_target(r"\\.\DISPLAY1", width, height);
-        let text = launch::gs_config_text(&settings, &paths, Some(&target)).unwrap();
+        let text = launch::gs_config_text(&settings, &paths, Some(&target), false).unwrap();
         assert_eq!(multiplier_line(&text), format!("upscale_multiplier = {expected}"), "{width}x{height} at {scale}%");
     }
     // A stored upscale (an old file edited by hand) never wins: the plan does.
     settings.set("render_scale", "100").unwrap();
-    let text = launch::gs_config_text(&settings, &paths, Some(&display_target("x", 2560, 1440))).unwrap();
+    let text = launch::gs_config_text(&settings, &paths, Some(&display_target("x", 2560, 1440)), false).unwrap();
     assert_eq!(multiplier_line(&text), "upscale_multiplier = 4");
+}
+
+#[test]
+fn an_integrated_gpu_plays_the_untouched_default_at_native_resolution() {
+    // Issue #89: 1440 x 900 is 3x on a discrete card; the integrated default is 1x, a changed scale is kept.
+    let paths = pcsx2_paths();
+    let target = display_target(r"\.\DISPLAY1", 1440, 900);
+    let mut settings = Settings::default();
+    let text = launch::gs_config_text(&settings, &paths, Some(&target), true).unwrap();
+    assert_eq!(multiplier_line(&text), "upscale_multiplier = 1");
+    assert_eq!(multiplier_line(&launch::gs_config_text(&settings, &paths, Some(&target), false).unwrap()), "upscale_multiplier = 3");
+    settings.set("render_scale", "150").unwrap();
+    let text = launch::gs_config_text(&settings, &paths, Some(&target), true).unwrap();
+    assert_eq!(multiplier_line(&text), "upscale_multiplier = 3");
 }
 
 #[test]
@@ -336,7 +350,7 @@ fn pcsx2_paths() -> launch::Pcsx2Paths {
 
 fn inputs() -> LaunchInputs<'static> {
     LaunchInputs {
-        game_executable: Path::new("C:/game/gt4vulkan.exe"),
+        game_executable: Path::new("C:/game/gt4.exe"),
         elf: Path::new("C:/work/SCUS_973.28"),
         disc: Path::new("C:/disc/game.iso"),
         card: Path::new("C:/cards/card.ps2"),
@@ -362,5 +376,132 @@ fn both_window_modes_pass_window_and_send_gt4_fullscreen_to_the_game_and_the_gs_
         let gs_plan = launch::plan_pcsx2_launch(&inputs(), settings, &pcsx2_paths(), None, &[]);
         assert_eq!(gs_plan.arguments.last().unwrap(), "--window");
         assert_eq!(env_map(&gs_plan.environment)["GT4_FULLSCREEN"], expected, "the PCSX2 GS path gets the same mode");
+    }
+}
+
+// ---- TASK-117: the flare limits of the parked guest patch ---------------------------------------------------------
+
+/// The derived-ELF flare limits were parked in rc6: Performance Mode removes the flares in the host (the client answers
+/// the visibility table as zeros), so the launcher never sends `GT4_FLARE_LIMITS`, for either game or mode. An inherited
+/// value from a parent process is scrubbed.
+#[test]
+fn the_parked_flare_limits_are_never_sent() {
+    let mut performance = Settings::default();
+    performance.set_gs("performance_mode", "no-readbacks").unwrap();
+    let accurate = Settings::default();
+    for settings in [&performance, &accurate] {
+        assert!(!env_map(&plan_launch(&inputs(), settings, None, &[]).environment)
+            .contains_key("GT4_FLARE_LIMITS"));
+        let spec2 = LaunchInputs { elf: Path::new("C:/work/SCUS_974.36"), ..inputs() };
+        assert!(!env_map(&plan_launch(&spec2, settings, None, &[]).environment)
+            .contains_key("GT4_FLARE_LIMITS"));
+    }
+    let inherited = vec!["GT4_FLARE_LIMITS".to_string()];
+    let plan = plan_launch(&inputs(), &performance, None, &inherited);
+    assert_eq!(plan.removed_inherited, vec!["GT4_FLARE_LIMITS".to_string()]);
+    assert!(!env_map(&plan.environment).contains_key("GT4_FLARE_LIMITS"));
+}
+
+// ---- TASK-097: the config file of a direct start ---------------------------------------------------------------------
+
+/// The sample the game's fixture (`native/standalone_fixture.cpp`) parses.
+const STANDALONE_SAMPLE: &str = include_str!("../../../../native/standalone_samples/game.ini");
+
+#[test]
+fn the_game_ini_matches_the_sample_the_game_fixture_reads() {
+    let display = display_target(r"\\.\DISPLAY2", 3440, 1440);
+    let text = launch::standalone_config_text(&Settings::default(), Some(&display));
+    assert_eq!(text.replace("\r\n", "\n"), STANDALONE_SAMPLE.replace("\r\n", "\n"));
+}
+
+/// The variable a `game.ini` key stands for (the mapping `native/standalone.cpp` `config_environment` implements).
+fn variables_of_game_ini(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut variables = std::collections::BTreeMap::new();
+    for line in text.lines().filter(|line| !line.starts_with('#') && !line.is_empty()) {
+        let (key, value) = line.split_once('=').expect("key=value");
+        match key {
+            "version" => {}
+            "fullscreen" => {
+                variables.insert("GT4_FULLSCREEN".to_string(), value.to_string());
+            }
+            "present_mode" => {
+                variables.insert("GT4_PRESENT_MODE".to_string(), value.to_string());
+            }
+            "monitor" => {
+                variables.insert("GT4_MONITOR".to_string(), value.to_string());
+            }
+            "output_size" => {
+                variables.insert("GT4_OUTPUT_SIZE".to_string(), value.to_string());
+            }
+            "async_gs" => {
+                if value == "0" {
+                    variables.insert("GT4_GS_SYNC".to_string(), "1".to_string());
+                }
+            }
+            "performance_report" => {
+                if value == "1" {
+                    variables.insert("GT4_PERF".to_string(), "1".to_string());
+                }
+            }
+            "check_vu_code" => {
+                if value != "0" {
+                    variables.insert("GT4_VU1_VERIFY".to_string(), value.to_string());
+                    variables.insert("GT4_VU0_VERIFY".to_string(), value.to_string());
+                }
+            }
+            other => panic!("unknown game.ini key {other}"),
+        }
+    }
+    variables
+}
+
+#[test]
+fn every_game_ini_key_stands_for_the_variable_the_launcher_sets_at_play() {
+    let variants: Vec<Vec<(&str, &str)>> = vec![
+        vec![],
+        vec![("fullscreen", "off")],
+        vec![("vsync", "fast")],
+        vec![("vsync", "off"), ("async_gs", "off")],
+        vec![("performance_report", "on"), ("check_vu_code", "100")],
+        vec![("check_vu_code", "1000"), ("fullscreen", "off"), ("vsync", "on")],
+    ];
+    let display = display_target(r"\\.\DISPLAY1", 2560, 1440);
+    for changes in variants {
+        let mut settings = Settings::default();
+        for (id, value) in &changes {
+            settings.set(id, value).unwrap_or_else(|error| panic!("{id}={value}: {error}"));
+        }
+        for shown in [Some(&display), None] {
+            let text = launch::standalone_config_text(&settings, shown);
+            let from_ini = variables_of_game_ini(&text);
+            let mut at_play = env_map(&game_environment(&settings));
+            at_play.extend(env_map(&launch::display_environment(shown)));
+            // Every variable the file stands for has exactly the value Play sets.
+            for (name, value) in &from_ini {
+                assert_eq!(at_play.get(name), Some(value), "{name} for {changes:?}, display {}", shown.is_some());
+            }
+            // And the file leaves out nothing that Play sets and the game does not default itself.
+            for name in ["GT4_FULLSCREEN", "GT4_PRESENT_MODE", "GT4_GS_SYNC", "GT4_PERF", "GT4_VU1_VERIFY", "GT4_VU0_VERIFY", "GT4_MONITOR", "GT4_OUTPUT_SIZE"] {
+                assert_eq!(from_ini.get(name), at_play.get(name), "{name} for {changes:?}, display {}", shown.is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn the_game_defaults_are_the_values_the_launcher_sets_for_default_settings() {
+    // native/standalone.cpp default_environment(): the six variables the game applies when nothing else says otherwise.
+    let defaults = [
+        ("GT4_RENDERER", "pcsx2"),
+        ("PS2_GS", "gpu"),
+        ("GT4_FORCE_480P", "1"),
+        ("GT4_FORCE_WIDESCREEN", "1"),
+        ("GT4_DISPLAY_ASPECT", "auto"),
+        ("GT4_FULLSCREEN", "1"),
+        ("GT4_PRESENT_MODE", "fifo"),
+    ];
+    let at_play = env_map(&game_environment(&Settings::default()));
+    for (name, value) in defaults {
+        assert_eq!(at_play[name], value, "{name}");
     }
 }

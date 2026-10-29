@@ -15,14 +15,18 @@
 
 #include <cstdint>
 
+#include "game_target.hpp"
+
 namespace gt4::display {
 
-inline constexpr std::uint32_t race_owner_pointer_address = 0x622F4Cu;
-inline constexpr std::uint32_t race_option_object_offset = 0x38CB0u;
-inline constexpr std::uint32_t race_display_index_offset = 0x16B0u;
-inline constexpr std::uint32_t race_display_index_normal = 0u;
-inline constexpr std::uint32_t race_display_index_480p = 1u;
-inline constexpr std::uint32_t race_display_index_1080i = 2u;
+// TASK-100 S3: the numbers live in native/game_target.hpp (per-target table); see race_widescreen.hpp.
+inline constexpr std::uint32_t race_owner_pointer_address = ::gt4::target::active().hooks.widescreen_owner_pointer;
+inline constexpr std::uint32_t race_option_object_offset = ::gt4::target::active().hooks.widescreen_option_offset;
+inline constexpr std::uint32_t race_display_index_offset = ::gt4::target::active().hooks.race_display_index_offset;
+inline constexpr std::uint32_t race_display_index_normal =
+    ::gt4::target::active().hooks.race_display_index_normal;
+inline constexpr std::uint32_t race_display_index_480p = ::gt4::target::active().hooks.race_display_index_480p;
+inline constexpr std::uint32_t race_display_index_1080i = ::gt4::target::active().hooks.race_display_index_1080i;
 
 // GT4_FORCE_480P: nullptr or "0" is off, "1" is on. Any other value throws std::invalid_argument.
 bool parse_force_480p(const char *value);
