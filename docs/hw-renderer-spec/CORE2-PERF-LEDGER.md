@@ -58,6 +58,7 @@ wall time of the whole emulator.
 | IN-425 | GPU cost map (`GT4_CORE2_GPU_PROFILE_AT`) | Headlight scene 5.9 ms of isolated GPU work against 7-19 ms per VBlank: gaps, not power | diagnostics | 299 |
 | measure | Submit every 32 or 16 batches with two slots | Flare wait down, slot waits and spikes up (47 -> 66 -> 94) | not alone | - |
 | IN-426 | Up to 8 submissions in flight, submit every 32 batches | Arcade race VBlanks over 17 ms 59 -> 15; GPU waits about a third; emulator 8.9-13.1 -> 7.6-10.5 ms | yes | 299 |
+| owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
 ## What we learned
 

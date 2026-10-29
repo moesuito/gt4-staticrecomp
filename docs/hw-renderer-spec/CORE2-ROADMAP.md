@@ -300,6 +300,39 @@ proves otherwise.
 - Launcher entry as a beta renderer (needs upscaling and AA), the GSdx fallback kept.
 - Later: the frame-skip study (TASK-082 branch) for CoreGS.
 
+## Beta closing plan (2026-10-29, proposal to the owner)
+
+The owner tested candidate 299: fidelity perfect, 60 FPS, frametime nearly flat. Phase B stops here; the rest of the
+frametime variation waits for the EE/VU0/VU1 optimisation. After the beta: the 1.3.0-rc7 branch comes in (CoreGS 2.0
+lands on it), the PR goes to the code optimisation branch, and the launcher entry is added there.
+
+**Beta (must):**
+1. **Core 2 at 1x:** today only the HUD shows (the 3D scene is black). 2x and above are correct.
+2. **C1 mipmapping and LOD** (a GS feature GT4 uses): less shimmer on the track and trees, the map's thin lines.
+3. **Phase E spec step 3 audit:** T8 from a target, the 16-from-32 shuffle, depth as a texture, GPU local-to-local
+   moves, the alpha-only tone variant. Find which paths GT4 still takes through CPU fallbacks or readbacks; fix the
+   wrong ones, count the slow ones.
+4. **The remaining spike sources:**
+   - the cut to the race camera (about 35 readbacks in one VBlank);
+   - textures over 16-bit targets (a readback each);
+   - the IN-411 stores in the owner's menus.
+5. **A memory budget** for target and texture images: about 630 MB at 3x now, and the HD 620 laptop shares system
+   memory.
+6. **C3 CAS sharpening** (the launcher already offers it for GSdx). Written from AMD's MIT FidelityFX CAS, never a
+   GPL copy.
+7. **C2 present resampling:** a sharper downscale when the internal size is above the window (supersampling).
+8. **The laptop gate:**
+   - the i5-7200U / HD 620 at 2x at full speed (owner F7/F8 over the laptop share);
+   - D1 (hardware raster path) moves into the beta only if that GPU is the limit there.
+
+**After the beta, for release 2.0.0** (owner requirements of 2026-10-27; the owner decides if any moves into the
+beta):
+- fractional scales and 12x (the scale is an integer everywhere today: a large refactor);
+- GSdx-compatible texture replacement and dumping (hash and naming from the comparison team, in prose);
+- C5 forced bilinear and anisotropic filtering;
+- D1 on the desktop for 6x-12x and power parity;
+- the frame-skip study.
+
 ## 5. Order and owner tests
 
 | Order | Step | Owner test |

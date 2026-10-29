@@ -54,6 +54,9 @@ with a per-VBlank spike log (IN-423): 40-160 image allocations per VBlank. Image
 still jittery in menus and slightly in the race. A GPU cost map (IN-425) showed the GPU has the power but is full of
 gaps; with only two submissions in flight the CPU waited for it. Up to 8 submissions in flight and submissions every
 32 batches (IN-426, candidate 299): Arcade B-Spec race VBlanks over 17 ms 59 -> 15, GPU waits cut to about a third.
+Owner test of 299: 60 FPS, frametime nearly flat, fidelity perfect; phase B closed. Beta closing plan in CORE2-ROADMAP
+(1x shows only the HUD, mipmapping, spec step 3 audit, the remaining spikes, a memory budget, CAS, present resampling,
+the HD 620 laptop gate). After the beta, the 1.3.0-rc7 branch comes in and the PR goes to the code optimisation branch.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
