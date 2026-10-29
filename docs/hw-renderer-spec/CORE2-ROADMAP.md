@@ -207,8 +207,10 @@ proves otherwise.
   - Owner test of 291: 59.2 VBlanks/s on the night race (p99 19.6 ms). IN-416 then made dirty rectangles exact
     page by page and block by block for writes in the same layout, so the partial-write stores went too (store waits
     about 0 ms on a long night race).
+  - IN-417 moved the CLUT loads over several or depth targets to the GPU (CLUT readbacks about 1 -> 0 per VBlank;
+    GS thread 7.2-11.1 ms on the long night race).
   - Next:
-    - the CLUT readbacks still waiting (up to 2 ms in some intervals) and the flare download (0.3-1.5 ms);
+    - the flare download (0.4-1.2 readbacks, 0.7-1.6 ms per VBlank) if it stays on top;
     - translate and decode recording (B4);
     - the GS thread split in two (B5).
   - Original item, kept for the record:

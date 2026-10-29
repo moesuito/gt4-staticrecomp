@@ -3628,6 +3628,65 @@ cpuref::CaptureWriter Core2StreamOverRenderCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-417 (GT4's palettes in the memory of its night render): page 22 holds a CT32 target (a colour sprite over the
+// palette's 16 x 16) and a Z24 target (a depth-only sprite over half of it), both drawn on the GPU; then a T8 texture
+// loads its CSM1 palette from page 22 and is drawn. The CLUT load overlaps two drawn targets, one of them depth.
+cpuref::CaptureWriter Core2MultiTargetClutCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kT8 = 18, kShared = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y, uint32_t z = 0) {
+        return uint64_t{x * 16} | (uint64_t{y * 16} << 16) | (uint64_t{z} << 32);
+    };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // A 16 x 16 T8 texture at page 18: every index once.
+    ad({(uint64_t{kT8 * 32} << 32) | (uint64_t{2} << 48) | (uint64_t{0x13} << 56), 0x50, 0, 0x51,
+        uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> texels;
+        for (uint32_t i = 0; i < 32; ++i) {
+            uint64_t word = 0;
+            for (uint32_t b = 0; b < 8; ++b) word |= uint64_t{(i * 8 + b) & 255u} << (8 * b);
+            texels.push_back(word);
+        }
+        image(texels);
+    }
+    const uint64_t zbufMasked = kShared | (uint64_t{1} << 24) | (uint64_t{1} << 32);
+    const uint64_t zbufZ24 = kShared | (uint64_t{1} << 24);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18,
+            // the colour target: a sprite over the palette's 16 x 16 at page 22
+            uint64_t{1} << 17, 0x47, zbufMasked, 0x4E, frameReg(kShared), 0x4C, kSprite, 0x00,
+            rgbaq(0x80402010u + frame * 0x01030507u), 0x01, xyz(0, 0), 0x05, xyz(16, 16), 0x05,
+            // the depth target: Z24 at page 22, a depth-only sprite (colour into A) over half of the palette
+            (uint64_t{1} << 16) | (uint64_t{1} << 17), 0x47, zbufZ24, 0x4E, frameReg(kA), 0x4C, kSprite, 0x00,
+            rgbaq(0x80000000u), 0x01, xyz(8, 4, 0x00123456u + frame * 0x010101u), 0x05,
+            xyz(24, 20, 0x00123456u + frame * 0x010101u), 0x05,
+            // the T8 texture through a palette loaded from page 22 (CSM1, CT32, CLD 1), drawn into A
+            uint64_t{1} << 17, 0x47, zbufMasked, 0x4E,
+            uint64_t{kT8 * 32} | (uint64_t{2} << 14) | (uint64_t{0x13} << 20) | (uint64_t{4} << 26) |
+                (uint64_t{4} << 30) | (uint64_t{1} << 34) | (uint64_t{1} << 35) | (uint64_t{kShared * 32} << 37) |
+                (uint64_t{1} << 61),
+            0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(32, 0), 0x05,
+            uv(16, 16), 0x03, xyz(48, 16), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -3747,6 +3806,21 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                              static_cast<unsigned long long>(on.stats.pageExactDirties));
                                  return off.stats.storesBeforeWrite == 4 && on.stats.storesBeforeWrite == 2 &&
                                                 off.stats.pageExactDirties == 0 && on.stats.pageExactDirties > 0
+                                            ? 0
+                                            : 1;
+                             });
+    // IN-417: a CLUT load over a colour and a Z24 target is read on the GPU from the GLM, not read back.
+    failures += CheckCore2Ab(handles, "palette over colour and depth targets", Core2MultiTargetClutCapture(3), 3,
+                             "GT4_CORE2_GPU_MULTI_TARGET", false,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  palette over colour and depth targets: CLUT readbacks %llu / %llu, "
+                                             "multi-target GPU loads %llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.clutReadbacks),
+                                             static_cast<unsigned long long>(on.stats.clutReadbacks),
+                                             static_cast<unsigned long long>(off.stats.clutMultiTargetLoads),
+                                             static_cast<unsigned long long>(on.stats.clutMultiTargetLoads));
+                                 return off.stats.clutReadbacks > 0 && on.stats.clutReadbacks == 0 &&
+                                                off.stats.clutMultiTargetLoads == 0 && on.stats.clutMultiTargetLoads > 0
                                             ? 0
                                             : 1;
                              });

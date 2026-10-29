@@ -498,7 +498,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             times_.clutLoads += 1;
             const BlockSpan span{range.begin, range.count};
             // IN-408: one drawn 32-bit colour target under a CSM1 palette is read on the GPU when the load happens.
-            if (gpuClut_ && span.count < kAllBlocks && ClutSourceTarget(span) != nullptr) {
+            if (gpuClut_ && span.count < kAllBlocks && (ClutSourceTarget(span) != nullptr || ClutTargetsOnGpu(span))) {
                 clutFromTargetPending_ = true;
                 return;
             }
@@ -528,6 +528,29 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             found = &t;
         }
         return found;
+    }
+
+    // IN-417: GT4_CORE2_GPU_MULTI_TARGET=0 keeps depth targets out of the GLM writes and reads CLUT loads over several
+    // drawn targets back on the CPU (A/B).
+    const bool multiTarget_ = std::getenv("GT4_CORE2_GPU_MULTI_TARGET") == nullptr ||
+                              std::strcmp(std::getenv("GT4_CORE2_GPU_MULTI_TARGET"), "0") != 0;
+    bool MaterializableClass(FormatClass cls) const {
+        return cls == FormatClass::Colour32 || (multiTarget_ && cls == FormatClass::Depth32);
+    }
+
+    // IN-417: whether a CLUT load over `span` can be read on the GPU from the GLM after the drawn targets under it are
+    // written there: at least one drawn target overlaps it and every one is a 32-bit colour or depth target. GT4 loads
+    // palettes from the memory of its 128 x 128 night render, which also holds a Z24 target and lies inside its
+    // 640 x 224 frames.
+    bool ClutTargetsOnGpu(const BlockSpan &span) const {
+        if (!multiTarget_) return false;
+        bool any = false;
+        for (const Target &t : targets_) {
+            if (!t.alive || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (!MaterializableClass(t.cls)) return false;
+            any = true;
+        }
+        return any;
     }
 
     // The CLUT buffer halfwords a load writes (hw_glm_clut.comp, ClutUnit::Copy).
@@ -626,6 +649,53 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 for (std::uint32_t index : written) clutSource_[index] = clutTargetLoadCount_;
                 stats.clutTargetLoads++;
                 return;
+            }
+            if (ClutTargetsOnGpu(span)) {
+                // IN-417: several drawn targets (or a depth target): written into the GLM oldest draw first, then the
+                // load reads the GLM alone (an empty held area).
+                if (!gpuClutMirror_) {
+                    if (!gpu_.WriteClut(0, 512, frontEnd_.Clut().Halfwords(), error)) {
+                        Fail(error);
+                        return;
+                    }
+                    gpuClutMirror_ = true;
+                }
+                bool any = false;
+                if (!FlushClutMirror() || !MakeGlmCurrent(span) || !MaterializeTargets(span, any)) return;
+                const Target *bound = nullptr;  // any live image fills the target binding, which is not read
+                for (const Target &t : targets_) {
+                    if (t.alive && t.image != kNoImage) {
+                        bound = &t;
+                        break;
+                    }
+                }
+                if (bound) {
+                    ClutTargetLoad load;
+                    load.cbp = write.cbp;
+                    load.cpsm = write.cpsm;
+                    load.csm = write.csm;
+                    load.csa = write.csa;
+                    load.eightBit = (write.psm & 7u) == 3u;
+                    load.cbw = write.texclutCbw;
+                    load.cou = write.texclutCou;
+                    load.cov = write.texclutCov;
+                    load.tbp = bound->view.basePointer;
+                    load.tbw = bound->view.bufferWidth;
+                    load.heldX0 = 0;
+                    load.heldY0 = 0;
+                    load.heldX1 = -1;
+                    load.heldY1 = -1;
+                    load.fullWord = true;
+                    if (!gpu_.ClutFromTarget(bound->image, load, error)) {
+                        Fail(error);
+                        return;
+                    }
+                    ++clutTargetLoadCount_;
+                    for (std::uint32_t index : written) clutSource_[index] = clutTargetLoadCount_;
+                    stats.clutTargetLoads++;
+                    stats.clutMultiTargetLoads++;
+                    return;
+                }
             }
         }
         // A load from memory: the CPU CLUT unit's words are right; the GPU CLUT gets them before its next reader.
@@ -760,13 +830,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // IN-408: the GLM over `span` also holds what drawn targets hold there, written on the GPU (no readback): a GLM
-    // reader then sees what a readback would have stored. Only 32-bit colour targets are written this way; any other
-    // drawn target over the span is read back as before. Returns whether a target was written (`any`).
+    // reader then sees what a readback would have stored. 32-bit colour targets are written this way, and 32-bit
+    // depth targets too (IN-417); any other drawn target over the span is read back as before. Returns whether a
+    // target was written (`any`).
     bool MaterializeTargets(const BlockSpan &span, bool &any) {
         any = false;
         for (const Target &t : targets_) {
-            if (t.alive && !t.drawn.Empty() && t.cls != FormatClass::Colour32 &&
-                SpansOverlap(TargetSpan(t, t.drawn), span)) {
+            if (t.alive && !t.drawn.Empty() && !MaterializableClass(t.cls) && SpansOverlap(TargetSpan(t, t.drawn), span)) {
                 return Readback(span);
             }
         }
@@ -793,8 +863,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const PixelRect area = Intersect(rows, t.drawn);
             if (area.Empty()) continue;
             std::string error;
-            if (!gpu_.MaterializeTarget(t.image, t.view.basePointer, t.view.bufferWidth, area.x0, area.y0, area.x1,
-                                        area.y1, t.fullWordWritten, error)) {
+            const std::uint32_t layout = t.cls == FormatClass::Depth32 ? static_cast<std::uint32_t>(Psm::Z32)
+                                                                        : static_cast<std::uint32_t>(Psm::Ct32);
+            if (!gpu_.MaterializeTarget(t.image, layout, t.view.basePointer, t.view.bufferWidth, area.x0, area.y0,
+                                        area.x1, area.y1, t.fullWordWritten, error)) {
                 Fail(error);
                 return false;
             }
@@ -1752,7 +1824,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                          static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth,
                                          static_cast<unsigned>(view.psm), width, height);
                         }
-                        if (gpuTextures_ && target.cls == FormatClass::Colour32) continue;  // IN-408: MemoryTexture
+                        if (gpuTextures_ && MaterializableClass(target.cls)) continue;  // IN-408/417: MemoryTexture
                         if (indexed) {
                             stats.indexedFromTargetReadbacks++;
                         } else {

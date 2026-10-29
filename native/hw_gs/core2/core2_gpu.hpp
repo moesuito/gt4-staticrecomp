@@ -139,7 +139,7 @@ public:
     bool ReadClut(std::uint16_t halfwords[512], std::string &error);
     // IN-408: writes the native rectangle (inclusive) of 32-bit colour target `id` into the GLM at the target's own
     // CT32 addresses (base `tbp` in blocks, width `tbw` in pages); `fullWord` false keeps the GLM's top bytes.
-    bool MaterializeTarget(ImageId id, std::uint32_t tbp, std::uint32_t tbw, std::int32_t x0, std::int32_t y0,
+    bool MaterializeTarget(ImageId id, std::uint32_t psm, std::uint32_t tbp, std::uint32_t tbw, std::int32_t x0, std::int32_t y0,
                            std::int32_t x1, std::int32_t y1, bool fullWord, std::string &error);
 
     // 4.1: native rectangle (inclusive) of stored words, row-major, written into the image at scale; `mask` selects

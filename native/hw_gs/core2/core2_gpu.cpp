@@ -1446,7 +1446,7 @@ bool Gpu::ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string
   return true;
 }
 
-bool Gpu::MaterializeTarget(ImageId id, std::uint32_t tbp, std::uint32_t tbw, std::int32_t x0, std::int32_t y0,
+bool Gpu::MaterializeTarget(ImageId id, std::uint32_t psm, std::uint32_t tbp, std::uint32_t tbw, std::int32_t x0, std::int32_t y0,
                             std::int32_t x1, std::int32_t y1, bool fullWord, std::string &error) {
   Impl &s = *impl_;
   const Image *image = s.image_of(id);
@@ -1481,8 +1481,8 @@ bool Gpu::MaterializeTarget(ImageId id, std::uint32_t tbp, std::uint32_t tbw, st
   gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
   const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
   const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
-  const std::uint32_t push[8] = {tbp,   tbw, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width,
-                                 height, fullWord ? 1u : 0u, FloatBits(static_cast<float>(image->scale))};
+  const std::uint32_t push[9] = {tbp,   tbw, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width,
+                                 height, fullWord ? 1u : 0u, FloatBits(static_cast<float>(image->scale)), psm};
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.materializePipeline);
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);

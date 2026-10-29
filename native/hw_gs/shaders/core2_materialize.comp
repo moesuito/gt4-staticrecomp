@@ -3,10 +3,10 @@
 // CORE2 target to GLM (TASK-027 core rewrite, IN-408). Copyright (c) 2026 GT4Recomp contributors.
 // Written from docs/hw-renderer-spec chapters 01.3, 04.9 and CORE2-SPEC 4.2, clean room (decision 0070).
 //
-// Writes a native rectangle of a 32-bit colour target into the GLM at the target's own addresses (CT32 layout), each
-// pixel taken at its native centre as the readback (core2_reduce.comp) takes it. A GLM reader (a texture decode, a
+// Writes a native rectangle of a 32-bit colour or depth target into the GLM at the target's own addresses (CT32 or
+// Z32 layout, IN-417), each pixel taken at its native centre as the readback (core2_reduce.comp) takes it. A GLM reader (a texture decode, a
 // CLUT load) then sees what a readback would have stored in GS memory, without the CPU waiting for the GPU. A target
-// only ever drawn as 24-bit keeps the top byte that the GLM holds.
+// only ever drawn as 24-bit (CT24, Z24) keeps the top byte that the GLM holds.
 
 #version 450
 #extension GL_GOOGLE_include_directive : require
@@ -25,6 +25,7 @@ layout(push_constant) uniform MaterializeParameters {
     uint height;
     uint full_word;  // 0: only 24-bit draws
     float scale;
+    uint psm;        // PSMCT32 (0x00) or PSMZ32 (0x30): the target's 32-bit layout
 } pc;
 
 void main() {
@@ -36,7 +37,7 @@ void main() {
     uint y = pc.y0 + native.y;
     ivec2 sample_at = min(ivec2(floor((vec2(x, y) + vec2(0.5)) * pc.scale)), imageSize(target) - ivec2(1));
     uint word = imageLoad(target, sample_at).x;
-    GlmSlot slot = glm_slot(pc.tbp, pc.tbw, 0u, x, y);  // PSMCT32: one whole GLM word per pixel
+    GlmSlot slot = glm_slot(pc.tbp, pc.tbw, pc.psm, x, y);  // a 32-bit layout: one whole GLM word per pixel
     if (pc.full_word == 0u) {
         word = (word & 0x00FFFFFFu) | (glm_words[slot.word_index] & 0xFF000000u);
     }

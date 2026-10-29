@@ -34,7 +34,8 @@ were for nothing (GT4's streamed textures replace whole pages under its night re
 (IN-415), GPU waits 2.3-3.4 -> 1.1-2.0 ms and GS thread 16-22 -> 14-19 ms per night VBlank. Owner test of 291:
 night race 59.2 VBlanks/s over 190 s (p95 18.0, p99 19.6 ms), 60 FPS on the hood camera, no defects. Dirty
 rectangles are now exact page by page and block by block for writes in the same layout (IN-416, candidate 292): the
-remaining store waits went to about 0 ms on a long night race.
+remaining store waits went to about 0 ms on a long night race. CLUT loads over several or depth targets are read on
+the GPU too (IN-417, candidate 293): GS thread 7.2-11.1 ms per VBlank on the long night race (292: 8.3-13.9).
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
