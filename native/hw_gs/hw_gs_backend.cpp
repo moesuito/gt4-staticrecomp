@@ -865,6 +865,8 @@ bool Backend::init(const Options &options, std::string &error) {
   s.renderer->SetDecodeReuse(options.decode_reuse);
   // 13.5 GT4_HW_POSTFX=fxaa (IN-376): progressive presentation frames (races) pass through the edge-only FXAA.
   s.renderer->SetFxaa((options.postfx & postfx_fxaa) != 0);
+  // IN-433: GT4_HW_FILTER=forced / forced_no_sprite (core 2).
+  s.renderer->SetForcedBilinear(options.filter == Filter::forced ? 1u : options.filter == Filter::forced_no_sprite ? 2u : 0u);
   s.renderer->SetClutDefer(options.clut_defer);
   // IN-383 (parity plan item 2): GT4's tone-sequence strip batches run as one dispatch per page; GT4_HW_VERIFY_SHUFFLE
   // runs both paths and compares the written pages (09.4).

@@ -39,6 +39,7 @@ struct DrawBatch {
     std::int32_t paletteRow = -1;
     // IN-428: the mip parameters of memoryTexture (0: level 0 only), packed as hw_pixel_uber.frag g_mip describes.
     std::uint32_t mipInfo = 0;
+    bool forceLinear = false;  // IN-433: bilinear where the game asks for nearest (push word bit 31)
 };
 
 // Diagnostics for the F8 report and the replay summary.

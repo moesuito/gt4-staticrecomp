@@ -3774,6 +3774,10 @@ void Renderer::SetPresentSize(std::uint32_t width, std::uint32_t height) {
     if (core2_) core2_->SetPresentSize(width, height);
 }
 
+void Renderer::SetForcedBilinear(std::uint32_t mode) {
+    if (core2_) core2_->SetForcedBilinear(mode);
+}
+
 bool Renderer::ReadGpuFrame(const GpuFrame& frame, std::vector<std::uint32_t>& pixels) {
     if (core2_) return core2_->ReadGpuFrame(frame, pixels);
     std::string error;

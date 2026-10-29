@@ -82,7 +82,8 @@ constexpr std::pair<const char *, Blend> blend_tokens[] = {
 constexpr std::pair<const char *, Mipmap> mipmap_tokens[] = {
     {"off", Mipmap::off}, {"basic", Mipmap::basic}, {"full", Mipmap::full}};
 constexpr std::pair<const char *, Filter> filter_tokens[] = {
-    {"ps2", Filter::ps2}, {"nearest", Filter::nearest}, {"forced", Filter::forced}};
+    {"ps2", Filter::ps2}, {"nearest", Filter::nearest}, {"forced", Filter::forced},
+    {"forced_no_sprite", Filter::forced_no_sprite}};
 constexpr std::pair<const char *, Dither> dither_tokens[] = {
     {"native", Dither::native}, {"fine", Dither::fine}, {"off", Dither::off}};
 constexpr std::pair<const char *, AutoFlush> autoflush_tokens[] = {

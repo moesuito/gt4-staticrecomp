@@ -1655,7 +1655,8 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // not tell it from the atlas), 1 for the atlas; at scale the fine dither (8.6) and the floored rasteriser depth (1.6)
   // are on.
   record.push[7] = (batch.texture != kNoImage ? (sc | 0x01000000u) : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u) |
-                   (batch.mipInfo != 0 ? 0x00800000u : 0u);  // IN-428: tex_origin_x holds the mip parameters
+                   (batch.mipInfo != 0 ? 0x00800000u : 0u) |  // IN-428: tex_origin_x holds the mip parameters
+                   (batch.forceLinear ? 0x80000000u : 0u);    // IN-433: forced bilinear
   record.textureFromTarget = batch.texture != kNoImage;
   if (s.profiling) {
     namespace g = gpu::gpufield;

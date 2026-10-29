@@ -346,6 +346,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // GT4_CORE2_FSR_SHARPNESS=<stops> turns RCAS on (0 strongest, 0.2 FSR's usual, 2 mild);
     // GT4_CORE2_PRESENT_SIZE=<w>x<h> forces the rectangle (headless checks; the window sets it otherwise).
     std::uint32_t presentWidth_ = 0, presentHeight_ = 0;
+    // IN-433 (C5): GT4_HW_FILTER=forced samples every texture bilinearly where the game asked for nearest (as the
+    // reference renderer's forced bilinear): softer 1x textures magnified at scale (menu grids, map dashes, distant
+    // signs). forced_no_sprite leaves sprites alone: GT4 draws its HUD, fonts and full-screen copies (tone pass, the
+    // frame copies of its effects) as sprites, where bilinear only blurs. Off by default (faithful).
+    std::uint32_t forcedBilinear_ = 0;
+    // IN-434 (C5): GT4_CORE2_ANISO=2|4|8|16 spreads up to that many samples along the long axis of a mipmapped
+    // texture's footprint (hw_pixel_uber.frag sample_mipmapped). Off by default (the GS has no anisotropy).
+    const std::uint32_t anisoLog2_ = [] {
+        const char *v = std::getenv("GT4_CORE2_ANISO");
+        const int n = v ? std::atoi(v) : 0;
+        return n >= 16 ? 4u : n >= 8 ? 3u : n >= 4 ? 2u : n >= 2 ? 1u : 0u;
+    }();
     const bool presentResample_ = std::getenv("GT4_CORE2_PRESENT_FILTER") == nullptr ||
                                   std::strcmp(std::getenv("GT4_CORE2_PRESENT_FILTER"), "bilinear") != 0;
     const float rcasSharpness_ = std::getenv("GT4_CORE2_FSR_SHARPNESS") != nullptr
@@ -1110,7 +1122,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         const MipPlan mip = PlanMips(t, tex1, miptbp1, miptbp2);
-        mipInfo = mip.info;
+        mipInfo = mip.info | (anisoLog2_ << 21);  // IN-434
         if (mip.levels > 0) {
             key.width = mip.imageWidth;
             key.height = mip.imageHeight;
@@ -2296,6 +2308,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         draw.state = t.state;
         draw.vertices = &t.vertices;
         draw.draws = &t.draws;
+        draw.forceLinear = forcedBilinear_ == 1 || (forcedBilinear_ == 2 && batch.cls != PrimClass::Sprite);
+        if (draw.forceLinear && t.hasTexture) stats.forcedBilinearBatches++;
         const std::uint32_t zFormat = t.state.fields[gpu::gpufield::Zformat];
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
         if (t.hasTexture && draw.texture == kNoImage) {
@@ -2763,7 +2777,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
-                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
+                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu forced_bilinear=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f texture_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
@@ -2776,6 +2790,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
                  (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,
                  (unsigned long long)c.batchedReadbacks, (unsigned long long)c.dirtyMerged,
+                 (unsigned long long)c.forcedBilinearBatches,
                  (unsigned long long)c.cpuSpriteBatches, (unsigned long long)c.liveTargets,
                  (unsigned long long)c.targetSlots, (unsigned long long)c.decodesFirst,
                  (unsigned long long)c.decodesStale, (unsigned long long)c.decodesKeyClash,
@@ -3040,6 +3055,8 @@ void Renderer::SetOutputSettings(const writeback::OutputSettings &settings) {
 }
 
 void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
+
+void Renderer::SetForcedBilinear(std::uint32_t mode) { impl_->forcedBilinear_ = mode; }
 
 void Renderer::SetPresentSize(std::uint32_t width, std::uint32_t height) {
     impl_->presentWidth_ = width;

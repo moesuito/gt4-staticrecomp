@@ -103,6 +103,8 @@ layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D hw_texels;
 
 // IN-384 follow-up: set from the top bit of the tex_scale push word (the GPU drawer's GT4_HW_SCALED_FILTER=linear).
 bool g_force_linear = false;
+uint g_mip_aniso = 0u;    // IN-434: log2 of the most anisotropic samples (0: off), tex_origin_x bits 21-23
+vec2 g_tex_dx = vec2(0.0), g_tex_dy = vec2(0.0);  // IN-434: texel coordinate per screen pixel in x and y
 uint g_tex_scale = 1u;  // pc.tex_scale without the filter/dither bits
 // IN-427 (CORE2): bit 24 says the texture is a target sampled at binding 4, whatever the scale. At 1x the scale alone
 // (1) also meant "the 1x texel atlas", so core 2 read the atlas instead of the target and GT4's scene copies came out
@@ -243,19 +245,11 @@ ivec4 sample_level(int level, int uvs, int uvt, bool linear) {
 // IN-428: the GS LOD (01.5): LCM = 0 gives log2(1/|Q|) * 2^L + K/16, LCM = 1 (or FST) K/16. LOD <= 0 uses MMAG at
 // level 0; otherwise MMIN: 2/4 the nearest level (round half up), 3/5 a blend of the two levels around the LOD
 // (weight in 1/256 steps, Hypothesis); 0/1 level 0. Levels clamp to [0, MXL].
-ivec4 sample_mipmapped(int uvs, int uvt, float q) {
-    float lod = float(g_mip_k) / 16.0;
-    if (!g_mip_lcm && state.tex_fst == 0u) {
-        float magnitude = abs(q);
-        lod = magnitude > 0.0 ? lod - log2(magnitude) * float(1u << g_mip_l) : 1.0e9;
-    }
-    if (lod <= 0.0 || g_mip_mmin < 2u) {
-        bool linear = lod <= 0.0 ? state.tex_linear != 0u : (g_mip_mmin & 1u) != 0u;
-        return sample_level(0, uvs, uvt, linear);
-    }
+// MMIN 2-5 at a positive LOD: the level or levels around it.
+ivec4 sample_at_lod(int uvs, int uvt, float lod) {
     float top = float(g_mip_mxl);
     lod = min(lod, top);
-    bool linear_in_level = g_mip_mmin >= 4u;
+    bool linear_in_level = g_mip_mmin >= 4u || g_force_linear;  // IN-433
     if (g_mip_mmin == 2u || g_mip_mmin == 4u) {
         int level = int(min(floor(lod + 0.5), top));
         return sample_level(level, uvs, uvt, linear_in_level);
@@ -269,6 +263,43 @@ ivec4 sample_mipmapped(int uvs, int uvt, float q) {
     }
     ivec4 b = sample_level(level1, uvs, uvt, linear_in_level);
     return (a * (256 - weight) + b * weight) >> 8;
+}
+
+// IN-434 (C5, an enhancement the GS does not have; off by default): anisotropic filtering of mipmapped draws. The
+// pixel's texture footprint (screen derivatives of the texel coordinate, g_tex_dx / g_tex_dy) is long along one axis
+// on surfaces seen at a grazing angle (the road ahead); the GS LOD from Q then picks a level blurred along the short
+// axis too. With up to N = 2^g_mip_aniso samples spread along the long axis, the LOD drops by log2(samples), so the
+// short axis keeps its detail.
+ivec4 sample_mipmapped(int uvs, int uvt, float q) {
+    float lod = float(g_mip_k) / 16.0;
+    if (!g_mip_lcm && state.tex_fst == 0u) {
+        float magnitude = abs(q);
+        lod = magnitude > 0.0 ? lod - log2(magnitude) * float(1u << g_mip_l) : 1.0e9;
+    }
+    if (lod <= 0.0 || g_mip_mmin < 2u) {
+        bool linear = g_force_linear || (lod <= 0.0 ? state.tex_linear != 0u : (g_mip_mmin & 1u) != 0u);
+        return sample_level(0, uvs, uvt, linear);
+    }
+    if (g_mip_aniso != 0u && lod < 1.0e8) {
+        float lx = length(g_tex_dx);
+        float ly = length(g_tex_dy);
+        float major = max(lx, ly);
+        float minor = max(min(lx, ly), 1.0e-6);
+        int samples = int(min(ceil(major / minor), float(1u << g_mip_aniso)));
+        if (samples > 1) {
+            vec2 axis = (lx >= ly ? g_tex_dx : g_tex_dy) * 16.0;  // the long axis in 1/16 texels
+            float reduced = max(lod - log2(float(samples)), 0.0);
+            ivec4 sum = ivec4(0);
+            for (int i = 0; i < samples; ++i) {
+                vec2 offset = axis * ((float(i) + 0.5) / float(samples) - 0.5);
+                int su = uvs + int(round(offset.x));
+                int sv = uvt + int(round(offset.y));
+                sum += reduced <= 0.0 ? sample_level(0, su, sv, true) : sample_at_lod(su, sv, reduced);
+            }
+            return sum / samples;
+        }
+    }
+    return sample_at_lod(uvs, uvt, lod);
 }
 
 // The texture at s x s texels per native texel: the coordinate times s, the same 4-bit weights.
@@ -344,6 +375,7 @@ void main() {
         g_mip_lcm = ((info >> 6) & 1u) != 0u;
         g_mip_l = (info >> 7) & 3u;
         g_mip_k = int(info << 11) >> 20;  // bits 9-20, sign extended
+        g_mip_aniso = (info >> 21) & 7u;
     }
     const bool depth_from_position = (pc.tex_scale & 0x10000000u) != 0u;
 
@@ -390,6 +422,10 @@ void main() {
             float scale_t = float(1u << state.tex_log2_h) * 16.0;
             uvs = to_texel_104((in_st.x / q) * scale_s);
             uvt = to_texel_104((in_st.y / q) * scale_t);
+            // IN-434: derivatives in uniform control flow (tex_on and tex_fst are draw-wide), in texels.
+            vec2 texel_coord = (in_st / q) * vec2(float(1u << state.tex_log2_w), float(1u << state.tex_log2_h));
+            g_tex_dx = dFdx(texel_coord);
+            g_tex_dy = dFdy(texel_coord);
         }
         ivec4 texel = g_mip ? sample_mipmapped(uvs, uvt, in_q)
                       : (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))

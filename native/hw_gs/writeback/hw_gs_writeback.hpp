@@ -308,6 +308,8 @@ public:
     void SetFxaa(bool enabled);
     // IN-432 (core 2): the window rectangle the next presented frame is shown in (0 x 0: unknown, no resampling).
     void SetPresentSize(std::uint32_t width, std::uint32_t height);
+    // IN-433 (core 2): GT4_HW_FILTER forced bilinear: 0 as the game asks, 1 every textured draw, 2 all but sprites.
+    void SetForcedBilinear(std::uint32_t mode);
     // Fixtures and checks: the pixels of a GPU frame (submits and waits).
     bool ReadGpuFrame(const GpuFrame &frame, std::vector<std::uint32_t> &pixels);
     FrameOutput Compose(ComposeKind kind = ComposeKind::Reference);

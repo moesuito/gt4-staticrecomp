@@ -64,6 +64,8 @@ wall time of the whole emulator.
 | IN-430 | dirty rectangles merged into the last pending one | camera cut dirty patches 863 -> 387, readback 13.3 ms, wall 46 -> 40 ms | yes | 302 |
 | IN-431 | texture cache budget 192 MiB on integrated GPUs (768 discrete) | at 192 MiB: images 621 -> 507 MB, texture +0.16 ms | yes | 303 |
 | IN-432 | present resampling (Lanczos-2 down, FSR1 EASU up, optional RCAS) | quality feature; three small compute passes at the window size | yes | 303 |
+| IN-433 | forced bilinear option (forced, forced_no_sprite) | option, off by default | yes | 304 |
+| IN-434 | anisotropic filtering of mipmapped draws (GT4_CORE2_ANISO) | option, off by default; GPU time unchanged within noise at 16x | yes | 304 |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
 ## What we learned

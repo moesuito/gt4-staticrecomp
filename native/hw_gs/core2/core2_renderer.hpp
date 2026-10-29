@@ -43,7 +43,8 @@ struct Core2Counters {
     std::uint64_t downloadReadbacks = 0;       // EE downloads (local-to-host transfers) that read back a target
     std::uint64_t batchedReadbacks = 0;        // IN-429: target readbacks reduced together in one submission
     std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now
-    std::uint64_t dirtyMerged = 0;             // IN-430: dirty rectangles merged into the target's last pending one
+    std::uint64_t dirtyMerged = 0;
+    std::uint64_t forcedBilinearBatches = 0;   // IN-433: textured batches sampled bilinearly by GT4_HW_FILTER             // IN-430: dirty rectangles merged into the target's last pending one
     std::uint64_t cpuSpriteBatches = 0;        // IN-407: small untextured sprite batches drawn into GS memory
     std::uint64_t clutTargetLoads = 0;         // IN-408: CLUT loads read from a drawn target on the GPU
     std::uint64_t gpuPaletteDecodes = 0;       // IN-408: indexed textures expanded through the GPU CLUT
@@ -101,6 +102,8 @@ public:
     void SetFxaa(bool enabled);  // IN-405: 13.5 FXAA of the presented frame
     // IN-432: the window rectangle the presented frame is resampled to (0 x 0: none).
     void SetPresentSize(std::uint32_t width, std::uint32_t height);
+    // IN-433: 0 textures filtered as the game asks, 1 bilinear on every textured draw, 2 on all but sprites.
+    void SetForcedBilinear(std::uint32_t mode);
 
     // The shadow memory after writing every target's drawn area back (a host read of the whole memory).
     const std::uint8_t *Slm();

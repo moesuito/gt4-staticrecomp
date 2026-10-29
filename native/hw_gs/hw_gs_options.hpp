@@ -33,7 +33,7 @@ enum class HalfPixel { native, normal, off };
 enum class NativePostfx { off, normal, aggressive };
 enum class Blend { basic, medium, high, full };
 enum class Mipmap { off, basic, full };
-enum class Filter { ps2, nearest, forced };
+enum class Filter { ps2, nearest, forced, forced_no_sprite };  // IN-433: forced_no_sprite keeps sprites as the game asks
 enum class Dither { native, fine, off };
 enum class AutoFlush { sprites, all, off };
 enum class SyncMode { cache, writeback };

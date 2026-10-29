@@ -3304,7 +3304,8 @@ struct Core2AbRun {
 constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
 
 bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, const char* abSwitch,
-                   bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0, uint32_t scale = 2) {
+                   bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0, uint32_t scale = 2,
+                   const std::function<void(writeback::Renderer&)>& configure = {}) {
     _putenv_s(abSwitch, on ? "" : "0");
     _putenv_s("GT4_HW_CORE", "2");
     writeback::Renderer renderer;
@@ -3312,6 +3313,7 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
     _putenv_s(abSwitch, "");
     renderer.SetScale(scale, static_cast<float>(scale));
     if (!renderer.Init(handles, error)) return false;
+    if (configure) configure(renderer);
     if (!renderer.Core2()) {
         error = "GT4_HW_CORE=2 did not select core 2";
         return false;
@@ -3866,9 +3868,82 @@ cpuref::CaptureWriter Core2MipCapture() {
     sprite(32, 0, 3, 8);
     sprite(48, 0, 1, 16);
     sprite(0, 16, 2, -16);
+    // IN-434: an STQ sprite 16 x 2 pixels showing the whole 16 x 16 texture (8 texels per pixel down, 1 across),
+    // MMIN 2 with LOD 2: level 2 (blue); with GT4_CORE2_ANISO=16 eight samples along the long axis bring the LOD
+    // to 2 - 3 < 0, so level 0 (red).
+    auto st = [](float s, float t) {
+        uint32_t sb, tb;
+        std::memcpy(&sb, &s, 4);
+        std::memcpy(&tb, &t, 4);
+        return uint64_t{sb} | (uint64_t{tb} << 32);
+    };
+    w.insert(w.end(), {tex1(2, 32), 0x14, kSprite | kTme, 0x00, rgbaq(0x80808080u), 0x01, st(0.0f, 0.0f), 0x02,
+                       xyz(0, 32), 0x05, st(1.0f, 1.0f), 0x02, xyz(16, 34), 0x05});
     ad(w);
     capture.FrameEnd(0);
     return capture;
+}
+
+// IN-433: a 2 x 2 CT32 checker (black and white texels), nearest (TEX1 = 0), magnified 16 times by one FST sprite
+// into page 0 (32 x 32 pixels).
+cpuref::CaptureWriter Core2CheckerCapture() {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kTexture = 16;  // page
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    ad({(kTexture * 32) << 32 | (uint64_t{1} << 48), 0x50, 0, 0x51, uint64_t{2} | (uint64_t{2} << 32), 0x52, 0, 0x53});
+    capture.Gif(1, cpuref::CaptureWriter::Packet(1, true, false, 0, 2, {},
+                                                 {uint64_t{0x80000000u} | (uint64_t{0x80FFFFFFu} << 32),
+                                                  uint64_t{0x80FFFFFFu} | (uint64_t{0x80000000u} << 32)}));
+    const uint64_t tex0 = uint64_t{kTexture * 32} | (uint64_t{1} << 14) | (uint64_t{1} << 26) | (uint64_t{1} << 30) |
+                          (uint64_t{1} << 34) | (uint64_t{1} << 35);  // CT32 2 x 2, TCC, decal
+    ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        uint64_t{1} << 16, 0x4C, tex0, 0x06, 0, 0x14, 6u | (1u << 4) | (1u << 8), 0x00, rgbaq(0x80808080u), 0x01,
+        uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(2, 2), 0x03, xyz(32, 32), 0x05});
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_forced_bilinear (IN-433): GT4_HW_FILTER forced filters the nearest checker (grey steps appear), the
+// default and forced_no_sprite (a sprite) keep only black and white.
+int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    for (uint32_t mode : {0u, 1u, 2u}) {
+        Core2AbRun run;
+        std::string error;
+        if (!ReplayCore2Ab(handles, Core2CheckerCapture(), "GT4_CORE2_UNUSED_SWITCH", true, run, error, 0, 2,
+                           [mode](writeback::Renderer& r) { r.SetForcedBilinear(mode); }) ||
+            run.memory.empty() || run.memory.back().empty()) {
+            std::printf("  forced bilinear mode %u: replay failed: %s\n", mode, error.c_str());
+            ++failures;
+            continue;
+        }
+        memory::LocalMemory local;
+        std::memcpy(local.bytes().data(), run.memory.back().data(), kGsMemoryBytes);
+        const memory::BufferView frame{0, 1, memory::Psm::Ct32};
+        uint32_t greys = 0;
+        for (uint32_t y = 0; y < 32; ++y) {
+            for (uint32_t x = 0; x < 32; ++x) {
+                const uint32_t rgb = local.readPixel(frame, x, y) & 0xFFFFFFu;
+                if (rgb != 0 && rgb != 0xFFFFFFu) ++greys;
+            }
+        }
+        const bool expectGreys = mode == 1;
+        std::printf("  forced bilinear mode %u: %u grey pixels of 1024 (%s)\n", mode, greys,
+                    expectGreys ? "filtered expected" : "nearest expected");
+        if ((greys != 0) != expectGreys) ++failures;
+    }
+    std::printf("hw_core2_forced_bilinear: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
 }
 
 // hw_core2_mipmaps (IN-428): the five sprites above at 1x and 3x, every pixel the expected level colour; with
@@ -3888,6 +3963,7 @@ int TestCore2Mipmaps(const gpu::VulkanHandles& handles) {
     for (uint32_t scale : {1u, 3u}) {
         for (bool mips : {true, false}) {
             Core2AbRun run;
+            Core2AbRun aniso;
             std::string error;
             if (!ReplayCore2Ab(handles, Core2MipCapture(), "GT4_CORE2_MIPMAP", mips, run, error, 0, scale) ||
                 run.memory.empty() || run.memory.back().empty()) {
@@ -3898,6 +3974,25 @@ int TestCore2Mipmaps(const gpu::VulkanHandles& handles) {
             memory::LocalMemory local;
             std::memcpy(local.bytes().data(), run.memory.back().data(), kGsMemoryBytes);
             const memory::BufferView frame{0, 1, memory::Psm::Ct32};
+            // IN-434: the stretched STQ sprite, without and with anisotropic filtering.
+            if (mips) {
+                _putenv_s("GT4_CORE2_ANISO", "16");
+                const bool ok = ReplayCore2Ab(handles, Core2MipCapture(), "GT4_CORE2_MIPMAP", true, aniso, error, 0, scale) &&
+                                !aniso.memory.empty() && !aniso.memory.back().empty();
+                _putenv_s("GT4_CORE2_ANISO", "");
+                memory::LocalMemory anisoLocal;
+                if (ok) std::memcpy(anisoLocal.bytes().data(), aniso.memory.back().data(), kGsMemoryBytes);
+                uint32_t plainWrong = 0, anisoWrong = 0;
+                for (uint32_t y = 32; y < 34; ++y) {
+                    for (uint32_t x = 1; x < 15; ++x) {  // away from the sprite's ends
+                        if (local.readPixel(frame, x, y) != 0x80FF0000u) ++plainWrong;
+                        if (!ok || anisoLocal.readPixel(frame, x, y) != 0x800000FFu) ++anisoWrong;
+                    }
+                }
+                std::printf("  mipmaps %ux stretched STQ sprite: level 2 without anisotropy %u of 28 wrong, level 0 with "
+                            "16x %u of 28 wrong\n", scale, plainWrong, anisoWrong);
+                if (plainWrong != 0 || anisoWrong != 0) ++failures;
+            }
             for (const Expect& e : expected) {
                 const uint32_t want = mips ? e.colour : 0x800000FFu;
                 uint32_t wrong = 0, sample = 0;
@@ -4750,6 +4845,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
+    if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());
     return 2;
 }

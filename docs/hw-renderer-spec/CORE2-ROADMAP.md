@@ -330,7 +330,7 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
 beta):
 - fractional scales and 12x (the scale is an integer everywhere today: a large refactor);
 - GSdx-compatible texture replacement and dumping (hash and naming from the comparison team, in prose);
-- C5 forced bilinear and anisotropic filtering;
+- C5 forced bilinear and anisotropic filtering (done in the beta: IN-433, IN-434);
 - D1 on the desktop for 6x-12x and power parity;
 - the frame-skip study.
 
