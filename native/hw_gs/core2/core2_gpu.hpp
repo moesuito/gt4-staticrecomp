@@ -179,6 +179,14 @@ public:
     // 4.2: the native rectangle (inclusive) reduced to 1x stored words (submits and waits).
     bool Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
                 std::vector<std::uint32_t> &words, std::string &error);
+    // IN-429: several reductions in one submission and one wait; `words[i]` receives request i. False with an empty
+    // error when the requests do not fit the readback buffer together (the caller reduces them one by one).
+    struct ReduceRequest {
+        ImageId id = 0;
+        std::int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    };
+    bool ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std::vector<std::uint32_t>> &words,
+                    std::string &error);
     // 7.2: GT4's channel-shuffle hook over the image's native rectangle [0, width) x [0, height).
     bool Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight, const std::uint32_t palette[256],
               std::string &error);

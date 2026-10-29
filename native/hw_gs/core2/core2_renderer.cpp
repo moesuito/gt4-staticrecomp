@@ -1477,7 +1477,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         continue;
                     }
                 }
-                t.dirty.push_back(Dirty{moved, view.psm});
+                PushDirty(t, Dirty{moved, view.psm});
             }
         }
         stats.pageExactDirties++;
@@ -1512,17 +1512,40 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         continue;
                     }
                 }
-                t.dirty.push_back(Dirty{moved, view.psm});
+                PushDirty(t, Dirty{moved, view.psm});
             }
         }
         stats.pageExactDirties++;
     }
 
     // 4.1: an EE write into `rect` of `view`: a dirty rectangle in every target it lands on.
+    // IN-430: a dirty rectangle the target's last pending one (same format) already covers adds nothing, and one that
+    // covers the last replaces it: 4.1 patches read GS memory when they are applied, so applying the same words twice
+    // in a row equals applying them once. GT4 uploads its car textures piece by piece over the same page rows of its
+    // 256 x 128 targets (up to 8 times a row in one VBlank at the pre-race camera cut), one patch each before.
+    // GT4_CORE2_DIRTY_MERGE=0 keeps every rectangle (A/B).
+    const bool dirtyMerge_ = std::getenv("GT4_CORE2_DIRTY_MERGE") == nullptr ||
+                             std::strcmp(std::getenv("GT4_CORE2_DIRTY_MERGE"), "0") != 0;
+    void PushDirty(Target &t, const Dirty &d) {
+        if (dirtyMerge_ && !t.dirty.empty() && t.dirty.back().psm == d.psm) {
+            Dirty &last = t.dirty.back();
+            if (Contains(last.rect, d.rect)) {
+                stats.dirtyMerged++;
+                return;
+            }
+            if (Contains(d.rect, last.rect)) {
+                last.rect = d.rect;
+                stats.dirtyMerged++;
+                return;
+            }
+        }
+        t.dirty.push_back(d);
+    }
+
     void AddUploadDirty(Target &t, const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
         const FormatClass cls = ClassOf(view.psm);
         if (view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls) {
-            t.dirty.push_back(Dirty{rect, view.psm});
+            PushDirty(t, Dirty{rect, view.psm});
             return;
         }
         // IN-416: page for page when the layouts agree, unless the write replaces the whole target (whole page rows
@@ -1546,7 +1569,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                          static_cast<std::int32_t>(t.width) - 1,
                                          static_cast<std::int32_t>((row + 1) * info.pageHeight) - 1});
         }
-        if (!rows.Empty()) t.dirty.push_back(Dirty{rows, t.view.psm});
+        if (!rows.Empty()) PushDirty(t, Dirty{rows, t.view.psm});
     }
 
     void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember) {
@@ -1590,6 +1613,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // 4.2: every target over `span` writes its drawn area (inside `limit` when it is given in the same buffer) back
     // to GS memory, oldest draw first so the newest content wins.
+    // IN-429: when no target after the first has pending dirty rectangles (4.1 patches read GS memory, which the
+    // earlier targets' readbacks change), all the reductions go in one submission with one wait; the memory writes
+    // keep the same order, so the result is the same. GT4's pre-race camera cut downloads small areas that span up to
+    // 35 targets in one VBlank, one GPU round trip each before. GT4_CORE2_BATCH_READBACK=0 reduces one by one (A/B).
+    const bool batchReadback_ = std::getenv("GT4_CORE2_BATCH_READBACK") == nullptr ||
+                                std::strcmp(std::getenv("GT4_CORE2_BATCH_READBACK"), "0") != 0;
     bool Readback(const BlockSpan &span, const BufferView *limitView = nullptr, const PixelRect *limit = nullptr) {
         ScopedUs timer(times_.readback);
         std::vector<Target *> order;
@@ -1599,6 +1628,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             order.push_back(&t);
         }
         std::sort(order.begin(), order.end(), [](const Target *a, const Target *b) { return a->lastDraw < b->lastDraw; });
+        std::vector<PixelRect> areas;
+        std::vector<Target *> reduced;
+        bool batch = batchReadback_;
         for (Target *t : order) {
             PixelRect area = t->drawn;
             if (limitView && limit && limitView->basePointer == t->view.basePointer &&
@@ -1608,17 +1640,51 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             area = Intersect(area, PixelRect{0, 0, static_cast<std::int32_t>(t->width) - 1,
                                              static_cast<std::int32_t>(t->height) - 1});
             if (area.Empty()) continue;
-            if (!ApplyDirty(*t)) return false;
-            std::vector<std::uint32_t> words;
+            if (!reduced.empty() && !t->dirty.empty()) batch = false;
+            reduced.push_back(t);
+            areas.push_back(area);
+        }
+        std::vector<std::vector<std::uint32_t>> batched;
+        if (batch && reduced.size() > 1) {
+            if (!ApplyDirty(*reduced.front())) return false;
+            std::vector<Gpu::ReduceRequest> requests;
+            for (std::size_t i = 0; i < reduced.size(); ++i) {
+                requests.push_back(Gpu::ReduceRequest{reduced[i]->image, areas[i].x0, areas[i].y0, areas[i].x1,
+                                                      areas[i].y1});
+            }
             std::string error;
             const std::uint64_t waitBefore = gpu_.Stats().waitNs;
-            if (!gpu_.Reduce(t->image, area.x0, area.y0, area.x1, area.y1, words, error)) {
-                Fail(error);
-                return false;
+            if (!gpu_.ReduceMany(requests, batched, error)) {
+                if (!error.empty()) {
+                    Fail(error);
+                    return false;
+                }
+                batched.clear();  // too large together: one by one below
+            } else {
+                ReasonWait &reasonWait = WaitOf(readbackReason_);
+                reasonWait.waitNs += gpu_.Stats().waitNs - waitBefore;
+                stats.batchedReadbacks += reduced.size();
             }
-            ReasonWait &reasonWait = WaitOf(readbackReason_);
-            reasonWait.waitNs += gpu_.Stats().waitNs - waitBefore;
-            reasonWait.readbacks++;
+        }
+        for (std::size_t i = 0; i < reduced.size(); ++i) {
+            Target *t = reduced[i];
+            const PixelRect area = areas[i];
+            std::vector<std::uint32_t> words;
+            if (!batched.empty()) {
+                words.swap(batched[i]);
+                WaitOf(readbackReason_).readbacks++;
+            } else {
+                if (!ApplyDirty(*t)) return false;
+                std::string error;
+                const std::uint64_t waitBefore = gpu_.Stats().waitNs;
+                if (!gpu_.Reduce(t->image, area.x0, area.y0, area.x1, area.y1, words, error)) {
+                    Fail(error);
+                    return false;
+                }
+                ReasonWait &reasonWait = WaitOf(readbackReason_);
+                reasonWait.waitNs += gpu_.Stats().waitNs - waitBefore;
+                reasonWait.readbacks++;
+            }
             // A 32/24 target that was only ever drawn as 24-bit leaves the top byte to memory.
             Psm psm = t->view.psm;
             if (!t->fullWordWritten) {
@@ -1780,9 +1846,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (rect.x1 >= 2048 || rect.y1 >= 2048) {
             MarkWritten(BlockSpan{0, kAllBlocks});
             for (Target &t : targets_) {
-                if (t.alive) t.dirty.push_back(Dirty{PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1,
-                                                              static_cast<std::int32_t>(t.height) - 1},
-                                                    t.view.psm});
+                if (t.alive) PushDirty(t, Dirty{PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1,
+                                                         static_cast<std::int32_t>(t.height) - 1},
+                                               t.view.psm});
             }
             return;
         }
@@ -2668,7 +2734,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
-                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
+                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
@@ -2680,6 +2746,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.displayFromTargets, (unsigned long long)c.displayFromMemory,
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
                  (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,
+                 (unsigned long long)c.batchedReadbacks, (unsigned long long)c.dirtyMerged,
                  (unsigned long long)c.cpuSpriteBatches, (unsigned long long)c.liveTargets,
                  (unsigned long long)c.targetSlots, (unsigned long long)c.decodesFirst,
                  (unsigned long long)c.decodesStale, (unsigned long long)c.decodesKeyClash,

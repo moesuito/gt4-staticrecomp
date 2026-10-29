@@ -60,6 +60,8 @@ wall time of the whole emulator.
 | IN-426 | Up to 8 submissions in flight, submit every 32 batches | Arcade race VBlanks over 17 ms 59 -> 15; GPU waits about a third; emulator 8.9-13.1 -> 7.6-10.5 ms | yes | 299 |
 | IN-427 | 1x fix: texture from a target marked in the push word | 1x shows the 3D scene (was HUD only); 3x unchanged | yes | 300 |
 | IN-428 | C1 mipmapping and LOD (all levels in one image, LOD in the pixel shader) | fidelity feature; distant asphalt less noisy; no visible cost on the night race | yes | 301 |
+| IN-429 | readbacks of one transfer in one submission | camera cut readback 16.6 -> 14.4 ms | yes | 302 |
+| IN-430 | dirty rectangles merged into the last pending one | camera cut dirty patches 863 -> 387, readback 13.3 ms, wall 46 -> 40 ms | yes | 302 |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
 ## What we learned

@@ -312,7 +312,8 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
 3. **Phase E spec step 3 audit:** T8 from a target, the 16-from-32 shuffle, depth as a texture, GPU local-to-local
    moves, the alpha-only tone variant. Find which paths GT4 still takes through CPU fallbacks or readbacks; fix the
    wrong ones, count the slow ones.
-4. **The remaining spike sources:**
+4. **The remaining spike sources:** camera cut reduced (IN-429, IN-430; 46 -> 40 ms once per race start, the rest
+   is the game's own download waiting for real GPU work). Step 3 audit: in the race only the game's download remains.
    - the cut to the race camera (about 35 readbacks in one VBlank);
    - textures over 16-bit targets (a readback each);
    - the IN-411 stores in the owner's menus.

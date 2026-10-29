@@ -3988,6 +3988,27 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              "GT4_CORE2_SLOTS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     failures += CheckCore2Ab(handles, "submission slots, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_SLOTS",
                              true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // IN-429 / IN-430: batched readbacks and merged dirty rectangles give the same images and memory.
+    auto readbackCounters = [](const char* what) {
+        return [what](const Core2AbRun& off, const Core2AbRun& on) {
+            std::printf("  %s: batched readbacks %llu / %llu, dirty merged %llu / %llu, readbacks %llu / %llu\n", what,
+                        static_cast<unsigned long long>(off.stats.batchedReadbacks),
+                        static_cast<unsigned long long>(on.stats.batchedReadbacks),
+                        static_cast<unsigned long long>(off.stats.dirtyMerged),
+                        static_cast<unsigned long long>(on.stats.dirtyMerged),
+                        static_cast<unsigned long long>(off.stats.readbacks),
+                        static_cast<unsigned long long>(on.stats.readbacks));
+            return on.stats.batchedReadbacks + on.stats.dirtyMerged > 0 ? 0 : 1;  // the paths ran
+        };
+    };
+    for (const char* abSwitch : {"GT4_CORE2_BATCH_READBACK", "GT4_CORE2_DIRTY_MERGE"}) {
+        failures += CheckCore2Ab(handles, abSwitch, CacheFixtureCapture(), kCacheFixtureFrames, abSwitch, false,
+                                 readbackCounters("cache stream"));
+        failures += CheckCore2Ab(handles, abSwitch, Core2StreamOverRenderCapture(6), 6, abSwitch, true,
+                                 readbackCounters("stream over a GPU-read render"));
+        failures += CheckCore2Ab(handles, abSwitch, Core2GpuReadAgeingCapture(72), 72, abSwitch, false,
+                                 readbackCounters("GPU-read ageing"));
+    }
     // IN-427: a texture taken from a target at 1x gives the CPU reference's memory exactly (at 2x the scaled raster is not
     // bit-identical to the 1x reference by design: no new deviation between the runs).
     for (uint32_t scale : {1u, 2u}) {

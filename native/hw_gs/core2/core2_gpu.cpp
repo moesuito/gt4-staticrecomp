@@ -2270,6 +2270,55 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
   return true;
 }
 
+bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std::vector<std::uint32_t>> &words,
+                     std::string &error) {
+  Impl &s = *impl_;
+  error.clear();
+  const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
+  std::vector<VkDeviceSize> offsets;
+  VkDeviceSize total = 0;
+  for (const ReduceRequest &r : requests) {
+    const Image *image = s.image_of(r.id);
+    if (!image || r.x0 < 0 || r.y0 < 0 || r.x1 < r.x0 || r.y1 < r.y0) {
+      error = "CORE2 reduces an image or rectangle that does not exist";
+      return false;
+    }
+    total = (total + align - 1) / align * align;
+    offsets.push_back(total);
+    total += static_cast<VkDeviceSize>(r.x1 - r.x0 + 1) * static_cast<VkDeviceSize>(r.y1 - r.y0 + 1) * 4u;
+  }
+  if (total > kReadbackBytes) return false;  // empty error: reduce one by one
+  if (!s.begin_recording(error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  s.full_barrier();  // a host read: ordered at once
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const ReduceRequest &r = requests[i];
+    const Image *image = s.image_of(r.id);
+    const std::uint32_t width = static_cast<std::uint32_t>(r.x1 - r.x0 + 1);
+    const std::uint32_t height = static_cast<std::uint32_t>(r.y1 - r.y0 + 1);
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!s.compute_set(s.readback.buffer, offsets[i], static_cast<VkDeviceSize>(width) * height * 4u, image->view,
+                       image->view, image->view, set, error)) {
+      return false;
+    }
+    const std::uint32_t push[6] = {0u, static_cast<std::uint32_t>(r.x0), static_cast<std::uint32_t>(r.y0), width, height,
+                                   FloatBits(static_cast<float>(image->scale))};
+    s.dispatch(s.reducePipeline, set, push, 6, width, height);  // distinct buffer ranges: no barrier between them
+    s.stats.reductions++;
+  }
+  s.full_barrier();  // the host reads the results
+  if (!s.submit(true, error)) return false;
+  words.resize(requests.size());
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const ReduceRequest &r = requests[i];
+    const std::size_t count = static_cast<std::size_t>(r.x1 - r.x0 + 1) * static_cast<std::size_t>(r.y1 - r.y0 + 1);
+    words[i].resize(count);
+    std::memcpy(words[i].data(), static_cast<const std::uint8_t *>(s.readback.mapped) + offsets[i], count * 4u);
+  }
+  return true;
+}
+
 bool Gpu::Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight, const std::uint32_t palette[256],
                std::string &error) {
   Impl &s = *impl_;
