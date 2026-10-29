@@ -212,8 +212,11 @@ proves otherwise.
   - Owner test of 293: 59.3 VBlanks/s, EE critical path 14.0 ms. B4 started with IN-418 (no allocation per batch,
     images reused): GS thread 5.5-8.9 ms per VBlank on the long night race; the CPU now outruns the GPU at some
     cameras.
+  - GPU timestamps (IN-419): 6.6-9.1 ms of GPU time per night VBlank at 3x but 4.3-7.3 ms at 1x, a fixed cost per
+    command (the owner saw the GPU at 45 W of 180 W). Barriers only where needed halved them; GPU time 3-13% less.
   - Next:
-    - GPU timestamps per submission, to size the GPU side; then D1 (hardware raster path) moves up;
+    - fewer render pass breaks: record draws into one pass and put the compute and transfer work that does not
+      depend on them before it (deferred draws), then D1 (hardware raster path);
     - the flare download (0.4-1.2 readbacks, 0.7-2.1 ms per VBlank) if it stays on top;
     - translate and decode recording (B4);
     - the GS thread split in two (B5).

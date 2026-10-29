@@ -107,6 +107,9 @@ struct Gpu::Impl {
     std::vector<Image> doomed;  // released once this slot's submission is complete
   };
   Slot slots[2];
+  // B4: two timestamps per slot (start and end of its command buffer), read when the slot's fence has signalled.
+  VkQueryPool timestamps = VK_NULL_HANDLE;
+  double timestampNs = 0.0;  // nanoseconds per timestamp tick (0: no timestamps)
   std::uint32_t slot = 0;           // the slot being recorded
   std::uint32_t lastSubmitted = 1;  // the slot submitted last
   VkCommandBuffer cmd = VK_NULL_HANDLE;  // slots[slot].cmd
@@ -481,11 +484,57 @@ struct Gpu::Impl {
     barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     gt4_hw_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                                 &barrier, 0, nullptr, 0, nullptr);
+    stats.fullBarriers++;
     drewSinceBarrier = false;
+    pendingBufferReads = pendingBufferWrites = 0;  // everything before is ordered against everything after
+    pendingImageReads.clear();
+    pendingImageWrites.clear();
+  }
+
+  // IN-419: the accesses recorded since the last full barrier, so a compute or transfer command gets a barrier only
+  // when it depends on one of them: it reads or writes what an earlier command wrote, or writes what one read. Core 2
+  // recorded a barrier before and after every one (about 2000 per night VBlank, each draining the GPU), though most
+  // touch unrelated things (two texture decodes write two different images). Buffers: the GLM and the GPU CLUT;
+  // images by serial. GT4_CORE2_LAZY_BARRIERS=0 records a barrier around every command again (A/B).
+  enum : unsigned { kGlmBuffer = 1u, kClutBuffer = 2u };
+  bool lazyBarriers =
+      std::getenv("GT4_CORE2_LAZY_BARRIERS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_LAZY_BARRIERS"), "0") != 0;
+  unsigned pendingBufferReads = 0, pendingBufferWrites = 0;
+  std::vector<std::uint32_t> pendingImageReads, pendingImageWrites;
+
+  static bool holds(const std::vector<std::uint32_t> &serials, std::uint32_t serial) {
+    return std::find(serials.begin(), serials.end(), serial) != serials.end();
+  }
+
+  // Declares the accesses of the command about to be recorded; records a barrier first when it depends on earlier ones.
+  void touch(std::initializer_list<const Image *> reads, std::initializer_list<const Image *> writes,
+             unsigned bufferReads, unsigned bufferWrites) {
+    if (!lazyBarriers) return;  // outside_pass and after_op already order every command
+    bool hazard = ((bufferReads | bufferWrites) & pendingBufferWrites) != 0 || (bufferWrites & pendingBufferReads) != 0;
+    for (const Image *image : reads) hazard = hazard || (image && holds(pendingImageWrites, image->serial));
+    for (const Image *image : writes) {
+      hazard = hazard || (image && (holds(pendingImageWrites, image->serial) || holds(pendingImageReads, image->serial)));
+    }
+    if (hazard || pendingImageReads.size() + pendingImageWrites.size() > 256) full_barrier();
+    else stats.barriersSkipped++;
+    pendingBufferReads |= bufferReads;
+    pendingBufferWrites |= bufferWrites;
+    for (const Image *image : reads) {
+      if (image) pendingImageReads.push_back(image->serial);
+    }
+    for (const Image *image : writes) {
+      if (image) pendingImageWrites.push_back(image->serial);
+    }
+  }
+
+  // After a compute or transfer command: a barrier at once only without IN-419 (touch orders it otherwise).
+  void after_op() {
+    if (!lazyBarriers) full_barrier();
   }
 
   // Inside the render pass (the subpass self-dependency): later fragments see earlier fragment stores.
   void fragment_barrier() {
+    stats.fragmentBarriers++;
     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -500,10 +549,11 @@ struct Gpu::Impl {
     renderPassOpen = false;
   }
 
-  // Leaves the render pass and orders everything before against everything after (compute, transfer).
+  // Leaves the render pass; without IN-419 also orders everything before against everything after (compute,
+  // transfer). With it, the command's touch() decides.
   void outside_pass() {
     end_render_pass();
-    full_barrier();
+    if (!lazyBarriers) full_barrier();
   }
 
   bool wait_slot(std::uint32_t index, std::string &error) {
@@ -514,6 +564,15 @@ struct Gpu::Impl {
     stats.waitNs += static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count());
     stats.waits++;
+    if (timestamps) {
+      std::uint64_t ticks[2] = {};
+      if (gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * 2u, 2, sizeof ticks, ticks, sizeof(std::uint64_t),
+                                        VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+          ticks[1] >= ticks[0]) {
+        stats.gpuNs += static_cast<std::uint64_t>(static_cast<double>(ticks[1] - ticks[0]) * timestampNs);
+        stats.timedSubmissions++;
+      }
+    }
     for (Image &image : s.doomed) retire(image);
     s.doomed.clear();
     s.inFlight = false;
@@ -535,6 +594,10 @@ struct Gpu::Impl {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!check(gt4_hw_vkBeginCommandBuffer(cmd, &begin), "vkBeginCommandBuffer", error)) return false;
     if (!check(gt4_hwd_vkResetDescriptorPool(device, transientPool, 0), "vkResetDescriptorPool", error)) return false;
+    if (timestamps) {
+      gt4_hwd_vkCmdResetQueryPool(cmd, timestamps, slot * 2u, 2);
+      gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, slot * 2u);
+    }
     transientSetsUsed = 0;
     drawSets.clear();
     for (Buffer *buffer : {&staging, &vertices, &uniforms}) {
@@ -555,6 +618,7 @@ struct Gpu::Impl {
       return wait ? wait_all(error) : true;
     }
     end_render_pass();
+    if (timestamps) gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, slot * 2u + 1u);
     if (!check(gt4_hw_vkEndCommandBuffer(cmd), "vkEndCommandBuffer", error)) return false;
     recording = false;
     if (!check(gt4_hw_vkResetFences(device, 1, &fence), "vkResetFences", error)) return false;
@@ -623,7 +687,7 @@ struct Gpu::Impl {
     gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout, 0, 1, &set, 0, nullptr);
     gt4_hwd_vkCmdPushConstants(cmd, computeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushWords * 4u, push);
     gt4_hwd_vkCmdDispatch(cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
-    full_barrier();
+    after_op();
   }
 };
 
@@ -643,6 +707,7 @@ Gpu::~Gpu() {
   s.release(s.deinterlaceWoven);
   s.release(s.deinterlaceOutput);
   s.release(s.fxaa);
+  if (s.timestamps) gt4_hwd_vkDestroyQueryPool(s.device, s.timestamps, nullptr);
   // The remaining objects live as long as the device (the renderer is destroyed with the backend).
 }
 
@@ -693,6 +758,14 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (!check(gt4_hw_vkCreateFence(s.device, &fenceInfo, nullptr, &slot.fence), "vkCreateFence", error)) return false;
+  }
+  if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
+    VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    queryInfo.queryCount = 4;
+    if (gt4_hwd_vkCreateQueryPool(s.device, &queryInfo, nullptr, &s.timestamps) == VK_SUCCESS) {
+      s.timestampNs = s.limits.timestampPeriod;
+    }
   }
 
   const VkBufferUsageFlags stagingUsage =
@@ -1020,6 +1093,7 @@ bool Gpu::CopyImage(ImageId from, ImageId to, std::int32_t x0, std::int32_t y0, 
   if (right <= left || bottom <= top || source->scale != destination->scale) return true;
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
+  s.touch({source}, {destination}, 0, 0);
   VkImageCopy region{};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1028,7 +1102,7 @@ bool Gpu::CopyImage(ImageId from, ImageId to, std::int32_t x0, std::int32_t y0, 
   region.extent = {static_cast<std::uint32_t>(right - left) * sc, static_cast<std::uint32_t>(bottom - top) * sc, 1};
   gt4_hwd_vkCmdCopyImage(s.cmd, source->image, VK_IMAGE_LAYOUT_GENERAL, destination->image, VK_IMAGE_LAYOUT_GENERAL,
                          1, &region);
-  s.full_barrier();
+  s.after_op();
   return true;
 }
 
@@ -1063,13 +1137,14 @@ bool Gpu::UploadAtlas(std::uint32_t x, std::uint32_t y, std::uint32_t width, std
   if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels, static_cast<std::size_t>(bytes));
   s.outside_pass();
+  s.touch({}, {&s.atlas}, 0, 0);
   VkBufferImageCopy region{};
   region.bufferOffset = offset;
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageOffset = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(y), 0};
   region.imageExtent = {width, height, 1};
   gt4_hwd_vkCmdCopyBufferToImage(s.cmd, s.staging.buffer, s.atlas.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-  s.full_barrier();
+  s.after_op();
   s.stats.atlasUploads++;
   return true;
 }
@@ -1088,12 +1163,13 @@ bool Gpu::UploadImage(ImageId id, std::uint32_t width, std::uint32_t height, con
   if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels, static_cast<std::size_t>(bytes));
   s.outside_pass();
+  s.touch({}, {image}, 0, 0);
   VkBufferImageCopy region{};
   region.bufferOffset = offset;
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageExtent = {width, height, 1};
   gt4_hwd_vkCmdCopyBufferToImage(s.cmd, s.staging.buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-  s.full_barrier();
+  s.after_op();
   s.stats.atlasUploads++;
   return true;
 }
@@ -1161,12 +1237,23 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
   }
 
+  // IN-419: the batch reads its textures and reads and writes its frame and depth. A new render pass orders them
+  // against pending compute and transfer accesses; inside an open pass draws order among themselves (interlock or
+  // fragment barriers) and only add their accesses.
+  const Image *drawWrites[2] = {frame, depth};
+  if (!s.renderPassOpen) {
+    s.touch({texels, texture, frame, depth}, {frame, depth}, 0, 0);
+  } else if (s.lazyBarriers) {
+    for (const Image *image : {texels, texture, frame, depth}) s.pendingImageReads.push_back(image->serial);
+    for (const Image *image : drawWrites) s.pendingImageWrites.push_back(image->serial);
+  }
   if (!s.renderPassOpen) {
     VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     begin.renderPass = s.renderPass;
     begin.framebuffer = s.framebuffer;
     begin.renderArea = {{0, 0}, {s.framebufferWidth, s.framebufferHeight}};
     gt4_hwd_vkCmdBeginRenderPass(s.cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    s.stats.renderPasses++;
     s.renderPassOpen = true;
   } else if (s.drewSinceBarrier && (!s.interlock || batch.texture != kNoImage)) {
     // A texture taken from a target reads pixels other than its own (no interlock order); without pixel interlock
@@ -1278,10 +1365,11 @@ bool Gpu::UploadGlm(const std::uint8_t *memory,
     copies.push_back(VkBufferCopy{at, offset, size});
   }
   s.outside_pass();
+  s.touch({}, {}, 0, s.kGlmBuffer);
   if (!copies.empty()) {
     gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.glm, static_cast<std::uint32_t>(copies.size()), copies.data());
   }
-  s.full_barrier();
+  s.after_op();
   return true;
 }
 
@@ -1299,6 +1387,7 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   if (!s.ring(s.staging, 256 * 4, align, paletteOffset, error)) return false;
   if (palette) std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + paletteOffset, palette, 256 * 4);
   s.outside_pass();
+  s.touch({}, {image}, s.kGlmBuffer | s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1333,7 +1422,7 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
   gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
-  s.full_barrier();
+  s.after_op();
   s.stats.atlasUploads++;
   return true;
 }
@@ -1348,6 +1437,7 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
+  s.touch({}, {image}, s.kGlmBuffer | s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1387,7 +1477,7 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
   gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
-  s.full_barrier();
+  s.after_op();
   s.stats.atlasUploads++;
   return true;
 }
@@ -1402,6 +1492,7 @@ bool Gpu::PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
+  s.touch({image}, {image}, s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1440,7 +1531,7 @@ bool Gpu::PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
   gt4_hwd_vkCmdDispatch(s.cmd, 32, 1, 1);  // 256 entries, 8 x 8 groups
-  s.full_barrier();
+  s.after_op();
   s.stats.paletteRows++;
   return true;
 }
@@ -1454,6 +1545,7 @@ bool Gpu::ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
+  s.touch({image}, {}, s.kGlmBuffer, s.kClutBuffer);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1499,7 +1591,7 @@ bool Gpu::ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
   gt4_hwd_vkCmdDispatch(s.cmd, 4, 1, 1);  // 256 entries, 64 per group
-  s.full_barrier();
+  s.after_op();
   s.stats.clutTargetLoads++;
   return true;
 }
@@ -1514,6 +1606,7 @@ bool Gpu::MaterializeTarget(ImageId id, std::uint32_t psm, std::uint32_t tbp, st
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
+  s.touch({image}, {}, s.kGlmBuffer, s.kGlmBuffer);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1545,7 +1638,7 @@ bool Gpu::MaterializeTarget(ImageId id, std::uint32_t psm, std::uint32_t tbp, st
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
   gt4_hwd_vkCmdDispatch(s.cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
-  s.full_barrier();
+  s.after_op();
   s.stats.materializations++;
   return true;
 }
@@ -1563,9 +1656,10 @@ bool Gpu::WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_
   auto *values = reinterpret_cast<std::uint32_t *>(static_cast<std::uint8_t *>(s.staging.mapped) + offset);
   for (std::uint32_t i = 0; i < count; ++i) values[i] = halfwords[first + i];
   s.outside_pass();
+  s.touch({}, {}, 0, s.kClutBuffer);
   VkBufferCopy copy{offset, first * 4u, count * 4u};
   gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.clut, 1, &copy);
-  s.full_barrier();
+  s.after_op();
   s.stats.clutWrites++;
   return true;
 }
@@ -1573,7 +1667,8 @@ bool Gpu::WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_
 bool Gpu::ReadClut(std::uint16_t halfwords[512], std::string &error) {
   Impl &s = *impl_;
   if (!s.begin_recording(error)) return false;
-  s.outside_pass();
+  s.end_render_pass();
+  s.full_barrier();  // a host read or a rare pass: ordered at once
   VkBufferCopy copy{0, 0, 512 * 4};
   gt4_hwd_vkCmdCopyBuffer(s.cmd, s.clut, s.readback.buffer, 1, &copy);
   s.full_barrier();
@@ -1594,6 +1689,7 @@ bool Gpu::PatchFromGlm(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
+  s.touch({image}, {image}, s.kGlmBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[3] = {{s.glm, 0, 4u << 20}, {s.glmTables.buffer, 0, s.glmTableBytes},
@@ -1623,7 +1719,7 @@ bool Gpu::PatchFromGlm(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
   gt4_hwd_vkCmdDispatch(s.cmd, (width * image->scale + 7u) / 8u, (height * image->scale + 7u) / 8u, 1);
-  s.full_barrier();
+  s.after_op();
   s.stats.patches++;
   return true;
 }
@@ -1649,6 +1745,7 @@ bool Gpu::Patch(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, s
   if (!s.ring(s.staging, bytes, align, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, words.data(), static_cast<std::size_t>(bytes));
   s.outside_pass();
+  s.touch({image}, {image}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, offset, bytes, image->view, image->view, image->view, set, error)) return false;
   const std::uint32_t push[7] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
@@ -1674,12 +1771,14 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
     return false;
   }
   if (!s.begin_recording(error)) return false;
-  s.outside_pass();
+  s.end_render_pass();
+  s.full_barrier();  // a host read or a rare pass: ordered at once
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.readback.buffer, 0, bytes, image->view, image->view, image->view, set, error)) return false;
   const std::uint32_t push[6] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
                                  FloatBits(static_cast<float>(image->scale))};
   s.dispatch(s.reducePipeline, set, push, 6, width, height);
+  s.full_barrier();  // the host reads the result
   if (!s.submit(true, error)) return false;
   words.resize(static_cast<std::size_t>(width) * height);
   std::memcpy(words.data(), s.readback.mapped, static_cast<std::size_t>(bytes));
@@ -1701,6 +1800,7 @@ bool Gpu::Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight
   if (!s.ring(s.staging, 256 * 4, align, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, palette, 256 * 4);
   s.outside_pass();
+  s.touch({image}, {image}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, offset, 256 * 4, image->view, image->view, image->view, set, error)) return false;
   const std::uint32_t width = std::min(nativeWidth, image->nativeWidth) * image->scale;
@@ -1726,6 +1826,7 @@ bool Gpu::Compose(const std::uint32_t words[28], ImageId sourceA, ImageId source
   const Image *a = s.image_of(sourceA);
   const Image *b = s.image_of(sourceB);
   s.outside_pass();
+  s.touch({a, b}, {&s.display}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, 0, 16, a ? a->view : s.atlas.view, b ? b->view : s.atlas.view, s.display.view,
                      set, error)) {
@@ -1758,7 +1859,8 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
       !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) {
     return false;
   }
-  s.outside_pass();
+  s.end_render_pass();
+  s.full_barrier();  // a host read or a rare pass: ordered at once
   VkImageCopy region{};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1818,7 +1920,8 @@ bool Gpu::Fxaa(std::uint32_t width, std::uint32_t height, std::string &error) {
   if (!s.begin_recording(error)) return false;
   bool fresh = false;
   if (!s.post_image(s.fxaa, s.display.width, s.display.height, fresh, error)) return false;
-  s.outside_pass();
+  s.end_render_pass();
+  s.full_barrier();  // a host read or a rare pass: ordered at once
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.fxaaSetLayout, set, error)) return false;
   const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL},
@@ -1857,7 +1960,8 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
     return false;
   }
   if (!s.begin_recording(error)) return false;
-  s.outside_pass();
+  s.end_render_pass();
+  s.full_barrier();  // a host read or a rare pass: ordered at once
   VkBufferImageCopy region{};
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageExtent = {width, height, 1};
@@ -1885,7 +1989,8 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
     return false;
   }
   if (!s.begin_recording(error)) return false;
-  s.outside_pass();
+  s.end_render_pass();
+  s.full_barrier();  // a host read or a rare pass: ordered at once
   VkBufferImageCopy region{};
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageExtent = {width, height, 1};

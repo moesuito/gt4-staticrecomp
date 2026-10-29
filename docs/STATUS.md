@@ -37,7 +37,10 @@ rectangles are now exact page by page and block by block for writes in the same 
 remaining store waits went to about 0 ms on a long night race. CLUT loads over several or depth targets are read on
 the GPU too (IN-417, candidate 293): GS thread 7.2-11.1 ms per VBlank on the long night race (292: 8.3-13.9).
 Owner test of 293: 59.3 VBlanks/s, EE critical path 14.0 ms per frame. No allocation per batch and images reused by
-size (IN-418, candidate 294): GS thread 5.5-8.9 ms per VBlank; the GPU side now shows up as the next limit.
+size (IN-418, candidate 294): GS thread 5.5-8.9 ms per VBlank; the GPU side now shows up as the next limit. Owner
+test of 294: 59.1 VBlanks/s, GPU-limited in the window (the GPU at 45 W of 180 W). GPU timestamps show a fixed cost
+per command (1x 4.3-7.3 ms against 3x 6.6-9.1 ms); barriers only where a command depends on another (IN-419,
+candidate 295) halved them, GPU time 3-13% less; the 250-310 render pass breaks per VBlank are next.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
