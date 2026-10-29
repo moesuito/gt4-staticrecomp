@@ -58,7 +58,7 @@ struct Core2Counters {
     std::uint64_t paletteRowsWritten = 0;      // IN-409: palette rows filled (CPU palettes and GPU CLUT expansions)
     std::uint64_t paletteRowHits = 0;          // IN-409: draws whose palette row was already filled
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
-    std::uint64_t uploadCheckMismatches = 0;               // CLUT loads over a drawn target (GT4 draws palettes)
+    std::uint64_t uploadCheckMismatches = 0;   // ... of which differed (also printed per upload)
 };
 
 class Renderer {

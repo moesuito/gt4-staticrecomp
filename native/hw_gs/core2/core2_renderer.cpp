@@ -15,6 +15,7 @@
 #include <unordered_map>
 
 #include "core2_gpu.hpp"
+#include "core2_upload.hpp"
 #include "hw_batch.hpp"
 #include "hw_clut.hpp"
 #include "hw_front_end.hpp"
@@ -210,58 +211,10 @@ std::uint64_t KeyHash(const writeback::TextureKey &k) {
 
 int RowFieldOfDisplayField(bool csrFieldOdd) { return csrFieldOdd ? 0 : 1; }
 
-// A host-to-local upload swizzled through the precomputed in-page tables (memory::gpuAddressTables, the same numbers
-// as memory::pixelSlot): the generic per-pixel path cost about 8 ms per race frame. Returns false (nothing written)
-// when the data does not cover the whole rectangle; the caller then takes the generic path.
-bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
-                     std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount) {
-    static const memory::GpuAddressTables tables = memory::gpuAddressTables();
-    const memory::PsmInfo &info = memory::psmInfo(view.psm);
-    const std::uint32_t bpp = info.transferBpp;
-    if (static_cast<std::uint64_t>(width) * height * bpp > static_cast<std::uint64_t>(byteCount) * 8u) return false;
-    const std::uint32_t code = static_cast<std::uint32_t>(view.psm) & 63u;
-    const std::uint32_t tableOffset = tables.directory[code * 4u];
-    const std::uint32_t pageWidth = tables.directory[code * 4u + 1u];
-    const std::uint32_t pageHeight = tables.directory[code * 4u + 2u];
-    const bool zXor = tables.directory[code * 4u + 3u] != 0;
-    if (pageWidth == 0 || pageHeight == 0) return false;
-    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
-    const std::uint32_t *entries = tables.entries.data() + tableOffset;
-    std::uint64_t index = 0;
-    for (std::uint32_t row = 0; row < height; ++row) {
-        const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
-        const std::uint32_t pageRow = (y / pageHeight) * perRow;
-        const std::uint32_t *rowEntries = entries + (y % pageHeight) * pageWidth;
-        for (std::uint32_t column = 0; column < width; ++column, ++index) {
-            const std::uint32_t x = (x0 + column) % memory::kTransferCoordinateWrap;
-            const std::uint32_t entry = rowEntries[x % pageWidth];
-            std::uint32_t block = view.basePointer + memory::kBlocksPerPage * (pageRow + x / pageWidth) + (entry & 31u);
-            if (zXor) block ^= 24u;
-            block &= memory::kBlocksTotal - 1u;
-            const std::uint32_t at = (block * memory::kBlockBytes + ((entry >> 5) & 255u)) & (memory::kLocalMemoryBytes - 1u);
-            const std::uint32_t shift = (entry >> 13) & 31u;
-            std::uint8_t *out = memoryBytes + at;
-            switch (bpp) {
-                case 32: std::memcpy(out, data + index * 4u, 4); break;
-                case 24: std::memcpy(out, data + index * 3u, 3); break;
-                case 16: std::memcpy(out, data + index * 2u, 2); break;
-                case 8: *out = data[index]; break;
-                default: {  // 4 bits, low nibble first in the host stream
-                    const std::uint8_t nibble =
-                        (index & 1u) ? static_cast<std::uint8_t>(data[index / 2] >> 4) : (data[index / 2] & 0x0Fu);
-                    *out = static_cast<std::uint8_t>((*out & ~(0x0Fu << shift)) | (nibble << shift));
-                    break;
-                }
-            }
-        }
-    }
-    return true;
-}
-
 // CPU time of CORE2's stages (microseconds, summed between two [core2] lines).
 struct PhaseTimes {
     double gif = 0, batch = 0, upload = 0, written = 0, clut = 0, clutLoads = 0, uploads = 0, hook = 0, glmHook = 0, translate = 0, targets = 0, texture = 0, draw = 0, readback = 0, patch = 0, compose = 0,
-           flush = 0, cpuSprites = 0, spriteCheck = 0;
+           flush = 0, cpuSprites = 0, spriteCheck = 0, glm = 0, glmPages = 0, glmCalls = 0, swizzle = 0, swizzleBytes = 0;
 };
 
 class ScopedUs {
@@ -765,12 +718,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // 3.7: the GLM pages a texture reads are made current (uploaded where GS memory changed since).
     bool MakeGlmCurrent(const BlockSpan &span) {
+        ScopedUs timer(times_.glm);
         std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
         static const bool full = std::getenv("GT4_CORE2_GLM_FULL") != nullptr;  // diagnostics A/B
         auto add = [&](std::uint32_t page) {
             if (!full && glmUploaded_[page] && glmSequence_[page] >= pageWrites_[page]) return;
             glmUploaded_[page] = true;
             glmSequence_[page] = writeSequence_;
+            times_.glmPages += 1;
             const std::uint32_t offset = page * memory::kPageBytes;
             if (!ranges.empty() && ranges.back().first + ranges.back().second == offset) {
                 ranges.back().second += memory::kPageBytes;
@@ -788,6 +743,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         std::string error;
+        if (!ranges.empty()) times_.glmCalls += 1;
         if (!gpu_.UploadGlm(memory_.Local().bytes().data(), ranges, error)) {
             Fail(error);
             return false;
@@ -1264,6 +1220,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // ---- TransferSink ----------------------------------------------------------------------------------------
     void InvalidateDestination(const UploadCommit &c) override { memory_.InvalidateDestination(c); }
 
+    // IN-414: GT4_CORE2_SWIZZLE_RUNS=0 swizzles EE uploads pixel by pixel (A/B).
+    const UploadSwizzle uploadSwizzle_ = std::getenv("GT4_CORE2_SWIZZLE_RUNS") != nullptr &&
+                                                 std::strcmp(std::getenv("GT4_CORE2_SWIZZLE_RUNS"), "0") == 0
+                                             ? UploadSwizzle::PerPixel
+                                             : UploadSwizzle::PageRuns;
+
     void CommitUpload(const UploadCommit &c, const std::uint8_t *bytes, std::size_t byteCount) override {
         ScopedUs uploadTimer(times_.upload);
         times_.uploads += 1;
@@ -1276,11 +1238,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         static const bool fast = std::getenv("GT4_CORE2_FAST_UPLOAD") == nullptr ||
                                  std::strcmp(std::getenv("GT4_CORE2_FAST_UPLOAD"), "0") != 0;  // A/B
-        if (!fast || !psm ||
-            !FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay, c.rrw,
-                             c.rrh, bytes, byteCount)) {
-            memory_.CommitUpload(c, bytes, byteCount);
-        } else {
+        bool swizzled = false;
+        {
+            ScopedUs swizzleTimer(times_.swizzle);
+            times_.swizzleBytes += static_cast<double>(byteCount);
+            swizzled = fast && psm &&
+                       FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay,
+                                       c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_);
+            if (!swizzled) memory_.CommitUpload(c, bytes, byteCount);
+        }
+        if (swizzled) {
             // Diagnostics: GT4_CORE2_UPLOAD_CHECK=1 reads the rectangle back through the generic addressing
             // (memory::pixelSlot) and compares every pixel with the host data.
             static const bool check = std::getenv("GT4_CORE2_UPLOAD_CHECK") != nullptr;
@@ -2294,10 +2261,12 @@ void Renderer::Flush() {
         std::fprintf(stderr, "[core2] wall ms/vblank=%.2f (the whole emulator, GS thread included)\n", wall);
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
-                     "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f\n",
+                     "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f glm=%.2f (%.0f calls, "
+                     "%.0f pages) swizzle=%.2f (%.0f KiB)\n",
                      p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
                      p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f, p.spriteCheck / f,
-                     static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6);
+                     static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6, p.glm / f, p.glmCalls / 600.0,
+                     p.glmPages / 600.0, p.swizzle / f, p.swizzleBytes / 600.0 / 1024.0);
         s.lastWaitNs_ = s.gpu_.Stats().waitNs;
         s.times_ = PhaseTimes{};
     }

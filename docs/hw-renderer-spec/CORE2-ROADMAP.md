@@ -200,11 +200,11 @@ proves otherwise.
 - **B2. Texture cache** (2.5-3.9 ms). **Measured 2026-10-28: not the bottleneck.**
   - A content-keyed cache cut decodes from 200 to 15 per VBlank but cost more CPU than it saved (journal; IN-412/413
     reverted).
-  - The texture and target time is mostly GLM page copies: EE uploads are swizzled on the CPU, and the changed pages
-    are then copied again into the GLM.
-  - Next instead:
-    - EE uploads written into the GLM on the GPU from the raw bytes (one copy);
-    - the IN-411 stores replaced by a GPU merge;
+  - Measured next (IN-414): the GLM page copies cost only 0.3-0.5 ms per VBlank. The CPU swizzle of EE uploads cost
+    2.3-2.8 ms; page-row runs cut it to 0.9 ms, so the GPU upload path is not needed now.
+  - Next:
+    - the IN-411 stores (and the flare download wait) replaced by a GPU merge;
+    - translate and decode recording (B4);
     - the GS thread split in two (B5).
   - Original item, kept for the record:
   - Find out why 236 textures are decoded per VBlank against 97 hits: page versions bumped by uploads or dirty

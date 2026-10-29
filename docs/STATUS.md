@@ -27,7 +27,9 @@ textures over drawn targets now read on the GPU, indexed textures keep their ind
 (IN-407..IN-410, candidate 288): night race at 3x 20.8-26.4 -> 17.0-20.6 ms per VBlank, readbacks 6.9-8.7 -> 0.8-1.6 ms,
 frames byte-identical. Owner test of 288: lighter at night, but the title backdrop broke after a GT Mode visit (GPU
 reads kept a target alive past its ageing); fixed in candidate 289 (IN-411), night 17.8-22.2 ms per VBlank headless. Owner test of 289: title clean; night
-race 57.0 VBlanks/s over 192 s (frame time p95 20.6 ms, p99 23.4 ms).
+race 57.0 VBlanks/s over 192 s (frame time p95 20.6 ms, p99 23.4 ms). Measured next: the GLM page copies cost only
+0.3-0.5 ms per night VBlank, the CPU swizzle of EE uploads 2.3-2.8 ms; page-row runs cut it to 0.9 ms (IN-414,
+candidate 290), and the new upload fixture found and fixed wrong T8H/T4HL/T4HH uploads.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)

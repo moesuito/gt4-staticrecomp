@@ -30,7 +30,8 @@ add_library(gt4_hw_core STATIC
     frontend/hw_batch.cpp
     frontend/hw_front_end.cpp
     pixel/hw_gs_pixel.cpp
-    display/hw_gs_display.cpp)
+    display/hw_gs_display.cpp
+    core2/core2_upload.cpp)
 target_include_directories(gt4_hw_core PUBLIC
     "${HW_GS_CORE_DIR}/cpuref" "${HW_GS_CORE_DIR}/memory" "${HW_GS_CORE_DIR}/clut"
     "${HW_GS_CORE_DIR}/frontend" "${HW_GS_CORE_DIR}/pixel" "${HW_GS_CORE_DIR}/display")
@@ -114,6 +115,13 @@ target_include_directories(hw_present_rect_fixture PRIVATE "${GT4_HW_VULKAN_SDK}
 target_link_libraries(hw_present_rect_fixture PRIVATE gt4_pacing gt4_perf_probe gt4_install_paths gt4_vulkan_extensions user32)
 target_compile_definitions(hw_present_rect_fixture PRIVATE GT4_VULKAN_SHADER_DIR="" _CRT_SECURE_NO_WARNINGS)
 target_compile_options(hw_present_rect_fixture PRIVATE /W4)
+
+# IN-414: core 2's HOST->LOCAL fast path against memory::hostToLocal (CPU only).
+add_executable(hw_core2_upload_fixture core2/core2_upload_fixture.cpp)
+target_include_directories(hw_core2_upload_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(hw_core2_upload_fixture PRIVATE gt4_hw_core)
+target_compile_options(hw_core2_upload_fixture PRIVATE /W4)
+add_test(NAME hw_core2_upload_swizzle COMMAND hw_core2_upload_fixture)
 
 add_executable(hw_gs_smoke hw_gs_smoke.cpp)
 target_include_directories(hw_gs_smoke PRIVATE "${GT4_HW_VULKAN_SDK}/Include")
