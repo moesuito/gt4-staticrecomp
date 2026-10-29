@@ -553,9 +553,22 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return any;
     }
 
+    // B4: a list of CLUT buffer halfwords (at most 512) that needs no allocation; about 500 CLUT loads per night VBlank
+    // build one each.
+    struct HalfwordList {
+        std::array<std::uint16_t, 512> index;
+        std::uint32_t count = 0;
+        void push_back(std::uint32_t value) {
+            if (count < index.size()) index[count++] = static_cast<std::uint16_t>(value);
+        }
+        bool empty() const { return count == 0; }
+        const std::uint16_t *begin() const { return index.data(); }
+        const std::uint16_t *end() const { return index.data() + count; }
+    };
+
     // The CLUT buffer halfwords a load writes (hw_glm_clut.comp, ClutUnit::Copy).
-    static std::vector<std::uint32_t> ClutHalfwordsWritten(const clut::Tex0Write &write) {
-        std::vector<std::uint32_t> out;
+    static HalfwordList ClutHalfwordsWritten(const clut::Tex0Write &write) {
+        HalfwordList out;
         const std::uint32_t count = (write.psm & 7u) == 3u ? 256u : 16u;
         for (std::uint32_t e = 0; e < count; ++e) {
             if (write.cpsm == 0) {
@@ -571,8 +584,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // The CLUT buffer halfwords an indexed texture's palette reads (hw_glm_decode.comp gpu_palette_entry).
-    static std::vector<std::uint32_t> ClutHalfwordsUsed(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) {
-        std::vector<std::uint32_t> out;
+    static HalfwordList ClutHalfwordsUsed(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) {
+        HalfwordList out;
         const std::uint32_t count = (psm & 7u) == 3u ? 256u : 16u;
         for (std::uint32_t e = 0; e < count; ++e) {
             if (cpsm == 0) {
@@ -601,7 +614,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void OnClutLoaded(const clut::Tex0Write &write) {
         const bool fromTarget = clutFromTargetPending_;
         clutFromTargetPending_ = false;
-        const std::vector<std::uint32_t> written = ClutHalfwordsWritten(write);
+        const HalfwordList written = ClutHalfwordsWritten(write);
         std::string error;
         if (fromTarget) {
             // An upload committed before the copy may have replaced the target: look again.
@@ -1777,6 +1790,29 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // ---- Batches ---------------------------------------------------------------------------------------------
+    writeback::BatchTranslation translation_;  // B4: reused by OnBatch
+    std::uint32_t batchDepth_ = 0;
+
+    // Empties a translation for the next batch, keeping the capacity of its vectors.
+    static void ResetTranslation(writeback::BatchTranslation &t) {
+        std::vector<std::uint32_t> palette, texels;
+        std::vector<gpu::GpuVertex> vertices;
+        std::vector<gpu::GpuDraw> draws;
+        palette.swap(t.palette);
+        texels.swap(t.texels);
+        vertices.swap(t.vertices);
+        draws.swap(t.draws);
+        t = writeback::BatchTranslation{};
+        palette.clear();
+        texels.clear();
+        vertices.clear();
+        draws.clear();
+        t.palette.swap(palette);
+        t.texels.swap(texels);
+        t.vertices.swap(vertices);
+        t.draws.swap(draws);
+    }
+
     void OnBatch(Batch &&batch) override {
         ScopedUs batchTimer(times_.batch);
         if (failed_) return;
@@ -1786,7 +1822,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (ToneHook(batch)) return;
         }
 
-        writeback::BatchTranslation t;
+        // B4: the translation's vectors keep their capacity from batch to batch (a nested batch, if one ever came while
+        // this one is translated, gets its own).
+        writeback::BatchTranslation nested;
+        writeback::BatchTranslation &t = batchDepth_ == 0 ? translation_ : nested;
+        ResetTranslation(t);
+        ++batchDepth_;
+        struct DepthGuard {
+            std::uint32_t &depth;
+            ~DepthGuard() { --depth; }
+        } depthGuard{batchDepth_};
         textureHit_ = kNoImage;
         textureTarget_ = -1;
         pendingStore_ = false;
@@ -2387,7 +2432,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
-                 "waits=%llu image_mb=%.1f\n",
+                 "waits=%llu recycled_images=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
                  (unsigned long long)c.texturesFromTargets, (unsigned long long)c.texturesFromMemory,
@@ -2406,7 +2451,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
-                 (unsigned long long)g.waits, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
+                 (unsigned long long)g.waits, (unsigned long long)g.recycledImages, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
 }
 
 }  // namespace

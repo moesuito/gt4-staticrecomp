@@ -42,6 +42,7 @@ struct DrawBatch {
 // Diagnostics for the F8 report and the replay summary.
 struct Core2GpuStats {
     std::uint64_t batches = 0;
+    std::uint64_t recycledImages = 0;  // B4: images taken over from finished ones instead of allocated
     std::uint64_t draws = 0;
     std::uint64_t patches = 0;
     std::uint64_t reductions = 0;

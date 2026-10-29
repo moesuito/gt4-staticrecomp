@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 
@@ -60,7 +61,26 @@ struct Image {
   std::uint32_t scale = 1;
   VkDeviceSize bytes = 0;
   bool alive = false;
+  std::uint32_t serial = 0;  // B4: unique per make_image, so a cached descriptor set never names a reused image
 };
+
+// B4: the images bound by one draw descriptor set, by serial.
+struct DrawSetKey {
+  std::uint32_t frame = 0, depth = 0, texels = 0, texture = 0;
+  bool operator==(const DrawSetKey &other) const {
+    return frame == other.frame && depth == other.depth && texels == other.texels && texture == other.texture;
+  }
+};
+struct DrawSetKeyHash {
+  std::size_t operator()(const DrawSetKey &k) const {
+    std::uint64_t h = (static_cast<std::uint64_t>(k.frame) << 32 | k.depth) * 0x9E3779B97F4A7C15ull;
+    h ^= (static_cast<std::uint64_t>(k.texels) << 32 | k.texture) + 0x7F4A7C159E3779B9ull + (h << 6) + (h >> 2);
+    return static_cast<std::size_t>(h);
+  }
+};
+
+// B4: device memory kept in finished images for reuse by size (see Impl::retire).
+constexpr VkDeviceSize kRecycledImageBytes = static_cast<VkDeviceSize>(128) << 20;
 
 }  // namespace
 
@@ -101,7 +121,14 @@ struct Gpu::Impl {
   }();
   std::uint32_t batchesSinceSubmit = 0;
   // Draw descriptor sets of this recording by their four images (a batch with the same targets reuses its set).
-  std::unordered_map<std::uint64_t, VkDescriptorSet> drawSets;
+  std::unordered_map<DrawSetKey, VkDescriptorSet, DrawSetKeyHash> drawSets;
+  // B4: images whose last use finished, kept for reuse by size instead of freed: every new image was a device memory
+  // allocation and several driver calls, and core 2 replaces 5-6 targets and pooled textures per night VBlank.
+  // GT4_CORE2_IMAGE_POOL=0 frees them at once (A/B).
+  std::vector<Image> recycled;
+  VkDeviceSize recycledBytes = 0;
+  bool recycleImages = std::getenv("GT4_CORE2_IMAGE_POOL") == nullptr || std::strcmp(std::getenv("GT4_CORE2_IMAGE_POOL"), "0") != 0;
+  std::uint32_t nextSerial = 1;
   bool renderPassOpen = false;
   bool drewSinceBarrier = false;
 
@@ -232,6 +259,20 @@ struct Gpu::Impl {
       error = "CORE2 image larger than the device limit";
       return false;
     }
+    out.serial = nextSerial++;
+    // B4: a finished image of the same size is taken over (cleared below like a new one).
+    for (std::size_t i = recycled.size(); i-- > 0;) {
+      if (recycled[i].width != out.width || recycled[i].height != out.height) continue;
+      out.image = recycled[i].image;
+      out.memory = recycled[i].memory;
+      out.view = recycled[i].view;
+      out.bytes = recycled[i].bytes;
+      recycledBytes -= recycled[i].bytes;
+      recycled.erase(recycled.begin() + static_cast<std::ptrdiff_t>(i));
+      out.alive = true;
+      stats.recycledImages++;
+      return clear_new_image(out, error);
+    }
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = VK_FORMAT_R32_UINT;
@@ -262,9 +303,12 @@ struct Gpu::Impl {
     if (!check(gt4_hwd_vkCreateImageView(device, &view, nullptr, &out.view), "vkCreateImageView", error)) return false;
     out.bytes = requirements.size;
     out.alive = true;
-    drawSets.clear();
     stats.imageBytes += out.bytes;
-    // UNDEFINED -> GENERAL and zero, in this recording.
+    return clear_new_image(out, error);
+  }
+
+  // UNDEFINED -> GENERAL and zero, in this recording (a recycled image's old content is discarded the same way).
+  bool clear_new_image(Image &out, std::string &error) {
     if (!begin_recording(error)) return false;
     end_render_pass();
     VkImageMemoryBarrier toGeneral{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -284,6 +328,23 @@ struct Gpu::Impl {
     return true;
   }
 
+  // B4: a doomed image whose submission finished: kept for reuse (newest last; the oldest go past the budget).
+  void retire(Image &image) {
+    if (!image.alive) return;
+    if (!recycleImages) {
+      release(image);
+      return;
+    }
+    recycled.push_back(image);
+    recycledBytes += image.bytes;
+    image = Image{};
+    while (recycledBytes > kRecycledImageBytes && !recycled.empty()) {
+      recycledBytes -= recycled.front().bytes;
+      release(recycled.front());
+      recycled.erase(recycled.begin());
+    }
+  }
+
   void release(Image &image) {
     if (!image.alive) return;
     if (image.view) gt4_hwd_vkDestroyImageView(device, image.view, nullptr);
@@ -295,7 +356,6 @@ struct Gpu::Impl {
 
   void doom(Image &image) {
     if (!image.alive) return;
-    drawSets.clear();  // a cached set may name this image (an id can be reused or grown)
     doomed.push_back(image);
     image = Image{};
   }
@@ -454,7 +514,7 @@ struct Gpu::Impl {
     stats.waitNs += static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count());
     stats.waits++;
-    for (Image &image : s.doomed) release(image);
+    for (Image &image : s.doomed) retire(image);
     s.doomed.clear();
     s.inFlight = false;
     return true;
@@ -576,6 +636,7 @@ Gpu::~Gpu() {
   s.submit(true, ignored);
   for (Image &image : s.images) s.release(image);
   for (Image &image : s.doomed) s.release(image);
+  for (Image &image : s.recycled) s.release(image);
   s.release(s.atlas);
   s.release(s.display);
   for (Image &image : s.deinterlaceHistory) s.release(image);
@@ -1072,10 +1133,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
 
   VkDescriptorSet set = VK_NULL_HANDLE;
-  const std::uint64_t setKey = (static_cast<std::uint64_t>(batch.frame + 1) << 48) ^
-                               (static_cast<std::uint64_t>(batch.depth + 1) << 32) ^
-                               (static_cast<std::uint64_t>(batch.memoryTexture + 1) << 16) ^
-                               static_cast<std::uint64_t>(paletted ? batch.palettes + 0x8001 : batch.texture + 1);
+  const DrawSetKey setKey{frame->serial, depth->serial, texels->serial, texture->serial};
   if (auto cached = s.drawSets.find(setKey); cached != s.drawSets.end()) {
     set = cached->second;
   } else {

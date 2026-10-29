@@ -209,8 +209,12 @@ proves otherwise.
     about 0 ms on a long night race).
   - IN-417 moved the CLUT loads over several or depth targets to the GPU (CLUT readbacks about 1 -> 0 per VBlank;
     GS thread 7.2-11.1 ms on the long night race).
+  - Owner test of 293: 59.3 VBlanks/s, EE critical path 14.0 ms. B4 started with IN-418 (no allocation per batch,
+    images reused): GS thread 5.5-8.9 ms per VBlank on the long night race; the CPU now outruns the GPU at some
+    cameras.
   - Next:
-    - the flare download (0.4-1.2 readbacks, 0.7-1.6 ms per VBlank) if it stays on top;
+    - GPU timestamps per submission, to size the GPU side; then D1 (hardware raster path) moves up;
+    - the flare download (0.4-1.2 readbacks, 0.7-2.1 ms per VBlank) if it stays on top;
     - translate and decode recording (B4);
     - the GS thread split in two (B5).
   - Original item, kept for the record:
