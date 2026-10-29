@@ -49,8 +49,8 @@ struct Buffer {
   VkDeviceMemory memory = VK_NULL_HANDLE;
   void *mapped = nullptr;
   VkDeviceSize size = 0;
-  VkDeviceSize used = 0;  // ring cursor for this recording, inside the recording's half
-  VkDeviceSize base = 0;  // the recording's half: [base, base + size / 2) (two recordings alternate)
+  VkDeviceSize used = 0;  // ring cursor for this recording, inside the recording's share
+  VkDeviceSize base = 0;  // the recording's share: [base, base + size / slotCount) (S4: the slots take turns)
 };
 
 struct Image {
@@ -101,7 +101,7 @@ struct Gpu::Impl {
 
   VkCommandPool pool = VK_NULL_HANDLE;
   // Two recordings alternate (double buffering): the CPU records one while the GPU runs the other, each with its own
-  // command buffer, fence, descriptor pool and half of every ring.
+  // command buffer, fence, descriptor pool and share of every ring.
   struct Slot {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -110,7 +110,17 @@ struct Gpu::Impl {
     std::uint32_t passTimestamps = 0;  // B4: draw pass timestamp pairs written in this slot's recording
     std::vector<Image> doomed;  // released once this slot's submission is complete
   };
-  Slot slots[2];
+  // S4: up to kMaxSlots submissions in flight (GT4_CORE2_SLOTS, default 8, 2 to 8). With two, the CPU could run only
+  // one submission ahead of the GPU: with the GPU at a low clock and full of small dependent commands, the GS thread
+  // waited for it in the middle of frames (draw stage waits of 12-30 ms in the owner's menus and the Arcade race
+  // start), and submitting more often made it worse.
+  static constexpr std::uint32_t kMaxSlots = 8;
+  Slot slots[kMaxSlots];
+  std::uint32_t slotCount = [] {
+    const char *text = std::getenv("GT4_CORE2_SLOTS");
+    const long value = text ? std::strtol(text, nullptr, 10) : 8;
+    return static_cast<std::uint32_t>(std::clamp<long>(value, 2, static_cast<long>(kMaxSlots)));
+  }();
   // B4: per slot, the start and end of its command buffer, then up to kPassTimestampPairs draw passes (start, end);
   // read when the slot's fence has signalled.
   static constexpr std::uint32_t kPassTimestampPairs = 64;
@@ -151,16 +161,17 @@ struct Gpu::Impl {
   VkQueryPool statistics = VK_NULL_HANDLE;
   double timestampNs = 0.0;  // nanoseconds per timestamp tick (0: no timestamps)
   std::uint32_t slot = 0;           // the slot being recorded
-  std::uint32_t lastSubmitted = 1;  // the slot submitted last
+  std::uint32_t lastSubmitted = kMaxSlots - 1;  // the slot submitted last (set to slotCount - 1 at Init)
   VkCommandBuffer cmd = VK_NULL_HANDLE;  // slots[slot].cmd
   VkFence fence = VK_NULL_HANDLE;
   bool recording = false;
   // IN-410: the recording is submitted every `submitEvery` draw batches, so the GPU draws while the CPU records the
   // rest of the frame and a readback in mid-frame (GT4's flare reads) waits only for the work after the last
   // submission. GT4_CORE2_SUBMIT_EVERY=<batches>, 0 = only when the CPU needs a result or at the end of the frame.
+  // S4: 32 since more submissions can be in flight (was 96 with two slots).
   std::uint32_t submitEvery = [] {
     const char *text = std::getenv("GT4_CORE2_SUBMIT_EVERY");
-    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : 96u;
+    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : 32u;
   }();
   std::uint32_t batchesSinceSubmit = 0;
   // Draw descriptor sets of this recording by their four images (a batch with the same targets reuses its set).
@@ -270,14 +281,20 @@ struct Gpu::Impl {
   }
 
   // Reserves `bytes` of a ring for this recording, aligned; submits and waits when the ring is full.
+  // S4: one recording's share of a ring, a multiple of 4 KiB so every share starts aligned for any buffer offset rule
+  // (dynamic uniform and storage offsets); size / slotCount alone is not aligned for 6 slots.
+  VkDeviceSize ring_share(const Buffer &buffer) const {
+    return buffer.size / slotCount / 4096u * 4096u;
+  }
+
   bool ring(Buffer &buffer, VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize &offset, std::string &error) {
     if (bytes > buffer.size) {
       error = "CORE2 ring request larger than the ring";
       return false;
     }
-    const VkDeviceSize half = buffer.size / 2;
+    const VkDeviceSize half = ring_share(buffer);  // this recording's share
     if (bytes > half) {
-      error = "CORE2 ring request larger than half the ring";
+      error = "CORE2 ring request larger than a recording's share of the ring";
       return false;
     }
     VkDeviceSize at = (buffer.used + alignment - 1) / alignment * alignment;
@@ -686,9 +703,12 @@ struct Gpu::Impl {
 
   // Declares the accesses of the compute or transfer command about to be recorded. With IN-420 the deferred draws are
   // recorded first when the command depends on them (reads what they write, writes what they read or write).
-  void touch(std::initializer_list<Use> reads, std::initializer_list<Use> writes, unsigned bufferReads,
-             unsigned bufferWrites) {
-    if (!lazyBarriers) return;  // outside_pass and after_op already order every command
+  void touch(const char *label, std::initializer_list<Use> reads, std::initializer_list<Use> writes,
+             unsigned bufferReads, unsigned bufferWrites) {
+    if (!lazyBarriers) {  // outside_pass and after_op already order every command
+      prof_begin(label);
+      return;
+    }
     if (!deferred.empty()) {
       bool dependsOnDraws = false;
       for (const Use &use : reads) dependsOnDraws = dependsOnDraws || drawWrites.conflicts(use.serial, use.region);
@@ -699,11 +719,40 @@ struct Gpu::Impl {
       if (dependsOnDraws) flush_draws();
     }
     order(reads, writes, bufferReads, bufferWrites);
+    prof_begin(label);
   }
 
   // After a compute or transfer command: a barrier at once only without IN-419 (touch orders it otherwise).
   void after_op() {
     if (!lazyBarriers) full_barrier();
+    prof_end();
+  }
+
+  // S3: GPU cost map (diagnostics, GT4_CORE2_GPU_PROFILE_AT=<vblank>): during one VBlank every compute, transfer and
+  // draw command waits for the work before it (a barrier) and is timed on its own (timestamps at the completion of
+  // the work before it and of itself); ProfileReport prints the GPU time per kind of command. The barriers make that
+  // VBlank slower; the numbers are each command's own cost.
+  static constexpr std::uint32_t kProfileQueries = 16384;
+  VkQueryPool profilePool = VK_NULL_HANDLE;
+  bool profiling = false, profileOpen = false;
+  std::uint32_t profileNext = 0;
+  std::vector<std::string> profileLabels;  // label of query pair (2i, 2i + 1)
+  void prof_begin(const std::string &label) {
+    if (!profiling || profileOpen || profileNext + 2u > kProfileQueries) return;
+    if (renderPassOpen) {
+      fragment_barrier();
+    } else {
+      full_barrier();
+    }
+    gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, profilePool, profileNext);
+    profileLabels.push_back(label);
+    profileOpen = true;
+  }
+  void prof_end() {
+    if (!profileOpen) return;
+    gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, profilePool, profileNext + 1u);
+    profileNext += 2u;
+    profileOpen = false;
   }
 
   // IN-420: draw batches recorded later, in one render pass. Core 2 recorded each batch at once, so every texture
@@ -725,6 +774,7 @@ struct Gpu::Impl {
     std::uint32_t push[8] = {};
     bool textureFromTarget = false;
     std::uint32_t firstCommand = 0, commandCount = 0;
+    std::string profileLabel;  // S3: only while profiling
   };
   bool deferDraws = lazyBarriers && (std::getenv("GT4_CORE2_DEFER_DRAWS") == nullptr ||
                                      std::strcmp(std::getenv("GT4_CORE2_DEFER_DRAWS"), "0") != 0);
@@ -744,6 +794,7 @@ struct Gpu::Impl {
 
   // One batch's commands, inside the open render pass; `first` is the pass's first batch (no barrier before it).
   void record_draw(const DeferredDraw &draw, bool first) {
+    prof_begin(draw.profileLabel);
     if (!first && drewSinceBarrier && (!interlock || draw.textureFromTarget)) {
       // A texture taken from a target reads pixels other than its own (no interlock order); without pixel interlock
       // every batch waits for the one before.
@@ -764,6 +815,7 @@ struct Gpu::Impl {
       stats.draws++;
       drewSinceBarrier = true;
     }
+    prof_end();
   }
 
   // Records the deferred batches in one render pass, ordered against the pending compute and transfer accesses.
@@ -875,11 +927,16 @@ struct Gpu::Impl {
   }
 
   // Waits for everything submitted (a fence signals after every earlier submission on the queue too).
-  bool wait_all(std::string &error) { return wait_slot(lastSubmitted, error) && wait_slot(lastSubmitted ^ 1u, error); }
+  bool wait_all(std::string &error) {
+    for (std::uint32_t i = 0; i < slotCount; ++i) {
+      if (!wait_slot(i, error)) return false;
+    }
+    return true;
+  }
 
   bool begin_recording(std::string &error) {
     if (recording) return true;
-    slot = lastSubmitted ^ 1u;
+    slot = (lastSubmitted + 1u) % slotCount;
     if (!wait_slot(slot, error)) return false;  // the submission before the last one: usually long done
     cmd = slots[slot].cmd;
     fence = slots[slot].fence;
@@ -902,7 +959,7 @@ struct Gpu::Impl {
     drawSets.clear();
     for (Buffer *buffer : {&staging, &vertices, &uniforms}) {
       buffer->used = 0;
-      buffer->base = slot * (buffer->size / 2);
+      buffer->base = slot * ring_share(*buffer);
     }
     readback.used = 0;  // the readback buffer is only used by waited submissions
     readback.base = 0;
@@ -1065,10 +1122,11 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (!check(gt4_hw_vkCreateFence(s.device, &fenceInfo, nullptr, &slot.fence), "vkCreateFence", error)) return false;
   }
+  s.lastSubmitted = s.slotCount - 1u;  // S4: the first recording takes slot 0
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    queryInfo.queryCount = 2u * Impl::kTimestampsPerSlot;
+    queryInfo.queryCount = Impl::kMaxSlots * Impl::kTimestampsPerSlot;
     if (gt4_hwd_vkCreateQueryPool(s.device, &queryInfo, nullptr, &s.timestamps) == VK_SUCCESS) {
       s.timestampNs = s.limits.timestampPeriod;
     }
@@ -1079,7 +1137,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     if (features.features.pipelineStatisticsQuery) {
       VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
       queryInfo.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
-      queryInfo.queryCount = 2;
+      queryInfo.queryCount = Impl::kMaxSlots;
       queryInfo.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
                                      VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
                                      VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT;
@@ -1415,7 +1473,7 @@ bool Gpu::CopyImage(ImageId from, ImageId to, std::int32_t x0, std::int32_t y0, 
   if (right <= left || bottom <= top || source->scale != destination->scale) return true;
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch({source}, {destination}, 0, 0);
+  s.touch("copy image", {source}, {destination}, 0, 0);
   VkImageCopy region{};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1459,7 +1517,7 @@ bool Gpu::UploadAtlas(std::uint32_t x, std::uint32_t y, std::uint32_t width, std
   if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels, static_cast<std::size_t>(bytes));
   s.outside_pass();
-  s.touch({}, {&s.atlas}, 0, 0);
+  s.touch("upload atlas", {}, {&s.atlas}, 0, 0);
   VkBufferImageCopy region{};
   region.bufferOffset = offset;
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1485,7 +1543,7 @@ bool Gpu::UploadImage(ImageId id, std::uint32_t width, std::uint32_t height, con
   if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels, static_cast<std::size_t>(bytes));
   s.outside_pass();
-  s.touch({}, {image}, 0, 0);
+  s.touch("upload image", {}, {image}, 0, 0);
   VkBufferImageCopy region{};
   region.bufferOffset = offset;
   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1576,6 +1634,21 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // and the floored rasteriser depth (1.6) are on.
   record.push[7] = (batch.texture != kNoImage ? sc : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u);
   record.textureFromTarget = batch.texture != kNoImage;
+  if (s.profiling) {
+    namespace g = gpu::gpufield;
+    const auto &f = batch.state.fields;
+    char label[200];
+    std::snprintf(label, sizeof label, "draw %ux%u tex=%s blend=%s z=%s%s ate=%u fbmsk=%s prims=%s",
+                  frame->width, frame->height,
+                  batch.texture != kNoImage ? "target" : batch.memoryTexture != kNoImage ? (paletted ? "indexed" : "memory") : "-",
+                  f[g::BlendOn] ? (std::to_string(f[g::BlendA]) + std::to_string(f[g::BlendB]) + std::to_string(f[g::BlendC]) +
+                                   std::to_string(f[g::BlendD])).c_str()
+                                : "off",
+                  f[g::Ztest] && f[g::Ztst] != 1u ? "test" : "-", f[g::Zmsk] == 0 ? "+write" : "", f[g::Ate],
+                  f[g::Fbmsk] == 0 ? "0" : "set",
+                  batch.draws->size() <= 4 ? "1-4" : batch.draws->size() <= 64 ? "5-64" : batch.draws->size() <= 1024 ? "65-1k" : "1k+");
+    record.profileLabel = label;
+  }
   const std::int32_t limitX = static_cast<std::int32_t>(std::min(frame->width, s.framebufferWidth));
   const std::int32_t limitY = static_cast<std::int32_t>(std::min(frame->height, s.framebufferHeight));
   // 8.3: the GS scissor and the primitive's box (one native pixel of slack) times s.
@@ -1686,7 +1759,7 @@ bool Gpu::UploadGlm(const std::uint8_t *memory,
     copies.push_back(VkBufferCopy{at, offset, size});
   }
   s.outside_pass();
-  s.touch({}, {}, 0, s.kGlmBuffer);
+  s.touch("glm upload", {}, {}, 0, s.kGlmBuffer);
   if (!copies.empty()) {
     gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.glm, static_cast<std::uint32_t>(copies.size()), copies.data());
   }
@@ -1705,14 +1778,14 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   if (!s.begin_recording(error)) return false;
   VkDeviceSize paletteOffset = 0;
   const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
-  // The window first: a ring that submits moves to the other half, so later offsets stay in this recording.
+  // The window first: a ring that submits moves to the next share, so later offsets stay in this recording.
   VkDescriptorBufferInfo glmRange{s.glm, 0, 4u << 20};
   std::uint32_t windowBase = 0, windowWords = 0;
   if (!s.bind_window(glmRange, windowBase, windowWords, error)) return false;
   if (!s.ring(s.staging, 256 * 4, align, paletteOffset, error)) return false;
   if (palette) std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + paletteOffset, palette, 256 * 4);
   s.outside_pass();
-  s.touch({}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
+  s.touch("decode", {}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {glmRange,
@@ -1754,6 +1827,67 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   return true;
 }
 
+bool Gpu::ProfileStart(std::string &error) {
+  Impl &s = *impl_;
+  if (!s.timestamps) return true;  // no timestamps on this device
+  if (!s.profilePool) {
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = Impl::kProfileQueries;
+    if (gt4_hwd_vkCreateQueryPool(s.device, &info, nullptr, &s.profilePool) != VK_SUCCESS) return true;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  gt4_hwd_vkCmdResetQueryPool(s.cmd, s.profilePool, 0, Impl::kProfileQueries);
+  s.profileNext = 0;
+  s.profileLabels.clear();
+  s.profileOpen = false;
+  s.profiling = true;
+  return true;
+}
+
+bool Gpu::ProfileReport(std::string &error) {
+  Impl &s = *impl_;
+  if (!s.profiling) return true;
+  s.prof_end();
+  s.profiling = false;
+  if (!s.submit(true, error)) return false;
+  std::vector<std::uint64_t> ticks(s.profileNext);
+  if (s.profileNext == 0 ||
+      gt4_hwd_vkGetQueryPoolResults(s.device, s.profilePool, 0, s.profileNext, ticks.size() * sizeof(std::uint64_t),
+                                    ticks.data(), sizeof(std::uint64_t),
+                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) {
+    std::fprintf(stderr, "[core2] gpu profile: no results\n");
+    return true;
+  }
+  struct Kind {
+    double total = 0, longest = 0;
+    std::uint32_t count = 0;
+  };
+  std::map<std::string, Kind> kinds;
+  double total = 0;
+  for (std::size_t i = 0; i < s.profileLabels.size(); ++i) {
+    const std::uint64_t a = ticks[2 * i], b = ticks[2 * i + 1];
+    const double ms = b >= a ? static_cast<double>(b - a) * s.timestampNs / 1.0e6 : 0.0;
+    Kind &kind = kinds[s.profileLabels[i]];
+    kind.total += ms;
+    kind.longest = std::max(kind.longest, ms);
+    kind.count++;
+    total += ms;
+  }
+  std::vector<std::pair<double, std::string>> rows;
+  for (const auto &[label, kind] : kinds) rows.push_back({kind.total, label});
+  std::sort(rows.rbegin(), rows.rend());
+  std::fprintf(stderr, "[core2] gpu profile: %zu commands, %.2f ms of isolated GPU time\n", s.profileLabels.size(), total);
+  for (std::size_t i = 0; i < rows.size() && i < 40; ++i) {
+    const Kind &kind = kinds[rows[i].second];
+    std::fprintf(stderr, "[core2] gpu profile %7.3f ms %5u x (max %.3f) %s\n", kind.total, kind.count, kind.longest,
+                 rows[i].second.c_str());
+  }
+  return true;
+}
+
 void Gpu::SetDecodeWindow(const std::uint8_t *memory, std::uint32_t firstPage, std::uint32_t pageCount) {
   impl_->windowMemory = memory;
   impl_->windowFirstPage = firstPage;
@@ -1773,7 +1907,7 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
   std::uint32_t windowBase = 0, windowWords = 0;
   if (!s.bind_window(glmRange, windowBase, windowWords, error)) return false;
   s.outside_pass();
-  s.touch({}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
+  s.touch("decode gpu clut", {}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {glmRange,
@@ -1830,7 +1964,7 @@ bool Gpu::PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch({Impl::Use(image, row)}, {Impl::Use(image, row)}, s.kClutBuffer, 0);
+  s.touch("palette row", {Impl::Use(image, row)}, {Impl::Use(image, row)}, s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1883,7 +2017,7 @@ bool Gpu::ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch({image}, {}, s.kGlmBuffer, s.kClutBuffer);
+  s.touch("clut from target", {image}, {}, s.kGlmBuffer, s.kClutBuffer);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1944,7 +2078,7 @@ bool Gpu::MaterializeTarget(ImageId id, std::uint32_t psm, std::uint32_t tbp, st
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch({image}, {}, s.kGlmBuffer, s.kGlmBuffer);
+  s.touch("glm write (target)", {image}, {}, s.kGlmBuffer, s.kGlmBuffer);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -1994,7 +2128,7 @@ bool Gpu::WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_
   auto *values = reinterpret_cast<std::uint32_t *>(static_cast<std::uint8_t *>(s.staging.mapped) + offset);
   for (std::uint32_t i = 0; i < count; ++i) values[i] = halfwords[first + i];
   s.outside_pass();
-  s.touch({}, {}, 0, s.kClutBuffer);
+  s.touch("clut write", {}, {}, 0, s.kClutBuffer);
   VkBufferCopy copy{offset, first * 4u, count * 4u};
   gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.clut, 1, &copy);
   s.after_op();
@@ -2028,7 +2162,7 @@ bool Gpu::PatchFromGlm(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch({image}, {image}, s.kGlmBuffer, 0);
+  s.touch("dirty patch", {image}, {image}, s.kGlmBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[3] = {{s.glm, 0, 4u << 20}, {s.glmTables.buffer, 0, s.glmTableBytes},
@@ -2086,7 +2220,7 @@ bool Gpu::Patch(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, s
   s.outside_pass();
   // One row is tracked as a row (the palette rows of IN-409; IN-420), anything else as the whole image.
   const std::uint32_t region = y0 == y1 ? static_cast<std::uint32_t>(y0) : Impl::kWholeImage;
-  s.touch({Impl::Use(image, region)}, {Impl::Use(image, region)}, 0, 0);
+  s.touch("patch (cpu words)", {Impl::Use(image, region)}, {Impl::Use(image, region)}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, offset, bytes, image->view, image->view, image->view, set, error)) return false;
   const std::uint32_t push[7] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
@@ -2142,7 +2276,7 @@ bool Gpu::Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight
   if (!s.ring(s.staging, 256 * 4, align, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, palette, 256 * 4);
   s.outside_pass();
-  s.touch({image}, {image}, 0, 0);
+  s.touch("tone", {image}, {image}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, offset, 256 * 4, image->view, image->view, image->view, set, error)) return false;
   const std::uint32_t width = std::min(nativeWidth, image->nativeWidth) * image->scale;
@@ -2168,7 +2302,7 @@ bool Gpu::Compose(const std::uint32_t words[28], ImageId sourceA, ImageId source
   const Image *a = s.image_of(sourceA);
   const Image *b = s.image_of(sourceB);
   s.outside_pass();
-  s.touch({a, b}, {&s.display}, 0, 0);
+  s.touch("compose", {a, b}, {&s.display}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.compute_set(s.staging.buffer, 0, 16, a ? a->view : s.atlas.view, b ? b->view : s.atlas.view, s.display.view,
                      set, error)) {

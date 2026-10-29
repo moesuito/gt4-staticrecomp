@@ -55,6 +55,9 @@ wall time of the whole emulator.
 | IN-422 | Textures over no target decoded from a CPU page window (no GLM upload or barrier) | Barriers 254-961 -> 137-843; GPU time 3-10% less; emulator 0.1-0.3 ms less | yes | 297 |
 | IN-423 | Per-VBlank spike log (`GT4_CORE2_SPIKE_MS`) | Found the race-start stutters: 40-160 new images per VBlank, each a device allocation | diagnostics | 298 |
 | IN-424 | Image memory taken from 64 MiB blocks | Race-start VBlanks over 20 ms: 60 -> 2; averages unchanged; image memory +90 MB | yes | 298 |
+| IN-425 | GPU cost map (`GT4_CORE2_GPU_PROFILE_AT`) | Headlight scene 5.9 ms of isolated GPU work against 7-19 ms per VBlank: gaps, not power | diagnostics | 299 |
+| measure | Submit every 32 or 16 batches with two slots | Flare wait down, slot waits and spikes up (47 -> 66 -> 94) | not alone | - |
+| IN-426 | Up to 8 submissions in flight, submit every 32 batches | Arcade race VBlanks over 17 ms 59 -> 15; GPU waits about a third; emulator 8.9-13.1 -> 7.6-10.5 ms | yes | 299 |
 
 ## What we learned
 
@@ -82,5 +85,9 @@ wall time of the whole emulator.
     owns about 2.5 ms (the EE waiting for the flare downloads).
 - **Stutters are spikes, not averages.** The 600-VBlank averages hid them. Look per VBlank with the spike log. The
   race-start stutters were device memory allocations (IN-424), not readbacks.
+- **Two submissions in flight were the structural limit:** the CPU waited for a GPU that ran at a low clock and was
+  full of gaps (IN-426).
+- **Split rings into aligned shares:** a non-power-of-two slot count broke buffer offsets. Only the frame checks
+  caught it, and the bad run looked faster.
 - **Timestamps:** with deferred draws, compute recorded before a pass overlaps the pass's timestamps, so
   `gpu_draw_passes` overstates drawing.

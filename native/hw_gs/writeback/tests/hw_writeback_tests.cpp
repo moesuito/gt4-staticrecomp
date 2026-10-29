@@ -3842,6 +3842,11 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              "GT4_CORE2_IMAGE_BLOCKS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     failures += CheckCore2Ab(handles, "image memory blocks, GPU-read ageing", Core2GpuReadAgeingCapture(72), 72,
                              "GT4_CORE2_IMAGE_BLOCKS", true, [](const Core2AbRun&, const Core2AbRun&) { return 0; }, true);
+    // S4: eight submissions in flight (the switch at "0" means two) must give the same images and memory.
+    failures += CheckCore2Ab(handles, "submission slots, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
+                             "GT4_CORE2_SLOTS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    failures += CheckCore2Ab(handles, "submission slots, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_SLOTS",
+                             true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

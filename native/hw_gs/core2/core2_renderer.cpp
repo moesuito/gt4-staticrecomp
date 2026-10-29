@@ -424,11 +424,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::chrono::steady_clock::time_point at{};
         double gif = 0, upload = 0, texture = 0, readback = 0, translate = 0, draw = 0, targets = 0, clut = 0, patch = 0;
         double uploads = 0, swizzleBytes = 0;
-        std::uint64_t createdImages = 0;
+        std::uint64_t createdImages = 0, gpuNs = 0, fragments = 0, prims = 0;
         std::uint64_t waitNs = 0, readbacks = 0, downloads = 0, stores = 0, keeps = 0, created = 0, allocated = 0,
                       decodes = 0, submits = 0, materializations = 0, dirty = 0;
     };
     SpikeMark spikeMark_;
+    const long long profileAt_ =
+        std::getenv("GT4_CORE2_GPU_PROFILE_AT") ? std::atoll(std::getenv("GT4_CORE2_GPU_PROFILE_AT")) : -1;
     std::uint32_t spikeLines_ = 0;
     const double spikeMs_ = std::getenv("GT4_CORE2_SPIKE_MS") ? std::atof(std::getenv("GT4_CORE2_SPIKE_MS")) : 20.0;
     SpikeMark TakeSpikeMark() const {
@@ -453,6 +455,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         m.created = stats.targetsCreated;
         m.allocated = gpu_.Stats().imagesAllocated + gpu_.Stats().imageBlocks;  // device allocations
         m.createdImages = gpu_.Stats().imagesCreated;
+        m.gpuNs = gpu_.Stats().gpuNs;  // finished submissions: lags the VBlank by a submission or two
+        m.fragments = gpu_.Stats().fragments;
+        m.prims = gpu_.Stats().primitives;
         m.decodes = gpu_.Stats().atlasUploads;
         m.submits = gpu_.Stats().submissions;
         m.materializations = stats.materializations;
@@ -471,7 +476,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                              "[core2] spike vblank=%llu wall=%.1f gs=%.1f upload=%.1f (%.0f, %.0f KiB) texture=%.1f "
                              "readback=%.1f translate=%.1f draw=%.1f targets=%.1f clut=%.1f patch=%.1f gpu_wait=%.1f "
                              "readbacks=%llu (download %llu, store %llu, keep %llu) created=%llu images=%llu allocated=%llu "
-                             "decodes=%llu submits=%llu glm_writes=%llu dirty=%llu\n",
+                             "decodes=%llu submits=%llu glm_writes=%llu dirty=%llu gpu_busy=%.1f fragments=%llu prims=%llu\n",
                              static_cast<unsigned long long>(vblanks_), wall, gs, (now.upload - b.upload) / 1000.0,
                              now.uploads - b.uploads, (now.swizzleBytes - b.swizzleBytes) / 1024.0,
                              (now.texture - b.texture) / 1000.0, (now.readback - b.readback) / 1000.0,
@@ -488,7 +493,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                              static_cast<unsigned long long>(now.decodes - b.decodes),
                              static_cast<unsigned long long>(now.submits - b.submits),
                              static_cast<unsigned long long>(now.materializations - b.materializations),
-                             static_cast<unsigned long long>(now.dirty - b.dirty));
+                             static_cast<unsigned long long>(now.dirty - b.dirty),
+                             static_cast<double>(now.gpuNs - b.gpuNs) / 1.0e6,
+                             static_cast<unsigned long long>(now.fragments - b.fragments),
+                             static_cast<unsigned long long>(now.prims - b.prims));
             }
         }
         spikeMark_ = now;
@@ -2736,6 +2744,12 @@ void Renderer::Flush() {
     s.Age();
     s.TrimTexturePool();
     s.NoteSpike();
+    // S3: GT4_CORE2_GPU_PROFILE_AT=<vblank> maps the GPU cost of the next VBlank's commands.
+    if (s.profileAt_ >= 0) {
+        std::string error;
+        if (static_cast<long long>(s.vblanks_) == s.profileAt_ + 1 && !s.gpu_.ProfileReport(error)) s.Fail(error);
+        if (static_cast<long long>(s.vblanks_) == s.profileAt_ && !s.gpu_.ProfileStart(error)) s.Fail(error);
+    }
     if (s.vblanks_ % 600 == 0) {
         s.stats.liveTargets = 0;
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;

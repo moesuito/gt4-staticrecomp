@@ -143,6 +143,9 @@ public:
     // IN-422: the next DecodeTexture or DecodeTextureGpuClut reads GS memory pages [firstPage, firstPage + pageCount)
     // (modulo 512) from `memory` (the CPU copy, current for them) instead of the GLM. Cleared by that decode.
     void SetDecodeWindow(const std::uint8_t *memory, std::uint32_t firstPage, std::uint32_t pageCount);
+    // S3: GPU cost map of the commands recorded between ProfileStart and ProfileReport (each isolated and timed).
+    bool ProfileStart(std::string &error);
+    bool ProfileReport(std::string &error);
     // IN-408: the same decode, indexed formats expanded through the GPU CLUT buffer.
     bool DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
                               std::uint32_t height, const GpuPalette &palette, std::string &error);
