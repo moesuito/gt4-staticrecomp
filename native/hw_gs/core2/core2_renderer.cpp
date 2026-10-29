@@ -261,7 +261,7 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uin
 // CPU time of CORE2's stages (microseconds, summed between two [core2] lines).
 struct PhaseTimes {
     double gif = 0, batch = 0, upload = 0, written = 0, clut = 0, clutLoads = 0, uploads = 0, hook = 0, glmHook = 0, translate = 0, targets = 0, texture = 0, draw = 0, readback = 0, patch = 0, compose = 0,
-           flush = 0, cpuSprites = 0;
+           flush = 0, cpuSprites = 0, spriteCheck = 0;
 };
 
 class ScopedUs {
@@ -843,6 +843,23 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             found->second.lastUse = ++textureUses_;
             stats.atlasHits++;
             return found->second.image;
+        }
+        // B2: why this decode happens.
+        if (overTargets) {
+            stats.decodesOverTargets++;
+        } else if (found == textures_.end()) {
+            stats.decodesFirst++;
+        } else if (!(found->second.key == key)) {
+            stats.decodesKeyClash++;
+        } else {
+            stats.decodesStale++;
+            static const bool trace = std::getenv("GT4_CORE2_DECODE_TRACE") != nullptr;  // diagnostics only
+            if (trace) {
+                std::fprintf(stderr, "[core2] stale decode vblank=%llu tbp=%u tbw=%u psm=%02x %ux%u span=%u+%u age=%llu\n",
+                             static_cast<unsigned long long>(vblanks_), t.glmBp, t.glmBw, t.glmPsm, t.texWidth,
+                             t.texHeight, found->second.span.begin, found->second.span.count,
+                             static_cast<unsigned long long>(textureUses_ - found->second.lastUse));
+            }
         }
         if (found != textures_.end()) ForgetTexture(found);
         const auto psm = memory::decodePsm(t.glmPsm);
@@ -1596,7 +1613,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const bool testReads = st.fields[gpu::gpufield::Ztest] != 0 && st.fields[gpu::gpufield::Ztst] != 1u;
             return testReads || st.fields[gpu::gpufield::Zmsk] == 0;
         }();
-        if (CpuSmallSprites(batch, t, depthUsed)) {
+        bool cpuSprite = false;
+        {
+            ScopedUs timer(times_.spriteCheck);
+            cpuSprite = CpuSmallSprites(batch, t, depthUsed);
+        }
+        if (cpuSprite) {
             ScopedUs timer(times_.cpuSprites);
             cpuref::DrawStats drawStats;
             cpuref::DrawBatch(batch, memory_.Local(), frontEnd_.Clut(), drawStats);
@@ -2096,7 +2118,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
-                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
+                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "waits=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
@@ -2108,7 +2130,10 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.displayFromTargets, (unsigned long long)c.displayFromMemory,
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
                  (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,
-                 (unsigned long long)c.cpuSpriteBatches, (unsigned long long)c.clutTargetLoads,
+                 (unsigned long long)c.cpuSpriteBatches, (unsigned long long)c.liveTargets,
+                 (unsigned long long)c.targetSlots, (unsigned long long)c.decodesFirst,
+                 (unsigned long long)c.decodesStale, (unsigned long long)c.decodesKeyClash,
+                 (unsigned long long)c.decodesOverTargets, (unsigned long long)c.clutTargetLoads,
                  (unsigned long long)c.gpuPaletteDecodes, (unsigned long long)c.clutReads,
                  (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
@@ -2256,6 +2281,9 @@ void Renderer::Flush() {
     s.Age();
     s.TrimTexturePool();
     if (s.vblanks_ % 600 == 0) {
+        s.stats.liveTargets = 0;
+        for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
+        s.stats.targetSlots = s.targets_.size();
         PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_);
         const PhaseTimes &p = s.times_;
         const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank
@@ -2266,9 +2294,9 @@ void Renderer::Flush() {
         std::fprintf(stderr, "[core2] wall ms/vblank=%.2f (the whole emulator, GS thread included)\n", wall);
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
-                     "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f gpu_wait=%.2f\n",
+                     "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f\n",
                      p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
-                     p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f,
+                     p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f, p.spriteCheck / f,
                      static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6);
         s.lastWaitNs_ = s.gpu_.Stats().waitNs;
         s.times_ = PhaseTimes{};

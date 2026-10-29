@@ -49,6 +49,12 @@ struct Core2Counters {
     std::uint64_t texturesOverTargets = 0;     // IN-408: textures decoded over drawn targets (through the GLM)
     std::uint64_t gpuReadKeeps = 0;            // IN-408: GPU-read targets stored to memory before being dropped
     std::uint64_t storesBeforeWrite = 0;       // IN-411: drawn targets stored before a write patches whole rows
+    std::uint64_t liveTargets = 0;             // B3: targets alive at the last [core2] line
+    std::uint64_t targetSlots = 0;             // B3: the size of the target table then
+    std::uint64_t decodesFirst = 0;            // B2: memory texture decodes with no cached entry
+    std::uint64_t decodesStale = 0;            // B2: ... whose entry's pages were written since
+    std::uint64_t decodesKeyClash = 0;         // B2: ... whose hash slot held another key
+    std::uint64_t decodesOverTargets = 0;      // B2: ... over drawn targets (never cached, IN-411)
     std::uint64_t paletteRowsWritten = 0;      // IN-409: palette rows filled (CPU palettes and GPU CLUT expansions)
     std::uint64_t paletteRowHits = 0;          // IN-409: draws whose palette row was already filled
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
