@@ -204,8 +204,11 @@ proves otherwise.
     2.3-2.8 ms; page-row runs cut it to 0.9 ms, so the GPU upload path is not needed now.
   - IN-415 then removed most IN-411 store waits (1.7-2.2 -> 0.2-0.34 ms per night VBlank): GT4's streamed texture
     uploads replace whole pages under its night render, so the stored pixels were overwritten anyway.
+  - Owner test of 291: 59.2 VBlanks/s on the night race (p99 19.6 ms). IN-416 then made dirty rectangles exact
+    page by page and block by block for writes in the same layout, so the partial-write stores went too (store waits
+    about 0 ms on a long night race).
   - Next:
-    - the remaining waits (flare download 0.3-0.6 ms, partial-write stores, CLUT) only if they stay on top;
+    - the CLUT readbacks still waiting (up to 2 ms in some intervals) and the flare download (0.3-1.5 ms);
     - translate and decode recording (B4);
     - the GS thread split in two (B5).
   - Original item, kept for the record:

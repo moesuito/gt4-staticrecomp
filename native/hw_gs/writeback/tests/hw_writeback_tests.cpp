@@ -3538,10 +3538,13 @@ cpuref::CaptureWriter Core2GpuReadAgeingCapture(uint32_t frames) {
     return capture;
 }
 
-// IN-415 (GT4's streamed textures over its night render): a CT32 target drawn on the GPU and read as a T8 texture
-// (a GPU read, no readback), then an EE upload in another base pointer over its memory. Even frames upload 64 x 64
-// CT32 over pages 21-22, replacing the whole target page: no store is needed. Odd frames upload 64 x 16 over the
-// middle of the target page only: its drawn pixels must be stored first (IN-411). The T8 sprite then shows memory.
+// IN-415 / IN-416 (GT4's streamed textures over its night render): a CT32 target drawn on the GPU and read as a T8
+// texture (a GPU read, no readback), then an EE write over its memory in another view, three kinds in turn:
+//   frame % 3 == 0: 128 x 64 T8 over the whole target page (IN-415: whole pages replaced, no store);
+//   frame % 3 == 1: 64 x 16 T4 at the target's base (another layout, no shortcut: the drawn pixels are stored, IN-411);
+//   frame % 3 == 2: CT32 in the same layout, no store (IN-416): frame 2 writes 64 x 16 from the page before (rows
+//   40-55, page-exact), frame 5 writes 16 x 8 from 8 blocks after the target's base (block-exact).
+// The T8 sprite then shows memory.
 cpuref::CaptureWriter Core2StreamOverRenderCapture(uint32_t frames) {
     cpuref::CaptureWriter capture;
     constexpr uint64_t kA = 0, kSource = 16, kUpload = 21, kRender = 22;  // pages
@@ -3591,14 +3594,30 @@ cpuref::CaptureWriter Core2StreamOverRenderCapture(uint32_t frames) {
             frameReg(kA), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05, readRender,
             0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(32, 32),
             0x03, xyz(32, 32), 0x05});
-        // the upload from page 21: whole pages 21-22 (even frames) or 16 rows inside page 22 (odd frames)
-        const bool whole = frame % 2 == 0;
-        const uint32_t rows = whole ? 64 : 16;
-        ad({blit(kUpload * 32, 0x00), 0x50, whole ? 0 : uint64_t{40} << 48, 0x51, uint64_t{64} | (uint64_t{rows} << 32),
-            0x52, 0, 0x53});
         std::vector<uint64_t> words;
-        for (uint32_t i = 0; i < 64 * rows / 2; ++i) {
-            words.push_back(uint64_t{0x80F0E0D0u - i - frame * 77u} | (uint64_t{0x80203040u + i + frame} << 32));
+        if (frame % 3 == 0) {
+            // 128 x 64 T8, BW 2, at the target's own base: the whole target page in another format
+            ad({(uint64_t{kRender * 32} << 32) | (uint64_t{2} << 48) | (uint64_t{0x13} << 56), 0x50, 0, 0x51,
+                uint64_t{128} | (uint64_t{64} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 128 * 64 / 8; ++i) words.push_back((uint64_t{i + frame} * 0x0102030405060708ull) ^ 0x8040201008040201ull);
+        } else if (frame % 3 == 1) {
+            // 64 x 16 T4, BW 2, rows 8-23 at the target's base
+            ad({(uint64_t{kRender * 32} << 32) | (uint64_t{2} << 48) | (uint64_t{0x14} << 56), 0x50, uint64_t{8} << 48,
+                0x51, uint64_t{64} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 64 * 16 / 16; ++i) words.push_back(uint64_t{0x0123456789ABCDEFull} * (i + 3 + frame));
+        } else if (frame == 2) {
+            // 64 x 16 CT32 at rows 40-55 from page 21: rows 8-23 of the target page
+            ad({blit(kUpload * 32, 0x00), 0x50, uint64_t{40} << 48, 0x51, uint64_t{64} | (uint64_t{16} << 32), 0x52, 0,
+                0x53});
+            for (uint32_t i = 0; i < 64 * 16 / 2; ++i) {
+                words.push_back(uint64_t{0x80F0E0D0u - i - frame * 77u} | (uint64_t{0x80203040u + i + frame} << 32));
+            }
+        } else {
+            // 16 x 8 CT32 from 8 blocks after the target's base: two blocks somewhere inside the target page
+            ad({blit(kRender * 32 + 8, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{8} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 16 * 8 / 2; ++i) {
+                words.push_back(uint64_t{0x80A0B0C0u + i * 3u + frame} | (uint64_t{0x80C0B0A0u - i} << 32));
+            }
         }
         image(words);
         // the render page read again, next to the first sprite
@@ -3703,8 +3722,9 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                             : 1;
                              },
                              true);
-    // IN-415: an upload replacing every page under a GPU-read target needs no store; a partial one still stores.
-    failures += CheckCore2Ab(handles, "stream over a GPU-read render", Core2StreamOverRenderCapture(4), 4,
+    // IN-415: a write replacing every page under a GPU-read target needs no store; the half-page one still stores and
+    // the page-exact one needs none either way (IN-416).
+    failures += CheckCore2Ab(handles, "stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
                              "GT4_CORE2_STORE_SKIP_WHOLE", true,
                              [](const Core2AbRun& off, const Core2AbRun& on) {
                                  std::printf("  stream over a GPU-read render: stores before write %llu / %llu, "
@@ -3714,6 +3734,21 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                              static_cast<unsigned long long>(off.stats.targetsReplaced),
                                              static_cast<unsigned long long>(on.stats.targetsReplaced));
                                  return off.stats.storesBeforeWrite == 4 && on.stats.storesBeforeWrite == 2 ? 0 : 1;
+                             });
+    // IN-416: a write a whole number of pages away in the same layout patches only its pixels, page by page: no store.
+    failures += CheckCore2Ab(handles, "page-exact writes over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
+                             "GT4_CORE2_PAGE_EXACT_DIRTY", true,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  page-exact writes: stores before write %llu / %llu, page-exact writes "
+                                             "%llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                             static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                             static_cast<unsigned long long>(off.stats.pageExactDirties),
+                                             static_cast<unsigned long long>(on.stats.pageExactDirties));
+                                 return off.stats.storesBeforeWrite == 4 && on.stats.storesBeforeWrite == 2 &&
+                                                off.stats.pageExactDirties == 0 && on.stats.pageExactDirties > 0
+                                            ? 0
+                                            : 1;
                              });
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;

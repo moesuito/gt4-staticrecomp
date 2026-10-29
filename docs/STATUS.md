@@ -31,7 +31,10 @@ race 57.0 VBlanks/s over 192 s (frame time p95 20.6 ms, p99 23.4 ms). Measured n
 0.3-0.5 ms per night VBlank, the CPU swizzle of EE uploads 2.3-2.8 ms; page-row runs cut it to 0.9 ms (IN-414,
 candidate 290), and the new upload fixture found and fixed wrong T8H/T4HL/T4HH uploads. Most IN-411 store waits
 were for nothing (GT4's streamed textures replace whole pages under its night render): skipped in candidate 291
-(IN-415), GPU waits 2.3-3.4 -> 1.1-2.0 ms and GS thread 16-22 -> 14-19 ms per night VBlank.
+(IN-415), GPU waits 2.3-3.4 -> 1.1-2.0 ms and GS thread 16-22 -> 14-19 ms per night VBlank. Owner test of 291:
+night race 59.2 VBlanks/s over 190 s (p95 18.0, p99 19.6 ms), 60 FPS on the hood camera, no defects. Dirty
+rectangles are now exact page by page and block by block for writes in the same layout (IN-416, candidate 292): the
+remaining store waits went to about 0 ms on a long night race.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)

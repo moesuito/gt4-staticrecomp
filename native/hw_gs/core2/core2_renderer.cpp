@@ -182,6 +182,60 @@ BlockSpan WholePagesWritten(const BufferView &view, const PixelRect &rect) {
                      static_cast<std::uint32_t>(std::min<std::uint64_t>(count, kAllBlocks))};
 }
 
+// IN-416: the block cells of one page of a PSM: the block number of each cell and the cell of each block number.
+// `hierarchical` says every pixel's byte and bit inside its block depend only on its place in the block cell and its
+// block only on the cell, which makes a write's pixels land at the same in-block places in any view of that PSM
+// family, whatever the base pointer (checked here from memory::pageLocalSlot, not assumed).
+struct BlockGrid {
+    std::uint32_t cellsX = 0, cellsY = 0;
+    std::array<std::uint8_t, 32> blockOfCell{};
+    std::array<std::uint8_t, 32> cellOfBlock{};
+    bool hierarchical = false;
+};
+
+const BlockGrid &BlockGridOf(Psm psm) {
+    static const std::array<BlockGrid, 64> grids = [] {
+        std::array<BlockGrid, 64> built{};
+        for (std::uint32_t code = 0; code < 64u; ++code) {
+            const auto psm = memory::decodePsm(code);
+            if (!psm) continue;
+            const memory::PsmInfo &info = memory::psmInfo(*psm);
+            if (info.zBlockXorApplies) continue;  // the Z block swap moves blocks across base pointers
+            BlockGrid &grid = built[code];
+            grid.cellsX = info.pageWidth / info.blockWidth;
+            grid.cellsY = info.pageHeight / info.blockHeight;
+            if (grid.cellsX * grid.cellsY != memory::kBlocksPerPage) continue;
+            bool ok = true;
+            for (std::uint32_t y = 0; y < info.pageHeight && ok; ++y) {
+                for (std::uint32_t x = 0; x < info.pageWidth && ok; ++x) {
+                    const memory::PixelSlot slot = memory::pageLocalSlot(*psm, x, y);
+                    const memory::PixelSlot corner = memory::pageLocalSlot(*psm, x % info.blockWidth, y % info.blockHeight);
+                    const memory::PixelSlot cellCorner =
+                        memory::pageLocalSlot(*psm, x - x % info.blockWidth, y - y % info.blockHeight);
+                    ok = slot.byteOffset / memory::kBlockBytes == cellCorner.byteOffset / memory::kBlockBytes &&
+                         slot.byteOffset % memory::kBlockBytes == corner.byteOffset % memory::kBlockBytes &&
+                         slot.bitShift == corner.bitShift;
+                }
+            }
+            std::array<bool, 32> seen{};
+            for (std::uint32_t cell = 0; cell < memory::kBlocksPerPage && ok; ++cell) {
+                const std::uint32_t block = memory::pageLocalSlot(*psm, (cell % grid.cellsX) * info.blockWidth,
+                                                                  (cell / grid.cellsX) * info.blockHeight)
+                                                .byteOffset /
+                                            memory::kBlockBytes;
+                ok = block < 32u && !seen[block];
+                if (!ok) break;
+                seen[block] = true;
+                grid.blockOfCell[cell] = static_cast<std::uint8_t>(block);
+                grid.cellOfBlock[block] = static_cast<std::uint8_t>(cell);
+            }
+            grid.hierarchical = ok;
+        }
+        return built;
+    }();
+    return grids[static_cast<std::uint32_t>(psm) & 63u];
+}
+
 std::uint64_t FieldOf(std::uint64_t value, unsigned shift, unsigned width) {
     return (value >> shift) & ((1ull << width) - 1ull);
 }
@@ -1108,11 +1162,114 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // ---- Coherence (4) ---------------------------------------------------------------------------------------
+    // IN-416: whether a write in `view` lands on target `t` page for page with the same in-page pixel positions: the
+    // same swizzle family and Z block rule, base pointers a whole number of pages apart (or any number of blocks when
+    // the layout is hierarchical, BlockGridOf), and buffer widths that are whole pages. Each page the write touches is then one page of the target, and the written pixels of that page sit
+    // at the same in-page positions in the target. GT4_CORE2_PAGE_EXACT_DIRTY=0 keeps whole page rows (A/B).
+    const bool pageExactDirty_ = std::getenv("GT4_CORE2_PAGE_EXACT_DIRTY") == nullptr ||
+                                 std::strcmp(std::getenv("GT4_CORE2_PAGE_EXACT_DIRTY"), "0") != 0;
+    bool PageExact(const Target &t, const BufferView &view, const PixelRect &rect) const {
+        if (!pageExactDirty_) return false;
+        if (rect.x0 < 0 || rect.y0 < 0 || rect.x1 >= 2048 || rect.y1 >= 2048) return false;
+        const memory::PsmInfo &written = memory::psmInfo(view.psm);
+        const memory::PsmInfo &target = memory::psmInfo(t.view.psm);
+        if (written.family != target.family || written.zBlockXorApplies != target.zBlockXorApplies) return false;
+        // Base pointers a whole number of pages apart, or any number of blocks for a hierarchical, non-Z layout.
+        if (((view.basePointer + kAllBlocks - t.view.basePointer) % kAllBlocks) % memory::kBlocksPerPage != 0 &&
+            (!BlockGridOf(view.psm).hierarchical || !BlockGridOf(t.view.psm).hierarchical)) {
+            return false;
+        }
+        return view.bufferWidth != 0 && t.view.bufferWidth != 0 && (view.bufferWidth * 64u) % written.pageWidth == 0 &&
+               (t.view.bufferWidth * 64u) % written.pageWidth == 0;
+    }
+
+    // IN-416: the dirty rectangles of a PageExact write, in the target's coordinates: per page the write touches, its
+    // written pixels moved to that page's place in the target (pages outside the target are skipped). Neighbours in
+    // one page row are merged.
+    void AddPageExactDirty(Target &t, const BufferView &view, const PixelRect &rect) {
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        const std::int32_t pw = info.pageWidth, ph = info.pageHeight;
+        const std::uint32_t writtenPerRow = view.bufferWidth * 64u / info.pageWidth;
+        const std::uint32_t targetPerRow = t.view.bufferWidth * 64u / info.pageWidth;
+        const std::uint32_t blockOffset = (view.basePointer + kAllBlocks - t.view.basePointer) % kAllBlocks;
+        if (blockOffset % memory::kBlocksPerPage != 0) {
+            AddBlockExactDirty(t, view, rect, blockOffset);
+            return;
+        }
+        const std::uint32_t pageOffset = blockOffset / memory::kBlocksPerPage;
+        const std::size_t first = t.dirty.size();
+        for (std::int32_t py = rect.y0 / ph; py <= rect.y1 / ph; ++py) {
+            for (std::int32_t px = rect.x0 / pw; px <= rect.x1 / pw; ++px) {
+                const std::uint32_t page =
+                    (pageOffset + static_cast<std::uint32_t>(py) * writtenPerRow + static_cast<std::uint32_t>(px)) %
+                    memory::kPagesTotal;
+                const std::int32_t ty = static_cast<std::int32_t>(page / targetPerRow);
+                const std::int32_t tx = static_cast<std::int32_t>(page % targetPerRow);
+                if (ty * ph >= static_cast<std::int32_t>(t.height)) continue;
+                const PixelRect inPage = Intersect(rect, PixelRect{px * pw, py * ph, px * pw + pw - 1, py * ph + ph - 1});
+                const std::int32_t dx = (tx - px) * pw, dy = (ty - py) * ph;
+                const PixelRect moved{inPage.x0 + dx, inPage.y0 + dy, inPage.x1 + dx, inPage.y1 + dy};
+                if (t.dirty.size() > first) {
+                    PixelRect &last = t.dirty.back().rect;
+                    if (last.y0 == moved.y0 && last.y1 == moved.y1 && last.x1 + 1 == moved.x0) {
+                        last.x1 = moved.x1;
+                        continue;
+                    }
+                }
+                t.dirty.push_back(Dirty{moved, view.psm});
+            }
+        }
+        stats.pageExactDirties++;
+    }
+
+    // IN-416: the same for base pointers that are not a whole number of pages apart, block cell by block cell: each
+    // cell the write touches is one memory block, found in the target through the cell of its block number.
+    void AddBlockExactDirty(Target &t, const BufferView &view, const PixelRect &rect, std::uint32_t blockOffset) {
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        const BlockGrid &grid = BlockGridOf(view.psm);
+        const std::int32_t pw = info.pageWidth, ph = info.pageHeight, bw = info.blockWidth, bh = info.blockHeight;
+        const std::uint32_t writtenPerRow = view.bufferWidth * 64u / info.pageWidth;
+        const std::uint32_t targetPerRow = t.view.bufferWidth * 64u / info.pageWidth;
+        const std::size_t first = t.dirty.size();
+        for (std::int32_t by = rect.y0 / bh; by <= rect.y1 / bh; ++by) {
+            for (std::int32_t bx = rect.x0 / bw; bx <= rect.x1 / bw; ++bx) {
+                const std::int32_t x = bx * bw, y = by * bh;
+                const std::uint32_t page = static_cast<std::uint32_t>(y / ph) * writtenPerRow + static_cast<std::uint32_t>(x / pw);
+                const std::uint32_t cell = static_cast<std::uint32_t>((y % ph) / bh) * grid.cellsX + static_cast<std::uint32_t>((x % pw) / bw);
+                const std::uint32_t block = (blockOffset + page * memory::kBlocksPerPage + grid.blockOfCell[cell]) % kAllBlocks;
+                const std::uint32_t targetPage = block / memory::kBlocksPerPage;
+                const std::uint32_t targetCell = grid.cellOfBlock[block % memory::kBlocksPerPage];
+                const std::int32_t ty = static_cast<std::int32_t>((targetPage / targetPerRow) * ph + (targetCell / grid.cellsX) * bh);
+                const std::int32_t tx = static_cast<std::int32_t>((targetPage % targetPerRow) * pw + (targetCell % grid.cellsX) * bw);
+                if (ty >= static_cast<std::int32_t>(t.height)) continue;
+                const PixelRect inCell = Intersect(rect, PixelRect{x, y, x + bw - 1, y + bh - 1});
+                const PixelRect moved{inCell.x0 + tx - x, inCell.y0 + ty - y, inCell.x1 + tx - x, inCell.y1 + ty - y};
+                if (t.dirty.size() > first) {
+                    PixelRect &last = t.dirty.back().rect;
+                    if (last.y0 == moved.y0 && last.y1 == moved.y1 && last.x1 + 1 == moved.x0) {
+                        last.x1 = moved.x1;
+                        continue;
+                    }
+                }
+                t.dirty.push_back(Dirty{moved, view.psm});
+            }
+        }
+        stats.pageExactDirties++;
+    }
+
     // 4.1: an EE write into `rect` of `view`: a dirty rectangle in every target it lands on.
     void AddUploadDirty(Target &t, const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
         const FormatClass cls = ClassOf(view.psm);
         if (view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls) {
             t.dirty.push_back(Dirty{rect, view.psm});
+            return;
+        }
+        // IN-416: page for page when the layouts agree, unless the write replaces the whole target (whole page rows
+        // then, so that 4.1 deletes it below).
+        const BlockSpan whole =
+            TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
+        if (PageExact(t, view, rect) && !SpanContains(WholePagesWritten(view, rect), whole)) {
+            AddPageExactDirty(t, view, rect);
             return;
         }
         // Another base, width or format: the target's page rows the write touches, read in the target's format.
@@ -1263,6 +1420,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls;
             if (sameView && !outOfRange) continue;
             if (!SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (PageExact(t, view, rect)) {  // IN-416: only the written pixels get patched
+                storesSkipped_++;
+                continue;
+            }
             if (wholePages.count != 0 && SpanContains(wholePages, TargetSpan(t, t.drawn))) {
                 storesSkipped_++;
                 continue;
