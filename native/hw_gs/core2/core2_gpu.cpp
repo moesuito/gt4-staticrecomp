@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -62,6 +63,8 @@ struct Image {
   VkDeviceSize bytes = 0;
   bool alive = false;
   std::uint32_t serial = 0;  // B4: unique per make_image, so a cached descriptor set never names a reused image
+  std::int32_t block = -1;   // S2: the image memory block it lives in (-1: an allocation of its own)
+  VkDeviceSize offset = 0;   // S2: its place in that block
 };
 
 // B4: the images bound by one draw descriptor set, by serial.
@@ -287,6 +290,76 @@ struct Gpu::Impl {
     return true;
   }
 
+  // S2: device memory for images taken from 64 MiB blocks instead of one allocation per image. vkAllocateMemory is a
+  // kernel call: at GT4's race start core 2 created 40-160 images per VBlank (texture decodes of new textures), which
+  // made 20-65 ms spikes. Images over 16 MiB keep an allocation of their own; empty blocks are kept for reuse.
+  // GT4_CORE2_IMAGE_BLOCKS=0 gives every image its own allocation (A/B).
+  static constexpr VkDeviceSize kImageBlockBytes = static_cast<VkDeviceSize>(64) << 20;
+  static constexpr VkDeviceSize kOwnAllocationBytes = static_cast<VkDeviceSize>(16) << 20;
+  struct MemoryBlock {
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    std::uint32_t type = 0;
+    std::map<VkDeviceSize, VkDeviceSize> free;  // offset -> size of each free range
+  };
+  std::vector<MemoryBlock> imageBlocks;
+  bool imageBlocksOn =
+      std::getenv("GT4_CORE2_IMAGE_BLOCKS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_IMAGE_BLOCKS"), "0") != 0;
+
+  // First fit in the blocks of memory type `type`; a new block when none has room.
+  bool take_block_memory(const VkMemoryRequirements &requirements, std::uint32_t type, Image &out, std::string &error) {
+    const VkDeviceSize alignment = std::max<VkDeviceSize>(requirements.alignment, 1);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      for (std::size_t b = 0; b < imageBlocks.size(); ++b) {
+        MemoryBlock &block = imageBlocks[b];
+        if (block.type != type) continue;
+        for (auto range = block.free.begin(); range != block.free.end(); ++range) {
+          const VkDeviceSize start = range->first, end = range->first + range->second;
+          const VkDeviceSize at = (start + alignment - 1) / alignment * alignment;
+          if (at + requirements.size > end) continue;
+          block.free.erase(range);
+          if (at > start) block.free[start] = at - start;
+          if (at + requirements.size < end) block.free[at + requirements.size] = end - (at + requirements.size);
+          out.memory = block.memory;
+          out.block = static_cast<std::int32_t>(b);
+          out.offset = at;
+          return true;
+        }
+      }
+      MemoryBlock block;
+      block.type = type;
+      VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      allocate.allocationSize = kImageBlockBytes;
+      allocate.memoryTypeIndex = type;
+      if (!check(gt4_hwd_vkAllocateMemory(device, &allocate, nullptr, &block.memory), "vkAllocateMemory", error)) {
+        return false;
+      }
+      block.free[0] = kImageBlockBytes;
+      imageBlocks.push_back(std::move(block));
+      stats.imageBlocks++;
+    }
+    error = "CORE2 image does not fit an image memory block";
+    return false;
+  }
+
+  // Returns a block range, merged with its free neighbours.
+  void give_block_memory(std::int32_t blockIndex, VkDeviceSize offset, VkDeviceSize size) {
+    if (blockIndex < 0 || static_cast<std::size_t>(blockIndex) >= imageBlocks.size()) return;
+    std::map<VkDeviceSize, VkDeviceSize> &free = imageBlocks[static_cast<std::size_t>(blockIndex)].free;
+    auto next = free.lower_bound(offset);
+    if (next != free.end() && offset + size == next->first) {
+      size += next->second;
+      next = free.erase(next);
+    }
+    if (next != free.begin()) {
+      auto previous = std::prev(next);
+      if (previous->first + previous->second == offset) {
+        previous->second += size;
+        return;
+      }
+    }
+    free[offset] = size;
+  }
+
   bool make_image(Image &out, std::uint32_t nativeWidth, std::uint32_t nativeHeight, std::uint32_t imageScale,
                   std::string &error) {
     out = Image{};
@@ -307,6 +380,8 @@ struct Gpu::Impl {
       out.memory = recycled[i].memory;
       out.view = recycled[i].view;
       out.bytes = recycled[i].bytes;
+      out.block = recycled[i].block;
+      out.offset = recycled[i].offset;
       recycledBytes -= recycled[i].bytes;
       recycled.erase(recycled.begin() + static_cast<std::ptrdiff_t>(i));
       out.alive = true;
@@ -333,8 +408,15 @@ struct Gpu::Impl {
       error = "no device-local memory type for a CORE2 image";
       return false;
     }
-    if (!check(gt4_hwd_vkAllocateMemory(device, &allocate, nullptr, &out.memory), "vkAllocateMemory", error)) return false;
-    if (!check(gt4_hwd_vkBindImageMemory(device, out.image, out.memory, 0), "vkBindImageMemory", error)) return false;
+    if (imageBlocksOn && requirements.size <= kOwnAllocationBytes) {
+      if (!take_block_memory(requirements, allocate.memoryTypeIndex, out, error)) return false;
+    } else {
+      if (!check(gt4_hwd_vkAllocateMemory(device, &allocate, nullptr, &out.memory), "vkAllocateMemory", error)) return false;
+      stats.imagesAllocated++;
+    }
+    if (!check(gt4_hwd_vkBindImageMemory(device, out.image, out.memory, out.offset), "vkBindImageMemory", error)) {
+      return false;
+    }
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = out.image;
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -344,6 +426,7 @@ struct Gpu::Impl {
     out.bytes = requirements.size;
     out.alive = true;
     stats.imageBytes += out.bytes;
+    stats.imagesCreated++;
     return clear_new_image(out, error);
   }
 
@@ -389,7 +472,11 @@ struct Gpu::Impl {
     if (!image.alive) return;
     if (image.view) gt4_hwd_vkDestroyImageView(device, image.view, nullptr);
     if (image.image) gt4_hwd_vkDestroyImage(device, image.image, nullptr);
-    if (image.memory) gt4_hwd_vkFreeMemory(device, image.memory, nullptr);
+    if (image.block >= 0) {
+      give_block_memory(image.block, image.offset, image.bytes);  // S2
+    } else if (image.memory) {
+      gt4_hwd_vkFreeMemory(device, image.memory, nullptr);
+    }
     stats.imageBytes -= std::min(stats.imageBytes, image.bytes);
     image = Image{};
   }
@@ -926,6 +1013,7 @@ Gpu::~Gpu() {
   s.release(s.fxaa);
   if (s.timestamps) gt4_hwd_vkDestroyQueryPool(s.device, s.timestamps, nullptr);
   if (s.statistics) gt4_hwd_vkDestroyQueryPool(s.device, s.statistics, nullptr);
+  for (Impl::MemoryBlock &block : s.imageBlocks) gt4_hwd_vkFreeMemory(s.device, block.memory, nullptr);
   // The remaining objects live as long as the device (the renderer is destroyed with the backend).
 }
 

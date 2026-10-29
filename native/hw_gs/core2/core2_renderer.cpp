@@ -418,6 +418,81 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool clutMirrorAnyPending_ = false;
     bool clutFromTargetPending_ = false;
     std::uint64_t lastWaitNs_ = 0;
+    // S1: per-VBlank spike log. A VBlank whose GS thread time or wall time passes GT4_CORE2_SPIKE_MS (default 20;
+    // 0 = off) prints what it did, at most 40 lines per 600 VBlanks.
+    struct SpikeMark {
+        std::chrono::steady_clock::time_point at{};
+        double gif = 0, upload = 0, texture = 0, readback = 0, translate = 0, draw = 0, targets = 0, clut = 0, patch = 0;
+        double uploads = 0, swizzleBytes = 0;
+        std::uint64_t createdImages = 0;
+        std::uint64_t waitNs = 0, readbacks = 0, downloads = 0, stores = 0, keeps = 0, created = 0, allocated = 0,
+                      decodes = 0, submits = 0, materializations = 0, dirty = 0;
+    };
+    SpikeMark spikeMark_;
+    std::uint32_t spikeLines_ = 0;
+    const double spikeMs_ = std::getenv("GT4_CORE2_SPIKE_MS") ? std::atof(std::getenv("GT4_CORE2_SPIKE_MS")) : 20.0;
+    SpikeMark TakeSpikeMark() const {
+        SpikeMark m;
+        m.at = std::chrono::steady_clock::now();
+        m.gif = times_.gif;
+        m.upload = times_.upload;
+        m.texture = times_.texture;
+        m.readback = times_.readback;
+        m.translate = times_.translate;
+        m.draw = times_.draw;
+        m.targets = times_.targets;
+        m.clut = times_.clut;
+        m.patch = times_.patch;
+        m.uploads = times_.uploads;
+        m.swizzleBytes = times_.swizzleBytes;
+        m.waitNs = gpu_.Stats().waitNs;
+        m.readbacks = stats.readbacks;
+        m.downloads = stats.downloadReadbacks;
+        m.stores = stats.storesBeforeWrite;
+        m.keeps = stats.gpuReadKeeps;
+        m.created = stats.targetsCreated;
+        m.allocated = gpu_.Stats().imagesAllocated + gpu_.Stats().imageBlocks;  // device allocations
+        m.createdImages = gpu_.Stats().imagesCreated;
+        m.decodes = gpu_.Stats().atlasUploads;
+        m.submits = gpu_.Stats().submissions;
+        m.materializations = stats.materializations;
+        m.dirty = stats.dirtyPatches;
+        return m;
+    }
+    void NoteSpike() {
+        const SpikeMark now = TakeSpikeMark();
+        if (spikeMs_ > 0.0 && spikeMark_.at.time_since_epoch().count() != 0 && spikeLines_ < 40) {
+            const SpikeMark &b = spikeMark_;
+            const double wall = std::chrono::duration<double, std::milli>(now.at - b.at).count();
+            const double gs = (now.gif - b.gif) / 1000.0;
+            if (gs >= spikeMs_ || wall >= spikeMs_) {
+                spikeLines_++;
+                std::fprintf(stderr,
+                             "[core2] spike vblank=%llu wall=%.1f gs=%.1f upload=%.1f (%.0f, %.0f KiB) texture=%.1f "
+                             "readback=%.1f translate=%.1f draw=%.1f targets=%.1f clut=%.1f patch=%.1f gpu_wait=%.1f "
+                             "readbacks=%llu (download %llu, store %llu, keep %llu) created=%llu images=%llu allocated=%llu "
+                             "decodes=%llu submits=%llu glm_writes=%llu dirty=%llu\n",
+                             static_cast<unsigned long long>(vblanks_), wall, gs, (now.upload - b.upload) / 1000.0,
+                             now.uploads - b.uploads, (now.swizzleBytes - b.swizzleBytes) / 1024.0,
+                             (now.texture - b.texture) / 1000.0, (now.readback - b.readback) / 1000.0,
+                             (now.translate - b.translate) / 1000.0, (now.draw - b.draw) / 1000.0,
+                             (now.targets - b.targets) / 1000.0, (now.clut - b.clut) / 1000.0,
+                             (now.patch - b.patch) / 1000.0, static_cast<double>(now.waitNs - b.waitNs) / 1.0e6,
+                             static_cast<unsigned long long>(now.readbacks - b.readbacks),
+                             static_cast<unsigned long long>(now.downloads - b.downloads),
+                             static_cast<unsigned long long>(now.stores - b.stores),
+                             static_cast<unsigned long long>(now.keeps - b.keeps),
+                             static_cast<unsigned long long>(now.created - b.created),
+                             static_cast<unsigned long long>(now.createdImages - b.createdImages),
+                             static_cast<unsigned long long>(now.allocated - b.allocated),
+                             static_cast<unsigned long long>(now.decodes - b.decodes),
+                             static_cast<unsigned long long>(now.submits - b.submits),
+                             static_cast<unsigned long long>(now.materializations - b.materializations),
+                             static_cast<unsigned long long>(now.dirty - b.dirty));
+            }
+        }
+        spikeMark_ = now;
+    }
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
 
@@ -2660,6 +2735,7 @@ void Renderer::Flush() {
     }
     s.Age();
     s.TrimTexturePool();
+    s.NoteSpike();
     if (s.vblanks_ % 600 == 0) {
         s.stats.liveTargets = 0;
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
@@ -2712,6 +2788,8 @@ void Renderer::Flush() {
         s.storesSkipped_ = 0;
         s.lastWaitNs_ = s.gpu_.Stats().waitNs;
         s.times_ = PhaseTimes{};
+        s.spikeMark_ = s.TakeSpikeMark();  // the phase times restart from 0
+        s.spikeLines_ = 0;
     }
     std::string error;
     {

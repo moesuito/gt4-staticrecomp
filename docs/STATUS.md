@@ -47,7 +47,10 @@ D1 measured before building it (IN-421): the whole fragment stage is only 0.4-0.
 draw-pass timestamps include overlapping compute; the GPU time is the chain of small dependent commands, the next
 target. Textures over no target are now decoded from a CPU page window (IN-422, candidate 297): barriers down again,
 GPU time 3-10% less. Every GPU-side step gives far less than its share; a low GPU clock at this partial load is the
-next thing to check. All steps are tabled in `hw-renderer-spec/CORE2-PERF-LEDGER.md`.
+next thing to check. All steps are tabled in `hw-renderer-spec/CORE2-PERF-LEDGER.md`. The owner's overlay confirmed
+the GPU idles at a low clock (as with GSdx), so the frame is the EE critical path. The race-start stutters were found
+with a per-VBlank spike log (IN-423): 40-160 image allocations per VBlank. Image memory now comes from 64 MiB blocks
+(IN-424, candidate 298): race-start VBlanks over 20 ms 60 -> 2.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)

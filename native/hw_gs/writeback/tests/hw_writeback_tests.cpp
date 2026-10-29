@@ -3837,6 +3837,11 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     failures += CheckCore2Ab(handles, "decode window, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
                              "GT4_CORE2_DECODE_WINDOW", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // S2: images placed in shared memory blocks must give the same images and memory as one allocation per image.
+    failures += CheckCore2Ab(handles, "image memory blocks, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
+                             "GT4_CORE2_IMAGE_BLOCKS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    failures += CheckCore2Ab(handles, "image memory blocks, GPU-read ageing", Core2GpuReadAgeingCapture(72), 72,
+                             "GT4_CORE2_IMAGE_BLOCKS", true, [](const Core2AbRun&, const Core2AbRun&) { return 0; }, true);
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
