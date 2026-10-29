@@ -1,0 +1,74 @@
+# CoreGS 2.0 (core 2) performance ledger
+
+One table of every phase B optimisation step: what was tried, what it measured, and whether it stayed. The details
+are in `IMPLEMENTATION-NOTES.md` (one row per IN number) and the journals of 2026-10-28 and 2026-10-29. Update this
+file with every step, including the ones that are reverted.
+
+## How to measure
+
+- **Scene:** the headless night race (Hong Kong Reverse, B-Spec, VW Lupo, 5 AI cars, 3x). The presses are in the
+  journal of 2026-10-28; local scripts `night-run.sh` and `title-run2.sh`.
+  - Short race: VBlanks 6500-9100. Long race: VBlanks 9000-14000 (`FRAMES=14000 EVERY=1200 FROM=9000`).
+  - Some pixels vary from run to run in every build:
+    - frame 6600 (the first race camera);
+    - 0-2 pixels at frames 7200 and 9000;
+    - the box (1204-1359, 568-621) at frame 12000.
+  - Compare frames against two runs of the same build before calling a difference real.
+- **Title check:** the GT Mode visit then the title (the IN-411 bug scene), compared byte for byte with candidate 287
+  at VBlanks 4200, 4300 and 4400.
+- **Timing lines,** every 600 VBlanks:
+  - `[core2] ms/vblank`:
+    - CPU stages: gif, batch, upload, translate, targets, texture, draw, readback, glm, swizzle;
+    - GPU: `gpu_wait` (fence waits), `gpu_busy` (GPU time from timestamps), `gpu_draw_passes`, and the pipeline
+      statistics `prims`, `fragments` and `compute`.
+  - `[core2] gpu_wait ms/vblank by readback reason`.
+  - The `[core2] vblank=` counters: barriers, render passes, flushes, recycled images and more.
+- **Owner tests:** F7/F8 in a 1080p window at 3x on the night race; the report is in the session log (UTF-16).
+- **Rule:** one change per candidate, with an A/B switch, frames checked, and CTest in both interlock modes.
+
+## Ledger
+
+Numbers are per VBlank on the night race at 3x unless stated. "GS thread" is the `gif` field. "Emulator" is the
+wall time of the whole emulator.
+
+| Step | Change | Measured effect | Kept? | Candidate |
+|---|---|---|---|---|
+| IN-406 | Present halving stops while the halved level still covers the window | Sharpness of GSdx at 3x in a 1080p window (owner test 13b) | yes | 287 |
+| IN-407 | Small untextured sprites drawn by the CPU into memory | Part of B1, below | yes | 288 |
+| IN-408 | CLUT loads and textures over a drawn CT32 target read on the GPU (GLM), no readback | Alone: slower, because GPU-palette textures were not cacheable | yes, with IN-409/410 | 288 |
+| IN-409 | Indexed textures keep their indices; palette rows looked up at draw time | Made IN-408 a gain | yes | 288 |
+| IN-410 | Submit every 96 batches | Readback waits fall, because the GPU is busy earlier | yes | 288 |
+| B1 total | IN-407..410 | Readbacks 6.9-8.7 -> 0.8-1.6 ms; emulator 20.8-26.4 -> 17.0-20.6 ms | yes | 288 |
+| IN-411 | GPU reads are not ageing uses; GPU-read targets stored before a drop or a row patch | Fixed the owner's title-backdrop bug; owner F8 57.0 VBlanks/s | yes | 289 |
+| IN-412 | Repeated identical uploads dropped; block versions instead of page versions | 5-19 uploads dropped, decodes unchanged | **reverted** | - |
+| IN-413 | Texture cache keyed by content (block tags) | Decodes 200 -> 15, but the emulator went 17-20 -> 26-30 ms (hashing about 2 MB per VBlank) | **reverted** | - |
+| B2 lesson | | A decode costs about 10 us of CPU; the texture cache was not the bottleneck | | |
+| measure | GLM page copies against the CPU upload swizzle | GLM copies 0.3-0.5 ms; swizzle 2.3-2.8 ms. The planned "uploads straight into the GLM on the GPU" would have removed little | | |
+| IN-414 | Upload swizzle in page-row runs (in-page byte tables) | Swizzle 2.3-2.8 -> 0.9 ms; the new fixture found and fixed wrong T8H/T4HL/T4HH uploads | yes | 290 |
+| IN-415 | No IN-411 store before a write that replaces whole pages under the target | Store waits 1.7-2.2 -> 0.2-0.3 ms; GS thread 16-22 -> 14-19 ms; owner F8 59.17 VBlanks/s, p99 19.6 ms | yes | 291 |
+| IN-416 | Dirty rectangles exact page by page and block by block for writes in the same layout | Store waits about 0 on the long race; GS thread 9.0-15.7 -> 8.3-13.9 ms | yes | 292 |
+| IN-417 | CLUT loads over several or depth targets, and textures over depth targets, via the GLM | CLUT readbacks about 1 -> 0; GS thread 8.3-13.9 -> 7.2-11.1 ms; owner F8 59.33, EE critical path 14.0 ms | yes | 293 |
+| IN-418 | No allocation per batch or CLUT load; finished images reused by size | GS thread 7.2-11.1 -> 5.5-8.9 ms; owner F8 59.14 (now GPU-limited in the window) | yes | 294 |
+| IN-419 | GPU timestamps; barriers only on real dependencies | Barriers halved; GPU time only 3-13% less | yes | 295 |
+| IN-420 | Draw batches deferred into one render pass | Render passes 106-312 -> 4-8; GPU time 5-13% less | yes | 296 |
+| IN-421 | D1 measured first: shader experiments, pipeline statistics | The whole fragment stage is 0.4-0.7 ms of GPU time; 53-65 M fragments; D1 not the next lever on the desktop | diagnostics only | - |
+
+## What we learned
+
+- **Measure before building.** The plan was wrong three times, and each time a measurement caught it:
+  - the content-keyed texture cache (IN-413);
+  - "the double copy is the cost" (it was the swizzle, IN-414);
+  - D1 as the next GPU lever (IN-421).
+- **Stores and readbacks:**
+  - GPU waits came mostly from IN-411's safety stores, not from the flare download.
+  - GT4 streams textures over the memory of its night render every frame. Whole-page writes (IN-415) and page-exact
+    dirty rectangles (IN-416) removed the stores without changing a pixel.
+- **CPU housekeeping:** allocation churn and device-memory churn cost the GS thread about 2 ms per VBlank (IN-418).
+  Profile with the all-thread sampler (`build/prof/sampler2.cpp`, git-ignored) on a RelWithDebInfo build.
+- **The GPU side:**
+  - The owner sees the GPU at 45 W of 180 W: it waits more than it works.
+  - The fixed GPU time is the chain of about 1000 small dependent commands per VBlank (texture decodes, GLM uploads,
+    patches, CLUT loads); halving barriers and render passes gave only about 10%.
+  - The fragment shader is cheap here. D1 remains required for the HD 620 beta gate, where shading is far slower.
+- **Timestamps:** with deferred draws, compute recorded before a pass overlaps the pass's timestamps, so
+  `gpu_draw_passes` overstates drawing.

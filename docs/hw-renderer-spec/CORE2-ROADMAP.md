@@ -147,6 +147,8 @@ end of each phase.
 
 Revised after the night measurement above.
 
+The ledger of every phase B step (kept and reverted, with numbers) is `CORE2-PERF-LEDGER.md`.
+
 **Owner direction (2026-10-28): 16.7 ms is not the goal, it is the ceiling.**
 - Cut the load as far as possible, the waits first.
 - An unlocked frame rate is planned later, mostly through frame interpolation, so headroom matters.
