@@ -47,6 +47,8 @@ struct Core2Counters {
     std::uint64_t clutReads = 0;               // IN-408: GPU CLUT read back for the CPU (the tone hook)
     std::uint64_t materializations = 0;        // IN-408: drawn target rectangles written into the GLM on the GPU
     std::uint64_t texturesOverTargets = 0;     // IN-408: textures decoded over drawn targets (through the GLM)
+    std::uint64_t gpuReadKeeps = 0;            // IN-408: GPU-read targets stored to memory before being dropped
+    std::uint64_t storesBeforeWrite = 0;       // IN-411: drawn targets stored before a write patches whole rows
     std::uint64_t paletteRowsWritten = 0;      // IN-409: palette rows filled (CPU palettes and GPU CLUT expansions)
     std::uint64_t paletteRowHits = 0;          // IN-409: draws whose palette row was already filled
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path

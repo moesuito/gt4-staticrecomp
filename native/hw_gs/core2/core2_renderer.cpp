@@ -172,6 +172,7 @@ struct Target {
     PixelRect drawn;                      // drawn since the last readback
     std::vector<Dirty> dirty;             // newer in GS memory than in the image
     bool fullWordWritten = false;         // a 32-bit (or Z32) draw happened: the top byte is the target's
+    bool readOnGpu = false;               // IN-408: drawn pixels were read on the GPU (CLUT, GLM) without a readback
     std::uint64_t lastDraw = 0;
     std::uint64_t lastDrawVblank = 0;
     std::uint32_t unusedFrames = 0;
@@ -353,8 +354,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // into the GPU CLUT, so it always equals the buffer the GS would hold. An indexed texture that uses a GPU-written
     // halfword is expanded on the GPU; a CPU user of such a palette (the tone hook) reads the GPU CLUT back first.
     // GT4_CORE2_GPU_CLUT=0 keeps the readback (A/B).
-    const bool gpuClut_ = std::getenv("GT4_CORE2_GPU_CLUT") == nullptr ||
-                          std::strcmp(std::getenv("GT4_CORE2_GPU_CLUT"), "0") != 0;
+    // Diagnostics: GT4_CORE2_GPU_CLUT=clut keeps only the CLUT loads on the GPU, =textures only the texture reads.
+    const char *gpuClutMode_ = std::getenv("GT4_CORE2_GPU_CLUT") ? std::getenv("GT4_CORE2_GPU_CLUT") : "1";
+    const bool gpuClut_ = std::strcmp(gpuClutMode_, "0") != 0 && std::strcmp(gpuClutMode_, "textures") != 0;
+    const bool gpuTextures_ = std::strcmp(gpuClutMode_, "0") != 0 && std::strcmp(gpuClutMode_, "clut") != 0;
     std::array<std::uint64_t, 512> clutSource_{};
     std::uint64_t clutTargetLoadCount_ = 0;
     bool gpuClutMirror_ = false;
@@ -561,7 +564,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                     Fail(error);
                     return;
                 }
-                target->usedThisFrame = true;
+                target->readOnGpu = true;  // not a use for 6.2 ageing (see MaterializeTargets)
                 static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
                 if (trace) {
                     std::fprintf(stderr, "[core2] gpu clut vblank=%llu cbp=%u psm=%u cpsm=%u csa=%u target bp=%u bw=%u "
@@ -717,8 +720,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 return Readback(span);
             }
         }
+        std::vector<Target *> order;
         for (Target &t : targets_) {
-            if (!t.alive || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) order.push_back(&t);
+        }
+        std::sort(order.begin(), order.end(), [](const Target *a, const Target *b) { return a->lastDraw < b->lastDraw; });
+        for (Target *target : order) {
+            Target &t = *target;
             if (!ApplyDirty(t)) return false;
             // The target's page rows inside the span, within its drawn area.
             const memory::PsmInfo &info = memory::psmInfo(Psm::Ct32);
@@ -740,7 +748,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 Fail(error);
                 return false;
             }
-            t.usedThisFrame = true;
+            // Not a use for 6.2 ageing: a readback was not one either, and a target kept alive by reads of its memory
+            // later wins texture lookups over newer memory (GT4's title video after GT Mode).
+            t.readOnGpu = true;
             any = true;
             stats.materializations++;
             static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
@@ -817,7 +827,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // IN-408: a texture over drawn targets reads them through the GLM, written on the GPU; such a decode is not
         // kept, since the targets change without GS memory page versions changing.
         bool overTargets = false;
-        if (gpuClut_) {
+        if (gpuTextures_) {
             for (const Target &target : targets_) {
                 if (target.alive && !target.drawn.Empty() && SpansOverlap(TargetSpan(target, target.drawn), textureSpan)) {
                     overTargets = true;
@@ -870,6 +880,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             Fail(error);
             return kNoImage;
         }
+        if (overTargets) {
+            // IN-408: decoded from targets' pixels written into the GLM, which change without GS memory page versions
+            // changing: never kept (a later hit would show the targets as they were, GT4's title backdrop after GT
+            // Mode). The image goes back to the pool at the next VBlank, after every draw that sampled it.
+            uncachedTextures_.push_back({image, SizeKey(t.texWidth, t.texHeight)});
+            return image;
+        }
         TextureEntry entry;
         entry.key = key;
         entry.span = span;
@@ -891,8 +908,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return image;
     }
 
+    // IN-408: decodes over drawn targets, used for one batch each; returned to the pool every VBlank.
+    std::vector<std::pair<ImageId, std::uint64_t>> uncachedTextures_;
+
     // Images in the pool past the budget are released (the pool only saves allocations).
     void TrimTexturePool() {
+        for (const auto &[image, size] : uncachedTextures_) texturePool_[size].push_back(image);
+        uncachedTextures_.clear();
         std::uint64_t pooled = 0;
         for (auto &[size, images] : texturePool_) {
             const std::uint64_t each = (size >> 32) * (size & 0xFFFFFFFFu) * 4u;
@@ -906,6 +928,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // ---- Targets ---------------------------------------------------------------------------------------------
     BlockSpan TargetSpan(const Target &t, const PixelRect &r) const { return SpanOfRect(t.view, r); }
+
+    // IN-408: a target whose drawn pixels a GPU CLUT load or texture read without a readback goes to memory before it
+    // is dropped (a width change, 6.2 ageing): before IN-408 that first read had already stored it there, and later
+    // reads of that memory (GT4's title backdrop after a GT Mode visit) must still see it.
+    void KeepGpuReadContent(Target &t) {
+        if (!t.alive || !t.readOnGpu || t.drawn.Empty()) return;
+        readbackReason_ = "keep";
+        Readback(TargetSpan(t, t.drawn));
+        readbackReason_ = "other";
+        stats.gpuReadKeeps++;
+    }
 
     void DestroyTarget(Target &t) {
         if (!t.alive) return;
@@ -1023,6 +1056,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (!t.alive || t.cls != cls || t.view.basePointer != view.basePointer) continue;
             if (t.view.bufferWidth != view.bufferWidth) {
                 if (vblanks_ > t.lastDrawVblank + 1) {
+                    KeepGpuReadContent(t);
                     DestroyTarget(t);
                     stats.targetsReplaced++;
                 }
@@ -1169,7 +1203,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             memory_.Local().writeRect(out, static_cast<std::uint32_t>(area.x0), static_cast<std::uint32_t>(area.y0), w, h,
                                       words.data());
             MarkWritten(SpanOfRect(out, area));
-            if (Contains(area, t->drawn)) t->drawn = PixelRect{};
+            if (Contains(area, t->drawn)) {
+                t->drawn = PixelRect{};
+                t->readOnGpu = false;
+            }
             stats.readbacks++;
             stats.readbackPixels += static_cast<std::uint64_t>(w) * h;
         }
@@ -1178,6 +1215,35 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     bool ReadbackAll() { return Readback(BlockSpan{0, kAllBlocks}); }
 
+    // IN-411: before a write into GS memory (an EE upload, a local move) lands, a drawn target that will get WHOLE page
+    // rows as dirty (4.1: a write in another base, width or format, or one past the 2048 range) and whose drawn pixels
+    // the GPU path read without a readback (IN-408) stores its drawn area first. Those rows are patched back from
+    // memory, so memory must hold the target's newest pixels outside the written words; before IN-408 the readback of
+    // that GPU read had stored them. The whole drawn area goes, so the target needs this once per round of reads.
+    // A write in the target's own view patches only the written rectangle and needs nothing.
+    // GT4_CORE2_STORE_BEFORE_WRITE=0 turns it off (A/B).
+    bool StoreDrawnBeforeWrite(const BufferView &view, const PixelRect &rect) {
+        static const bool enabled = std::getenv("GT4_CORE2_STORE_BEFORE_WRITE") == nullptr ||
+                                    std::strcmp(std::getenv("GT4_CORE2_STORE_BEFORE_WRITE"), "0") != 0;
+        if (!enabled) return true;
+        const bool outOfRange = rect.x1 >= 2048 || rect.y1 >= 2048;
+        const BlockSpan span = outOfRange ? BlockSpan{0, kAllBlocks} : WriteSpan(view, rect);
+        const FormatClass cls = ClassOf(view.psm);
+        for (Target &t : targets_) {
+            if (!t.alive || !t.readOnGpu || t.drawn.Empty()) continue;
+            const bool sameView =
+                view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls;
+            if (sameView && !outOfRange) continue;
+            if (!SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            readbackReason_ = "before write";
+            const bool ok = Readback(TargetSpan(t, t.drawn));
+            readbackReason_ = "other";
+            if (!ok) return false;
+            stats.storesBeforeWrite++;
+        }
+        return true;
+    }
+
     // ---- TransferSink ----------------------------------------------------------------------------------------
     void InvalidateDestination(const UploadCommit &c) override { memory_.InvalidateDestination(c); }
 
@@ -1185,6 +1251,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         ScopedUs uploadTimer(times_.upload);
         times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
+        if (psm && c.rrw != 0 && c.rrh != 0) {
+            const PixelRect written{static_cast<std::int32_t>(c.dsax), static_cast<std::int32_t>(c.dsay),
+                                    static_cast<std::int32_t>(c.dsax + c.rrw - 1u),
+                                    static_cast<std::int32_t>(c.dsay + c.rrh - 1u)};
+            if (!StoreDrawnBeforeWrite(BufferView{c.dbp, c.dbw, *psm}, written)) return;
+        }
         static const bool fast = std::getenv("GT4_CORE2_FAST_UPLOAD") == nullptr ||
                                  std::strcmp(std::getenv("GT4_CORE2_FAST_UPLOAD"), "0") != 0;  // A/B
         if (!fast || !psm ||
@@ -1254,6 +1326,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (!Readback(SpanOfRect(source, rect), &source, &rect)) return;
         } else if (!ReadbackAll()) {
             return;
+        }
+        if (dpsm && move.rrw != 0 && move.rrh != 0) {
+            const PixelRect written{static_cast<std::int32_t>(move.dsax), static_cast<std::int32_t>(move.dsay),
+                                    static_cast<std::int32_t>(move.dsax + move.rrw - 1u),
+                                    static_cast<std::int32_t>(move.dsay + move.rrh - 1u)};
+            if (!StoreDrawnBeforeWrite(BufferView{move.dbp, move.dbw, *dpsm}, written)) return;
         }
         memory_.LocalToLocalMove(move);
         if (dpsm && move.rrw != 0 && move.rrh != 0) {
@@ -1461,7 +1539,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                          static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth,
                                          static_cast<unsigned>(view.psm), width, height);
                         }
-                        if (gpuClut_ && target.cls == FormatClass::Colour32) continue;  // IN-408: MemoryTexture
+                        if (gpuTextures_ && target.cls == FormatClass::Colour32) continue;  // IN-408: MemoryTexture
                         if (indexed) {
                             stats.indexedFromTargetReadbacks++;
                         } else {
@@ -1997,7 +2075,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 t.unusedFrames = 0;
             } else if (++t.unusedFrames > kAgeLimitFrames) {
                 // 6.2: deleted without readback. Its drawn area is lost to memory, as in the reference; a later
-                // host read of it sees what memory held.
+                // host read of it sees what memory held (IN-408: unless the GPU path read it, see KeepGpuReadContent).
+                KeepGpuReadContent(t);
                 DestroyTarget(t);
                 stats.targetsAged++;
                 continue;

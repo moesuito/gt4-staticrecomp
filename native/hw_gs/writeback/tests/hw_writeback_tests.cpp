@@ -3201,7 +3201,8 @@ int TestCore2InterlacedPresent(const gpu::VulkanHandles& handles) {
 // semantics): every frame's composed image must be equal in both runs, and the run with the switch on must never
 // move GS memory away from the reference (a word may differ between the runs only where the run with the switch off
 // is already off the reference: at scale, a target's undrawn first sub-pixel row and column, sampled as a texture at
-// its edge, hold the image's earlier content). `exact` asks for the reference itself in both runs.
+// its edge, hold the image's earlier content). `exact` asks for the reference itself in both runs. `memoryLastOnly`
+// reads GS memory at the last frame only (reading it stores every drawn target, which changes what follows).
 struct Core2AbRun {
     std::vector<std::vector<uint8_t>> images;
     std::vector<std::vector<uint8_t>> memory;
@@ -3211,7 +3212,7 @@ struct Core2AbRun {
 constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
 
 bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, const char* abSwitch,
-                   bool on, Core2AbRun& out, std::string& error) {
+                   bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0) {
     _putenv_s(abSwitch, on ? "" : "0");
     _putenv_s("GT4_HW_CORE", "2");
     writeback::Renderer renderer;
@@ -3234,8 +3235,12 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
                                                   rgb.push_back(p.b);
                                               }
                                               out.images.push_back(std::move(rgb));
-                                              const uint8_t* slm = renderer.Slm();
-                                              out.memory.emplace_back(slm, slm + kGsMemoryBytes);
+                                              if (out.images.size() > memoryFromFrame) {
+                                                  const uint8_t* slm = renderer.Slm();
+                                                  out.memory.emplace_back(slm, slm + kGsMemoryBytes);
+                                              } else {
+                                                  out.memory.emplace_back();
+                                              }
                                           },
                                           error);
     if (const core2::Core2Counters* stats = renderer.Core2Stats()) out.stats = *stats;
@@ -3246,12 +3251,14 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
 // Returns the number of failures; `counters` checks the two runs' counters (switch off, switch on).
 int CheckCore2Ab(const gpu::VulkanHandles& handles, const char* name, const cpuref::CaptureWriter& capture,
                  uint32_t frames, const char* abSwitch, bool exact,
-                 const std::function<int(const Core2AbRun& off, const Core2AbRun& on)>& counters) {
+                 const std::function<int(const Core2AbRun& off, const Core2AbRun& on)>& counters,
+                 bool memoryLastOnly = false) {
     Core2AbRun off, on;
     std::vector<std::vector<uint8_t>> reference;
     std::string error;
-    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error) &&
-              ReplayCore2Ab(handles, capture, abSwitch, true, on, error);
+    const uint32_t memoryFrom = memoryLastOnly ? frames - 1 : 0;
+    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom) &&
+              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom);
     if (ok) {
         cpuref::CpuRenderer renderer;
         cpuref::ReplaySummary summary;
@@ -3274,7 +3281,8 @@ int CheckCore2Ab(const gpu::VulkanHandles& handles, const char* name, const cpur
     for (uint32_t frame = 0; frame < frames; ++frame) {
         const bool image = !off.images[frame].empty() && off.images[frame] == on.images[frame];
         uint64_t differing = 0, newDeviations = 0, offDeviations = 0, onDeviations = 0;
-        for (size_t at = 0; at < kGsMemoryBytes; at += 4) {
+        const size_t memoryBytes = off.memory[frame].empty() || on.memory[frame].empty() ? 0 : kGsMemoryBytes;
+        for (size_t at = 0; at < memoryBytes; at += 4) {
             uint32_t a = 0, b = 0, r = 0;
             std::memcpy(&a, off.memory[frame].data() + at, 4);
             std::memcpy(&b, on.memory[frame].data() + at, 4);
@@ -3458,6 +3466,78 @@ cpuref::CaptureWriter Core2GpuPaletteCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-408 ageing (owner report, GT4's title after a GT Mode visit): a CT32 target drawn once on the GPU and then only
+// read through GS memory (a T8 texture over it, every frame) must still age out after 60 unused frames (6.2), its
+// drawn pixels stored to memory first since no readback ever did; then an EE upload in the target's own view
+// replaces part of that memory and the T8 sprite must show the upload.
+cpuref::CaptureWriter Core2GpuReadAgeingCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSource = 16, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    auto blit = [](uint64_t dbp, uint64_t dpsm) { return (dbp << 32) | (uint64_t{1} << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    auto tex0 = [](uint64_t blocks, uint64_t psm, uint64_t log2, uint64_t tfx) {
+        return blocks | (uint64_t{1} << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) |
+               (tfx << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // A grey ramp palette at page 14 (CT32 16 x 16), uploaded: the T8 sprite shows index values as greys.
+    ad({blit(14 * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> entries;
+        for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t a = 2 * i, b = 2 * i + 1;  // CSM1 order does not matter for a check against the reference
+            entries.push_back(uint64_t{0x80000000u | (a * 0x010101u)} | (uint64_t{0x80000000u | (b * 0x010101u)} << 32));
+        }
+        image(entries);
+    }
+    // The source texture (16 x 16 CT32).
+    ad({blit(kSource * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> texels;
+        for (uint32_t i = 0; i < 128; ++i) texels.push_back(uint64_t{0x80123456u + i * 0x00010203u} * 0x100000001ull);
+        image(texels);
+    }
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        std::vector<uint64_t> w = {(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,
+                                   uint64_t{1} << 32, 0x4E};
+        if (frame == 0) {
+            // drawn once on the GPU: the source stretched over 32 x 32 of the render page
+            w.insert(w.end(), {frameReg(kRender), 0x4C, tex0(kSource * 32, 0x00, 4, 1), 0x06, kSprite | kTme | kFst,
+                               0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(16, 16), 0x03,
+                               xyz(32, 32), 0x05});
+        }
+        // every frame: A cleared, then the render page read as a T8 texture through the palette (CLD 1)
+        w.insert(w.end(), {frameReg(kA), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05,
+                           tex0(kRender * 32, 0x13, 5, 0) | (uint64_t{14 * 32} << 37) | (uint64_t{1} << 61), 0x06,
+                           kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05,
+                           uv(32, 32), 0x03, xyz(32, 32), 0x05});
+        ad(w);
+        if (frame == frames - 4) {
+            // after the target aged out: an EE upload over the top 8 x 8 of the render page (its own view)
+            ad({blit(kRender * 32, 0x00), 0x50, 0, 0x51, uint64_t{8} | (uint64_t{8} << 32), 0x52, 0, 0x53});
+            std::vector<uint64_t> words;
+            for (uint32_t i = 0; i < 32; ++i) words.push_back(uint64_t{0x80F0E0D0u - i} * 0x100000001ull);
+            image(words);
+        }
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -3535,6 +3615,23 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
     failures += CheckCore2Ab(handles, "palette rows, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
                              "GT4_CORE2_PALETTE_ROWS", false,
                              [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // IN-408 ageing: a target only read through GS memory on the GPU ages out and keeps its pixels in memory.
+    failures += CheckCore2Ab(handles, "GPU-read ageing", Core2GpuReadAgeingCapture(72), 72, kSwitch, false,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  GPU-read ageing: targets aged %llu / %llu, GPU-read keeps %llu / %llu, "
+                                             "GLM writes %llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.targetsAged),
+                                             static_cast<unsigned long long>(on.stats.targetsAged),
+                                             static_cast<unsigned long long>(off.stats.gpuReadKeeps),
+                                             static_cast<unsigned long long>(on.stats.gpuReadKeeps),
+                                             static_cast<unsigned long long>(off.stats.materializations),
+                                             static_cast<unsigned long long>(on.stats.materializations));
+                                 return on.stats.targetsAged > 0 && on.stats.gpuReadKeeps > 0 &&
+                                                on.stats.materializations > 0
+                                            ? 0
+                                            : 1;
+                             },
+                             true);
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -25,7 +25,9 @@ bilinear reduction like the reference. Owner test 13b: sharpness solved. Phase B
 16.7 ms is the ceiling, beta gate a 2x i5-7200U/HD 620 laptop) started on a headless night B-Spec scene: palettes and
 textures over drawn targets now read on the GPU, indexed textures keep their indices, submissions every 96 batches
 (IN-407..IN-410, candidate 288): night race at 3x 20.8-26.4 -> 17.0-20.6 ms per VBlank, readbacks 6.9-8.7 -> 0.8-1.6 ms,
-frames byte-identical. Not merged; no pins.
+frames byte-identical. Owner test of 288: lighter at night, but the title backdrop broke after a GT Mode visit (GPU
+reads kept a target alive past its ageing); fixed in candidate 289 (IN-411), night 17.8-22.2 ms per VBlank headless.
+Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)
 
