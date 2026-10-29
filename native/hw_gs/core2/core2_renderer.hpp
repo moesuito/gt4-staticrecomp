@@ -42,6 +42,7 @@ struct Core2Counters {
     std::uint64_t clutReadbacks = 0;
     std::uint64_t downloadReadbacks = 0;       // EE downloads (local-to-host transfers) that read back a target
     std::uint64_t batchedReadbacks = 0;        // IN-429: target readbacks reduced together in one submission
+    std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now
     std::uint64_t dirtyMerged = 0;             // IN-430: dirty rectangles merged into the target's last pending one
     std::uint64_t cpuSpriteBatches = 0;        // IN-407: small untextured sprite batches drawn into GS memory
     std::uint64_t clutTargetLoads = 0;         // IN-408: CLUT loads read from a drawn target on the GPU

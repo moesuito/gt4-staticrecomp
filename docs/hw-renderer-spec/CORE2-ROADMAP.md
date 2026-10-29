@@ -317,7 +317,7 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
    - the cut to the race camera (about 35 readbacks in one VBlank);
    - textures over 16-bit targets (a readback each);
    - the IN-411 stores in the owner's menus.
-5. **A memory budget** for target and texture images: about 630 MB at 3x now, and the HD 620 laptop shares system
+5. **A memory budget** (done, IN-431: 192 MiB of texture cache on integrated GPUs) for target and texture images: about 630 MB at 3x now, and the HD 620 laptop shares system
    memory.
 6. **C3 FSR1 sharpening** (owner, 2026-10-29: FSR1 replaces CAS). Written from AMD's MIT FidelityFX FSR1 (EASU and
    RCAS), never a GPL copy.

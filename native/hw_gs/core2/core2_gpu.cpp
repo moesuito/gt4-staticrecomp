@@ -84,6 +84,7 @@ struct DrawSetKeyHash {
 
 // B4: device memory kept in finished images for reuse by size (see Impl::retire).
 constexpr VkDeviceSize kRecycledImageBytes = static_cast<VkDeviceSize>(128) << 20;
+constexpr VkDeviceSize kRecycledImageBytesIntegrated = static_cast<VkDeviceSize>(32) << 20;  // IN-431
 
 }  // namespace
 
@@ -181,6 +182,7 @@ struct Gpu::Impl {
   // GT4_CORE2_IMAGE_POOL=0 frees them at once (A/B).
   std::vector<Image> recycled;
   VkDeviceSize recycledBytes = 0;
+  bool integrated = false;  // IN-431: VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
   bool recycleImages = std::getenv("GT4_CORE2_IMAGE_POOL") == nullptr || std::strcmp(std::getenv("GT4_CORE2_IMAGE_POOL"), "0") != 0;
   std::uint32_t nextSerial = 1;
   bool renderPassOpen = false;
@@ -478,7 +480,7 @@ struct Gpu::Impl {
     recycled.push_back(image);
     recycledBytes += image.bytes;
     image = Image{};
-    while (recycledBytes > kRecycledImageBytes && !recycled.empty()) {
+    while (recycledBytes > (integrated ? kRecycledImageBytesIntegrated : kRecycledImageBytes) && !recycled.empty()) {
       recycledBytes -= recycled.front().bytes;
       release(recycled.front());
       recycled.erase(recycled.begin());
@@ -1075,6 +1077,8 @@ Gpu::~Gpu() {
 }
 
 bool Gpu::Ready() const { return impl_->ready; }
+
+bool Gpu::Integrated() const { return impl_->integrated; }
 std::uint32_t Gpu::Scale() const { return impl_->scale; }
 
 std::uint32_t Gpu::MaxNativeSide() const {
@@ -1106,6 +1110,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   VkPhysicalDeviceProperties properties{};
   gt4_hw_vkGetPhysicalDeviceProperties(s.physical, &properties);
   s.limits = properties.limits;
+  s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 
   VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;

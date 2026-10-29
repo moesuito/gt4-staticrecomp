@@ -108,6 +108,9 @@ public:
     // `scale` is the internal scale s; `shift` the 06.3 half-pixel shift factor of the vertex stage.
     bool Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shift, std::string &error);
     bool Ready() const;
+    // IN-431: true on an integrated GPU (its images live in system memory shared with the game); the image budgets
+    // are smaller there.
+    bool Integrated() const;
     std::uint32_t Scale() const;
     std::uint32_t MaxNativeSide() const;  // the largest native side an image can have at this scale
 
