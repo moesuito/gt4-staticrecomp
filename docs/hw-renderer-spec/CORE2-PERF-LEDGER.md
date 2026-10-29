@@ -72,8 +72,11 @@ wall time of the whole emulator.
     patches, CLUT loads); halving barriers and render passes gave only about 10%.
   - The fragment shader is cheap here. D1 remains required for the HD 620 beta gate, where shading is far slower.
 - **GPU changes give far less than expected.** Removing half the barriers (IN-419), 97% of the render passes
-  (IN-420) and more barriers (IN-422) each gave 3-13% of GPU time. Hypothesis (unverified): the driver keeps the
-  GPU at a low clock at this partial load (45 W of 180 W). Check the GPU clock during the race before the next
-  GPU-side step.
+  (IN-420) and more barriers (IN-422) each gave 3-13% of GPU time.
+  - **Confirmed by the owner (297):** the RX 9060 XT runs at about 1650 of 3300 MHz, 47-50% use, 29 W; VRAM at about
+    1350 of 2500 MHz; the same with GSdx.
+  - The driver keeps the GPU at a low clock because it is idle, so GPU timestamps measure the clock more than work.
+  - On this desktop the GPU is not the limit. The frame is the EE critical path (about 14 ms), of which the renderer
+    owns about 2.5 ms (the EE waiting for the flare downloads).
 - **Timestamps:** with deferred draws, compute recorded before a pass overlaps the pass's timestamps, so
   `gpu_draw_passes` overstates drawing.

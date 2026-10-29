@@ -221,9 +221,12 @@ proves otherwise.
   - D1 measured first (IN-421): the whole fragment stage is only 0.4-0.7 ms of GPU time at 3x (empty-shader
     experiment); 53-65 M fragments per VBlank. The GPU time is the chain of small dependent commands.
   - IN-422 decodes textures over no target from a CPU page window (barriers down again, GPU time 3-10% less).
-  - Next:
-    - check the GPU clock during the race (the owner, Adrenalin overlay): every GPU-side change has given far less
-      than its share, so the timestamps may measure a low clock more than work;
+  - The owner's overlay (297) confirmed the GPU idles at a low clock (about 1650 of 3300 MHz, 29 W), as with GSdx: the
+    GPU is not the limit on the desktop. The frame is the EE critical path (about 14 ms); the renderer owns about
+    2.5 ms of it (the EE waiting for flare downloads). CPU/EE work goes to its own task (TASK-134).
+  - Next for the renderer:
+    - the flare-download wait;
+    - the HD 620 laptop measurement, then D1 if that GPU is the limit there;
     - patches from a page window too, if the GPU side stays on top;
     - D1 stays a beta requirement (the HD 620 shades far slower), after the chain;
     - the flare download (0.4-1.2 readbacks, 0.7-2.1 ms per VBlank) if it stays on top;
