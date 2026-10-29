@@ -1007,7 +1007,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const BufferView view{t.glmBp, t.glmBw, *psm};
         const BlockSpan span = SpanOfRect(view, 0, 0, static_cast<std::int32_t>(t.texWidth) - 1,
                                           static_cast<std::int32_t>(t.texHeight) - 1);
-        if (!MakeGlmCurrent(span)) return kNoImage;
+        // IN-422: a texture over no drawn target reads a copy of its pages taken from CPU memory (current for them)
+        // instead of the GLM: no GLM upload, and no barrier between that upload and the decode.
+        std::uint32_t windowFirst = 0, windowPages = 0;
+        const bool window = decodeWindow_ && !overTargets && span.count < kAllBlocks && span.count != 0 &&
+                            [&] {
+                                windowFirst = span.begin / memory::kBlocksPerPage;
+                                const std::uint32_t lastPage = (span.begin + span.count - 1u) / memory::kBlocksPerPage;
+                                windowPages = lastPage - windowFirst + 1u;
+                                return windowPages <= kMaxWindowPages;
+                            }();
+        if (!window && !MakeGlmCurrent(span)) return kNoImage;
         if (overTargets) {
             bool any = false;
             if (!MaterializeTargets(span, any)) return kNoImage;
@@ -1015,6 +1025,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         const ImageId image = TextureImage(t.texWidth, t.texHeight);
         if (image == kNoImage) return kNoImage;
+        if (window) gpu_.SetDecodeWindow(memory_.Local().bytes().data(), windowFirst, windowPages);
         std::string error;
         if (t.glmIndexed && paletteRows_) {
             if (!gpu_.DecodeTexture(image, t.glmBp, t.glmBw, t.glmPsm, t.texWidth, t.texHeight, nullptr, error)) {
@@ -1064,6 +1075,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         return image;
     }
+
+    // IN-422: GT4_CORE2_DECODE_WINDOW=0 decodes every texture from the GLM (A/B).
+    const bool decodeWindow_ = std::getenv("GT4_CORE2_DECODE_WINDOW") == nullptr ||
+                               std::strcmp(std::getenv("GT4_CORE2_DECODE_WINDOW"), "0") != 0;
+    static constexpr std::uint32_t kMaxWindowPages = 256;  // 2 MiB: larger textures read the GLM
 
     // IN-408: decodes over drawn targets, used for one batch each; returned to the pool every VBlank.
     std::vector<std::pair<ImageId, std::uint64_t>> uncachedTextures_;
@@ -2483,7 +2499,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
-                 "waits=%llu recycled_images=%llu full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f\n",
+                 "waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
                  (unsigned long long)c.texturesFromTargets, (unsigned long long)c.texturesFromMemory,
@@ -2502,7 +2518,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
-                 (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
+                 (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0));
 }
 
 }  // namespace

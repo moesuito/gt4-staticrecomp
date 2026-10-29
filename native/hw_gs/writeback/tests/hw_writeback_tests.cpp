@@ -3832,6 +3832,11 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              "GT4_CORE2_DEFER_DRAWS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     failures += CheckCore2Ab(handles, "lazy barriers, stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
                              "GT4_CORE2_LAZY_BARRIERS", true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // IN-422: textures over no drawn target decoded from a CPU page window must equal the GLM decodes.
+    failures += CheckCore2Ab(handles, "decode window, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_DECODE_WINDOW",
+                             true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    failures += CheckCore2Ab(handles, "decode window, cache stream", CacheFixtureCapture(), kCacheFixtureFrames,
+                             "GT4_CORE2_DECODE_WINDOW", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -113,6 +113,36 @@ struct Gpu::Impl {
   static constexpr std::uint32_t kPassTimestampPairs = 64;
   static constexpr std::uint32_t kTimestampsPerSlot = 2u + 2u * kPassTimestampPairs;
   VkQueryPool timestamps = VK_NULL_HANDLE;
+  // IN-422: the window of the next texture decode (SetDecodeWindow).
+  const std::uint8_t *windowMemory = nullptr;
+  std::uint32_t windowFirstPage = 0, windowPages = 0;
+
+  // Copies the decode window's pages into the staging ring (wrapping at the end of GS memory) and points `glm` at
+  // them; returns the push words of the window (base word, word count), {0, 0} without a window.
+  bool bind_window(VkDescriptorBufferInfo &glm, std::uint32_t &baseWord, std::uint32_t &words, std::string &error) {
+    baseWord = 0;
+    words = 0;
+    if (!windowMemory) return true;
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(windowPages) * 8192u;
+    const VkDeviceSize align = std::max<VkDeviceSize>(limits.minStorageBufferOffsetAlignment, 16);
+    VkDeviceSize offset = 0;
+    if (!ring(staging, bytes, align, offset, error)) return false;
+    std::uint8_t *out = static_cast<std::uint8_t *>(staging.mapped) + offset;
+    const std::uint32_t first = windowFirstPage % 512u;
+    const std::uint32_t head = std::min(windowPages, 512u - first);
+    std::memcpy(out, windowMemory + static_cast<std::size_t>(first) * 8192u, static_cast<std::size_t>(head) * 8192u);
+    if (head < windowPages) {
+      std::memcpy(out + static_cast<std::size_t>(head) * 8192u, windowMemory,
+                  static_cast<std::size_t>(windowPages - head) * 8192u);
+    }
+    glm = VkDescriptorBufferInfo{staging.buffer, offset, bytes};
+    baseWord = first * 2048u;
+    words = windowPages * 2048u;
+    windowMemory = nullptr;
+    stats.windowDecodes++;
+    stats.windowBytes += bytes;
+    return true;
+  }
   // B4: one pipeline statistics query per slot over its whole command buffer (primitives, fragment and compute
   // invocations), where the device enables them.
   VkQueryPool statistics = VK_NULL_HANDLE;
@@ -1587,13 +1617,17 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   if (!s.begin_recording(error)) return false;
   VkDeviceSize paletteOffset = 0;
   const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
+  // The window first: a ring that submits moves to the other half, so later offsets stay in this recording.
+  VkDescriptorBufferInfo glmRange{s.glm, 0, 4u << 20};
+  std::uint32_t windowBase = 0, windowWords = 0;
+  if (!s.bind_window(glmRange, windowBase, windowWords, error)) return false;
   if (!s.ring(s.staging, 256 * 4, align, paletteOffset, error)) return false;
   if (palette) std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + paletteOffset, palette, 256 * 4);
   s.outside_pass();
-  s.touch({}, {image}, s.kGlmBuffer | s.kClutBuffer, 0);
+  s.touch({}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
-  VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
+  VkDescriptorBufferInfo buffers[4] = {glmRange,
                                        {s.glmTables.buffer, 0, s.glmTableBytes},
                                        {s.staging.buffer, paletteOffset, 256 * 4},
                                        {s.clut, 0, 512 * 4}};  // the GPU CLUT: read only in mode 2 (IN-408)
@@ -1614,13 +1648,15 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
     }
   }
   gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
-  std::uint32_t push[20] = {};
+  std::uint32_t push[22] = {};
   push[0] = bp;
   push[1] = bw;
   push[2] = psm;
   push[3] = width;
   push[4] = height;
   push[5] = palette ? 1u : 0u;
+  push[20] = windowBase;  // IN-422
+  push[21] = windowWords;
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodePipeline);
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
@@ -1628,6 +1664,12 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   s.after_op();
   s.stats.atlasUploads++;
   return true;
+}
+
+void Gpu::SetDecodeWindow(const std::uint8_t *memory, std::uint32_t firstPage, std::uint32_t pageCount) {
+  impl_->windowMemory = memory;
+  impl_->windowFirstPage = firstPage;
+  impl_->windowPages = pageCount;
 }
 
 bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
@@ -1639,11 +1681,14 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
     return false;
   }
   if (!s.begin_recording(error)) return false;
+  VkDescriptorBufferInfo glmRange{s.glm, 0, 4u << 20};
+  std::uint32_t windowBase = 0, windowWords = 0;
+  if (!s.bind_window(glmRange, windowBase, windowWords, error)) return false;
   s.outside_pass();
-  s.touch({}, {image}, s.kGlmBuffer | s.kClutBuffer, 0);
+  s.touch({}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
-  VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
+  VkDescriptorBufferInfo buffers[4] = {glmRange,
                                        {s.glmTables.buffer, 0, s.glmTableBytes},
                                        {s.glmTables.buffer, 0, s.glmTableBytes},  // the palette ring is not read
                                        {s.clut, 0, 512 * 4}};
@@ -1664,7 +1709,7 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
     }
   }
   gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
-  std::uint32_t push[20] = {};
+  std::uint32_t push[22] = {};  // IN-422: the decode window words last (0: no window)
   push[0] = bp;
   push[1] = bw;
   push[2] = psm;
@@ -1676,6 +1721,8 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
   push[9] = static_cast<std::uint32_t>(palette.texa & 0xFFu);          // TEXA.TA0
   push[10] = static_cast<std::uint32_t>((palette.texa >> 32) & 0xFFu); // TEXA.TA1
   push[11] = static_cast<std::uint32_t>((palette.texa >> 15) & 1u);    // TEXA.AEM
+  push[20] = windowBase;  // IN-422
+  push[21] = windowWords;
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodePipeline);
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.decodeLayout, 0, 1, &set, 0, nullptr);
   gt4_hwd_vkCmdPushConstants(s.cmd, s.decodeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
@@ -1719,7 +1766,7 @@ bool Gpu::PaletteRowFromGpuClut(ImageId palettes, std::uint32_t row, std::uint32
     }
   }
   gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
-  std::uint32_t push[20] = {};
+  std::uint32_t push[22] = {};  // IN-422: the decode window words last (0: no window)
   push[2] = psm;
   push[3] = 256;
   push[4] = 1;

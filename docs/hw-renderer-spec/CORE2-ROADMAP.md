@@ -220,9 +220,11 @@ proves otherwise.
     split the GPU time: drawing 3.8-4.5 ms at 3x (1.3-1.5 ms at 1x), compute and transfer a fixed 1.4-3.8 ms.
   - D1 measured first (IN-421): the whole fragment stage is only 0.4-0.7 ms of GPU time at 3x (empty-shader
     experiment); 53-65 M fragments per VBlank. The GPU time is the chain of small dependent commands.
+  - IN-422 decodes textures over no target from a CPU page window (barriers down again, GPU time 3-10% less).
   - Next:
-    - the compute chain: texture decodes read a staging copy of their pages instead of the GLM, so they depend on
-      nothing and need no barrier between them; then patches the same way;
+    - check the GPU clock during the race (the owner, Adrenalin overlay): every GPU-side change has given far less
+      than its share, so the timestamps may measure a low clock more than work;
+    - patches from a page window too, if the GPU side stays on top;
     - D1 stays a beta requirement (the HD 620 shades far slower), after the chain;
     - the flare download (0.4-1.2 readbacks, 0.7-2.1 ms per VBlank) if it stays on top;
     - translate and decode recording (B4);

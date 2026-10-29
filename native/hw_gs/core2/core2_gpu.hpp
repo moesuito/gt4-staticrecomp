@@ -66,7 +66,9 @@ struct Core2GpuStats {
     std::uint64_t drawPassNs = 0;
     std::uint64_t primitives = 0;          // B4: pipeline statistics of finished submissions (input primitives,
     std::uint64_t fragments = 0;           // fragment shader invocations, compute shader invocations)
-    std::uint64_t computeInvocations = 0;       // B4: GPU time inside the deferred draw passes (IN-420), part of gpuNs // B4: submissions whose GPU time is in gpuNs
+    std::uint64_t computeInvocations = 0;
+    std::uint64_t windowDecodes = 0;       // IN-422: texture decodes read from a CPU page window, not the GLM
+    std::uint64_t windowBytes = 0;       // B4: GPU time inside the deferred draw passes (IN-420), part of gpuNs // B4: submissions whose GPU time is in gpuNs
     std::uint64_t fullBarriers = 0;      // B4: all-commands barriers (each drains the GPU)
     std::uint64_t barriersSkipped = 0;   // IN-419: commands recorded without a barrier (no dependency)
     std::uint64_t fragmentBarriers = 0;  // B4: fragment-to-fragment barriers inside the render pass
@@ -135,6 +137,9 @@ public:
     // (the pixel shader expands CT16/CT24), RGBA8 through `palette` (256 entries) for indexed ones.
     bool DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
                        std::uint32_t height, const std::uint32_t *palette, std::string &error);
+    // IN-422: the next DecodeTexture or DecodeTextureGpuClut reads GS memory pages [firstPage, firstPage + pageCount)
+    // (modulo 512) from `memory` (the CPU copy, current for them) instead of the GLM. Cleared by that decode.
+    void SetDecodeWindow(const std::uint8_t *memory, std::uint32_t firstPage, std::uint32_t pageCount);
     // IN-408: the same decode, indexed formats expanded through the GPU CLUT buffer.
     bool DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::uint32_t width,
                               std::uint32_t height, const GpuPalette &palette, std::string &error);

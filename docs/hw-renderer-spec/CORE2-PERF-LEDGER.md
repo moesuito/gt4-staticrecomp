@@ -52,6 +52,7 @@ wall time of the whole emulator.
 | IN-419 | GPU timestamps; barriers only on real dependencies | Barriers halved; GPU time only 3-13% less | yes | 295 |
 | IN-420 | Draw batches deferred into one render pass | Render passes 106-312 -> 4-8; GPU time 5-13% less | yes | 296 |
 | IN-421 | D1 measured first: shader experiments, pipeline statistics | The whole fragment stage is 0.4-0.7 ms of GPU time; 53-65 M fragments; D1 not the next lever on the desktop | diagnostics only | - |
+| IN-422 | Textures over no target decoded from a CPU page window (no GLM upload or barrier) | Barriers 254-961 -> 137-843; GPU time 3-10% less; emulator 0.1-0.3 ms less | yes | 297 |
 
 ## What we learned
 
@@ -70,5 +71,9 @@ wall time of the whole emulator.
   - The fixed GPU time is the chain of about 1000 small dependent commands per VBlank (texture decodes, GLM uploads,
     patches, CLUT loads); halving barriers and render passes gave only about 10%.
   - The fragment shader is cheap here. D1 remains required for the HD 620 beta gate, where shading is far slower.
+- **GPU changes give far less than expected.** Removing half the barriers (IN-419), 97% of the render passes
+  (IN-420) and more barriers (IN-422) each gave 3-13% of GPU time. Hypothesis (unverified): the driver keeps the
+  GPU at a low clock at this partial load (45 W of 180 W). Check the GPU clock during the race before the next
+  GPU-side step.
 - **Timestamps:** with deferred draws, compute recorded before a pass overlaps the pass's timestamps, so
   `gpu_draw_passes` overstates drawing.
