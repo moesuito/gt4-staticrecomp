@@ -1057,6 +1057,13 @@ bool Backend::end_frame(PresentPhase phase) {
   // Frame end (chapter 12.5) with the present decision separated from it (M6 interface, IN-331): compose
   // the presentation image once into the reusable buffer and hand its stamp to the scheduler.
   s.renderer->SetDisplayField(phase == PresentPhase::field_odd);
+  {
+    // IN-432: core 2 resamples the frame to the rectangle the present below shows it in.
+    const std::uint64_t aspect = s.display_aspect.load(std::memory_order_relaxed);
+    const PresentRect rect = present_rect_for(s.extent.width, s.extent.height, display_aspect_fill(aspect),
+                                              display_aspect_ratio(aspect));
+    s.renderer->SetPresentSize(rect.width, rect.height);
+  }
   hwgs::writeback::GpuFrame gpuFrame;
   if (s.renderer->ComposeFrameGpu(gpuFrame)) {
     // IN-364: composed on the GPU; the present copies the display image (no CPU pixels, no upload).

@@ -3027,6 +3027,98 @@ int TestScaleInterlacedPresent(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_present_scale (IN-432): core 2's presentation resampling to the window rectangle. A progressive 64 x 32
+// frame at 2x (128 x 64) whose left half is one colour and right half another is resampled up (EASU), down
+// (Lanczos-2 per axis), across (down in x, up in y) and at the same size with RCAS, with and without RCAS:
+//   - the frame has the requested size and comes from the resampled image;
+//   - no channel leaves the range of the two colours without RCAS (no ringing); with RCAS by at most an eighth of
+//     the step (sharpening darkens and brightens the two sides of an edge a little, by design);
+//   - the left and right columns keep their colour exactly (far from the edge every kernel sees one colour).
+int TestCore2PresentScale(const gpu::VulkanHandles& handles) {
+    constexpr uint32_t kWidth = 64, kRows = 32;
+    constexpr uint32_t kLeft = 0x80203040u, kRight = 0x80C0A060u;
+    int failures = 0;
+    const struct {
+        uint32_t width, height;
+        const char* what;
+    } sizes[] = {{200, 90, "up (EASU)"}, {100, 40, "down (Lanczos)"}, {96, 100, "down x, up y"}, {128, 64, "same size"}};
+    for (const char* sharpness : {"", "0.2"}) {
+        _putenv_s("GT4_CORE2_FSR_SHARPNESS", sharpness);
+        for (const auto& size : sizes) {
+            if (sharpness[0] == 0 && size.width == 128) continue;  // same size, no RCAS: nothing to resample
+            _putenv_s("GT4_HW_CORE", "2");
+            writeback::Renderer renderer;
+            _putenv_s("GT4_HW_CORE", "");
+            std::string error;
+            renderer.SetScale(2, 2.0f);
+            if (!renderer.Init(handles, error)) {
+                std::printf("hw_core2_present_scale: init failed: %s\n", error.c_str());
+                _putenv_s("GT4_CORE2_FSR_SHARPNESS", "");
+                return 1;
+            }
+            renderer.WritePrivileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));  // PMODE: RC1, MMOD 1, ALP 255
+            renderer.WritePrivileged(0x12000010u, uint64_t{2} << 13);              // SMODE1: NTSC
+            renderer.WritePrivileged(0x12000070u, uint64_t{1} << 9);               // DISPFB1: FBP 0, FBW 1, CT32
+            renderer.WritePrivileged(0x12000080u, (uint64_t{3} << 23) | (uint64_t{4 * kWidth - 1} << 32) |
+                                                      (uint64_t{kRows - 1} << 44));  // DISPLAY1: MAGH 3, 64 x 32
+            std::vector<Qword> stream;
+            stream.push_back(PackedTag(4, false, 0, {0xE}));
+            stream.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 48), 0x50});  // BITBLTBUF: DBP 0, DBW 1, CT32
+            stream.push_back(Qword{0, 0x51});
+            stream.push_back(Qword{uint64_t{kWidth} | (uint64_t{kRows} << 32), 0x52});
+            stream.push_back(Qword{0, 0x53});
+            const uint32_t qwords = kWidth * kRows / 4;
+            stream.push_back(PackedTag(qwords, true, 2, {}));
+            for (uint32_t i = 0; i < qwords; ++i) {
+                const uint32_t x = (i * 4) % kWidth;
+                const uint64_t c = x < kWidth / 2 ? kLeft : kRight;
+                stream.push_back(Qword{c | (c << 32), c | (c << 32)});
+            }
+            renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(stream.data()), stream.size() * sizeof(Qword));
+            renderer.Flush();
+            renderer.SetPresentSize(size.width, size.height);
+            writeback::GpuFrame frame;
+            std::vector<uint32_t> pixels;
+            if (!renderer.ComposeFrameGpu(frame) || !renderer.ReadGpuFrame(frame, pixels)) {
+                std::printf("  %s%s: no GPU frame\n", size.what, sharpness[0] ? " + RCAS" : "");
+                ++failures;
+                continue;
+            }
+            uint32_t outOfRange = 0, edgeColumns = 0, overshoot = 0;
+            const bool sized = frame.presentScaled && frame.width == size.width && frame.height == size.height &&
+                               pixels.size() == static_cast<size_t>(size.width) * size.height;
+            if (sized) {
+                for (uint32_t y = 0; y < size.height; ++y) {
+                    for (uint32_t x = 0; x < size.width; ++x) {
+                        const uint32_t c = pixels[static_cast<size_t>(y) * size.width + x];
+                        for (uint32_t shift = 0; shift < 24; shift += 8) {
+                            const uint32_t v = (c >> shift) & 0xFFu, a = (kLeft >> shift) & 0xFFu,
+                                           b = (kRight >> shift) & 0xFFu;
+                            const uint32_t past = v < std::min(a, b) ? std::min(a, b) - v
+                                                  : v > std::max(a, b) ? v - std::max(a, b)
+                                                                       : 0u;
+                            if (past != 0) ++outOfRange;
+                            overshoot = std::max(overshoot, past * 8u > std::max(a, b) - std::min(a, b) ? past : 0u);
+                        }
+                    }
+                    if ((pixels[static_cast<size_t>(y) * size.width] & 0xFFFFFFu) != (kLeft & 0xFFFFFFu)) ++edgeColumns;
+                    if ((pixels[static_cast<size_t>(y) * size.width + size.width - 1] & 0xFFFFFFu) != (kRight & 0xFFFFFFu)) {
+                        ++edgeColumns;
+                    }
+                }
+            }
+            std::printf("  %s%s: %ux%u%s, channels out of range %u (beyond an eighth of the step: max %u), wrong edge columns %u\n", size.what,
+                        sharpness[0] ? " + RCAS" : "", frame.width, frame.height, frame.presentScaled ? " resampled" : "",
+                        outOfRange, overshoot, edgeColumns);
+            const bool ranged = sharpness[0] ? overshoot == 0 : outOfRange == 0;
+            if (!sized || !ranged || edgeColumns != 0) ++failures;
+        }
+    }
+    _putenv_s("GT4_CORE2_FSR_SHARPNESS", "");
+    std::printf("hw_core2_present_scale: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_interlaced_present (IN-405): core 2's GPU deinterlace of 480i field-mode frames, on the same stream as
 // hw_scale_interlaced_present (EE uploads of a 64 x 32 field buffer, per-field lines, a right half that changes every
 // VBlank), with one algorithm row = one native row (GT4_HW_DEINTERLACE_ROWS=native) so a 1x-block image has an exact
@@ -4657,6 +4749,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
+    if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     std::printf("unknown test: %s\n", name.c_str());
     return 2;
 }

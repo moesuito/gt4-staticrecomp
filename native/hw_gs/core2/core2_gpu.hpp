@@ -55,6 +55,7 @@ struct Core2GpuStats {
     std::uint64_t composes = 0;
     std::uint64_t deinterlaces = 0;
     std::uint64_t fxaaFrames = 0;
+    std::uint64_t presentScales = 0;  // IN-432: frames resampled to the window rectangle
     std::uint64_t submissions = 0;
     std::uint64_t waits = 0;
     std::uint64_t atlasUploads = 0;
@@ -206,9 +207,16 @@ public:
     bool Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error);
     // 13.5 (IN-376, IN-405 in core 2): FXAA of the display image's top-left width x height pixels into the FXAA image.
     bool Fxaa(std::uint32_t width, std::uint32_t height, std::string &error);
+    // IN-432: the composed frame (`fromFxaa`: the FXAA output) of width x height resampled to outWidth x outHeight
+    // (core2_present_scale.comp: Lanczos-2 per axis, or FSR1 EASU when both axes grow), then FSR1 RCAS when
+    // `sharpness` > 0 (exp2(-stops)). The result is PresentImage().
+    bool PresentScale(bool fromFxaa, std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
+                      std::uint32_t outHeight, float sharpness, std::string &error);
+    std::uint64_t PresentImage() const;  // VkImage
     std::uint64_t FxaaImage() const;  // VkImage
     // `fxaa`: read the FXAA image instead of the display image.
     bool ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels, std::string &error,
+                     bool presentScaled,
                      bool fxaa = false);
     // Diagnostics: the top-left width x height words of an image (submits and waits).
     bool ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words,

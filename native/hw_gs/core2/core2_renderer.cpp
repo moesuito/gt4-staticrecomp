@@ -340,6 +340,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     writeback::OutputSettings settings_;
     std::uint64_t vblanks_ = 0;
     bool fxaa_ = false;  // IN-405: 13.5 FXAA of the presented frame
+    // IN-432: the presented frame is resampled to the window rectangle on the GPU (Lanczos-2 per axis when it
+    // shrinks, FSR1 EASU when it grows), then FSR1 RCAS sharpening when asked. The presenter's own box halvings and
+    // bilinear blit then copy it 1:1. GT4_CORE2_PRESENT_FILTER=bilinear keeps the presenter's blit (A/B);
+    // GT4_CORE2_FSR_SHARPNESS=<stops> turns RCAS on (0 strongest, 0.2 FSR's usual, 2 mild);
+    // GT4_CORE2_PRESENT_SIZE=<w>x<h> forces the rectangle (headless checks; the window sets it otherwise).
+    std::uint32_t presentWidth_ = 0, presentHeight_ = 0;
+    const bool presentResample_ = std::getenv("GT4_CORE2_PRESENT_FILTER") == nullptr ||
+                                  std::strcmp(std::getenv("GT4_CORE2_PRESENT_FILTER"), "bilinear") != 0;
+    const float rcasSharpness_ = std::getenv("GT4_CORE2_FSR_SHARPNESS") != nullptr
+                                     ? std::exp2(-std::max(0.0f, static_cast<float>(std::atof(std::getenv("GT4_CORE2_FSR_SHARPNESS")))))
+                                     : 0.0f;
     // IN-405: the GPU deinterlace history (the old core's rules, IN-381/IN-386/IN-396): which of the four merge images
     // holds which field, by age.
     struct DeinterlaceHistory {
@@ -2692,6 +2703,19 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         const bool fxaa = composed && fxaa_;
         if (fxaa) composed = gpu_.Fxaa(outWidth, outHeight, error);  // IN-376
+        std::uint32_t presentWidth = presentWidth_, presentHeight = presentHeight_;
+        if (const char *forced = std::getenv("GT4_CORE2_PRESENT_SIZE")) {
+            unsigned w = 0, h = 0;
+            if (std::sscanf(forced, "%ux%u", &w, &h) == 2) {
+                presentWidth = w;
+                presentHeight = h;
+            }
+        }
+        const bool presentScaled = composed && presentResample_ && presentWidth != 0 && presentHeight != 0 &&
+                                   (presentWidth != outWidth || presentHeight != outHeight || rcasSharpness_ > 0.0f);
+        if (presentScaled) {
+            composed = gpu_.PresentScale(fxaa, outWidth, outHeight, presentWidth, presentHeight, rcasSharpness_, error);
+        }
         if (!composed || !gpu_.Submit(false, error)) {
             Fail(error);
             return false;
@@ -2700,10 +2724,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         counters.gpuComposedFrames++;
         counters.scaledComposedFrames++;
         out.valid = true;
-        out.width = outWidth;
-        out.height = outHeight;
-        out.image = fxaa ? gpu_.FxaaImage() : gpu_.DisplayImage();
+        out.width = presentScaled ? presentWidth : outWidth;
+        out.height = presentScaled ? presentHeight : outHeight;
+        out.image = presentScaled ? gpu_.PresentImage() : fxaa ? gpu_.FxaaImage() : gpu_.DisplayImage();
         out.fxaa = fxaa;
+        out.presentScaled = presentScaled;
         composedVblank_ = vblanks_;
         lastFrame_ = out;
         return true;
@@ -2988,7 +3013,7 @@ bool Renderer::ComposeFrameGpu(writeback::GpuFrame &out) {
 bool Renderer::ReadGpuFrame(const writeback::GpuFrame &frame, std::vector<std::uint32_t> &pixels) {
     if (!frame.valid) return false;
     std::string error;
-    if (!impl_->gpu_.ReadDisplay(frame.width, frame.height, pixels, error, frame.fxaa)) {
+    if (!impl_->gpu_.ReadDisplay(frame.width, frame.height, pixels, error, frame.presentScaled, frame.fxaa)) {
         impl_->Fail(error);
         return false;
     }
@@ -3015,6 +3040,11 @@ void Renderer::SetOutputSettings(const writeback::OutputSettings &settings) {
 }
 
 void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
+
+void Renderer::SetPresentSize(std::uint32_t width, std::uint32_t height) {
+    impl_->presentWidth_ = width;
+    impl_->presentHeight_ = height;
+}
 
 const std::uint8_t *Renderer::Slm() {
     impl_->frontEnd_.FlushBatch(FlushReason::Transfer);

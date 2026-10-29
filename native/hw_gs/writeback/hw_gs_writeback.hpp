@@ -159,6 +159,7 @@ struct GpuFrame {
     std::uint32_t height = 0;
     std::uint64_t image = 0;  // the VkImage value (opaque here)
     bool fxaa = false;        // IN-376: `image` is the FXAA output (13.5) instead of the composed display image
+    bool presentScaled = false;  // IN-432: `image` is resampled to the window rectangle (width x height)
 };
 
 struct FrameOutput {
@@ -305,6 +306,8 @@ public:
     void SetGpuCompose(bool enabled);
     // 13.5 FXAA (GT4_HW_POSTFX=fxaa, IN-376): GPU-composed presentation frames pass through the edge-only FXAA.
     void SetFxaa(bool enabled);
+    // IN-432 (core 2): the window rectangle the next presented frame is shown in (0 x 0: unknown, no resampling).
+    void SetPresentSize(std::uint32_t width, std::uint32_t height);
     // Fixtures and checks: the pixels of a GPU frame (submits and waits).
     bool ReadGpuFrame(const GpuFrame &frame, std::vector<std::uint32_t> &pixels);
     FrameOutput Compose(ComposeKind kind = ComposeKind::Reference);

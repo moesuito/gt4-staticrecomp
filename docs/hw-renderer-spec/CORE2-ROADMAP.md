@@ -319,9 +319,9 @@ lands on it), the PR goes to the code optimisation branch, and the launcher entr
    - the IN-411 stores in the owner's menus.
 5. **A memory budget** (done, IN-431: 192 MiB of texture cache on integrated GPUs) for target and texture images: about 630 MB at 3x now, and the HD 620 laptop shares system
    memory.
-6. **C3 FSR1 sharpening** (owner, 2026-10-29: FSR1 replaces CAS). Written from AMD's MIT FidelityFX FSR1 (EASU and
+6. **C3 FSR1 sharpening** (done, IN-432: RCAS, plus EASU for upscaling) (owner, 2026-10-29: FSR1 replaces CAS). Written from AMD's MIT FidelityFX FSR1 (EASU and
    RCAS), never a GPL copy.
-7. **C2 present resampling:** a sharper downscale when the internal size is above the window (supersampling).
+7. **C2 present resampling** (done, IN-432: Lanczos-2 to the window rectangle): a sharper downscale when the internal size is above the window (supersampling).
 8. **The laptop gate:**
    - the i5-7200U / HD 620 at 2x at full speed (owner F7/F8 over the laptop share);
    - D1 (hardware raster path) moves into the beta only if that GPU is the limit there.

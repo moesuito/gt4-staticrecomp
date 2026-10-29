@@ -99,6 +99,8 @@ public:
     bool DisplayField() const;
     void SetOutputSettings(const writeback::OutputSettings &settings);
     void SetFxaa(bool enabled);  // IN-405: 13.5 FXAA of the presented frame
+    // IN-432: the window rectangle the presented frame is resampled to (0 x 0: none).
+    void SetPresentSize(std::uint32_t width, std::uint32_t height);
 
     // The shadow memory after writing every target's drawn area back (a host read of the whole memory).
     const std::uint8_t *Slm();

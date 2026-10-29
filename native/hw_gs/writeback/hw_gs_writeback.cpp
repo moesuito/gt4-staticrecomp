@@ -3770,6 +3770,10 @@ void Renderer::SetFxaa(bool enabled) {
     impl_->fxaa_ = enabled;
 }
 
+void Renderer::SetPresentSize(std::uint32_t width, std::uint32_t height) {
+    if (core2_) core2_->SetPresentSize(width, height);
+}
+
 bool Renderer::ReadGpuFrame(const GpuFrame& frame, std::vector<std::uint32_t>& pixels) {
     if (core2_) return core2_->ReadGpuFrame(frame, pixels);
     std::string error;

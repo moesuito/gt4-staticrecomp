@@ -201,6 +201,13 @@ struct Gpu::Impl {
   // (hw_postfx_fxaa.comp: 0 source, 1 output), each with its own set layout; the images follow the display size.
   Image deinterlaceHistory[gpu::kGpuDeinterlaceHistory];
   Image deinterlaceWoven, deinterlaceOutput, fxaa;
+  // IN-432: presentation resampling (core2_present_scale.comp: 0 source, 1 output); two passes ping-pong through
+  // presentA and presentB, the last one writes presentOut.
+  Image presentA, presentB, presentOut;
+  VkDescriptorSetLayout presentSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout presentLayout = VK_NULL_HANDLE;
+  VkShaderModule presentModule = VK_NULL_HANDLE;
+  VkPipeline presentPipeline = VK_NULL_HANDLE;
   VkDescriptorSetLayout deinterlaceSetLayout = VK_NULL_HANDLE, fxaaSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout deinterlaceLayout = VK_NULL_HANDLE, fxaaLayout = VK_NULL_HANDLE;
   VkShaderModule deinterlaceModule = VK_NULL_HANDLE, fxaaModule = VK_NULL_HANDLE;
@@ -1070,6 +1077,9 @@ Gpu::~Gpu() {
   s.release(s.deinterlaceWoven);
   s.release(s.deinterlaceOutput);
   s.release(s.fxaa);
+  s.release(s.presentA);
+  s.release(s.presentB);
+  s.release(s.presentOut);
   if (s.timestamps) gt4_hwd_vkDestroyQueryPool(s.device, s.timestamps, nullptr);
   if (s.statistics) gt4_hwd_vkDestroyQueryPool(s.device, s.statistics, nullptr);
   for (Impl::MemoryBlock &block : s.imageBlocks) gt4_hwd_vkFreeMemory(s.device, block.memory, nullptr);
@@ -1286,6 +1296,12 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     s.deinterlacePipeline = s.make_compute(s.deinterlaceModule, error, s.deinterlaceLayout);
     s.fxaaPipeline = s.make_compute(s.fxaaModule, error, s.fxaaLayout);
     if (!s.deinterlacePipeline || !s.fxaaPipeline) return false;
+    if (!s.image_layouts(fxaaCounts, 2, 6 * 4, s.presentSetLayout, s.presentLayout, error)) return false;
+    s.presentModule = s.make_module(hwgs::shaders::core2_present_scale_words,
+                                    hwgs::shaders::core2_present_scale_word_count, error);
+    if (!s.presentModule) return false;
+    s.presentPipeline = s.make_compute(s.presentModule, error, s.presentLayout);
+    if (!s.presentPipeline) return false;
   }
 
   // ---- GLM and the decode kernel ----
@@ -2488,10 +2504,89 @@ bool Gpu::Fxaa(std::uint32_t width, std::uint32_t height, std::string &error) {
 
 std::uint64_t Gpu::FxaaImage() const { return reinterpret_cast<std::uint64_t>(impl_->fxaa.image); }
 
-bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels,
-                      std::string &error, bool fxaa) {
+bool Gpu::PresentScale(bool fromFxaa, std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
+                       std::uint32_t outHeight, float sharpness, std::string &error) {
   Impl &s = *impl_;
-  const Image &source = fxaa ? s.fxaa : s.display;
+  Image &source = fromFxaa ? s.fxaa : s.display;
+  if (width == 0 || height == 0 || width > source.width || height > source.height || outWidth == 0 ||
+      outHeight == 0 || outWidth > s.limits.maxImageDimension2D || outHeight > s.limits.maxImageDimension2D) {
+    error = "CORE2 presentation resampling outside the display image";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  s.full_barrier();  // a rare pass: ordered at once
+  // One pass: `from` (fromWidth x fromHeight) into `to` (toWidth x toHeight, made to that size).
+  auto pass = [&](std::uint32_t mode, Image &from, std::uint32_t fromWidth, std::uint32_t fromHeight, Image &to,
+                  std::uint32_t toWidth, std::uint32_t toHeight) -> bool {
+    bool fresh = false;
+    if (!s.post_image(to, toWidth, toHeight, fresh, error)) return false;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!s.allocate_set(s.presentSetLayout, set, error)) return false;
+    const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, from.view, VK_IMAGE_LAYOUT_GENERAL},
+                                             {VK_NULL_HANDLE, to.view, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet writes[2]{};
+    for (std::uint32_t i = 0; i < 2; ++i) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = set;
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &images[i];
+    }
+    gt4_hwd_vkUpdateDescriptorSets(s.device, 2, writes, 0, nullptr);
+    gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.presentPipeline);
+    gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.presentLayout, 0, 1, &set, 0, nullptr);
+    const std::uint32_t push[6] = {fromWidth, fromHeight, toWidth, toHeight, mode, FloatBits(sharpness)};
+    gt4_hwd_vkCmdPushConstants(s.cmd, s.presentLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+    gt4_hwd_vkCmdDispatch(s.cmd, (toWidth + 7) / 8, (toHeight + 7) / 8, 1);
+    s.full_barrier();
+    return true;
+  };
+  constexpr std::uint32_t kHorizontal = 0, kVertical = 1, kEasu = 2, kRcas = 3;
+  const bool rcas = sharpness > 0.0f;
+  Image *current = &source;
+  std::uint32_t cw = width, ch = height;
+  // The image a resampling pass writes: the output when nothing follows, otherwise the other scratch image.
+  auto next = [&](bool last) -> Image & {
+    if (last) return s.presentOut;
+    return current == &s.presentA ? s.presentB : s.presentA;
+  };
+  if (outWidth >= width && outHeight >= height && (outWidth != width || outHeight != height)) {
+    Image &to = next(!rcas);
+    if (!pass(kEasu, *current, cw, ch, to, outWidth, outHeight)) return false;
+    current = &to;
+    cw = outWidth;
+    ch = outHeight;
+  } else {
+    if (outWidth != width) {
+      Image &to = next(!rcas && outHeight == height);
+      if (!pass(kHorizontal, *current, cw, ch, to, outWidth, ch)) return false;
+      current = &to;
+      cw = outWidth;
+    }
+    if (outHeight != height) {
+      Image &to = next(!rcas);
+      if (!pass(kVertical, *current, cw, ch, to, cw, outHeight)) return false;
+      current = &to;
+      ch = outHeight;
+    }
+  }
+  if (rcas || current == &source) {
+    // RCAS (or, at the same size without sharpening, a plain copy through RCAS with no lobe).
+    if (!pass(kRcas, *current, cw, ch, s.presentOut, cw, ch)) return false;
+  }
+  s.stats.presentScales++;
+  return true;
+}
+
+std::uint64_t Gpu::PresentImage() const { return reinterpret_cast<std::uint64_t>(impl_->presentOut.image); }
+
+bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels,
+                      std::string &error, bool presentScaled, bool fxaa) {
+  Impl &s = *impl_;
+  const Image &source = presentScaled ? s.presentOut : fxaa ? s.fxaa : s.display;
   width = std::min(width, source.width);
   height = std::min(height, source.height);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
