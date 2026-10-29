@@ -67,6 +67,7 @@ wall time of the whole emulator.
 | IN-433 | forced bilinear option (forced, forced_no_sprite) | option, off by default | yes | 304 |
 | IN-434 | anisotropic filtering of mipmapped draws (GT4_CORE2_ANISO) | option, off by default; GPU time unchanged within noise at 16x | yes | 304 |
 | IN-435 | display reads in bands (12x dumps) | 12x: 1.6 GB of images, GPU 27 ms per VBlank | yes | 305 |
+| IN-436 | scale sweep 1x-12x and the 12x cost found | GPU time per VBlank grows with the fragment count (6 M at 1x, 853 M at 12x, about 27 G fragments/s): 2.8 / 4.0 / 5.6 / 7.4 / 8.6 / 10.3 / 15.9 / 23.8 / 28.4 / 33.3 ms at 1/2/3/4/5/6/8/10/11/12x. Not bandwidth (skipping unneeded frame/depth reads: no change), not the interlock (removed: no change), not clocks (3.3 GHz, 98% busy, 85 W of 180 W). A fill-rate benchmark at 7680x5376: the uber shader 1.26 ms per full-screen pass, the same shader with the draw state folded to constants 0.41 ms, a minimal interlocked read-modify-write 0.58 ms, an RGBA8 attachment 0.21 ms (0.42 blended). The uber shader re-decides about 50 draw-state branches in every wave (`hw_process_pixel`: about 137 cycles per wave) | diagnostics only (read skipping reverted) | - |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
 ## What we learned
