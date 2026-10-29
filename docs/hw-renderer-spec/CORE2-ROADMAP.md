@@ -216,9 +216,12 @@ proves otherwise.
     command (the owner saw the GPU at 45 W of 180 W). Barriers only where needed halved them; GPU time 3-13% less.
   - IN-420 deferred the draws into one render pass (4-8 per VBlank instead of 106-312; GPU time 5-13% less) and
     split the GPU time: drawing 3.8-4.5 ms at 3x (1.3-1.5 ms at 1x), compute and transfer a fixed 1.4-3.8 ms.
+  - D1 measured first (IN-421): the whole fragment stage is only 0.4-0.7 ms of GPU time at 3x (empty-shader
+    experiment); 53-65 M fragments per VBlank. The GPU time is the chain of small dependent commands.
   - Next:
-    - D1 (hardware raster path) for the drawing, which scales with the pixels;
-    - the compute chain: GLM uploads and the decodes that read them (one barrier pair per streamed texture);
+    - the compute chain: texture decodes read a staging copy of their pages instead of the GLM, so they depend on
+      nothing and need no barrier between them; then patches the same way;
+    - D1 stays a beta requirement (the HD 620 shades far slower), after the chain;
     - the flare download (0.4-1.2 readbacks, 0.7-2.1 ms per VBlank) if it stays on top;
     - translate and decode recording (B4);
     - the GS thread split in two (B5).

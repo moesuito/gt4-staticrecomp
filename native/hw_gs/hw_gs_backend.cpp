@@ -410,6 +410,10 @@ struct Backend::Impl {
     features2.pNext = &v12;
     features2.features.dualSrcBlend = VK_TRUE;
     features2.features.fragmentStoresAndAtomics = VK_TRUE;
+    // CORE2 B4: pipeline statistics (fragment and primitive counts in the timing lines) where the device has them.
+    VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    vkGetPhysicalDeviceFeatures2(physical, &supported);
+    features2.features.pipelineStatisticsQuery = supported.features.pipelineStatisticsQuery;
 
     // IN-345: pixel interlock lets the GPU path draw a batch of triangles in one draw (no barriers).
     pixel_interlock = gt4::hw::vulkan_loader::pixel_interlock_supported(physical);

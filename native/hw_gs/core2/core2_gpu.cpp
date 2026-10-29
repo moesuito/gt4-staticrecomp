@@ -113,6 +113,9 @@ struct Gpu::Impl {
   static constexpr std::uint32_t kPassTimestampPairs = 64;
   static constexpr std::uint32_t kTimestampsPerSlot = 2u + 2u * kPassTimestampPairs;
   VkQueryPool timestamps = VK_NULL_HANDLE;
+  // B4: one pipeline statistics query per slot over its whole command buffer (primitives, fragment and compute
+  // invocations), where the device enables them.
+  VkQueryPool statistics = VK_NULL_HANDLE;
   double timestampNs = 0.0;  // nanoseconds per timestamp tick (0: no timestamps)
   std::uint32_t slot = 0;           // the slot being recorded
   std::uint32_t lastSubmitted = 1;  // the slot submitted last
@@ -739,6 +742,15 @@ struct Gpu::Impl {
       }
       s.passTimestamps = 0;
     }
+    if (statistics) {
+      std::uint64_t counts[3] = {};
+      if (gt4_hwd_vkGetQueryPoolResults(device, statistics, index, 1, sizeof counts, counts, sizeof counts,
+                                        VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+        stats.primitives += counts[0];
+        stats.fragments += counts[1];
+        stats.computeInvocations += counts[2];
+      }
+    }
     for (Image &image : s.doomed) retire(image);
     s.doomed.clear();
     s.inFlight = false;
@@ -765,6 +777,10 @@ struct Gpu::Impl {
       gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, slot * kTimestampsPerSlot);
       slots[slot].passTimestamps = 0;
     }
+    if (statistics) {
+      gt4_hwd_vkCmdResetQueryPool(cmd, statistics, slot, 1);
+      gt4_hwd_vkCmdBeginQuery(cmd, statistics, slot, 0);
+    }
     transientSetsUsed = 0;
     drawSets.clear();
     for (Buffer *buffer : {&staging, &vertices, &uniforms}) {
@@ -789,6 +805,7 @@ struct Gpu::Impl {
     if (timestamps) {
       gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, slot * kTimestampsPerSlot + 1u);
     }
+    if (statistics) gt4_hwd_vkCmdEndQuery(cmd, statistics, slot);
     if (!check(gt4_hw_vkEndCommandBuffer(cmd), "vkEndCommandBuffer", error)) return false;
     recording = false;
     if (!check(gt4_hw_vkResetFences(device, 1, &fence), "vkResetFences", error)) return false;
@@ -878,6 +895,7 @@ Gpu::~Gpu() {
   s.release(s.deinterlaceOutput);
   s.release(s.fxaa);
   if (s.timestamps) gt4_hwd_vkDestroyQueryPool(s.device, s.timestamps, nullptr);
+  if (s.statistics) gt4_hwd_vkDestroyQueryPool(s.device, s.statistics, nullptr);
   // The remaining objects live as long as the device (the renderer is destroyed with the backend).
 }
 
@@ -935,6 +953,21 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     queryInfo.queryCount = 2u * Impl::kTimestampsPerSlot;
     if (gt4_hwd_vkCreateQueryPool(s.device, &queryInfo, nullptr, &s.timestamps) == VK_SUCCESS) {
       s.timestampNs = s.limits.timestampPeriod;
+    }
+  }
+  {
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    gt4_hw_vkGetPhysicalDeviceFeatures2(s.physical, &features);
+    if (features.features.pipelineStatisticsQuery) {
+      VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+      queryInfo.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+      queryInfo.queryCount = 2;
+      queryInfo.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+                                     VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
+                                     VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT;
+      if (gt4_hwd_vkCreateQueryPool(s.device, &queryInfo, nullptr, &s.statistics) != VK_SUCCESS) {
+        s.statistics = VK_NULL_HANDLE;
+      }
     }
   }
 

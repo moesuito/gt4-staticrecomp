@@ -418,7 +418,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool clutMirrorAnyPending_ = false;
     bool clutFromTargetPending_ = false;
     std::uint64_t lastWaitNs_ = 0;
-    std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;  // B4: GPU time at the last timing line
+    std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
+    std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -1790,6 +1791,54 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return true;
     }
 
+    // D1 survey (diagnostics only, GT4_CORE2_D1_STATS=1): draw batches by the pixel-state fields that decide whether
+    // fixed-function raster and blending can draw them, with the summed primitive box area (native pixels, an upper
+    // bound of the fragments), printed with each [core2] line.
+    const bool d1Stats_ = std::getenv("GT4_CORE2_D1_STATS") != nullptr;
+    struct D1Class {
+        std::uint64_t batches = 0, area = 0;
+    };
+    std::unordered_map<std::string, D1Class> d1Classes_;
+    void NoteD1Class(const writeback::BatchTranslation &t, const DrawBatch &draw) {
+        const auto &f = t.state.fields;
+        namespace g = gpu::gpufield;
+        const bool zRead = f[g::Ztest] != 0 && f[g::Ztst] != 1u;
+        const bool zWrite = f[g::Zmsk] == 0;
+        char key[160];
+        std::snprintf(key, sizeof key,
+                      "fmt=%u z=%s%s zf=%u blend=%s ate=%u/%u afail=%u date=%u pabe=%u clamp=%u fbmsk=%s dither=%u tex=%s",
+                      f[g::Format], zRead ? "test" : "-", zWrite ? "+write" : "", f[g::Zformat],
+                      f[g::BlendOn] ? (std::to_string(f[g::BlendA]) + std::to_string(f[g::BlendB]) +
+                                       std::to_string(f[g::BlendC]) + std::to_string(f[g::BlendD]))
+                                          .c_str()
+                                    : "off",
+                      f[g::Ate], f[g::Atst], f[g::Ate] ? f[g::Afail] : 0u, f[g::DateOn], f[g::Pabe], f[g::Colclamp],
+                      f[g::Fbmsk] == 0 ? "0" : f[g::Fbmsk] == 0xFF000000u ? "A" : "other", f[g::Dither],
+                      !t.hasTexture ? "-" : draw.texture != kNoImage ? "target" : "memory");
+        D1Class &c = d1Classes_[key];
+        c.batches++;
+        for (const gpu::GpuDraw &d : t.draws) {
+            const std::int64_t w = static_cast<std::int64_t>(d.x1) - d.x0 + 1, h = static_cast<std::int64_t>(d.y1) - d.y0 + 1;
+            if (w > 0 && h > 0) c.area += static_cast<std::uint64_t>(w * h);
+        }
+    }
+    void PrintD1Classes() {
+        std::vector<std::pair<std::uint64_t, std::string>> rows;
+        std::uint64_t total = 0;
+        for (const auto &[key, c] : d1Classes_) {
+            rows.push_back({c.area, key});
+            total += c.area;
+        }
+        std::sort(rows.rbegin(), rows.rend());
+        for (std::size_t i = 0; i < rows.size() && i < 30; ++i) {
+            std::fprintf(stderr, "[core2] d1 %5.1f%% area=%llu batches=%llu %s\n",
+                         total ? 100.0 * static_cast<double>(rows[i].first) / static_cast<double>(total) : 0.0,
+                         static_cast<unsigned long long>(rows[i].first),
+                         static_cast<unsigned long long>(d1Classes_[rows[i].second].batches), rows[i].second.c_str());
+        }
+        d1Classes_.clear();
+    }
+
     // ---- Batches ---------------------------------------------------------------------------------------------
     writeback::BatchTranslation translation_;  // B4: reused by OnBatch
     std::uint32_t batchDepth_ = 0;
@@ -2129,6 +2178,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 }
             }
         }
+        if (d1Stats_) NoteD1Class(t, draw);
         std::string error;
         bool drawn = false;
         {
@@ -2599,6 +2649,7 @@ void Renderer::Flush() {
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
         s.stats.targetSlots = s.targets_.size();
         PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_);
+        if (s.d1Stats_) s.PrintD1Classes();
         const PhaseTimes &p = s.times_;
         const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank
         static auto last = std::chrono::steady_clock::now();
@@ -2609,14 +2660,20 @@ void Renderer::Flush() {
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
                      "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f glm=%.2f (%.0f calls, "
-                     "%.0f pages) swizzle=%.2f (%.0f KiB) gpu_busy=%.2f (%.1f submits) gpu_draw_passes=%.2f\n",
+                     "%.0f pages) swizzle=%.2f (%.0f KiB) gpu_busy=%.2f (%.1f submits) gpu_draw_passes=%.2f prims=%.0f fragments=%.0f compute=%.0f\n",
                      p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
                      p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f, p.spriteCheck / f,
                      static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6, p.glm / f, p.glmCalls / 600.0,
                      p.glmPages / 600.0, p.swizzle / f, p.swizzleBytes / 600.0 / 1024.0,
                      static_cast<double>(s.gpu_.Stats().gpuNs - s.lastGpuNs_) / 600.0e6,
                      static_cast<double>(s.gpu_.Stats().timedSubmissions - s.lastTimedSubmissions_) / 600.0,
-                     static_cast<double>(s.gpu_.Stats().drawPassNs - s.lastDrawPassNs_) / 600.0e6);
+                     static_cast<double>(s.gpu_.Stats().drawPassNs - s.lastDrawPassNs_) / 600.0e6,
+                     static_cast<double>(s.gpu_.Stats().primitives - s.lastPrimitives_) / 600.0,
+                     static_cast<double>(s.gpu_.Stats().fragments - s.lastFragments_) / 600.0,
+                     static_cast<double>(s.gpu_.Stats().computeInvocations - s.lastCompute_) / 600.0);
+        s.lastPrimitives_ = s.gpu_.Stats().primitives;
+        s.lastFragments_ = s.gpu_.Stats().fragments;
+        s.lastCompute_ = s.gpu_.Stats().computeInvocations;
         s.lastDrawPassNs_ = s.gpu_.Stats().drawPassNs;
         s.lastGpuNs_ = s.gpu_.Stats().gpuNs;
         s.lastTimedSubmissions_ = s.gpu_.Stats().timedSubmissions;

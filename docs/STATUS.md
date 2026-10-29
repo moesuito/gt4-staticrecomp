@@ -43,6 +43,9 @@ per command (1x 4.3-7.3 ms against 3x 6.6-9.1 ms); barriers only where a command
 candidate 295) halved them, GPU time 3-13% less. Draw batches deferred into one render pass (IN-420, candidate
 296): 4-8 render passes per VBlank instead of 106-312, GPU time 5-13% less; timestamps split the GPU time into
 drawing 3.8-4.5 ms at 3x (scales with pixels, D1's target) and a fixed 1.4-3.8 ms of compute and transfer work.
+D1 measured before building it (IN-421): the whole fragment stage is only 0.4-0.7 ms of GPU time at 3x, and the
+draw-pass timestamps include overlapping compute; the GPU time is the chain of small dependent commands, the next
+target.
 Not merged; no pins.
 
 ## TASK-027 CoreGS 2.0: scaled images sized to their slot (IN-384, parity plan Part A)

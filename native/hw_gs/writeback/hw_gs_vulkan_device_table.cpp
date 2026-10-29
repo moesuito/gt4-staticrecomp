@@ -45,6 +45,8 @@ bool load_device_entry_points(VkInstance instance, std::vector<std::string> &mis
   resolve(gt4_hwd_vkCmdResetQueryPool, proc, instance, "vkCmdResetQueryPool", missing);
   resolve(gt4_hwd_vkCmdWriteTimestamp, proc, instance, "vkCmdWriteTimestamp", missing);
   resolve(gt4_hwd_vkGetQueryPoolResults, proc, instance, "vkGetQueryPoolResults", missing);
+  resolve(gt4_hwd_vkCmdBeginQuery, proc, instance, "vkCmdBeginQuery", missing);
+  resolve(gt4_hwd_vkCmdEndQuery, proc, instance, "vkCmdEndQuery", missing);
   resolve(gt4_hwd_vkCmdCopyImageToBuffer, proc, instance, "vkCmdCopyImageToBuffer", missing);
   resolve(gt4_hwd_vkCmdDraw, proc, instance, "vkCmdDraw", missing);
   resolve(gt4_hwd_vkCmdEndRenderPass, proc, instance, "vkCmdEndRenderPass", missing);

@@ -66,6 +66,8 @@
 #define vkCmdResetQueryPool gt4_hwd_vkCmdResetQueryPool
 #define vkCmdWriteTimestamp gt4_hwd_vkCmdWriteTimestamp
 #define vkGetQueryPoolResults gt4_hwd_vkGetQueryPoolResults
+#define vkCmdBeginQuery gt4_hwd_vkCmdBeginQuery
+#define vkCmdEndQuery gt4_hwd_vkCmdEndQuery
 
 inline PFN_vkAllocateDescriptorSets gt4_hwd_vkAllocateDescriptorSets = nullptr;
 inline PFN_vkAllocateMemory gt4_hwd_vkAllocateMemory = nullptr;
@@ -121,6 +123,8 @@ inline PFN_vkDestroyQueryPool gt4_hwd_vkDestroyQueryPool = nullptr;
 inline PFN_vkCmdResetQueryPool gt4_hwd_vkCmdResetQueryPool = nullptr;
 inline PFN_vkCmdWriteTimestamp gt4_hwd_vkCmdWriteTimestamp = nullptr;
 inline PFN_vkGetQueryPoolResults gt4_hwd_vkGetQueryPoolResults = nullptr;
+inline PFN_vkCmdBeginQuery gt4_hwd_vkCmdBeginQuery = nullptr;  // CORE2 B4: pipeline statistics
+inline PFN_vkCmdEndQuery gt4_hwd_vkCmdEndQuery = nullptr;
 
 namespace gt4::hw::vulkan_device {
 
