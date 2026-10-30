@@ -23,6 +23,9 @@ using PadState = gt4::pad::PadState;
 // SDL3 gamepad handle (SDL_gamepad.h); the header is kept out of this file.
 struct SDL_Gamepad;
 
+// One standardized SDL3 gamepad reading, shared by live polling and the virtual-device fixture.
+gt4::pad::GamepadReading read_sdl_gamepad(SDL_Gamepad *gamepad);
+
 // Maps one XInput state through the binding table. The default-argument overload
 // uses controls::default_controls(), which equals the slice 157 mapping.
 PadState map_gamepad(const XINPUT_GAMEPAD &gamepad, const gt4::controls::ControlMap &map);

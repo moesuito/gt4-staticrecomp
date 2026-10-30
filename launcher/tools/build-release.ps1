@@ -5,7 +5,12 @@
 # Cargo's own trim-paths option is still unstable (Cargo 1.99). The prefixes depend on the machine, so they are set
 # here at build time and not in a committed .cargo/config.toml.
 #
-#   powershell -ExecutionPolicy Bypass -File launcher\tools\build-release.ps1 [-Sdl3Root <folder>]
+#   powershell -ExecutionPolicy Bypass -File launcher\tools\build-release.ps1 [-Sdl3Root <folder>] [-Portable]
+#
+# -Portable (TASK-098) builds the portable launcher: the Cargo feature `portable` (user data in <exe dir>\user, large data in
+# <exe dir>\data, no registry or system folders, update by zip swap). It builds into "<target dir>-portable", so the installer
+# build's executable is never overwritten; the two builds are different files from one source. The zip is made by
+# scripts\make_portable_zip.py.
 #
 # Steps: set CARGO_ENCODED_RUSTFLAGS (one flag per entry, so paths with spaces survive), run
 # `cargo tauri build --no-bundle`, restore any Cargo.toml the Tauri CLI rewrote, then scan the executable (ASCII and
@@ -13,9 +18,14 @@
 # CARGO_ENCODED_RUSTFLAGS replaces RUSTFLAGS and target rustflags; the workspace sets none today.
 
 param(
-    [string]$Sdl3Root = "C:/Antigravity/gt4-staticrecomp/private/tooling/sdl3-3.4.18"
+    [string]$Sdl3Root = "C:/Antigravity/gt4-staticrecomp/private/tooling/sdl3-3.4.18",
+    [switch]$Portable,
+    [string]$Label = ""
 )
 $ErrorActionPreference = "Stop"
+if ($Label -and $Label -notmatch '^rc[1-9][0-9]*$') { throw "-Label must be empty or rc<N> (for example rc5), got '$Label'" }
+$savedLabel = $env:GT4_RELEASE_LABEL
+$env:GT4_RELEASE_LABEL = $Label
 
 $launcher = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $checkout = (Resolve-Path (Join-Path $launcher "..")).Path
@@ -24,6 +34,11 @@ $rustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $env:U
 # CARGO_TARGET_DIR may put the build on another drive (C: short of space, TASK-091); its path is remapped and scanned
 # like the others.
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $launcher "target" }
+$savedTargetDir = $env:CARGO_TARGET_DIR
+if ($Portable) {
+    $targetDir = "$targetDir-portable"
+    $env:CARGO_TARGET_DIR = $targetDir
+}
 
 # Broad prefix first: when several prefixes match a path, rustc uses the last one, so the user-profile entry only
 # catches what the narrower Cargo and rustup entries do not.
@@ -45,10 +60,16 @@ foreach ($file in $manifests) { $saved[$file.FullName] = [System.IO.File]::ReadA
 
 Push-Location (Join-Path $launcher "crates\gt4l-tauri")
 try {
-    cargo tauri build --no-bundle
+    if ($Portable) {
+        cargo tauri build --no-bundle --features portable
+    } else {
+        cargo tauri build --no-bundle
+    }
     if ($LASTEXITCODE -ne 0) { throw "cargo tauri build failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location
+    $env:CARGO_TARGET_DIR = $savedTargetDir
+    $env:GT4_RELEASE_LABEL = $savedLabel
     foreach ($path in $saved.Keys) {
         $now = [System.IO.File]::ReadAllBytes($path)
         if ([Convert]::ToBase64String($now) -ne [Convert]::ToBase64String($saved[$path])) {
@@ -77,4 +98,6 @@ foreach ($needle in $needles) {
 }
 if ($hits -ne 0) { throw "$hits build path(s) left in $exe" }
 $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
-Write-Host "GT4Recomp.exe: $((Get-Item $exe).Length) bytes, sha256 $hash; no user or build path found"
+$kind = if ($Portable) { "portable" } else { "installer" }
+$labelText = if ($Label) { ", label $Label" } else { "" }
+Write-Host "GT4Recomp.exe ($kind build$labelText): $((Get-Item $exe).Length) bytes, sha256 $hash; no user or build path found"

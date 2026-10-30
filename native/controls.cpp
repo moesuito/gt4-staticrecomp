@@ -75,6 +75,14 @@ double shape(double value, Curve curve) {
     return value * value;
   case Curve::cubic:
     return value * value * value;
+  case Curve::s_curve:
+    return value * value * (3.0 - 2.0 * value);
+  case Curve::smooth_power:
+    return value * std::sqrt(value);
+  case Curve::sublinear:
+    return std::sqrt(value);
+  case Curve::logarithmic:
+    return std::log(1.0 + 9.0 * value) / std::log(10.0);
   case Curve::linear:
   default:
     return value;
@@ -263,8 +271,16 @@ Binding parse_source(std::string_view text, const InputInfo &input, const std::s
         binding.curve = Curve::quadratic;
       else if (curve == "cubic")
         binding.curve = Curve::cubic;
+      else if (curve == "s_curve" || curve == "scurve" || curve == "s-curve")
+        binding.curve = Curve::s_curve;
+      else if (curve == "smooth_power" || curve == "smooth")
+        binding.curve = Curve::smooth_power;
+      else if (curve == "sublinear" || curve == "root")
+        binding.curve = Curve::sublinear;
+      else if (curve == "logarithmic" || curve == "log")
+        binding.curve = Curve::logarithmic;
       else
-        fail(source, line, "curve must be linear, quadratic or cubic");
+        fail(source, line, "curve must be linear, quadratic, cubic, s_curve, smooth_power, sublinear or logarithmic");
     } else if (option == "invert") {
       if (binding.kind != SourceKind::xinput_axis)
         fail(source, line, "invert applies to stick axes only");

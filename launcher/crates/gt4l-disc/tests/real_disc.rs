@@ -53,6 +53,6 @@ fn real_discs_pass_or_fail_the_precheck() {
     if let Ok(spec) = std::env::var("GT4_SPEC2_ISO") {
         let error = setup::precheck(std::path::Path::new(&spec), &pins).expect_err("Spec II is refused");
         println!("Spec II: {}", error.user_message());
-        assert!(matches!(error, SetupError::Unsupported(Unsupported::SpecII)), "{error:?}");
+        assert!(matches!(error, SetupError::Unsupported(Unsupported::OtherGame { .. })), "{error:?}");
     }
 }

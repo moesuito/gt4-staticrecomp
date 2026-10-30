@@ -126,10 +126,16 @@ export component TriggerPanel inherits Rectangle {
         x: 0px;
         y: 88px;
         width: 180px;
-        model: ["Linear", "Quadratic", "Cubic"];
+        model: ["Linear", "Quadratic", "Cubic", "S-Curve", "Smooth Power", "Sublinear", "Logarithmic"];
         current-index: root.curve;
         selected(value) => {
-            root.changed(root.trigger, root.deadzone, value == "Quadratic" ? 1 : (value == "Cubic" ? 2 : 0));
+            root.changed(root.trigger, root.deadzone,
+                         value == "Quadratic" ? 1 :
+                         (value == "Cubic" ? 2 :
+                         (value == "S-Curve" ? 3 :
+                         (value == "Smooth Power" ? 4 :
+                         (value == "Sublinear" ? 5 :
+                         (value == "Logarithmic" ? 6 : 0))))));
         }
     }
     // Preview: pressure (vertical) against trigger travel (horizontal). Linear is the straight line.

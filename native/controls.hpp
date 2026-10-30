@@ -61,7 +61,15 @@ enum class SourceKind : std::uint8_t {
   keyboard, // Win32 virtual key; digital, full pressure
 };
 
-enum class Curve : std::uint8_t { linear, quadratic, cubic };
+enum class Curve : std::uint8_t {
+  linear,
+  quadratic,
+  cubic,
+  s_curve,
+  smooth_power,
+  sublinear,
+  logarithmic,
+};
 
 struct Binding {
   SourceKind kind = SourceKind::keyboard;

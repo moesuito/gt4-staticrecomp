@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-variants/1",
+  "purpose": "Known disc images of Gran Turismo 4 Spec II whose SCUS_974.36 is the pinned executable (spec2-iso.json, spec2-elf.json). The launcher accepts these by name; an image with the same executable and another hash is accepted as a 'Spec II 1.10 variant' and logged (TASK-101, docs/MULTI-GAME-LAUNCHER-PLAN.md).",
+  "executable": {
+    "name": "SCUS_974.36",
+    "size_bytes": 6520944,
+    "sha256": "db08421bc26bdc0298e80cb02a8f2067ddf640f0575af5dfe0548f1fd73ac39d"
+  },
+  "images": [
+    {
+      "name": "Spec II 1.10",
+      "size_bytes": 3683418112,
+      "sha256": "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2",
+      "note": "The community full image; same as spec2-iso.json."
+    },
+    {
+      "name": "Spec II 1.10 (PT-BR)",
+      "size_bytes": 3695083520,
+      "sha256": "fe8b51cf3008620260ff8945ac75d9b6fed4ab06813fa91ae5c9866529bf3352",
+      "note": "Brazilian Portuguese translation of 1.10 (replaces the Spanish language data). Its SCUS_974.36 is byte-identical to 1.10 (owner image, verified by the coordinator 2026-10-23)."
+    }
+  ]
+}

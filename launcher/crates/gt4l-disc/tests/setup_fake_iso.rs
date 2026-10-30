@@ -210,17 +210,14 @@ fn other_games_regions_and_spec_ii_get_the_not_supported_yet_message() {
     assert!(matches!(error, SetupError::Unsupported(Unsupported::OtherRegion { .. })), "{error:?}");
     assert!(error.user_message().starts_with(UNSUPPORTED_MESSAGE));
 
-    // Spec II as it really is: GT4 Online's serial SCUS-97436 and the plain GRANTURISMO4 volume name.
+    // A Spec II serial given to the Gran Turismo 4 setup: another game of the launcher, which `identify` routes to the
+    // Spec II setup (tests/identify.rs). The v2.00 setup itself refuses it by serial.
     let spec = fixture.path("spec.iso");
     let image = image_for(&game, "SCUS_974.36", "1.00", "GRANTURISMO4");
     fs::write(&spec, &image).unwrap();
     let error = run_setup(&fixture, &spec, &pins, &cancel).unwrap_err();
-    assert!(matches!(error, SetupError::Unsupported(Unsupported::SpecII)), "{error:?}");
-    assert_eq!(
-        error.user_message(),
-        "This disc is not supported yet. GT4Recomp supports Gran Turismo 4 (USA, SCUS-97328). \
-         This looks like Gran Turismo 4 Spec II or GT4 Online (SCUS-97436)."
-    );
+    assert!(matches!(&error, SetupError::Unsupported(Unsupported::OtherGame { serial }) if serial == "SCUS-97436"), "{error:?}");
+    assert_eq!(error.user_message(), format!("{UNSUPPORTED_MESSAGE} This disc is SCUS-97436."));
     assert_nothing_written(&fixture);
 }
 

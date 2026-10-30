@@ -16,9 +16,10 @@ component's own license text in this repository and need a check before the rele
 | Microsoft Visual C++ runtime: `vcruntime140.dll`, `msvcp140.dll`, `msvcp140_atomic_wait.dll` | the local Visual Studio CRT redistributable folder (`scripts/make_distribution.py --crt-dir`) | Microsoft redistributable terms. **Not verified**: the terms were not read in this repository | installed folder root | Imported by `gt4vulkan.exe` (checked with `dumpbin /dependents`, slice200). |
 | SDL 3.4.18 (`SDL3.dll`, import library `SDL3.lib`, headers) | release-3.4.18 (`https://github.com/libsdl-org/SDL/releases/tag/release-3.4.18`), commit `829a65d769d935c4852f8159e964312c0957260a`; pinned in `docs/inputs/slice210-sdl3.json` | zlib (`licenses\LICENSE-SDL3.txt`) | game executable (gamepad input, TASK-075): `SDL3.dll` and `licenses\LICENSE-SDL3.txt` next to `gt4vulkan.exe` | Gamepads only (`SDL_INIT_GAMEPAD`); the game window stays Win32. `make_distribution.py` ships the DLL and the licence. |
 | GT4Recomp GS stream protocol (1.2) | `native/gs_stream/gs_stream_protocol.h` | MIT | game executable (client) and a vendored copy in the renderer package | The same header is in `3rdparty/gt4recomp-gs-stream/` of the fork, checked by hash. |
+| rcheevos | `https://github.com/RetroAchievements/rcheevos`, commit `bbc79b58a5a2a0b98dfbf2be6ca9e42c764661ce` | MIT (`native/third_party/rcheevos/LICENSE`) | `gt4vulkan.exe` (`native/third_party/rcheevos/`) | RetroAchievements client, trigger evaluator, and PS2 disc/memory hashing. |
 | Translated game code | generated from Gran Turismo 4 (NTSC-U, SCUS-97328) | **not MIT**: the game's code belongs to Sony Interactive Entertainment and Polyphony Digital | `gt4vulkan.exe` and the private game library | Distribution follows decision 0069 (prebuilt executable; the user supplies the disc). No game data is shipped. |
 
-Windows system DLLs (`winmm.dll`, `xinput`, `user32.dll`, the Vulkan loader `vulkan-1.dll`) are used at run time from
+Windows system DLLs (`winmm.dll`, `xinput`, `user32.dll`, `gdi32.dll`, `gdiplus.dll`, `winhttp.dll`, the Vulkan loader `vulkan-1.dll`) are used at run time from
 the operating system. They are not shipped.
 
 ## 2. Separate renderer program (GPL-3.0-or-later)

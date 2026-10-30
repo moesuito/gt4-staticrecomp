@@ -126,6 +126,13 @@ void EeJournal::append_privileged(std::uint32_t address, std::uint64_t value) {
   journal_.push_back(std::move(entry));
 }
 
+void EeJournal::append_readback(std::uint32_t qwords) {
+  JournalEntry entry;
+  entry.kind = EntryKind::Readback;
+  entry.job = qwords;
+  journal_.push_back(std::move(entry));
+}
+
 bool EeJournal::drain(bool blocking) {
   for (;;) {
     const std::uint32_t seen = output_bell_.snapshot();
@@ -225,6 +232,9 @@ bool EeJournal::execute_ready() {
         break;
       case EntryKind::Privileged:
         sink_.privileged_write(entry.address, entry.job);
+        break;
+      case EntryKind::Readback:
+        sink_.readback(static_cast<std::uint32_t>(entry.job));
         break;
       case EntryKind::Placeholder:
         if (!consume_job(entry.job)) return false;

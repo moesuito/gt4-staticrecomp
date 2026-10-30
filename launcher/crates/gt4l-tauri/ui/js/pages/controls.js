@@ -26,6 +26,26 @@
   var GT4 = (root.GT4 = root.GT4 || {});
   var h = GT4.ui.h;
   var M = GT4.controlsModel;
+  // The names of the buttons and actions in the current language (TASK-102). The model keeps the English names.
+  function nameOf(id) {
+    var key = "controls.button." + id;
+    return GT4.i18n.has(key) ? GT4.t(key) : id;
+  }
+  function titleOf(id) {
+    return nameOf(id);
+  }
+  var ACTION_KEYS = {
+    "Nitro": "controls.action.nitro",
+    "Gear up": "controls.action.gear_up",
+    "Gear down": "controls.action.gear_down",
+    "Look back": "controls.action.look_back",
+    "Camera": "controls.action.camera",
+    "Pause": "controls.action.pause"
+  };
+  function actionName(name) {
+    return ACTION_KEYS[name] ? GT4.t(ACTION_KEYS[name]) : name;
+  }
+
 
   var CAPTURE_SECONDS = 5;
   var remembered = { selected: "cross", mode: "xinput" }; // kept while the app runs
@@ -72,8 +92,8 @@
 
     // ---- the chip mode switch (header) ----
     var modeButtons = {};
-    var seg = h("div", { class: "cx-seg", role: "group", "aria-label": "Show bindings for" },
-      [["xinput", "Controller"], ["key", "Keyboard"]].map(function (pair) {
+    var seg = h("div", { class: "cx-seg", role: "group", "aria-label": GT4.t("controls.show_for") },
+      [["xinput", GT4.t("controls.view_controller")], ["key", GT4.t("controls.view_keyboard")]].map(function (pair) {
         var button = h("button", {
           class: "cx-seg-btn",
           type: "button",
@@ -85,26 +105,25 @@
         return button;
       }));
     // ---- header: title, the honest note, controller status ----
-    var statusName = h("span", { class: "cx-status-name", text: "No controller" });
+    var statusName = h("span", { class: "cx-status-name", text: GT4.t("controls.no_controller") });
     var statusSub = h("span", { class: "cx-status-sub", text: "" });
     var status = h("div", { class: "cx-status", role: "status" }, [
       h("span", { class: "dot", "aria-hidden": "true" }),
       h("span", { class: "cx-status-text" }, [statusName, statusSub])
     ]);
-    var tipText = "Bindings are saved to controls.toml in the GT4Recomp data folder. This game build still uses the " +
-      "built-in mapping; your bindings, trigger and stick settings apply from the next game build.";
+    var tipText = GT4.t("controls.tip");
     var info = h("button", {
       class: "info",
       type: "button",
-      "aria-label": "About saving controls",
+      "aria-label": GT4.t("controls.about_saving"),
       "aria-expanded": "false",
       on: { click: function () { GT4.ui.toggleTip(info); } }
-    }, ["i", h("span", { class: "tip", role: "tooltip" }, [h("b", { text: "Controls" }), tipText])]);
+    }, ["i", h("span", { class: "tip", role: "tooltip" }, [h("b", { text: GT4.t("controls.title") }), tipText])]);
     var lockedNote = h("p", { class: "cx-locked", hidden: true, text: "" });
     content.appendChild(h("div", { class: "cx-head" }, [
       h("div", { class: "cx-title" }, [
-        h("h1", { text: "Controls" }),
-        h("p", { class: "note" }, [h("span", { text: "Changes save at once." }), info])
+        h("h1", { text: GT4.t("controls.title") }),
+        h("p", { class: "note" }, [h("span", { text: GT4.t("controls.saves_at_once") }), info])
       ]),
       h("div", { class: "cx-head-right" }, [seg, status])
     ]));
@@ -122,13 +141,13 @@
     var cardState = h("div", { class: "cx-state" });
     var padChipSlot = h("span", { class: "cx-src-v" });
     var keyChipSlot = h("span", { class: "cx-src-v" });
-    var rebindButton = h("button", { class: "btn primary small", type: "button", on: { click: function () { rebind(state.selected); } } }, "Rebind");
-    var resetButton = h("button", { class: "btn small", type: "button", on: { click: function () { resetOne(state.selected); } } }, "Reset");
+    var rebindButton = h("button", { class: "btn primary small", type: "button", on: { click: function () { rebind(state.selected); } } }, GT4.t("controls.rebind"));
+    var resetButton = h("button", { class: "btn small", type: "button", on: { click: function () { resetOne(state.selected); } } }, GT4.t("controls.reset"));
     var cardHint = h("p", { class: "cx-hint", text: "" });
     var card = h("section", { class: "cx-card" }, [
       h("div", { class: "cx-card-head" }, [cardGlyph, h("div", { class: "cx-card-title" }, [cardName, cardState])]),
-      h("div", { class: "cx-src" }, [h("span", { class: "cx-src-k", text: "Controller" }), padChipSlot]),
-      h("div", { class: "cx-src" }, [h("span", { class: "cx-src-k", text: "Keyboard" }), keyChipSlot]),
+      h("div", { class: "cx-src" }, [h("span", { class: "cx-src-k", text: GT4.t("controls.view_controller") }), padChipSlot]),
+      h("div", { class: "cx-src" }, [h("span", { class: "cx-src-k", text: GT4.t("controls.view_keyboard") }), keyChipSlot]),
       h("div", { class: "cx-actions" }, [rebindButton, resetButton]),
       cardHint
     ]);
@@ -146,7 +165,7 @@
       return h("div", { class: "cx-block" }, [
         h("div", { class: "cx-block-head" }, [
           h("span", { class: "cx-block-name", text: title }),
-          h("span", { class: "cx-meter", "aria-hidden": "true", title: "Grey: the trigger now. Blue: the pressure the game reads. Stripes: the deadzone." }, [dz, raw, out]),
+          h("span", { class: "cx-meter", "aria-hidden": "true", title: GT4.t("controls.meter_help") }, [dz, raw, out]),
           value
         ]),
         analogRows[id]
@@ -165,16 +184,16 @@
         analogRows[id]
       ]);
     }
-    var resetAllButton = h("button", { class: "btn danger small cx-reset-all", type: "button", on: { click: confirmResetAll } }, "Reset all to default");
-    var panel = h("aside", { class: "cx-panel", "aria-label": "Selected button and analog settings" }, [
+    var resetAllButton = h("button", { class: "btn danger small cx-reset-all", type: "button", on: { click: confirmResetAll } }, GT4.t("controls.reset_all_button"));
+    var panel = h("aside", { class: "cx-panel", "aria-label": GT4.t("controls.panel_label") }, [
       card,
       h("section", { class: "cx-analog" }, [
-        h("h2", null, ["Triggers", h("small", { text: "Game reads" })]),
+        h("h2", null, [GT4.t("controls.triggers"), h("small", { text: GT4.t("controls.game_reads") })]),
         triggerBlock("l2", "L2"),
         triggerBlock("r2", "R2"),
-        h("h2", { text: "Sticks" }),
-        stickBlock("lstick", "Left stick"),
-        stickBlock("rstick", "Right stick")
+        h("h2", { text: GT4.t("controls.sticks") }),
+        stickBlock("lstick", GT4.t("controls.left_stick")),
+        stickBlock("rstick", GT4.t("controls.right_stick"))
       ]),
       resetAllButton
     ]);
@@ -194,8 +213,8 @@
       var control = findControl(id);
       GT4.ui.clear(cardGlyph);
       cardGlyph.appendChild(GT4.controllerSvg.glyph(id));
-      cardName.textContent = M.find(id).name;
-      cardState.textContent = control ? (control.is_default ? "Default" : "Changed") : "";
+      cardName.textContent = nameOf(id);
+      cardState.textContent = control ? (control.is_default ? GT4.t("controls.default") : GT4.t("controls.changed")) : "";
       cardState.classList.toggle("is-changed", !!control && control.is_default === false);
       var padSource = firstOf(control, "xinput");
       GT4.ui.clear(padChipSlot);
@@ -207,15 +226,15 @@
       keyNames.forEach(function (name) {
         keyChipSlot.appendChild(chip("key:" + name));
       });
-      keyChipSlot.appendChild(h("span", { class: "cx-src-t", text: keyNames.length ? "Fixed layout" : "Not in the fixed layout yet" }));
+      keyChipSlot.appendChild(h("span", { class: "cx-src-t", text: keyNames.length ? GT4.t("controls.fixed_layout") : GT4.t("controls.not_in_layout") }));
       var keysMode = state.mode === "key";
       rebindButton.disabled = state.locked || keysMode;
       resetButton.disabled = state.locked || keysMode || !control || control.is_default;
       var pointer = GT4.inputMode && GT4.inputMode() === "mouse";
       if (keysMode) {
-        cardHint.textContent = "The keyboard layout is fixed in this build. Switch to Controller to rebind a button.";
+        cardHint.textContent = GT4.t("controls.keyboard_fixed");
       } else {
-        cardHint.textContent = state.locked ? "" : (pointer ? "Click or tap the button again to rebind it." : "Press A to rebind.");
+        cardHint.textContent = state.locked ? "" : (pointer ? GT4.t("controls.click_again") : GT4.t("controls.press_a"));
       }
     }
 
@@ -225,16 +244,16 @@
         var actions = M.KEYBOARD_ACTIONS.map(function (action) {
           return action.name + " " + action.keys.join(" or ") + " (" + action.button + ")";
         }).join(", ");
-        legend.appendChild(h("span", { class: "cx-legend-note", text: "Fixed keyboard layout, read only. Several keys drive one button. " +
-          "In a race: " + actions + "." }));
+        legend.appendChild(h("span", { class: "cx-legend-note", text: GT4.t("controls.legend_fixed") + " " +
+          "" + GT4.t("controls.in_a_race", { actions: actions }) }));
         return;
       }
       [
-        [["face", "A"], ["face", "B"], ["face", "X"], ["face", "Y"], "Buttons"],
-        [["bumper", "LB"], ["bumper", "RB"], "Bumpers"],
-        [["trigger", "LT"], ["trigger", "RT"], "Triggers, with pressure"],
-        [["thumb", "LS"], ["thumb", "RS"], "Stick clicks"],
-        [["menu", "Back"], ["menu", "Start"], "Menu"]
+        [["face", "A"], ["face", "B"], ["face", "X"], ["face", "Y"], GT4.t("controls.group_buttons")],
+        [["bumper", "LB"], ["bumper", "RB"], GT4.t("controls.group_bumpers")],
+        [["trigger", "LT"], ["trigger", "RT"], GT4.t("controls.group_triggers_pressure")],
+        [["thumb", "LS"], ["thumb", "RS"], GT4.t("controls.group_stick_clicks")],
+        [["menu", "Back"], ["menu", "Start"], GT4.t("controls.group_menu")]
       ].forEach(function (group) {
         var chips = group.slice(0, -1).map(function (pair) { return legendChip(pair[0], pair[1]); });
         legend.appendChild(h("span", { class: "cx-legend-item" }, chips.concat([h("span", { class: "cx-legend-t", text: group[group.length - 1] })])));
@@ -295,7 +314,7 @@
             return;
           }
           var node = GT4.settingsRows.rowNode(context, Object.assign({}, row, {
-            label: rowId.indexOf("curve") > 0 ? "Curve" : "Deadzone",
+            label: rowId.indexOf("curve") > 0 ? GT4.t("controls.curve") : GT4.t("controls.deadzone"),
             disabled: state.locked || !!row.disabled
           }));
           if (node) {
@@ -322,7 +341,7 @@
       state.locked = !!view.locked;
       lockedNote.hidden = !state.locked;
       lockedNote.textContent = state.locked
-        ? "The controls file was written by a newer GT4Recomp and is kept as it is. Update the launcher to change controls."
+        ? GT4.t("controls.locked")
         : "";
       paintBadges();
       paintCard();
@@ -354,11 +373,11 @@
       }
       lastStatus = key;
       status.classList.toggle("is-on", connected);
-      statusName.textContent = connected ? summary.name : (unavailable ? "Controller input unavailable" : "No controller");
+      statusName.textContent = connected ? summary.name : (unavailable ? GT4.t("controls.input_unavailable") : GT4.t("controls.no_controller"));
       if (connected) {
-        statusSub.textContent = "Connected" + (summary.count > 1 ? " · controller 1 of " + summary.count + ", the one the game uses" : "");
+        statusSub.textContent = summary.count > 1 ? GT4.t("controls.connected_many", { count: summary.count }) : GT4.t("controls.connected");
       } else {
-        statusSub.textContent = unavailable ? (summary.error || "SDL3 did not start") : "Connect one, or press a button on it";
+        statusSub.textContent = unavailable ? (summary.error || GT4.t("controls.sdl_not_started")) : GT4.t("controls.connect_hint");
       }
     }
     // Pad events from the Rust service. A page that is gone (another route) ignores them.
@@ -465,18 +484,18 @@
       return !!(active && active.closest && active.closest(".pad-ctl"));
     }
     function paintHints() {
-      var tabs = { key: "LB RB", label: "Tabs", run: function () { if (GT4.hooks.tabs) { GT4.hooks.tabs(1); } } };
-      var back = { key: "B", label: "Back", run: function () { GT4.back(); } };
-      var resetAll = { key: "X", label: "Reset all", run: confirmResetAll };
+      var tabs = { key: "LB RB", label: GT4.t("common.tabs"), run: function () { if (GT4.hooks.tabs) { GT4.hooks.tabs(1); } } };
+      var back = { key: "B", label: GT4.t("common.back"), run: function () { GT4.back(); } };
+      var resetAll = { key: "X", label: GT4.t("controls.reset_all_hint"), run: confirmResetAll };
       if (onDrawing() || !content.contains(document.activeElement)) {
         host.hints([
-          { key: "A", label: "Rebind", run: function () { rebind(state.selected); } },
-          { key: "Y", label: "Reset button", run: function () { resetOne(state.selected); } },
+          { key: "A", label: GT4.t("controls.rebind"), run: function () { rebind(state.selected); } },
+          { key: "Y", label: GT4.t("controls.reset_button"), run: function () { resetOne(state.selected); } },
           resetAll, back, tabs
         ], { replace: true });
       } else {
         host.hints([
-          { key: "A", label: "Select", run: function () { GT4.nav.activate(); } },
+          { key: "A", label: GT4.t("controls.select_hint"), run: function () { GT4.nav.activate(); } },
           resetAll, back, tabs
         ], { replace: true });
       }
@@ -521,10 +540,10 @@
       var body = h("div", { class: "cx-capture" }, [
         h("div", { class: "cx-capture-art" }, [ring, h("span", { class: "cx-capture-glyph" }, [GT4.controllerSvg.glyph(id)]), seconds]),
         h("div", { class: "cx-capture-text" }, [
-          h("p", { class: "modal-text", text: "Press a button or pull a trigger on the controller, or press a key." }),
-          h("p", { class: "cx-capture-sub" }, [h("span", { class: "key", text: "B" }), " or ", h("span", { class: "key", text: "Esc" }), " cancels."]),
+          h("p", { class: "modal-text", text: GT4.t("controls.capture_text") }),
+          h("p", { class: "cx-capture-sub" }, [h("span", { class: "key", text: "B" }), GT4.t("controls.capture_or"), h("span", { class: "key", text: "Esc" }), " " + GT4.t("controls.capture_cancels")]),
           message,
-          h("p", { class: "cx-capture-foot", text: "B cancels, so it cannot be picked here. To move B, rebind the button that has it and choose Swap." })
+          h("p", { class: "cx-capture-foot", text: GT4.t("controls.capture_foot") })
         ])
       ]);
       return { body: body, arc: arc, seconds: seconds, message: message };
@@ -533,7 +552,7 @@
     function captureTitle(id) {
       var button = M.find(id);
       var face = ["triangle", "square", "circle", "cross"].indexOf(id) >= 0;
-      return "Press a button for " + (face ? button.symbol + " (" + button.name + ")" : button.name) + "…";
+      return face ? GT4.t("controls.press_for_face", { symbol: button.symbol, button: nameOf(id) }) : GT4.t("controls.press_for", { button: nameOf(id) });
     }
 
     function rebind(id) {
@@ -541,11 +560,11 @@
         return;
       }
       if (state.locked) {
-        GT4.ui.toast("The controls file is kept as it is (written by a newer GT4Recomp).", true);
+        GT4.ui.toast(GT4.t("controls.file_kept"), true);
         return;
       }
       if (state.mode === "key") {
-        GT4.ui.toast("The keyboard layout is fixed in this build. Switch to Controller to rebind a button.");
+        GT4.ui.toast(GT4.t("controls.keys_fixed_rebind"));
         return;
       }
       select(id);
@@ -568,7 +587,7 @@
         capture.dialog.close();
         paintHints();
         if (reason === "timeout") {
-          GT4.ui.toast("No button was pressed. Nothing changed.");
+          GT4.ui.toast(GT4.t("controls.no_button_pressed"));
         } else if (reason === "error") {
           GT4.ui.toast(GT4.errorText(detail), true);
         } else if (reason === "source" && detail !== "xinput:B") {
@@ -588,7 +607,7 @@
         if (key.cancel) {
           stop("cancel");
         } else {
-          parts.message.textContent = "Keyboard keys are fixed in this build. Press a controller button, or B to cancel.";
+          parts.message.textContent = GT4.t("controls.keys_fixed_capture");
         }
         return true;
       };
@@ -598,7 +617,7 @@
         body: parts.body,
         wide: true,
         dismissable: false,
-        buttons: [{ label: "Cancel", closes: false, run: function () { stop("cancel"); } }]
+        buttons: [{ label: GT4.t("common.cancel"), closes: false, run: function () { stop("cancel"); } }]
       });
       capture.dialog.el.classList.add("is-capture");
       GT4.ui.setHints([{ key: "B", label: "Cancel", run: function () { stop("cancel"); } }]);
@@ -640,7 +659,7 @@
     function resolveSource(id, source) {
       var clash = M.conflict(state.controls, id, source);
       if (clash && clash.same) {
-        GT4.ui.toast(M.titleOf(id) + " already uses " + sourceText(source) + ".");
+        GT4.ui.toast(GT4.t("controls.already_uses", { button: titleOf(id), source: sourceText(source) }));
         return;
       }
       if (clash && clash.holder) {
@@ -653,10 +672,10 @@
     function openConflict(id, source, clash) {
       var holder = clash.holder;
       var swap = !!clash.previous;
-      var what = M.family(source) === "key" ? "key" : "controller button";
+      var what = M.family(source) === "key" ? GT4.t("controls.what_key") : GT4.t("controls.what_button");
       var text = swap
-        ? "Swap them: " + M.titleOf(id) + " gets " + M.label(source).text + " and " + M.titleOf(holder) + " gets " + M.label(clash.previous).text + "."
-        : "Move it: " + M.titleOf(id) + " gets " + M.label(source).text + " and " + M.titleOf(holder) + " is left without a " + what + ".";
+        ? GT4.t("controls.swap_text", { name: titleOf(id), source: M.label(source).text, holder: titleOf(holder), previous: M.label(clash.previous).text })
+        : GT4.t("controls.move_text", { name: titleOf(id), source: M.label(source).text, holder: titleOf(holder), what: what });
       var row = function (target, incoming) {
         return h("div", { class: "cx-swap-row" }, [
           h("span", { class: "cx-swap-glyph" }, [GT4.controllerSvg.glyph(target)]),
@@ -666,18 +685,18 @@
         ]);
       };
       GT4.ui.openDialog({
-        title: sourceText(source) + " is already on " + M.titleOf(holder),
+        title: GT4.t("controls.already_on", { source: sourceText(source), holder: titleOf(holder) }),
         text: text,
         body: h("div", { class: "cx-swap" }, [row(id, source), row(holder, swap ? clash.previous : null)]),
         buttons: [
-          { label: "Cancel" },
-          { label: swap ? "Swap" : "Move", primary: true, run: function () { assign(id, source, true); } }
+          { label: GT4.t("common.cancel") },
+          { label: swap ? GT4.t("controls.swap") : GT4.t("controls.move"), primary: true, run: function () { assign(id, source, true); } }
         ],
         onClose: function () { root.setTimeout(paintHints, 0); }
       });
       GT4.ui.setHints([
-        { key: "A", label: "Choose", run: function () { GT4.nav.activate(); } },
-        { key: "B", label: "Cancel", run: function () { GT4.back(); } }
+        { key: "A", label: GT4.t("controls.choose"), run: function () { GT4.nav.activate(); } },
+        { key: "B", label: GT4.t("common.cancel"), run: function () { GT4.back(); } }
       ]);
     }
 
@@ -688,10 +707,10 @@
           apply(view);
         }
         var changed = [id];
-        var message = M.titleOf(id) + " ← " + sourceText(source);
+        var message = titleOf(id) + " ← " + sourceText(source);
         if (view && view.swapped_with) {
           changed.push(view.swapped_with);
-          message += " · swapped with " + M.titleOf(view.swapped_with);
+          message += GT4.t("controls.swapped_with", { button: titleOf(view.swapped_with) });
         }
         if (M.family(source) !== state.mode) {
           setMode(M.family(source));
@@ -709,18 +728,18 @@
         return;
       }
       if (state.mode === "key") {
-        GT4.ui.toast("The keyboard layout is fixed in this build. Switch to Controller to reset a button.");
+        GT4.ui.toast(GT4.t("controls.keys_fixed_toast"));
         return;
       }
       var control = findControl(id);
       if (control && control.is_default) {
-        GT4.ui.toast(M.titleOf(id) + " already has its default binding.");
+        GT4.ui.toast(GT4.t("controls.already_default", { button: titleOf(id) }));
         return;
       }
       call("reset_binding", { control: id }).then(function () {
         return load().then(function () {
           pad.flash([id]);
-          GT4.ui.toast(M.titleOf(id) + " is back to its default.");
+          GT4.ui.toast(GT4.t("controls.back_to_default", { button: titleOf(id) }));
         });
       }, function (err) {
         GT4.ui.toast(GT4.errorText(err), true);
@@ -732,19 +751,19 @@
         return;
       }
       GT4.ui.openDialog({
-        title: "Reset all controls?",
-        text: "Every button, trigger and stick setting goes back to its default. This is saved at once.",
+        title: GT4.t("controls.reset_all_title"),
+        text: GT4.t("controls.reset_all_text"),
         buttons: [
-          { label: "Cancel" },
+          { label: GT4.t("common.cancel") },
           {
-            label: "Reset all",
+            label: GT4.t("controls.reset_all_hint"),
             primary: true,
             danger: true,
             run: function () {
               call("reset_all_bindings").then(function (view) {
                 apply(view);
                 pad.flash(M.BUTTONS.map(function (button) { return button.id; }));
-                GT4.ui.toast("All controls are back to their defaults.");
+                GT4.ui.toast(GT4.t("controls.reset_all_done"));
               }, function (err) {
                 GT4.ui.toast(GT4.errorText(err), true);
               });
@@ -754,8 +773,8 @@
         onClose: function () { root.setTimeout(paintHints, 0); }
       });
       GT4.ui.setHints([
-        { key: "A", label: "Choose", run: function () { GT4.nav.activate(); } },
-        { key: "B", label: "Cancel", run: function () { GT4.back(); } }
+        { key: "A", label: GT4.t("controls.choose"), run: function () { GT4.nav.activate(); } },
+        { key: "B", label: GT4.t("common.cancel"), run: function () { GT4.back(); } }
       ]);
     }
 

@@ -43,11 +43,20 @@ class RecordingSink final : public GsSink {
   void privileged_write(std::uint32_t address, std::uint64_t value) override {
     events.push_back(privileged_event(address, value));
   }
+  void readback(std::uint32_t qwords) override {
+    events.push_back(readback_event(qwords));
+  }
   static Event privileged_event(std::uint32_t address, std::uint64_t value) {
     Event event;
     event.kind = 4;
     for (int i = 0; i < 4; ++i) event.bytes.push_back(static_cast<std::uint8_t>(address >> (8 * i)));
     for (int i = 0; i < 8; ++i) event.bytes.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+    return event;
+  }
+  static Event readback_event(std::uint32_t qwords) {
+    Event event;
+    event.kind = 5;
+    for (int i = 0; i < 4; ++i) event.bytes.push_back(static_cast<std::uint8_t>(qwords >> (8 * i)));
     return event;
   }
   std::vector<Event> events;
@@ -179,6 +188,11 @@ void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_
       } else {
         journal.append_privileged(address, value);
       }
+    } else if (choice < 85) {
+      // TASK-116 step 1: a READ_FIFO queued behind the journal reaches the sink at its program position, in order.
+      const std::uint32_t qwords = static_cast<std::uint32_t>(1 + rng() % 512);
+      expected.push_back(RecordingSink::readback_event(qwords));
+      journal.append_readback(qwords);
     } else if (choice < 95) {
       journal.drain(false);
     } else {

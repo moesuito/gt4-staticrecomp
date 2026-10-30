@@ -8,6 +8,7 @@
 #include "race_display.hpp"
 #include "race_widescreen.hpp"
 #include "display_aspect.hpp"
+#include "flare_limits.hpp"
 #include "perf_probe.hpp"
 
 #include <atomic>
@@ -58,11 +59,18 @@ class DonorSink final : public GsSink {
     if (!privileged_) throw std::logic_error("mtvu journal privileged write without an ordered consumer");
     privileged_(address, value);
   }
+  // TASK-116 step 1: the queued READ_FIFO reaches the GS stream after the earlier GIF output, without waiting.
+  void readback(std::uint32_t qwords) override {
+    if (!post_readback_) throw std::logic_error("mtvu journal readback without an ordered consumer");
+    post_readback_(qwords);
+  }
+  void set_readback_consumer(void (*post)(std::uint32_t)) { post_readback_ = post; }
 
  private:
   void (*render_)(int, const std::uint8_t *, std::uint32_t);
   void (*privileged_)(std::uint32_t, std::uint64_t) = nullptr;
   bool (*post_vsync_)() = nullptr;
+  void (*post_readback_)(std::uint32_t) = nullptr;
 };
 
 // Cumulative worker totals, published by the worker after each job (before its JobDone). The EE reads them only
@@ -122,6 +130,10 @@ struct Runtime {
   std::uint64_t vif_chains = 0, vif_job_count = 0, vif_job_bytes = 0, vif_packet_count = 0;
   // TASK-041: ordered privileged writes (EE thread only).
   void (*ordered_privileged)(std::uint32_t, std::uint64_t) = nullptr;
+  // TASK-116 step 1: the deferred download sync and its READ_FIFO entry (EE thread only).
+  DownloadOrdering download{};
+  bool download_deferred = false;  // the last sync("download") returned without draining
+  std::uint64_t readbacks_queued = 0;
   std::uint64_t privileged_queued = 0;   // writes queued behind journal entries
   std::uint64_t privileged_wait_us = 0;  // wait of the last blocking gs_privileged sync, taken by the consumer
   std::uint64_t signals_applied = 0;  // EE thread only: SIGNAL/FINISH/LABEL applied at accept
@@ -369,6 +381,7 @@ void start(const Settings &settings, const Donor &donor) {
   r.output = std::make_unique<SpscByteRing>(kOutputBytes, r.output_bell);
   r.sink = std::make_unique<DonorSink>(donor.render_gs, donor.post_vsync);
   r.sink->set_privileged_consumer(r.ordered_privileged);
+  r.sink->set_readback_consumer(r.download.post_readback);
   r.journal = std::make_unique<EeJournal>(*r.input, *r.output, r.input_bell, r.output_bell, *r.sink);
   r.worker_end = std::make_unique<WorkerEnd>(*r.input, *r.output, r.input_bell, r.output_bell);
   r.worker_accounting = gt4::perf::Accounting(gt4::perf::Probe::shared().enabled());
@@ -409,6 +422,30 @@ std::uint64_t take_privileged_wait_us() {
   const std::uint64_t waited = r.privileged_wait_us;
   r.privileged_wait_us = 0;
   return waited;
+}
+
+void set_download_ordering(const DownloadOrdering &ordering) {
+  Runtime &r = rt();
+  r.download = ordering;
+  if (r.sink) r.sink->set_readback_consumer(ordering.post_readback);
+}
+
+bool queue_readback(std::uint32_t qwords) {
+  Runtime &r = rt();
+  if (t_on_worker || !enabled() || r.download.post_readback == nullptr) return false;
+  r.journal->append_readback(qwords);
+  ++r.readbacks_queued;
+  return true;
+}
+
+void drain_download() {
+  Runtime &r = rt();
+  if (t_on_worker || !enabled() || r.journal->queued_entries() == 0) return;
+  r.download_deferred = false;
+  ++r.syncs["download"];
+  gt4::perf::Scope waiting(gt4::perf::Category::mtvu_wait_download);
+  r.journal->drain(true);
+  rethrow_worker_error();
 }
 
 bool on_worker() { return t_on_worker; }
@@ -568,6 +605,14 @@ void sync(const char *reason) {
     r.privileged_wait_us = 0;
     return;
   }
+  if (why == "download" && r.download.defer && r.download.post_readback && r.download.defer()) {
+    // TASK-116 step 1: the readback that follows is answered locally. Its READ_FIFO is queued behind this journal by the
+    // caller (queue_readback) and posted at its stream position without waiting, so no drain is needed here; the
+    // accurate path drains on demand (drain_download) and the VBlank drains as usual.
+    ++r.syncs["download_deferred"];
+    r.download_deferred = true;
+    return;
+  }
   ++r.syncs[reason];
   using gt4::perf::Category;
   const Category wait = why == "vblank" ? Category::mtvu_wait_vblank
@@ -584,6 +629,7 @@ void sync(const char *reason) {
     r.journal->drain(true);
   }
   if (privileged) r.privileged_wait_us = wall_us() - start;
+  r.download_deferred = false;
   rethrow_worker_error();
 }
 
@@ -648,6 +694,8 @@ void vblank_sync() {
     static gt4::display::Force480pState state;
     if (force480p) gt4::display::force_race_480p_at_vblank(ps2::g_ram, 32u << 20, state);
   }
+  // TASK-117: the flare-limits block of Performance mode (native/flare_limits.hpp; GT4_FLARE_LIMITS).
+  gt4::flare_limits::at_guest_vblank(ps2::g_ram, 32u << 20);
   Runtime &r = rt();
   if (!r.started) return;
   // TASK-084 step 3: in pcsx2 mode the VSYNC is a journal entry after the frame's VU1 output, so the EE does not
@@ -729,6 +777,9 @@ void report(std::FILE *output) {
   std::fprintf(output, "[mtvu] privileged writes: async %d (GT4_MTVU_PRIV_ASYNC %d, ordered consumer %s); queued "
                "behind worker output %llu\n", privileged_async() ? 1 : 0, r.settings.privileged_async ? 1 : 0,
                r.ordered_privileged ? "registered" : "none", static_cast<unsigned long long>(r.privileged_queued));
+  std::fprintf(output, "[mtvu] download sync: deferral %s, readback consumer %s; readbacks queued behind the journal %llu\n",
+               r.download.defer ? "registered" : "none", r.download.post_readback ? "registered" : "none",
+               static_cast<unsigned long long>(r.readbacks_queued));
   if (r.settings.verify)
     std::fprintf(output, "[mtvu] verify frames %llu mismatches %llu\n", static_cast<unsigned long long>(r.verify_frames),
                  static_cast<unsigned long long>(r.verify_mismatches));

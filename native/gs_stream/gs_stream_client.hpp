@@ -72,6 +72,32 @@ const char *privileged_register_name(int index);
 // Local-to-host FIFO read. Returns true when the stream renderer answered it (data filled); false in donor mode,
 // where the capture only records the request and the donor serves the data.
 bool read_fifo(std::uint8_t *data, std::uint32_t qwords);
+// TASK-116 step 0 (P0 gate): the guest RAM window used to report a READ_FIFO destination as an EE address in the
+// GT4_GS_READBACK_LOG lines. native/game_main.cpp sets it once from ps2::g_ram; unset, the destination is reported as 0.
+// A probe aid only: read_fifo itself does not look at it.
+void set_guest_ram(std::uint8_t *base, std::uint32_t size);
+
+// TASK-116 step 1 (rc6): the flare readback answered locally in Performance mode (gt4-gs HWDownloadMode 2). The game
+// must not wait for the GS process to render and download the per-frame 2 KiB flare visibility table: only that
+// readback (128 qwords, a 64x8 PSMCT32 buffer) is answered with the previous reply, one frame old, and its READ_FIFO is
+// queued behind the MTVU journal, so the GS process still receives it at its stream position (the stream hash does not
+// change). Every other readback (car icons, loading picture, thumbnail, photo) keeps the blocking drain and the round
+// trip, and so does the first flare readback of a scene. GT4_GS_READBACK_LOCAL=0 turns the local answer off (A/B);
+// GT4_GS_READBACK_LOG=1 logs every reply. The journal services come from mtvu_bridge.cpp (pcsx2 mode only): with none
+// registered, every readback is served exactly as before.
+struct ReadbackJournal {
+  // EE thread: queues a READ_FIFO behind the journal entries already queued. False: nothing was queued, and the
+  // caller drains and waits for an accurate reply.
+  bool (*queue_readback)(std::uint32_t qwords) = nullptr;
+  // EE thread: the blocking drain the accurate path needs (the deferred sync("download")).
+  void (*drain_download)() = nullptr;
+};
+void set_readback_journal(const ReadbackJournal &journal);
+// True when the flare readback is answered locally: the GS stream runs, Performance mode is on, GT4_GS_READBACK_LOCAL is
+// not 0, and the journal is registered. Read by the MTVU download ordering to defer sync("download").
+bool readback_local_active();
+// Posts the queued READ_FIFO without waiting for the reply; called by the MTVU journal drain, in stream order.
+void post_read_fifo_nowait(std::uint32_t qwords);
 // Start of the vertical blank, after the donor toggled the field: odd_field is the CSR FIELD bit the EE now reads.
 // The donor toggles the field together with INTC VBLANK_S, before the game's VBLANK_S handler runs, so this is also
 // the display field of the frame that ends here (protocol 1.1 VSYNC.field; docs/GS-STREAM-PROTOCOL.md 6.1).

@@ -98,10 +98,14 @@ Options follow the source after a `|`, separated by spaces: `"xinput:LT | deadzo
 | --- | --- | --- | --- |
 | `deadzone` | triggers, sticks | 0 up to, not including, 1; fraction of full travel | trigger 30/255 (0.1176); right stick 8689/32767; left stick 7849/32767 |
 | `scale` | triggers, sticks | 0 to 2; multiplies the curve output, clamped to full travel | 1 |
-| `curve` | triggers, sticks | `linear`, `quadratic`, `cubic` | `linear` |
+| `curve` | triggers, sticks | `linear`, `quadratic`, `cubic`, `s_curve`, `smooth_power`, `sublinear`, `logarithmic` | `linear` |
 | `invert` | sticks only | `true` or `false` | `false` |
 
 Digital sources (`xinput:A` etc. and `key:` sources) take no options.
+
+SDL3 Gamepad triggers already use 0 released through 32767 pressed for Xbox and DualSense alike.
+The adapter reduces that standardized value to a pressure byte; raw joystick/HID signed ranges are
+not read here. No device-name range override or `mode` source option is supported.
 
 Reading rules, as implemented in `native/controls.cpp`:
 

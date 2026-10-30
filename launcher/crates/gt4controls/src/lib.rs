@@ -101,6 +101,10 @@ pub enum Curve {
     Linear,
     Quadratic,
     Cubic,
+    SCurve,
+    SmoothPower,
+    Sublinear,
+    Logarithmic,
 }
 
 impl Curve {
@@ -109,6 +113,10 @@ impl Curve {
             Curve::Linear => "linear",
             Curve::Quadratic => "quadratic",
             Curve::Cubic => "cubic",
+            Curve::SCurve => "s_curve",
+            Curve::SmoothPower => "smooth_power",
+            Curve::Sublinear => "sublinear",
+            Curve::Logarithmic => "logarithmic",
         }
     }
 }
@@ -229,6 +237,10 @@ impl Controls {
                 match option {
                     "curve=quadratic" => tuning.curve = Curve::Quadratic,
                     "curve=cubic" => tuning.curve = Curve::Cubic,
+                    "curve=s_curve" | "curve=scurve" | "curve=s-curve" => tuning.curve = Curve::SCurve,
+                    "curve=smooth_power" | "curve=smooth" => tuning.curve = Curve::SmoothPower,
+                    "curve=sublinear" | "curve=root" => tuning.curve = Curve::Sublinear,
+                    "curve=logarithmic" | "curve=log" => tuning.curve = Curve::Logarithmic,
                     _ => {}
                 }
             }
@@ -598,8 +610,8 @@ fn validate_option(line: usize, kind: InputKind, analog: bool, option: &str) -> 
             if !analog {
                 return Err(error(line, "curve applies to triggers and sticks only"));
             }
-            if !["linear", "quadratic", "cubic"].contains(&value) {
-                return Err(error(line, "curve must be linear, quadratic or cubic"));
+            if !["linear", "quadratic", "cubic", "s_curve", "scurve", "s-curve", "smooth_power", "smooth", "sublinear", "root", "logarithmic", "log"].contains(&value) {
+                return Err(error(line, "curve must be linear, quadratic, cubic, s_curve, smooth_power, sublinear or logarithmic"));
             }
         }
         "invert" => {
@@ -771,6 +783,49 @@ mod tests {
         assert!(controls.assign("lstick_x", "xinput:A", true).is_err());
         assert!(controls.assign("nope", "xinput:A", true).is_err());
         assert_eq!(controls, Controls::default());
+    }
+
+    #[test]
+    fn new_curves_round_trip_and_unsupported_raw_modes_are_rejected() {
+        for curve in [Curve::SCurve, Curve::SmoothPower, Curve::Sublinear, Curve::Logarithmic] {
+            let mut controls = Controls::default();
+            controls.set_trigger_tuning("r2", TriggerTuning { deadzone: 0.1, curve }).unwrap();
+            let parsed = Controls::parse(&controls.render()).unwrap();
+            assert_eq!(parsed.trigger_tuning("r2").curve, curve);
+        }
+        for (input, source) in [("l2", "xinput:LT"), ("lstick_x", "xinput:LX")] {
+            let text = format!("schema = 1\n[bindings]\n{input} = [\"{source} | mode=dualsense\"]\n");
+            assert!(Controls::parse(&text).unwrap_err().to_string().contains("unknown option 'mode'"));
+        }
+    }
+
+    #[test]
+    fn all_seven_curves_and_aliases_support_old_configs_and_monotonic_travel() {
+        // Old configs without curve option default to Linear.
+        let old_text = "schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.100\"]\n";
+        let old_controls = Controls::parse(old_text).unwrap();
+        assert_eq!(old_controls.trigger_tuning("l2").curve, Curve::Linear);
+
+        // All 7 canonical curves and their accepted aliases.
+        let cases = [
+            ("linear", Curve::Linear),
+            ("quadratic", Curve::Quadratic),
+            ("cubic", Curve::Cubic),
+            ("s_curve", Curve::SCurve),
+            ("scurve", Curve::SCurve),
+            ("s-curve", Curve::SCurve),
+            ("smooth_power", Curve::SmoothPower),
+            ("smooth", Curve::SmoothPower),
+            ("sublinear", Curve::Sublinear),
+            ("root", Curve::Sublinear),
+            ("logarithmic", Curve::Logarithmic),
+            ("log", Curve::Logarithmic),
+        ];
+        for (alias, expected_curve) in cases {
+            let text = format!("schema = 1\n[bindings]\nr2 = [\"xinput:RT | curve={alias}\"]\n");
+            let parsed = Controls::parse(&text).unwrap();
+            assert_eq!(parsed.trigger_tuning("r2").curve, expected_curve);
+        }
     }
 
     #[test]

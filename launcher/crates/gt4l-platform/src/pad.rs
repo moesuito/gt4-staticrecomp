@@ -85,7 +85,8 @@ pub fn sample(raw: &RawPad) -> PadSample {
     let digital = |on: bool| if on { 255u8 } else { 0u8 };
     let trigger = |value: i16| -> u8 {
         let clamped = i32::from(value).clamp(0, 32_767);
-        ((clamped * 255 + 16_383) / 32_767) as u8
+        // Match the native SDL adapter: standardized trigger units reduced to one pressure byte.
+        (clamped >> 7) as u8
     };
     let pairs: [(&'static str, u8); 16] = [
         ("xinput:A", digital(raw.south)),
@@ -183,6 +184,26 @@ mod tests {
         assert_eq!(sampled.pressure["xinput:RT"], 128, "half of SDL's travel is about half of 255");
         pad.left_trigger = -5;
         assert_eq!(sample(&pad).pressure["xinput:LT"], 0, "negative raw values are clamped");
+    }
+
+    #[test]
+    fn all_standardized_gamepads_keep_the_same_trigger_range_and_capture_threshold() {
+        // SDL supplies this range for Xbox, DualShock and DualSense alike, independently of HID ranges.
+        let baseline = sample(&raw());
+        for (value, byte) in [(0, 0), (8192, 64), (16384, 128), (24576, 192), (32767, 255)] {
+            let mut pad = raw();
+            pad.left_trigger = value;
+            let now = sample(&pad);
+            assert_eq!(now.pressure["xinput:LT"], byte);
+            assert_eq!(now.pressure["xinput:RT"], 0);
+            assert_eq!(captured_source(&baseline, &now).is_some(), byte >= PRESS);
+        }
+        assert_eq!(captured_source(&baseline, &sample(&raw())), None, "released triggers never capture");
+        for value in -32768..0 {
+            let mut pad = raw();
+            pad.left_trigger = value;
+            assert_eq!(sample(&pad).pressure["xinput:LT"], 0, "invalid negative values clamp to rest");
+        }
     }
 
     #[test]

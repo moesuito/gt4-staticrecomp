@@ -115,8 +115,21 @@
       return Math.floor(((v - d) * 255) / (255 - d)) / 255;
     }
     var n = (v - d) / (255 - d);
-    var shaped = curve === "cubic" ? n * n * n : n * n;
-    return Math.floor(Math.min(1, shaped) * 255) / 255;
+    var shaped = n;
+    if (curve === "quadratic") {
+      shaped = n * n;
+    } else if (curve === "cubic") {
+      shaped = n * n * n;
+    } else if (curve === "s_curve" || curve === "scurve" || curve === "s-curve") {
+      shaped = n * n * (3 - 2 * n);
+    } else if (curve === "smooth_power" || curve === "smooth") {
+      shaped = n * Math.sqrt(n);
+    } else if (curve === "sublinear" || curve === "root") {
+      shaped = Math.sqrt(n);
+    } else if (curve === "logarithmic" || curve === "log") {
+      shaped = Math.log(1 + 9 * n) / Math.log(10);
+    }
+    return Math.floor(Math.min(1, Math.max(0, shaped)) * 255) / 255;
   }
 
   // Dev mock only: {"xinput:A": 1, "xinput:LT": 0.6, ...} for every standard button of a Gamepad-like object.
@@ -308,22 +321,32 @@
   var KEY_TEXT = { Backspace: "Bksp", Up: "↑", Down: "↓", Left: "←", Right: "→", PageUp: "PgUp",
     PageDown: "PgDn", Delete: "Del", Insert: "Ins" };
 
+  // The player-facing long name in the interface language (locale key controls.source.*); the English text above
+  // is the fallback when the key or GT4.t is missing (the pure tests run without locales).
+  function longText(key, english, params) {
+    if (GT4.t && GT4.i18n && GT4.i18n.has && GT4.i18n.has(key)) {
+      return GT4.t(key, params);
+    }
+    return english;
+  }
+
   // Chip text for a source: {family: "xinput"|"key"|"", kind, text, long, dir?}. Unknown and empty sources read "-".
   function label(source) {
     if (!source) {
-      return { family: "", kind: "none", text: "–", long: "Not bound" };
+      return { family: "", kind: "none", text: "–", long: longText("controls.source.none", "Not bound") };
     }
     var name = sourceName(source);
     if (family(source) === "xinput" && XINPUT_LABELS[name]) {
       var entry = XINPUT_LABELS[name];
-      var out = { family: "xinput", kind: entry[0], text: entry[1], long: entry[2] };
+      var out = { family: "xinput", kind: entry[0], text: entry[1], long: longText("controls.source." + name, entry[2]) };
       if (entry[0] === "dpad") {
         out.dir = name.slice(4).toLowerCase();
       }
       return out;
     }
     if (family(source) === "key") {
-      return { family: "key", kind: "key", text: KEY_TEXT[name] || name, long: name + " key" };
+      return { family: "key", kind: "key", text: KEY_TEXT[name] || name,
+        long: longText("controls.source.key", name + " key", { key: name }) };
     }
     return { family: family(source), kind: "none", text: name || "?", long: sourceBase(source) };
   }
@@ -331,7 +354,7 @@
   // "Xbox 360 Controller (XInput STANDARD GAMEPAD)" -> "Xbox 360 Controller".
   function cleanPadName(id) {
     var text = String(id || "").replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
-    return text || "Controller";
+    return text || longText("controls.view_controller", "Controller");
   }
 
   // Dev mock only: pads = a list of Gamepad-like objects. The first connected one is the one the game reads.

@@ -1,8 +1,11 @@
 #include "host_io.hpp"
 #include "frame_clock.hpp"
 
+#include <SDL3/SDL.h>
+
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <stdexcept>
 
 namespace {
@@ -10,12 +13,76 @@ void require(bool value, const char *label) {
   if (!value)
     throw std::runtime_error(label);
 }
+// This fixture opens only its own virtual device; it does not select or send haptics to physical pads.
+void check_standardized_sdl_triggers() {
+  require(SDL_InitSubSystem(SDL_INIT_GAMEPAD), "SDL gamepad fixture initialization");
+  struct SdlCleanup {
+    ~SdlCleanup() { SDL_QuitSubSystem(SDL_INIT_GAMEPAD); }
+  } cleanup;
+  struct VirtualPad {
+    SDL_JoystickID id = 0;
+    SDL_Gamepad *pad = nullptr;
+    ~VirtualPad() {
+      if (pad) SDL_CloseGamepad(pad);
+      if (id) SDL_DetachVirtualJoystick(id);
+    }
+  };
+  const auto remap = gt4::controls::parse_controls(
+      "schema = 1\n[bindings]\ncross = [\"xinput:RT | deadzone=0\"]\n"
+      "square = [\"xinput:LT | deadzone=0\"]\n", "virtual-trigger-remap");
+  struct Device { const char *name; Uint16 vendor; Uint16 product; };
+  for (const auto &device : {Device{"DualSense Wireless Controller", 0x054c, 0x0ce6},
+                             Device{"Xbox Controller", 0x045e, 0x028e}}) {
+    VirtualPad owned;
+    SDL_VirtualJoystickDesc desc{};
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.vendor_id = device.vendor;
+    desc.product_id = device.product;
+    desc.name = device.name;
+    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+    desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+    owned.id = SDL_AttachVirtualJoystick(&desc);
+    require(owned.id != 0, "attach own virtual gamepad");
+    owned.pad = SDL_OpenGamepad(owned.id);
+    require(owned.pad != nullptr, "open own virtual gamepad");
+    SDL_Joystick *joystick = SDL_GetGamepadJoystick(owned.pad);
+    // Raw signed joystick values are normalized by SDL before the production adapter sees them.
+    const Sint16 joystick_values[] = {-32768, -16383, 1, 16385, 32767};
+    const std::uint8_t expected_bytes[] = {0, 64, 128, 192, 255};
+    for (std::size_t step = 0; step < std::size(joystick_values); ++step) {
+      require(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, joystick_values[step]),
+              "set virtual left trigger");
+      require(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, joystick_values[step]),
+              "set virtual right trigger");
+      SDL_UpdateJoysticks();
+      SDL_UpdateGamepads();
+      const auto reading = read_sdl_gamepad(owned.pad);
+      require(reading.left_trigger == expected_bytes[step] && reading.right_trigger == expected_bytes[step],
+              "PS5 and Xbox standardized SDL rest/quarter/half/three-quarter/full conversion");
+      const auto mapped = gt4::pad::map_reading(reading, remap);
+      require(mapped.pressures[14] == expected_bytes[step] && mapped.pressures[15] == expected_bytes[step],
+              "trigger pressure follows its physical source when rebound to face buttons");
+    }
+    require(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768), "release virtual LT");
+    require(SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768), "release virtual RT");
+    SDL_UpdateJoysticks();
+    SDL_UpdateGamepads();
+    const auto released = gt4::pad::map_reading(read_sdl_gamepad(owned.pad), gt4::controls::default_controls());
+    require(released.buttons == 0 && released.pressures[8] == 0 && released.pressures[9] == 0,
+            "released standardized DualSense and Xbox triggers stay neutral");
+  }
+  std::fprintf(stderr, "PASS: production SDL adapter with own virtual PS5 and Xbox triggers\n");
+}
 } // namespace
 
 int main() {
   // A missing SDL3.dll must fail the test, not open a system error dialog.
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   try {
+    check_standardized_sdl_triggers();
     const WORD buttons[] = {XINPUT_GAMEPAD_BACK,
                             XINPUT_GAMEPAD_LEFT_THUMB,
                             XINPUT_GAMEPAD_RIGHT_THUMB,

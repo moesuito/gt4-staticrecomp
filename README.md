@@ -171,12 +171,18 @@ possible.
 |---|---|---|
 | [ps2-web-recomp](https://github.com/snuri00/ps2-web-recomp) (MIT) | snuri00 | The runtime foundation: EE-to-C++ translator, PS2 hardware models, the GS compute renderer and the original VU1 compiler. |
 | [gt4-decomp](https://github.com/gustavocanepa/gt4-decomp) (MIT) | gustavocanepa | GT4's decompilation: function names, class layouts and engine notes ([identity](docs/DECOMP-IDENTITY.md)). |
+| [Gran Turismo 4 Spec II](https://www.theadmiester.co.uk/specii/) | TheAdmiester and contributors | The Spec II mod (the second game target). GT4Recomp ships none of its files; you need your own Spec II 1.10 disc image. |
 | [Nenkai's GT research](https://github.com/Nenkai) | Nenkai | File formats and the VU1 microcode encryption scheme ([details](docs/VU1-MICROCODE-SOURCE.md)). |
 | [GT4FS](https://github.com/Razer2015/GT4FS) | Razer2015 | GT4 volume file-system research. |
 | [PCSX2](https://github.com/PCSX2/pcsx2) (GPL-3.0) | PCSX2 team | Decades of PS2 knowledge; its GS runs only in the separate `gt4-gs.exe`. |
 | [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) · [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | gfx-rs · Khronos | Shader compilation at build time · Vulkan API headers. |
 
 Exact revisions and licenses: [THIRD_PARTY.md](native/THIRD_PARTY.md).
+
+**Gran Turismo 4 Spec II** by TheAdmiester and contributors - https://www.theadmiester.co.uk/specii/ - with credits to
+Nenkai, ddm, ermaccer, zinklesmesh, pez2k, xfileFIN, Silentwarrior112, Xenn and Submaniac, Silent, Alconautica,
+hydnhntr, JeyM and pioneerspine; special thanks to DustinEden and the testers and translators listed on the mod's
+credits page. GT4Recomp ships no Spec II files: the player supplies their own Spec II disc image.
 
 ## License and legal
 
