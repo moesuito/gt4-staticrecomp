@@ -57,7 +57,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑015 | LWR sign-extension fidelity check | ✅ Done (already correct; no change) |
 | TASK‑016 | IOP per-module cost counters and review | ⏸️ Deferred (not needed for 1.0.0) |
 | TASK‑017 | License-test crash | ✅ Done (2026-10-16) · license demo guard on both demo loaders (slice206, `--mode pcsx2`): licenses playable, demos that decrypt wrong are skipped as in PCSX2 default; root cause moved to TASK‑063 |
-| TASK‑018 | Racing wheels with force feedback: the game sees a Logitech Driving Force GT, force feedback through SDL3, a Wheel tab in the launcher | 📋 Planned · release 1.4.0 (owner, 2026-10-22) |
+| TASK‑018 | Native Driving Force Pro (DFP): 900-degree steering, game-generated force feedback bridged to SDL3, wheel configuration | 📋 Planned for 1.3.1; TASK-123 research brief ready; TASK-121 host-input groundwork is partial |
 | TASK‑019 | Launcher 1.0.0 (Rust core + Tauri 2 HTML frontend) and NSIS per-user installer | ✅ Launcher merged into main (2026-10-21): setup with disc copy, gt4-gs download, settings, saves, controls (SDL3), tray, updates; owner tested end to end. Still for 1.0.0: NSIS installer build and the v1.0.0 release |
 | TASK‑020 | Decomp names in generated EE code (waits for more decompilation progress) | 📋 Planned |
 | TASK‑025 | Save manager: memory card slots, import/export | ✅ Code done, merged into `task/019-launcher`; ships with the launcher (owner test pending) |
@@ -143,6 +143,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑096 | Remove CoreGS 1.1 from the launcher (owner, 2026-10-22): GSdx only, CoreGS 2.0 shown as "Coming soon" (disabled), a stored CoreGS 1.1 choice migrates to GSdx, a GSdx failure shows a clear error instead of falling back; CoreGS 1.1 stays in the game executable, unused by the launcher. For launcher release 1.2.3 | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
+| TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🔄 Study done and owner decisions recorded (2026-10-28) · next: P0 baselines when the owner frees the desktop |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -1536,11 +1537,21 @@ Owner decisions (2026-10-21). Release 1.2.0 of both the game/launcher and gt4-gs
 ### TASK-018 — Racing wheels
 High-level emulation at the PDIUSB boundary with SDL3 wheels and force feedback
 (docs/MENUS-AND-WHEEL.md). Builds on the TASK-075 SDL3 input layer.
-Release 1.4.0 (owner, 2026-10-23; was 1.3.0 before Spec II moved ahead): the game must recognise the connected wheel as a Logitech Driving Force GT
+Planned for 1.3.1 (owner update, 2026-10-26; previously 1.4.0): the game must recognise the connected wheel as a Logitech Driving Force Pro (DFP)
 (900-degree range and force feedback in GT4), whatever wheel SDL3 finds (Logitech, Thrustmaster, Fanatec); the
 game's force-feedback commands go to SDL3 haptics. The launcher gets a new Wheel tab (detection, rotation, force
 feedback strength, pedals and buttons, a live test). Study first: the GT4 USB stack (USBD, PDIUSB, LGDEV IRX,
-docs/IOP-MAP.md), where to answer as a DFGT, and the force-feedback command set.
+docs/IOP-MAP.md), where to answer as a DFP, and the force-feedback command set.
+
+Owner scope update 2026-10-26: the virtual target is Driving Force Pro (DFP), not DFGT.
+Native 900-degree steering and game-generated wheel force feedback are planned for 1.3.1;
+1.3.0 stays focused on Spec II and performance. TASK-123 prepares research and an implementation
+plan only. The private 1.2.5 draft is held back from publication; existing input contributions remain
+in main as reusable groundwork and are not proof of native wheel support.
+
+Host-input groundwork was merged through TASK-121 and packaged in the private 1.2.5 draft.
+Publication is now on hold. The guest USB/Logitech identity and native force-feedback protocol
+remain future acceptance for 1.3.1; this contribution does not complete TASK-018.
 
 ### TASK-075 — Input layer on SDL3
 Owner decision 2026-10-21. Replace the game's XInput-only pad code (native/host_io.cpp) with one input layer on
@@ -2245,7 +2256,7 @@ What we know today:
 - Owner checks wanted: both players drive, both HUDs right, performance at 60 FPS on both renderers, Spec II too.
 
 **Release plan (owner, 2026-10-22):** big features take a minor version, intermediate updates and hotfixes the
-patch number: 1.2.3 hotfix, 1.2.4 (TASK-097, 098, 099), 1.3.0 Spec II (TASK-100, on GSdx), 1.4.0 wheels (TASK-018) (owner, 2026-10-23: Spec II moved ahead);
+patch number: 1.2.3 hotfix, 1.2.4 (TASK-097, 098, 099), 1.3.0 Spec II (TASK-100, on GSdx), 1.3.1 native DFP wheels (TASK-018; owner update 2026-10-26);
 2.0.0 is CoreGS 2.0 (phase 2).
 
 **Spec II is a second target** (owner, 2026-10-22): support means the SCUS-97436
@@ -2309,6 +2320,232 @@ Owner test: select CoreGS 1.1, restart the launcher with no gt4-gs package, laun
 there is no renderer download; switch back to PCSX2 and confirm its existing setup/update path.
 This changes package management, not rendering fidelity, performance or CoreGS 2.0 readiness.
 
+
+
+### TASK-119 — RetroAchievements release 1.2.4
+
+Owner decision 2026-10-25: integrate JulioHeroZ's PR #96 on the 1.2.3 code line, preserve authorship,
+fix the reviewed account refresh/logout race, HTTP shutdown delay and missing test coverage, and prepare
+a focused 1.2.4 release before bringing the feature to 1.3.0. Worktree `C:\Antigravity\gt4-wt-119-ra-124`,
+branch `task/119-retroachievements-124`. The original PR commit `d6c9ea0` is preserved by merge.
+
+State: completed, owner approved and published as stable 1.2.4 on 2026-10-25. PR #96 and #105 merged.
+CTest 43/43, Python 641 tests/42 skipped, final Rust 379 passed/4 ignored; UI focus 114/114,
+navigation 150/150; final launcher rebuild and all 24 installer/source checks passed.
+Owner authorized final publication; real-account and installer execution remain untested.
+Final asset GT4Recomp-Setup-1.2.4.exe, tag v1.2.4, Latest.
+User-approved exception: the legacy launcher remains English-only in 1.2.4, with en-US and pt-BR notes.
+Installer-only legacy packaging; the separate portable edition and multi-game launcher remain in 1.3.0.
+Native inputs are reused unchanged from slice268; new output reservations are slice1190 (build/pin),
+slice1191 (distribution), slice1192 (Cargo target). No owner saves or installation paths may be changed.
+Acceptance: CTest, Python with the exact new build/pin, launcher workspace and UI checks; no credential
+restoration after logout; bounded cancellation of a slow loopback HTTP request; installer/source identity;
+owner real-account login, unlock, overlay and save test. Later 1.3.0 integration must keep RA disabled for
+Spec II until its identity and achievement conditions are independently validated.
+
+### TASK-120 — Integrate PR #100: DualSense trigger range and response curves
+
+Owner request 2026-10-25: accept external PR #100 before PR #101, resolve integration conflicts,
+and validate each contribution separately. Contributor: luanantony (Luan Antony); original commits
+`b58024245253d548f3a8306e3eadc680bc547bd6` and `a36486d333c8fa23b89e1bddaa2404979b53dd87`.
+Worktree `C:\Antigravity\gt4-wt-120-dualsense-integration`, branch `task/120-dualsense-integration`,
+based on stable 1.2.4 main `90af154`.
+
+State: merged through integration PR #106 at `8b73fa0` on 2026-10-25; original PR #100 is merged.
+CTest 43/43, Python 641 tests/42 skipped, Rust 381 passed/4 ignored, UI focus 114/114 and
+navigation 154/154 passed. Immutable slice1200 preserves slice1190 inputs and RA hashes.
+No hardware gameplay or release performed. The incoming task label TASK-104 was incorrect: that number belongs to save import
+on the 1.3.0 line. This contribution is tracked as TASK-120 and relates to planned controller tuning
+TASK-110; it does not mark that broader future task complete.
+
+Scope: preserve the contributed extended curves (s_curve, smooth_power, sublinear, logarithmic).
+The proposed signed-axis modes and device-name heuristics are removed after review: SDL3 Gamepad
+triggers already use 0..32767 for DualSense and Xbox alike. The unsupported raw-joystick mode was
+never in a released build; native and Rust reject it consistently. Existing controls remain compatible.
+Preserve the 1.2.4 RetroAchievements account, HTTP-cancellation and UI response guards.
+
+Acceptance: independently reviewed SDL3 normalization and mode semantics, shared Rust/native parser and
+writer compatibility, default and custom controller mapping regression fixtures, native CTest, Python
+against the new build, Rust workspace and Controls UI navigation checks. Actual DualSense USB/Bluetooth
+travel, reconnect and in-game pressure remain hardware checks; synthetic fixtures alone cannot prove them.
+Record observed results before marking acceptance complete. Integration only: no release assets, labels,
+installed application, owner card/save or active game session is changed. PR #101 begins only afterward.
+See `docs/PR-100-101-INTEGRATION.md` for the sequential mapping and acceptance limits.
+
+TASK-120 validation result (2026-10-25): CTest 43/43; Python 641 tests, 42 skipped; Rust 381 passed, 4 ignored; UI focus 114/114 and navigation 154/154, no JavaScript errors. Owner authorized sequential integration. Physical controller gameplay remains unvalidated; no release created.
+
+
+### TASK-121 — Integrate PR #101 and #109: configurable racing wheels
+
+Owner approved sequential integration on 2026-10-25 and assigned these contributions to stable
+1.2.5 on 2026-10-26, followed by a port to 1.3.0-rc7 preserving frame skipping. PR #100 is already
+merged through #106 at main8b73fa0. PR #101 by JulioHeroZ now ends at
+`6da047cf5ca9829224ade13dd84e9c797129bdf8`; PR #109 by luanantony contributes conflict-resolution
+commit `99f8dc48f6f6fc9ecfc0421bf0e75758203ea6bf`. Both histories are preserved by integration.
+
+State: complete and merged on 2026-10-26 through PR #111 at main cbfd8b8.
+Original PR #101 (latest head) and PR #109 are also marked merged.
+Three original conflicts are resolved. Independent native and Rust/UI static reviews approved
+routing, opt-in defaults, unique physical identity, full haptic stop, capture and UI/backend contracts.
+Fresh slice1210 build/pin: CTest 44/44, Python 641 tests (42 skipped), Rust workspace 391 passed
+(4 ignored), actual UI focus 114/114 and navigation 169/169. Actual UI setting commands were
+recorded and replayed through real Rust command bodies. No physical haptics or gameplay claimed.
+
+This implements configurable host input through existing gamepad actions, contributing to TASK-018.
+Native guest wheel USB identity/protocol, physics-derived torque, direct gear selection and manual
+clutch remain outside this implementation; damper/inversion fields are reserved and inactive.
+Existing RetroAchievements protections and TASK-120 controller curves/standardized SDL triggers stay.
+See docs/WHEEL.md and docs/PR-100-101-INTEGRATION.md. No new release is built or published here;
+1.2.4 remains Latest. The later rc7 port must keep RA disabled for Spec II and pass both-game,
+frame-skipping, input and language gates without replacing published rc6 assets.
+
+### TASK-122 — Release 1.2.5 private draft (reserved on release branch)
+
+Packaging is recorded on task/122-release-125 at 70aa363, without a main source merge. Draft v1.2.5
+remains private; owner update 2026-10-26 puts publication on hold in favor of the native DFP plan.
+This reservation prevents reusing TASK-122 while its release branch is open.
+
+### TASK-123 — Native DFP wheel research and implementation plan
+
+State 2026-10-26: research brief ready for an owner-run OpenCode agent; research not started.
+Parent TASK-018, planned release 1.3.1. The virtual guest target is Logitech Driving Force Pro
+(DFP), 900-degree steering, original game-generated force feedback translated to SDL3.
+The launcher/host SDL3 configuration from TASK-121 is reusable groundwork, not the guest protocol.
+Branch task/123-dfp-wheel-study; worktree C:\Antigravity\gt4-wt-123-dfp-wheel-study.
+Brief: docs/tasks/TASK-123-DFP-WHEEL-RESEARCH.md. Study both USA v2.00 and Spec II independently.
+Deliver an evidence-backed device/protocol map, HLE-versus-USB boundary analysis, reuse audit,
+FFB effect coverage and staged implementation/test plan. No implementation, build, game launch,
+physical force test, release or integration into active rc7 work is authorized by this research.
+The owner starts the economical research agent in OpenCode; Codex reviews its deliverables.
+
+## Open issue intake (owner, 2026-10-26)
+
+Registration and priority triage only: no implementation plan or work has started.
+Urgent defects are candidates for a later 1.3.0 rc before final, subject to owner selection.
+Checked main, the modern launcher and rc6/rc7 task lists, and Claude's ai-memory notes.
+Complete issue coverage: [issue triage](docs/ISSUE-TRIAGE.md).
+
+Existing tasks reused; do not allocate replacements:
+- #86 -> TASK-104 on the 1.3.0 line: the new chain-entry-7937 import failure needs follow-up.
+- #89 -> TASK-105 on the 1.3.0 line: existing integrated-GPU/startup work, reporter validation pending.
+- #98 -> TASK-025: deleted save returns; related to card persistence TASK-058.
+- #88 -> TASK-018 and research TASK-123: native DFP/FFB remains planned for 1.3.1.
+- #97 and #112 -> existing performance backlog TASK-041, related TASK-082/105/116/117/118
+  and the CPU-parity TASK-119 on task/116-117-flare-perf. Retain both hardware reports.
+- #95 -> TASK-053 for reuse of an existing texture directory, TASK-128 for optional external ISO.
+- #92 -> TASK-080/TASK-079 for 4:3, TASK-130 for split-screen display.
+- #87 -> existing TASK-057 mod-scope disposition and the owner's not-planned cheat policy.
+  This is not approval or scheduling of a cheat feature.
+
+TASK-104/105 exist in frozen rc6 commit 58322229c0bd63a0652b0550c5ad2154bd907039.
+The CPU-parity TASK-119 is recorded in commit 9226927 on task/116-117-flare-perf, distinct
+from main's RetroAchievements TASK-119 and task/101's player-one-controller TASK-119.
+No existing task is renumbered, copied as a new task or silently dropped here.
+
+### TASK-124 — Game cannot start (issue #107)
+
+State: recorded, not planned (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/107
+Report: cannot start on both 1.2.4 and 1.3.0; screenshot and log bundle supplied. Cause unknown.
+Priority: high, candidate for an upcoming 1.3.0 rc before final.
+Related: TASK-105 and TASK-129 only if evidence establishes a shared cause; no duplicate confirmed.
+
+### TASK-125 — GT Auto service audio keeps looping (issue #104)
+
+State: recorded, not planned (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/104
+Report: oil-change/car-wash bubble audio persists after the service has finished.
+Priority: normal backlog, release unassigned.
+Related: distinct from missing-output-device startup behavior in TASK-129; no shared cause established.
+
+### TASK-126 — Home key unavailable to ReShade (issue #102)
+
+State: recorded, not planned (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/102
+Report: Home/Pos1 does not open the ReShade options while the game is active.
+Priority: normal backlog, release unassigned.
+Related: existing window/input tasks TASK-038 and TASK-076. No compatibility fix is claimed yet.
+
+### TASK-127 — Flashing window followed by crashes (issue #99)
+
+State: recorded, not planned (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/99
+Report: repeated flashing and random crashes in 1.2.2, 1.2.3 and rc5, for both games; logs attached.
+Priority: high, candidate for an upcoming 1.3.0 rc before final.
+Related: TASK-105 and TASK-124 remain separate until evidence confirms the same cause.
+
+### TASK-128 — Optional use of an existing disc image (issue #95)
+
+State: request recorded, not planned or approved for implementation (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/95
+Request: reuse the original ISO without storing a second full copy. Claude had recorded the idea
+without a task number; it remains an option under consideration, with no release assignment.
+Related: the texture-directory portion of the same issue belongs to existing TASK-053.
+
+### TASK-129 — Keep running without an audio output device (issue #93)
+
+State: recorded, not planned (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/93
+Existing diagnosis: no Windows audio output causes the game to close. Desired behavior: run silently.
+Priority: high, candidate for an upcoming 1.3.0 rc before final. Claude recorded the fix without an ID.
+Deduplication: closed issue #94 is already a duplicate of #93. Issue #107 joins only if confirmed.
+
+### TASK-130 — Split-screen display quality follow-up (issue #92)
+
+State: recorded, not planned (2026-10-26).
+Issue: https://github.com/moesuito/gt4-staticrecomp/issues/92
+Report: split-screen resolution/quality concern; the reporter supplied the requested screenshot.
+Priority: backlog, owner to select release priority. The old split-screen concern had no task number.
+Related: 4:3 stays with TASK-080/TASK-079. Broader two-controller support remains the existing future
+idea; this display intake does not silently schedule it.
+
+
+### TASK-131 — Restore main to the released 1.2.4 program baseline
+
+State: completed source restoration, owner-directed (2026-10-26).
+Branch: task/131-restore-124. Restores program files directly from v1.2.4 / ad46df6;
+preserves documentation and historical input pins. Git blob identity against that tag is
+the validation; no build, hardware test, release or owner-data modification is performed.
+
+Owner shelves the existing private 1.2.5 wheel draft. Public Latest stays 1.2.4. A future
+1.2.5 will reintroduce only reviewed controller improvements from PR #100/#106 (8b73fa0),
+with fresh packaging and acceptance; do not reintroduce the current wheel bridge.
+This supersedes TASK-120/121 entries describing those changes as active on main and the
+TASK-122 draft as a publication candidate. All contribution commits/authorship remain in
+history (wheel integration cbfd8b8); native DFP remains TASK-018 with research TASK-123.
+
+Contributor reply: https://github.com/moesuito/gt4-staticrecomp/pull/101#issuecomment-6422692723
+TASK-018 and the TASK-123 brief were verified on main before linking. Requested native DFP
+recognition (900 degrees) and original wheel FFB through SDL3, not pad-state/rumble adaptation.
+No native wheel backend is claimed to exist, no new feature implementation dispatched.
+
+
+### TASK-132 — Publish controller-only 1.2.5 from the reviewed PR #100 integration
+
+Owner request 2026-10-26: replace the private wheel-containing 1.2.5 draft with a final
+controller-only 1.2.5, after review and checks. Branch task/132-release-125-controls starts
+from main749af82 and reapplies exact program blobs from reviewed integration8b73fa0
+(PR #100 via #106), before wheel integration. No Git history is rewritten.
+
+State: done, published stable Latest v1.2.5 (2026-10-26), PR #125 / merge5d7a669. Only launcher,
+workspace lockfile, Tauri metadata and installer version change beyond that reviewed code.
+Native game reuses immutable slice1200-pcsx2.json; fresh distribution slice1320-controls125-dist.
+No wheel implementation or wheel UI is included; native DFP remains TASK-018 / research123.
+RetroAchievements1.2.4 is retained. Legacy English UI exception remains owner-authorized;
+matching en-US/pt-BR short notes precede the launcher build. Installer-only legacy release.
+
+Observed checks: CTest43/43, Python641 tests/24 skipped, Rust381 passed/4 ignored, UI focus114/114
+and navigation154/154 with no script errors. Official launcher build/path scan and installer
+extraction/hash comparison passed. Publication follows the owner-authorized final release step.
+No new physical controller, account-unlock or installer execution validation is claimed.
+This supersedes the held TASK-122 wheel release candidate; keep its historical branch intact.
+
+TASK-132 publication receipt: old private wheel draft deleted; new controller-only draft asset
+sizes/SHA256 digests verified before owner-authorized final publication. Release v1.2.5 is
+public, not a pre-release, Latest; tag points at5d7a669bdecf5e60c0782ca449f48aacac3c7a32.
+https://github.com/moesuito/gt4-staticrecomp/releases/tag/v1.2.5
+Installer SHA256556e7725d11146f1f79613814fbf961e1299000bd56df7c8831a324213003a74.
+No new wheel support, Spec II, frame skipping or CoreGS changes are included.
 ### TASK‑119 — CPU: reach PCSX2 usage at 1x, then go below it (owner, 2026-10-26)
 Owner decision (pinned in ai-memory `decisions/next-objective-cpu-parity-with-pcsx2`). On the weak laptop (i5-7200U,
 HD 620, 1x, Direct3D 11, blending Minimum, MTVU on, no speed hacks) the same scene (Time Trial Nordschleife, Pitwork Z)
@@ -2346,3 +2583,30 @@ Acceptance: target isolation, account/logout/HTTP cancellation regressions, cont
 preview consistency, full native/Python/Rust and en-US/pt-BR checks, both target builds/pins,
 installer+portable verification. New builds go to draft; owner gameplay/review before merge or
 publication. No code, builds, running agents or public rc7 authorized by this mapping step.
+
+### TASK-134 — Game-code optimization study (research and plan)
+
+State: study done; owner decisions recorded (2026-10-28); P0 waits for the owner's signal that the desktop is free. Branch `task/134-game-code-optimization-study`, worktree
+`C:/Antigravity/gt4-wt-134-game-code-study`, from main 795cdc0. Research and documents only: no code, build, benchmark,
+profiler or game run (a CoreGS 2.0 session was measuring on the desktop). Agent status: not PCSX2-tainted.
+Follows the owner's CPU-parity objective (PCSX2 ~50% vs GT4Recomp 70-80% on the i5-7200U), recorded as "TASK-119" in
+commit 9226927 on `task/116-117-flare-perf` and in ai-memory `decisions/next-objective-cpu-parity-with-pcsx2`.
+
+Deliverable: [docs/GAME-CODE-OPTIMIZATION-STUDY.md](docs/GAME-CODE-OPTIMIZATION-STUDY.md). Evidence: 13 desktop F8
+blocks and the owner's laptop logs (6 race F8 intervals, ~200 periodic reports), copied to the worktree's ignored
+`private/laptop-i5-7200u-f8/` with hashes.
+
+Result: on the laptop race the four busy threads use ~35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3,
+gt4-gs CPU thread 3.4, gt4-gs GS thread ~11); half or more of the EE critical path (12.2 ms) is emulation plumbing, the
+rest translated game code; no large spinning wait exists. Ordered plan P0 (measure) .. P8 (IOP AOT), with gains, effort,
+risk and identity gates per step; GSdx-bridge costs are left to the CoreGS 2.0 intake (section 3.6).
+Owner decisions (2026-10-28, study section 7): measure SSE4.1 first, no AVX2 executable unless a large gain; always
+the easiest and cheapest step first, built and tested right away, the translator (now P8) last; thread priority and
+core placement yes; the WPR profile and the first baselines run when the owner says the current CoreGS 2.0 build is
+done; v2.00 is already on the laptop; no more work on the GSdx bridge, the game-side optimisations ship with CoreGS 2.0.
+Test method: one fixed headless Arcade night race on the desktop (Clubman Stage Route 5, Ford Ka, 5 AI, plus its
+replay for the varied cameras; B-Spec exists only in GT Mode, which the owner ruled out); laptop runs by the owner with F7/F8 on builds the agent copies to the laptop's
+portable folder over the network, logs collected the same way.
+2026-10-29: branch synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934, program files identical); the
+RetroAchievements per-frame hook added to the study (section 3.8, P1g). Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
+task or branch as it starts.

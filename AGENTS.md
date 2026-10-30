@@ -121,6 +121,23 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
 
 ## Workflow
 
+- **Bounded Gemini work and evidence review (owner, 2026-10-26):** every brief must
+  define the starting baseline/inputs, ordered work, explicit deliverables, acceptance evidence,
+  and a final stop. Leave no open-ended permission to expand scope or choose another task.
+  Unknown or unmeasured facts must remain labelled as such, never filled with invented numbers,
+  assumed compatibility or stale test results. Treat agent reports as claims: independently
+  inspect commits/diffs, artifact provenance/hashes and logs, and rerun relevant checks before
+  accepting completion. A plausible explanation or a passed mock is not gameplay evidence.
+  For TASK-133, the worker is authorized only for integration, local test builds and its own
+  scoped tests, then must return evidence for review. No PR creation/merge, release upload,
+  draft publication, public release or follow-on task without a new owner instruction.
+- **Agent task handoff (owner, 2026-10-26):** before handing any task to another agent,
+  write its consolidated plan as a `.md` file inside the exact worktree where that agent
+  will operate (normally `docs/tasks/`). The plan holds scope, references, constraints,
+  validation and review gates. End the handoff response with a ready-to-copy prompt for
+  the owner to paste into a fresh agent chat, naming the absolute workspace and plan-file
+  paths plus required first reads. Keep that prompt short; do not duplicate the plan in it.
+  Preparing a handoff does not authorize launching or messaging an agent.
 - Speak Brazilian Portuguese with the owner, in plain lay language. Keep all
   repository docs, reports, prompts and code comments in en-US.
 - The main agent orchestrates, reviews and tests; implementation and research go
@@ -180,10 +197,44 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
   - Pin new game builds in new `docs/inputs` files.
   - Build the launcher with `launcher/tools/build-release.ps1` and the installer with makensis.
   - Check the installer contents against their sources.
-  - The owner tests the installer before anything is public.
-  - Then the PR, the merge, the tag `vX.Y.Z` and the GitHub release: the full notes as the body, the installer and
-    `SHA256SUMS` as assets.
-  - Update the README badge and download name, and STATUS.
+  - **Language check before every release, rc included** (owner, 2026-10-23). en-US and pt-BR are the two default
+    languages and both must be right:
+    - the locale files `launcher/crates/gt4l-tauri/ui/locales/en-US.json` and `pt-BR.json` have the same keys and the
+      same `{placeholders}`;
+    - no pt-BR value is left in English, except names and terms kept on purpose (Saves, Replays, Start, Select);
+    - the focus checks pass in both languages (`dev/focus-check.html?lang=en-US` and `?lang=pt-BR`);
+    - both launcher notes exist for the version, with the same bullets.
+  - Then the release channels below decide what is published and when.
+
+### Release channels (owner, 2026-10-23)
+
+- **Stable channel:** final releases, tag `vX.Y.Z`, marked Latest on GitHub. Launchers on Stable (the default) only
+  see these.
+- **Beta channel:** release candidates, GitHub **pre-releases** tagged `vX.Y.Z-rcN` (rc1, rc2, …). The build carries
+  its label (`build-release.ps1 -Label rcN`, makensis `/DLABEL=rcN`, `make_portable_zip.py --version X.Y.Z-rcN`), so
+  the launcher reports `X.Y.Z-rcN` and the assets are named `GT4Recomp-Setup-X.Y.Z-rcN.exe` and
+  `GT4Recomp-X.Y.Z-rcN-portable.zip`. Never reuse the final tag for an rc.
+- **The launcher** (Settings > General, from 1.3.0-rc5) offers Stable or Beta and a version list read from GitHub:
+  Beta lists rcs by date (plus a newer stable on top), Stable lists finals by SemVer. Drafts are never listed or
+  offered (the public API does not even return them), and versions older than the picker minimum are hidden. Going to
+  an older version shows a strong downgrade warning; a newer version, from either channel, is always plain.
+- **Every new build goes up as a GitHub draft** (owner, 2026-10-23): after the automated checks and the language check,
+  upload it as a **draft** release (`gh release create <tag> --draft`, with the label, the assets and the full notes
+  plus a test-build warning). A draft is private: neither the public nor any launcher sees it, and the owner can
+  download it on other PCs.
+  - **Replacing a draft:** a small fix keeps the same rc number. Rebuild with the same label and replace the draft's
+    assets (`gh release upload <tag> <files> --clobber`, and update `SHA256SUMS`), or delete and recreate the draft.
+    Only a more substantial change gets a new rc number. Never replace the assets of a published pre-release or
+    release.
+- **The agent never publishes on its own:**
+  - **Release candidate:** it stays a draft until the owner says, in words, that it can become a pre-release; then
+    `gh release edit <tag> --draft=false --prerelease --latest=false`.
+  - **Final release:** only when the owner says, in words, that a given rc is stable and should be rebuilt as final.
+    Then rebuild without a label, publish `vX.Y.Z` as Latest with the full notes as the body, the installer, the
+    portable zip and `SHA256SUMS`, open and merge the PR (owner approval), update the README badge and download name,
+    and STATUS.
+  - **Withdrawn rcs:** an rc replaced by a newer one is turned into a **draft** (`gh release edit <tag> --draft=true`)
+    when the owner asks, so nobody downloads it and no launcher sees it.
 
 ## Testing the game
 

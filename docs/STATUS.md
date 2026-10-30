@@ -193,6 +193,20 @@ form of the rule, 0 alpha bytes changed) and CTest passes in both interlock mode
 and 19.01 -> 16.92 ms at 6x, which leaves the scaled pass (9.2 ms at 6x) as the next target (item 1 of the plan).
 Switches `GT4_HW_TONE_HLE=0` / `--no-tone-hle` and `GT4_HW_VERIFY_SHUFFLE=1` / `--tone-verify`. Not merged; no pins.
 
+## TASK-134: game-code optimization study for the i5-7200U laptop (2026-10-28)
+
+2026-10-29: the branch is synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934; program files identical);
+the only per-frame change since rc6, the RetroAchievements hook on the EE thread, is in study section 3.8.
+
+Research and plan only (no code, build, benchmark or game run): [GAME-CODE-OPTIMIZATION-STUDY](GAME-CODE-OPTIMIZATION-STUDY.md),
+branch task/134-game-code-optimization-study. From the owner's laptop logs (rc6, Spec II, 1x, D3D11) the four busy
+threads use about 35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3, gt4-gs CPU thread 3.4, gt4-gs GS thread
+~11); half or more of the EE critical path (12.2 ms) is emulation plumbing; syscalls and guest idle are negligible and
+no large spin-wait exists. Ordered plan P0 (measure) to P8 (IOP AOT); the GSdx bridge is left to the CoreGS 2.0
+intake, which must be zero-copy. Owner decisions recorded the same day (study section 7): cheapest steps first,
+SSE4.1 only, translator last, no GSdx bridge work, game-side gains ship with CoreGS 2.0. P0 baselines (headless Arcade
+night race and its replay, WPR profile) start when the owner says the CoreGS 2.0 build has freed the desktop.
+
 ## Local rc7 owner test candidate (2026-10-27)
 
 Codex built an unpublished installer including the current Discord changes and verified extracted game and launcher hashes. Automated Rust tests passed; real Discord and gameplay remain untested. Important lifecycle and transport edge-case validation remains open; see docs/tasks/TASK-115-CODEX-LOCAL-KIT.md. This supersedes any earlier readiness claim.
@@ -220,6 +234,119 @@ multi-game/portable paths, localization, channels and rc6 performance behavior. 
 Mapping/preparation only, no implementation/build/test run or agent dispatch. Installer and portable
 rc7 will require new target builds/pins, both languages and draft checks. No public rc7 yet.
 
+
+## TASK-132: controller-only 1.2.5 published as Latest (2026-10-26)
+
+Owner authorized replacing the private wheel draft and publishing a final1.2.5 after checks.
+Branch task/132-release-125-controls reapplies exact reviewed controller integration8b73fa0
+(PR #100/#106) over main749af82, with only version/packaging changes beyond that program code.
+Wheel source, commands and UI are absent. RetroAchievements from1.2.4 remains unchanged.
+Native pin slice1200 reused; fresh distribution slice1320-controls125-dist. Legacy English UI
+exception retained; matching en-US/pt-BR short notes were written before the launcher build.
+
+Repeated checks: CTest43/43, Python641 tests/24skipped, Rust381 passed/4ignored, UI focus114/114
+and navigation154/154 with no JS errors. Official release build/path scan passed. Installer
+extraction matched all24 staged program files plus WebView2 (the signed bootstrapper was verified too).
+Installer29,041,073bytes, SHA256556e7725d11146f1f79613814fbf961e1299000bd56df7c8831a324213003a74.
+Launcher SHA2563a2044c63e2a245e62c212232cee6d88b567b1cd8c84a994f7983e51101fb8c6;
+game SHA2566ea86e695d058bf954292d2967be42d5d3e0b85d4aa25c0cabfcf98b38a47116.
+Published stable Latest v1.2.5 after draft upload/digest verification, PR #125 / merge5d7a669.
+The old private wheel draft was deleted. Tag v1.2.5 points at5d7a669; public API confirms
+Latest=v1.2.5 and isDraft=false/isPrerelease=false. No new physical controller,
+real-account unlock or installer execution is claimed. CoreGS/modern worktrees remain untouched.
+
+
+## TASK-131: restore the 1.2.4 program baseline (2026-10-26)
+
+Owner requested shelving the existing private 1.2.5 wheel build, returning main's program
+sources to published v1.2.4, and later preparing a new 1.2.5 with controller improvements only.
+All tracked files outside docs/, TASKS.md and README.md are restored directly from tag v1.2.4
+(ad46df65c03894ed204beafbd02819a11e4037bc). Git blob identity is the validation for this mechanical
+restoration; no code is authored, rebuilt or newly hardware-tested. Existing RetroAchievements
+fixes stay exactly as released in 1.2.4. Documentation and historical manifests remain available.
+
+The original contributions and reviewed integrations remain in history: controller PR #100 via
+#106 (8b73fa0), wheel PR #101/#109 via #111 (cbfd8b8). Reintroduce only the reviewed controller
+changes in a separate future task, with a fresh build/pins and acceptance. Do not assume a merged
+PR can simply be merged again after restoration. No current wheel bridge enters that release.
+The existing v1.2.5 stays an unpublished, superseded draft; v1.2.4 remains public Latest.
+
+Native DFP is still planned under TASK-018, with TASK-123 research; no native protocol backend
+exists yet. Owner-authorized reply to JulioHeroZ: PR #101 comment 6422692723, requesting native
+DFP recognition / game-generated FFB through SDL3 and linking both tasks verified on main.
+This entry supersedes earlier descriptions of the controller/wheel integrations as current code.
+
+## Open issue task intake registered (2026-10-26)
+
+All 14 open issues map to existing tasks or newly recorded TASK-124..130; see ISSUE-TRIAGE.md.
+Claude's existing save/import, GPU, performance, aspect, texture and wheel work is reused.
+Only intake, deduplication and urgency are recorded; no implementation plan or code change.
+Urgent launch/crash/save/audio cases are candidates for later 1.3.0 rcs, subject to owner selection.
+Cheats remain not planned; native wheels remain planned for 1.3.1. No issue or release was changed.
+
+## Experimental rc7 kit copied to owner laptop (2026-10-26)
+
+At the owner request, Z: portable program files now match the rc7-test082 kit. Four files
+changed, all backed up and hash-verified; user/data trees and settings hash stayed unchanged.
+No ISO, saves, renderer or Spec II executable changed; no program was launched. Only Spec II
+is prepared there, so the current v2.00-only frame skipping cannot yet be exercised on it.
+PR #113 review and the 13 observed Python failures remain unresolved; this is not release approval.
+See journal 2026-10-26 and private/task082-laptop-update-20261026T065206Z/receipt.json.
+
+
+## Native DFP wheel scope and research (2026-10-26)
+
+Owner corrected the guest model to Logitech Driving Force Pro (DFP), 900-degree steering with
+GT4-generated wheel force feedback translated to SDL3. Planned release 1.3.1; 1.3.0 stays focused
+on Spec II and performance. TASK-123 research brief is ready for an owner-run OpenCode agent,
+not dispatched and not implemented. See docs/tasks/TASK-123-DFP-WHEEL-RESEARCH.md.
+Existing PR #101/#109 host-input work remains in main as reusable groundwork; TASK-018 is incomplete.
+The 1.2.5 draft stays private, publication on hold. No release, native source, active rc7 worktree
+or owner data is changed by this documentation update. TASK-122 remains reserved on its release branch.
+
+
+## TASK-121 configurable wheel integration for 1.2.5 (2026-10-26)
+
+PR #100 is merged through #106 at main8b73fa0. PR #101 (latest6da047cf) and integration #109
+(99f8dc48) are reviewed on task/121-wheel-integration, preserving both external authors.
+The original conflicts and routing/capture/configuration/haptic lifecycle defects are corrected.
+Fresh slice1210 built and passed CTest 44/44, Python 641 tests (42 skipped), Rust 391 passed
+(4 ignored), UI focus 114/114 and navigation 169/169 with no JavaScript errors. Recorded real
+wheel UI calls passed replay through Rust. Both independent static reviews approved the result.
+
+Merged through PR #111 at main cbfd8b8 on 2026-10-26; original #101 and #109 also merged.
+Target is 1.2.5, then a forward-port to 1.3.0-rc7 with
+frame skipping and RA disabled for Spec II. No release publication or 1.3.0 worktree change here.
+Current Latest remains 1.2.4; rc6 remains public. Hardware gameplay and actual force-feedback
+quality remain unvalidated. Guest wheel USB protocol, direct gears, clutch and active damper/
+force inversion are not implemented; see docs/WHEEL.md for the supported input/feedback scope.
+
+## TASK-120 external controller contribution integration (2026-10-25)
+
+Owner requested sequential acceptance of PR #100 (DualSense triggers), then PR #101 (racing wheels).
+PR #100 is isolated on `task/120-dualsense-integration`, based on main `90af154` after stable 1.2.4.
+Its TASKS-only conflict is resolved without dropping TASK-119 and its conflicting TASK-104 label
+is replaced by TASK-120. Review corrections retain standard SDL trigger semantics, remove unsupported
+signed-axis modes and keep the contributed response curves. Full native slice1200 build and focused CTest native_audio_input, native_controls and native_pad_mapping
+passed (3/3), including the actual production SDL adapter with virtual PS5/Xbox devices. New immutable
+`docs/inputs/slice1200-pcsx2.json` retains slice1190 inputs and RA hashes. Full CTest 43/43, Python
+641 tests/42 skipped, Rust 381 passed/4 ignored, UI focus 114/114 and navigation 154/154 passed.
+Merged through PR #106 at `8b73fa0`; actual controller hardware remains unvalidated. No release.
+Preserve all 1.2.4 RetroAchievements fixes. See [integration mapping](PR-100-101-INTEGRATION.md).
+
+## TASK-119 release 1.2.4: RetroAchievements (2026-10-25)
+
+Owner approved final stable 1.2.4 publication on 2026-10-25. The contributor commit is preserved.
+Final launcher and installer rebuilt without a label; CTest 43/43 passed (Python 641 tests,
+42 skipped), final Rust 379 passed/4 ignored, UI focus 114/114 and navigation 150/150.
+All 24 final installer payload files match their sources. Installer SHA256:
+`100192215644918fa1bdd876810efa48f743399354d5c23d9de651b0c4d8be6d`.
+Published [v1.2.4](https://github.com/moesuito/gt4-staticrecomp/releases/tag/v1.2.4) as Latest.
+PR #96 and follow-up #105 merged; release commit ad46df6. Private rc1 and public 1.3.0-rc5 retained.
+Real-account login, online unlocks, gameplay notifications and installer execution were not tested.
+Owner-approved scope: legacy English UI, en-US/pt-BR notes, installer-only distribution.
+Spec II remains unsupported here; RA must stay disabled for it in the later 1.3.0 port.
+ai-memory MCP unavailable; see TASK-119 and the daily journal.
 ## rc6 performance, TASK-116 step 1 and TASK-117 (2026-10-25, `task/116-117-flare-perf`)
 
 Implemented and tested headless, owner test pending; nothing merged or released.

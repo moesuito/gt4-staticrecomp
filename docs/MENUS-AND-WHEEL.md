@@ -36,3 +36,17 @@
   output packets).
 - Real wheels through SDL3 (G27, G29, Thrustmaster, Fanatec). Clutch and
   H-shifter are probably not used by GT4 (anecdotal).
+
+## Current wheel target and research assignment (owner, 2026-10-26)
+
+- Guest device target: **Logitech Driving Force Pro (DFP)**, 900-degree steering with the game's
+  native wheel force-feedback commands. Earlier references to DFGT in task planning were a naming
+  mistake; a physical DFGT may still be a host device through SDL3. Exact DFP descriptor/revision
+  and negotiation remain research items, not an implementation claim.
+- Planned release: **1.3.1**, subject to research and owner acceptance. 1.3.0 stays focused on
+  Spec II and performance. The 1.2.5 adapted-input draft stays private, without publication.
+- Reuse the existing SDL3 enumeration, capture, calibration, UI and safe output lifecycle where
+  suitable. Replace the gamepad-state bridge and rumble-derived output for native wheel mode.
+- Research-only contract: [TASK-123](tasks/TASK-123-DFP-WHEEL-RESEARCH.md). Identify the actual
+  USBD/PDIUSB/LGDEV and EE/IOP paths before choosing a hook. Do not assume HLE is sufficient.
+- Both game targets need independent evidence. No new wheel implementation is part of this update.

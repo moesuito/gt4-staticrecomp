@@ -1,5 +1,18 @@
 # TASK-133: integrate RetroAchievements and controller curves into 1.3.0-rc7
 
+## Superseding execution boundary (owner, 2026-10-26)
+
+Authorized output is the scoped integration, a LOCAL test build/kit and the worker's own
+checks with actual evidence, followed by a stop for Codex review and owner gameplay testing.
+No PR creation/merge, release upload (including drafts), public publication or next task is
+authorized. This overrides the draft-upload delivery wording below. The orchestrator updated
+this main copy only; the active worker's worktree was not edited or messaged.
+
+Every result must identify the exact commit, build path, command/log and artifact hash where
+applicable. Unknown/unmeasured values stay explicit; do not invent results, repeat old counts
+as new runs, or claim hardware validation from mocks. The orchestrator independently reviews
+the diff/provenance and repeats the relevant tests before accepting completion.
+
 ## Owner decision and scope
 
 Owner, 2026-10-26: the new rc7 is published rc6 plus the RetroAchievements upgrade from stable
