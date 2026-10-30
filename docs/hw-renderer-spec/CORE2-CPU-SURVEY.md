@@ -221,5 +221,17 @@ Found on the way: GT4's stale texture decodes came from 4 KiB page versions (blo
 largest GPU item at 12x is GT4's clears (strips covering whole targets, 3.7 ms of isolated GPU time per VBlank); the
 exactness check caught a compiler load merge across the pixel interlock (ai-memory gotcha).
 
+**Candidate 332 (direct GS intake on) against 313** (interleaved headless night race): 3x, 2+2 runs: process CPU
+20.21 -> 14.54 ms per VBlank (-28%), GS worker 7.28 -> 5.77 ms (-21%), wall 10.28 -> 8.70 ms (-15%), EE critical
+path 9.98 -> 8.47 ms (-15%), frame p50 10.05 -> 8.38 ms (-17%), p95 12.33 -> 11.02 ms (-11%), GPU busy 4.29 -> 4.01
+ms, VU1 worker 3.05 -> 2.88 ms. 12x, one run each: process CPU 19.85 -> 15.24 ms (-23%), GPU busy 20.78 -> 20.26 ms,
+frame p50 23.97 -> 22.76 ms, p95 28.17 -> 27.62 ms.
+
+Found later the same night: two runs of the same executable (candidate 330) at 12x differ in one frame of the night
+race (VBlank 9600: one column of 26 output pixels at x = 4215, the edge of a dark object against the road, black in
+one run and grey 16-24 in the other); every 3x comparison of the night was identical. A column at the edge of an
+object that is 0 in one run points at pixels read from a pooled image that nothing wrote (12x recycles images more
+often); to be traced in its own task.
+
 Still open from the list above: T3 (zero-copy MTVU intake, P6), R3 draw recording, R6 CLUT, R7 front end vertex path,
 R8 translate, R9 batches split by CLUT loads, a submission thread, M0 replay bench.

@@ -1,5 +1,23 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 332: transport and CLUT fronts, direct GS intake (2026-10-30, owner asleep)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-332` with `GT4_MTVU_DIRECT=1` (`-NoDirect`
+turns it off): 326 + IN-456 (block of a pixel from the address tables), IN-457 (CSM1 CLUT loads by table, the
+renderer's CLUT halfwords as ranges), IN-458 (redundant draw binds left out), IN-459 (the VU1 worker wakes the
+sleeping EE only past 64 KiB of output, when idle or stopping, or with a full ring: EE wake-ups 650 -> 16 per VBlank,
+process CPU -12%), IN-461 (direct GS intake: the GS worker reads the VU1 output ring itself; off by default in the
+code, on in the play script: process CPU -9%, wall -2.7%). Frames identical to candidate 310 at every check (night
+race; Arcade menus, showroom and race start with direct intake on and off); CTest 28/28 CORE2, 13/13 MTVU and stream
+sink, front end 79/79. Measured and dropped: IN-460 (GLM patch kernel with shared words, no change at 12x) and
+expanding indexed textures instead of palette rows (worse on GPU and CPU). The 12x draw passes are bound by frame and
+depth traffic; big GPU gains there need CoreGS 3.0. New instruments: `[core2] batch flushes/vblank` (flushes by
+reason: CLUT loads flush about 275 of the 480 batches), `notifies` in `[mtvu] doorbells`, `mtvu_*` in `[hw] transport`.
+Against 313 (start of the CPU work; headless night race, interleaved): 3x process CPU 20.2 -> 14.5 ms per VBlank
+(-28%), GS worker -21%, wall 10.3 -> 8.7 ms (-15%), frame p50 10.1 -> 8.4 ms, p95 12.3 -> 11.0 ms; 12x process CPU
+-23%, GPU busy 20.8 -> 20.3 ms. Found: two 12x runs of the same executable differ in a 1-pixel column of one frame
+(non-determinism, to be traced in its own task; every 3x check is identical).
+
 ## TASK-027 CoreGS 2.0 candidate 326: night of CPU and GPU fronts (2026-10-30, owner asleep)
 
 `build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-326`: 313 + IN-446 (GS stream through a
