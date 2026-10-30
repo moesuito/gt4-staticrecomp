@@ -353,7 +353,7 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
     write.texclutCou = static_cast<uint32_t>(BitRange(env.texclut, 6, 11));
     write.texclutCov = static_cast<uint32_t>(BitRange(env.texclut, 12, 21));
 
-    const bool loaded = clut_.ProcessWrite(write, localMemory_, [this, write]() {
+    const bool loaded = clut_.ProcessWrite(write, localMemory_, [this, write, contextIndex]() {
         // Chapter 07.3 step 1: an indexed textured batch, or one that writes the
         // CLUT source, renders with the old palette, so it is flushed first.
         bool flush = false;
@@ -367,6 +367,9 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
             }
         }
         if (flush) {
+            // TASK-027 CPU survey R9: how many of these flushes keep the batch's texture (only the palette changes).
+            const uint64_t base = kTex0BaseMask | kTex0IndexedMask;
+            if (((registers_.Context(contextIndex).tex0 ^ batch_.state.ctx.tex0) & base) == 0u) ++clutFlushSameTexture_;
             FlushBatch(FlushReason::ClutLoad);
         }
         if (beforeLocalRead_) {

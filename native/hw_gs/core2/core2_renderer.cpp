@@ -644,6 +644,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
+    std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
+    std::uint64_t lastClutSameTexture_ = 0;
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -792,19 +794,33 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const std::uint16_t *end() const { return index.data() + count; }
     };
 
-    // The CLUT buffer halfwords a load writes (hw_glm_clut.comp, ClutUnit::Copy).
-    static HalfwordList ClutHalfwordsWritten(const clut::Tex0Write &write) {
-        HalfwordList out;
+    // IN-457: the CLUT buffer halfwords a load writes (hw_glm_clut.comp, ClutUnit::Copy) are at most two ranges
+    // [begin, end): PSMCT32 palette group g goes to buffer group g + CSA (groups past 15 are not loaded), its low halves
+    // at 0..255 and its high halves at 256..511; PSMCT16 entry e goes to (16 * CSA + e) mod 512, so a range that wraps.
+    struct HalfwordRanges {
+        std::uint32_t begin[2] = {0, 0};
+        std::uint32_t end[2] = {0, 0};
+        bool empty() const { return begin[0] == end[0] && begin[1] == end[1]; }
+        template <typename Array, typename Value>
+        void Fill(Array &array, Value value) const {
+            for (int r = 0; r < 2; ++r) std::fill(array.begin() + begin[r], array.begin() + end[r], value);
+        }
+    };
+    static HalfwordRanges ClutHalfwordsWritten(const clut::Tex0Write &write) {
+        HalfwordRanges out;
         const std::uint32_t count = (write.psm & 7u) == 3u ? 256u : 16u;
-        for (std::uint32_t e = 0; e < count; ++e) {
-            if (write.cpsm == 0) {
-                const std::uint32_t group = (e >> 4) + (write.csa & 15u);
-                if (group > 15u) continue;
-                out.push_back(16u * group + (e & 15u));
-                out.push_back(16u * group + (e & 15u) + 256u);
-            } else {
-                out.push_back((16u * write.csa + e) & 511u);
-            }
+        if (write.cpsm == 0) {
+            const std::uint32_t firstGroup = write.csa & 15u;
+            const std::uint32_t endGroup = std::min(16u, firstGroup + count / 16u);
+            out.begin[0] = 16u * firstGroup;
+            out.end[0] = 16u * endGroup;
+            out.begin[1] = 256u + 16u * firstGroup;
+            out.end[1] = 256u + 16u * endGroup;
+        } else {
+            const std::uint32_t start = (16u * write.csa) & 511u;
+            out.begin[0] = start;
+            out.end[0] = std::min(512u, start + count);
+            out.end[1] = start + count > 512u ? start + count - 512u : 0u;
         }
         return out;
     }
@@ -840,7 +856,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void OnClutLoaded(const clut::Tex0Write &write) {
         const bool fromTarget = clutFromTargetPending_;
         clutFromTargetPending_ = false;
-        const HalfwordList written = ClutHalfwordsWritten(write);
+        const HalfwordRanges written = ClutHalfwordsWritten(write);
         std::string error;
         if (fromTarget) {
             // An upload committed before the copy may have replaced the target: look again.
@@ -885,7 +901,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                  held.y0, held.x1, held.y1);
                 }
                 ++clutTargetLoadCount_;
-                for (std::uint32_t index : written) clutSource_[index] = clutTargetLoadCount_;
+                written.Fill(clutSource_, clutTargetLoadCount_);
                 stats.clutTargetLoads++;
                 return;
             }
@@ -930,7 +946,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         return;
                     }
                     ++clutTargetLoadCount_;
-                    for (std::uint32_t index : written) clutSource_[index] = clutTargetLoadCount_;
+                    written.Fill(clutSource_, clutTargetLoadCount_);
                     stats.clutTargetLoads++;
                     stats.clutMultiTargetLoads++;
                     return;
@@ -938,9 +954,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         // A load from memory: the CPU CLUT unit's words are right; the GPU CLUT gets them before its next reader.
-        for (std::uint32_t index : written) clutSource_[index] = 0;
+        written.Fill(clutSource_, std::uint64_t{0});
         if (!gpuClutMirror_) return;
-        for (std::uint32_t index : written) clutMirrorPending_[index] = true;
+        written.Fill(clutMirrorPending_, true);
         clutMirrorAnyPending_ = clutMirrorAnyPending_ || !written.empty();
     }
 
@@ -3351,6 +3367,26 @@ void Renderer::Flush() {
                          x.glm / f, x.glmHook / f, x.hook / f, x.spriteCheck / f, x.cpuSprites / f, x.flush / f,
                          x.compose / f, x.vblank / f, x.fifo / f);
             s.clock_.exclusive = PhaseTimes{};
+        }
+        {
+            // TASK-027 CPU survey R9: batches flushed per VBlank by reason (chapter 02.5 rules, CLUT loads, transfers).
+            static const char *const kReasonNames[] = {"prim",  "test",   "dimx",      "alpha",    "fog",
+                                                       "frame", "zbuf",   "texture",   "clut",     "transfer",
+                                                       "vblank", "autoflush", "capacity", "reset", "sync"};
+            static_assert(std::size(kReasonNames) == static_cast<std::size_t>(FlushReason::Count));
+            std::string reasons;
+            for (std::size_t r = 0; r < std::size(kReasonNames); ++r) {
+                const std::uint64_t count = s.frontEnd_.FlushReasonCount(static_cast<FlushReason>(r));
+                char part[48];
+                std::snprintf(part, sizeof part, " %s=%.1f", kReasonNames[r],
+                              static_cast<double>(count - s.lastFlushCounts_[r]) / 600.0);
+                reasons += part;
+                s.lastFlushCounts_[r] = count;
+            }
+            const std::uint64_t sameTexture = s.frontEnd_.ClutFlushesSameTexture();
+            std::fprintf(stderr, "[core2] batch flushes/vblank%s clut_same_texture=%.1f\n", reasons.c_str(),
+                         static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0);
+            s.lastClutSameTexture_ = sameTexture;
         }
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;

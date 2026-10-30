@@ -109,6 +109,8 @@ public:
     uint64_t FlushReasonCount(FlushReason reason) const {
         return flushCounts_[static_cast<size_t>(reason)];
     }
+    // CLUT-load flushes whose batch had the same texture as the new TEX0 (CPU survey R9).
+    uint64_t ClutFlushesSameTexture() const { return clutFlushSameTexture_; }
     const Batch& PendingBatch() const { return batch_; }
     bool TexflushPending() const { return texflushPending_; }
 
@@ -218,6 +220,7 @@ private:
     bool inTransferHook_ = false;  // a transfer commit is running (no nested transfer commits)
 
     std::array<uint64_t, static_cast<size_t>(FlushReason::Count)> flushCounts_{};
+    uint64_t clutFlushSameTexture_ = 0;
 };
 
 }  // namespace hwgs

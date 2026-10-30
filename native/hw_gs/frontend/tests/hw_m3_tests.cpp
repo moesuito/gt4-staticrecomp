@@ -1133,6 +1133,36 @@ void TestClutLoad() {
     const uint64_t badBefore = counters.Get(Counter::ClutBadCpsm);
     badUnit.ProcessWrite(bad, memory.data(), nullptr);
     CHECK_EQ(counters.Get(Counter::ClutBadCpsm), badBefore + 1u);
+
+    // IN-457: the CSM1 offset tables load the same halfwords as LocatePixel at CBP, for every CPSM, both index widths
+    // and base pointers that wrap past the end of memory.
+    uint64_t seed = 0x457u;
+    for (uint8_t& byte : memory) {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        byte = static_cast<uint8_t>(seed >> 56);
+    }
+    for (const uint32_t cpsm : {psm::kCt32, psm::kCt16, psm::kCt16S}) {
+        for (const bool eightBit : {false, true}) {
+            for (const uint32_t tableCbp : {0u, 0x100u, 0x2A7u, kBlocksTotal - 5u, kBlocksTotal - 1u}) {
+                clut::ClutUnit tableUnit(counters);
+                clut::Tex0Write tableLoad = write(tableCbp, 1, eightBit ? 0x13u : 0x14u);
+                tableLoad.cpsm = cpsm;
+                tableUnit.ProcessWrite(tableLoad, memory.data(), nullptr);
+                uint16_t expected[512] = {};
+                for (uint32_t e = 0; e < (eightBit ? 256u : 16u); ++e) {
+                    uint32_t ex = 0;
+                    uint32_t ey = 0;
+                    clut::CsmEntryPosition(e, eightBit, ex, ey);
+                    clut::PixelLocation location;
+                    CHECK(clut::LocatePixel(cpsm, tableCbp, 1, ex, ey, location));
+                    const uint8_t* source = memory.data() + location.PhysicalByte();
+                    expected[e] = static_cast<uint16_t>(source[0] | (source[1] << 8));
+                    if (cpsm == psm::kCt32) expected[e + 256u] = static_cast<uint16_t>(source[2] | (source[3] << 8));
+                }
+                CHECK(std::memcmp(tableUnit.Halfwords(), expected, sizeof expected) == 0);
+            }
+        }
+    }
 }
 
 void TestClutSnapshot() {

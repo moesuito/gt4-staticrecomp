@@ -204,6 +204,7 @@ Every step: one switch for A/B, 2+2 interleaved headless runs (3x or 12x night r
 | IN-453 | R5: texture cache by block identity (the hash of each changed block) | texture stage 0.84 -> 0.36 ms, decode windows 12x less data, GPU -3% at 3x | yes |
 | IN-455 | R7: the front end vertex queue as a ring (no copy of the remaining vertices per strip vertex) | front end stage 1.80 -> 1.74 ms; totals within noise; front end fixtures (79 tests) and frames identical | yes |
 | IN-456 | R4/R5: the block of a pixel from the address tables instead of `pixelSlot` | upload stage 0.352 -> 0.329 ms; totals within drift | yes |
+| IN-457 | R6: CSM1 CLUT loads by table, the renderer's CLUT halfwords as ranges | CLUT stage 0.47 -> 0.26 ms, GS worker -5.3%, wall -2.3% | yes |
 | IN-454 | whole-image constant fills: the frame by vkCmdClearColorImage, the depth still by the fill shader (Z24 keeps the stored top byte) | exact, but 12x GPU 20.31 -> 20.25 ms (-0.3%): the fills are bound by the depth read-modify-write | no |
 
 **Candidate 324 against 313** (interleaved headless night race): 3x, 2+2 runs: GS worker 7.19 -> 6.41 ms per VBlank

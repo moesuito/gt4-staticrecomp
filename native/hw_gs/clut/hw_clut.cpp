@@ -249,6 +249,49 @@ bool ClutUnit::ProcessWrite(const Tex0Write& write, const uint8_t* localMemory,
     return true;
 }
 
+namespace {
+
+// IN-457 (CPU survey R6): a CSM1 load reads entry e at CsmEntryPosition(e) of a one-page-wide buffer at CBP. That
+// position's block is CBP plus a fixed offset and its byte in the block is fixed, per CPSM and entry count: LocatePixel
+// at base 0, computed once, so the load is a table walk instead of a division and a switch per entry. (LocatePixel adds
+// the buffer pointer to the in-page block and wraps at the memory size, so block(CBP) = (CBP + block(0)) % blocks.)
+struct CsmOffsets {
+    bool valid = false;
+    uint16_t block[256] = {};
+    uint8_t byteInBlock[256] = {};
+};
+
+const CsmOffsets& CsmOffsetsFor(uint32_t cpsm, bool eightBit) {
+    static CsmOffsets tables[3][2];  // CT32, CT16, CT16S x 4-bit, 8-bit
+    static bool built = false;
+    if (!built) {
+        const uint32_t formats[3] = {psm::kCt32, psm::kCt16, psm::kCt16S};
+        for (uint32_t f = 0; f < 3; ++f) {
+            for (uint32_t b = 0; b < 2; ++b) {
+                CsmOffsets& t = tables[f][b];
+                t.valid = true;
+                const uint32_t count = b ? 256u : 16u;
+                for (uint32_t e = 0; e < count; ++e) {
+                    uint32_t x = 0, y = 0;
+                    CsmEntryPosition(e, b != 0, x, y);
+                    PixelLocation location;
+                    if (!LocatePixel(formats[f], 0, 1, x, y, location)) {
+                        t.valid = false;
+                        break;
+                    }
+                    t.block[e] = static_cast<uint16_t>(location.block);
+                    t.byteInBlock[e] = static_cast<uint8_t>(location.byteInBlock);
+                }
+            }
+        }
+        built = true;
+    }
+    const uint32_t f = cpsm == psm::kCt32 ? 0u : cpsm == psm::kCt16 ? 1u : 2u;
+    return tables[f][eightBit ? 1 : 0];
+}
+
+}  // namespace
+
 void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
     if (!IsCpsmValid(write.cpsm)) {
         counters_.Add(Counter::ClutBadCpsm);
@@ -301,22 +344,28 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
         memo->blocks.clear();
         memo->lastUse = ++memoUses_;
     }
+    const CsmOffsets* offsets = write.csm == 0u ? &CsmOffsetsFor(write.cpsm, eightBit) : nullptr;
+    if (offsets && !offsets->valid) offsets = nullptr;
     for (uint32_t e = 0; e < entryCount; ++e) {
-        uint32_t x = 0;
-        uint32_t y = 0;
-        uint32_t base = write.cbp;
-        uint32_t width = 1;
-        if (write.csm == 0u) {
-            CsmEntryPosition(e, eightBit, x, y);
-        } else {
-            x = write.texclutCou * 16u + e;
-            y = write.texclutCov;
-            width = write.texclutCbw;
-        }
-
         PixelLocation location;
-        if (!LocatePixel(write.cpsm, base, width, x, y, location)) {
-            continue;
+        if (offsets) {  // IN-457
+            location.block = (write.cbp + offsets->block[e]) % kBlocksTotal;
+            location.byteInBlock = offsets->byteInBlock[e];
+        } else {
+            uint32_t x = 0;
+            uint32_t y = 0;
+            uint32_t base = write.cbp;
+            uint32_t width = 1;
+            if (write.csm == 0u) {
+                CsmEntryPosition(e, eightBit, x, y);
+            } else {
+                x = write.texclutCou * 16u + e;
+                y = write.texclutCov;
+                width = write.texclutCbw;
+            }
+            if (!LocatePixel(write.cpsm, base, width, x, y, location)) {
+                continue;
+            }
         }
         if (memo && !sourceBlocks_.test(location.block)) memo->blocks.push_back(location.block);
         sourceBlocks_.set(location.block);
