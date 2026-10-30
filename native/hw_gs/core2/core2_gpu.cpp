@@ -183,6 +183,9 @@ struct Gpu::Impl {
     return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : 32u;
   }();
   std::uint32_t batchesSinceSubmit = 0;
+  // IN-451: speculative depth rejection before texturing in the pixel shader (exact); GT4_CORE2_EARLY_Z=0 turns it
+  // off (A/B, the shader's constant 103).
+  bool earlyZ = std::getenv("GT4_CORE2_EARLY_Z") == nullptr || std::strcmp(std::getenv("GT4_CORE2_EARLY_Z"), "0") != 0;
   // Draw descriptor sets of this recording by their four images (a batch with the same targets reuses its set).
   std::unordered_map<DrawSetKey, VkDescriptorSet, DrawSetKeyHash> drawSets;
   // B4: images whose last use finished, kept for reuse by size instead of freed: every new image was a device memory
@@ -600,7 +603,24 @@ struct Gpu::Impl {
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragment;
     stages[1].pName = "main";
-    stages[1].pSpecializationInfo = specialization;
+    // IN-451: constant 103 (SPEC_EARLY_Z) follows GT4_CORE2_EARLY_Z on every fragment module (a module without the
+    // constant ignores the entry).
+    VkSpecializationMapEntry entries[64];
+    std::uint8_t data[64 * 4];
+    std::uint32_t count = 0;
+    std::size_t bytes = 0;
+    if (specialization) {
+      count = specialization->mapEntryCount;
+      bytes = specialization->dataSize;
+      std::memcpy(entries, specialization->pMapEntries, count * sizeof(VkSpecializationMapEntry));
+      std::memcpy(data, specialization->pData, bytes);
+    }
+    const std::uint32_t earlyZValue = earlyZ ? 1u : 0u;
+    entries[count++] = {103u, static_cast<std::uint32_t>(bytes), 4};
+    std::memcpy(data + bytes, &earlyZValue, 4);
+    bytes += 4;
+    const VkSpecializationInfo withEarlyZ{count, entries, bytes, data};
+    stages[1].pSpecializationInfo = &withEarlyZ;
     VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[7]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};   // S, T
@@ -1463,15 +1483,16 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
 
-  // Draw set (hw_pixel_uber.frag): 0 pixel state, 1 frame, 2 depth, 3 1x texel atlas, 4 a target sampled at scale.
+  // Draw set (hw_pixel_uber.frag): 0 pixel state, 1 frame, 2 depth, 3 1x texel atlas, 4 a target sampled at scale,
+  // 5 the depth image again (IN-451: the speculative depth read, a descriptor of its own).
   {
-    VkDescriptorSetLayoutBinding bindings[5]{};
+    VkDescriptorSetLayoutBinding bindings[6]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    for (std::uint32_t i = 1; i < 5; ++i) {
+    for (std::uint32_t i = 1; i < 6; ++i) {
       bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     }
     VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    info.bindingCount = 5;
+    info.bindingCount = 6;
     info.pBindings = bindings;
     if (!check(gt4_hwd_vkCreateDescriptorSetLayout(s.device, &info, nullptr, &s.drawSetLayout),
                "vkCreateDescriptorSetLayout", error)) return false;
@@ -1507,7 +1528,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   {
     VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, kTransientSets},
-                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4 * kTransientSets + 64},
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5 * kTransientSets + 64},
                                      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kTransientSets}};
     VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     info.maxSets = kTransientSets;
@@ -1552,15 +1573,15 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_smooth_words, hwgs::shaders::hw_vertex_smooth_word_count, error);
   s.fragmentModule =
-      s.make_module(hwgs::shaders::hw_pixel_uber_smooth_words, hwgs::shaders::hw_pixel_uber_smooth_word_count, error);
+      s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
   if (!s.vertexModule || !s.fragmentModule) return false;
   s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error);
   s.pipelines[1] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, s.fragmentModule, error);
   s.pipelines[2] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.fragmentModule, error);
   if (!s.pipelines[0] || !s.pipelines[1] || !s.pipelines[2]) return false;
   if (handles.pixelInterlock) {
-    s.interlockModule = s.make_module(hwgs::shaders::hw_pixel_uber_smooth_interlock_words,
-                                      hwgs::shaders::hw_pixel_uber_smooth_interlock_word_count, error);
+    s.interlockModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_interlock_words,
+                                      hwgs::shaders::hw_pixel_uber_core2_interlock_word_count, error);
     if (!s.interlockModule) return false;
     s.interlockTriangles = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.interlockModule, error);
     if (!s.interlockTriangles) return false;
@@ -2020,12 +2041,13 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     if (!s.allocate_set(s.drawSetLayout, set, error)) return false;
     s.drawSets[setKey] = set;
     VkDescriptorBufferInfo uniformInfo{s.uniforms.buffer, 0, kPixelStateBytes};
-    VkDescriptorImageInfo imageInfo[4] = {{VK_NULL_HANDLE, frame->view, VK_IMAGE_LAYOUT_GENERAL},
+    VkDescriptorImageInfo imageInfo[5] = {{VK_NULL_HANDLE, frame->view, VK_IMAGE_LAYOUT_GENERAL},
                                           {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL},
                                           {VK_NULL_HANDLE, texels->view, VK_IMAGE_LAYOUT_GENERAL},
-                                          {VK_NULL_HANDLE, texture->view, VK_IMAGE_LAYOUT_GENERAL}};
-    VkWriteDescriptorSet writes[5]{};
-    for (std::uint32_t i = 0; i < 5; ++i) {
+                                          {VK_NULL_HANDLE, texture->view, VK_IMAGE_LAYOUT_GENERAL},
+                                          {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL}};  // IN-451
+    VkWriteDescriptorSet writes[6]{};
+    for (std::uint32_t i = 0; i < 6; ++i) {
       writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[i].dstSet = set;
       writes[i].dstBinding = i;
@@ -2038,7 +2060,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
         writes[i].pImageInfo = &imageInfo[i - 1];
       }
     }
-    gt4_hwd_vkUpdateDescriptorSets(s.device, 5, writes, 0, nullptr);
+    gt4_hwd_vkUpdateDescriptorSets(s.device, 6, writes, 0, nullptr);
   }
 
   const std::uint32_t sc = s.scale;

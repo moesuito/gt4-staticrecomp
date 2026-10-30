@@ -211,6 +211,19 @@ layout(push_constant) uniform VertexPush {
 // IN-374 (06.8): a texture copied from a resident target's scaled image, s x s texels per native texel.
 layout(set = 0, binding = 4, r32ui) uniform readonly uimage2D hw_texels_scaled;
 
+#ifndef HWR_EARLY_Z
+#define HWR_EARLY_Z 0
+#endif
+#if HWR_EARLY_Z
+// IN-451 (core 2 variants only): speculative depth rejection before the texture is sampled (constant 103, 0 with
+// GT4_CORE2_EARLY_Z=0). The speculative word is read through binding 5, a second descriptor of the depth image:
+// read through hw_depth itself, the compiler was free to reuse that value for the load inside the interlock (no store
+// in between in this invocation), so the depth test saw a stale word (frames differed). A load through another
+// descriptor cannot stand in for it.
+layout(constant_id = 103) const uint SPEC_EARLY_Z = 1u;
+layout(set = 0, binding = 5, r32ui) uniform readonly uimage2D hw_depth_peek;
+#endif
+
 // CPU ToTexel104: floor of the scaled coordinate, saturated far outside the 1024 range.
 int to_texel_104(float value) {
     return int(clamp(floor(value), -1.0e9, 1.0e9));
@@ -429,6 +442,25 @@ ivec4 sample_texture(int uvs, int uvt) {
     return (c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11) >> 8;
 }
 
+// The texture function's colour for the fragment colour `frag` at texel coordinate (uvs, uvt) (12.4 units).
+ivec4 textured_colour(int uvs, int uvt, ivec4 frag) {
+    ivec4 texel = g_mip ? sample_mipmapped(uvs, uvt, in_q)
+                  : (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
+                                                                 : sample_texture(uvs, uvt);
+    if ((PUSH_WORD & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
+    return hw_texture_function(ST_TFX, ST_TCC != 0u, texel, frag);
+}
+
+// Fog: the colour blended with FOGCOL by the interpolated fog value (truncated, IN-304).
+ivec4 fogged(ivec4 colour) {
+    int fog = int(clamp(floor(clamp(in_fog, 0.0, 255.0) + 0.001), 0.0, 255.0));
+    ivec3 fog_colour = ivec3(int(state.fog_r), int(state.fog_g), int(state.fog_b));
+    colour.r = (fog * colour.r + (255 - fog) * fog_colour.r) >> 8;
+    colour.g = (fog * colour.g + (255 - fog) * fog_colour.g) >> 8;
+    colour.b = (fog * colour.b + (255 - fog) * fog_colour.b) >> 8;
+    return colour;
+}
+
 void main() {
     ivec2 pixel = ivec2(floor(gl_FragCoord.xy));
     // IN-384 follow-up: the top bit of the tex_scale push word requests the forced linear filter for 1x textures.
@@ -480,9 +512,20 @@ void main() {
     // absorbs float interpolation noise on exact integer vertices (IN-500).
     ivec4 frag = ivec4(floor(clamp(in_rgba, 0.0, 255.0) + vec4(0.001)));
     ivec4 colour = frag;
+    // IN-392: at scale, the rasteriser's depth (the vertex stage writes Z * 2^-32, clamped to the format maximum)
+    // floored to an integer, as the reference does: identical vertices give bit-identical depth in every pass
+    // (position invariance), so a GEQUAL tie between passes holds at every sub-pixel. 1x keeps the varying.
+    const uint frag_z = depth_from_position ? uint(min(floor(gl_FragCoord.z * 4294967296.0), 4294967040.0))
+                                            : uint(clamp(in_z, 0.0, 4294967040.0));
+    // IN-451: a fragment that fails the depth test writes nothing, whatever its texel. For GEQUAL and GREATER the
+    // stored depth is read once without the interlock: when the fragment fails against it, the texel is not sampled
+    // here. The outcome is still decided inside the interlock with the current word; if the fragment passes there
+    // (a write between the two reads lowered the stored depth), the texel is sampled then. The image is never
+    // changed by this read, so every pixel is exactly what it was.
+    bool texel_deferred = false;
+    int uvs = 0;
+    int uvt = 0;
     if (ST_TEX_ON != 0u) {
-        int uvs;
-        int uvt;
         if (ST_TEX_FST != 0u) {
             uvs = to_texel_104(in_uv.x);
             uvt = to_texel_104(in_uv.y);
@@ -503,19 +546,15 @@ void main() {
                 g_tex_dy = dFdy(texel_coord);
             }
         }
-        ivec4 texel = g_mip ? sample_mipmapped(uvs, uvt, in_q)
-                      : (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
-                                                                     : sample_texture(uvs, uvt);
-        if ((PUSH_WORD & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
-        colour = hw_texture_function(ST_TFX, ST_TCC != 0u, texel, frag);
+#if HWR_EARLY_Z
+        if (SPEC_EARLY_Z != 0u && s.ztest != 0u && s.ztst >= HW_DEPTH_GEQUAL) {
+            const uint z = hw_clamp_z(frag_z, s.zformat);
+            texel_deferred = !hw_depth_passes(s.ztst, z, imageLoad(hw_depth_peek, pixel).x, s.zformat);
+        }
+#endif
+        if (!texel_deferred) colour = textured_colour(uvs, uvt, frag);
     }
-    if (ST_FOG_ON != 0u) {
-        int fog = int(clamp(floor(clamp(in_fog, 0.0, 255.0) + 0.001), 0.0, 255.0));
-        ivec3 fog_colour = ivec3(int(state.fog_r), int(state.fog_g), int(state.fog_b));
-        colour.r = (fog * colour.r + (255 - fog) * fog_colour.r) >> 8;
-        colour.g = (fog * colour.g + (255 - fog) * fog_colour.g) >> 8;
-        colour.b = (fog * colour.b + (255 - fog) * fog_colour.b) >> 8;
-    }
+    if (ST_FOG_ON != 0u && !texel_deferred) colour = fogged(colour);
 
     HwFragment f;
     // Dither index. IN-384 follow-up: the reference's default at scale is the raw fragment coordinate (4x4 output
@@ -524,11 +563,7 @@ void main() {
     f.x = g_dither_fine ? uint(pixel.x) : uint(pixel.x) / pixel_scale;
     f.y = g_dither_fine ? uint(pixel.y) : uint(pixel.y) / pixel_scale;
     f.colour = colour;
-    // IN-392: at scale, the rasteriser's depth (the vertex stage writes Z * 2^-32, clamped to the format maximum)
-    // floored to an integer, as the reference does: identical vertices give bit-identical depth in every pass
-    // (position invariance), so a GEQUAL tie between passes holds at every sub-pixel. 1x keeps the varying.
-    f.z = depth_from_position ? uint(min(floor(gl_FragCoord.z * 4294967296.0), 4294967040.0))
-                              : uint(clamp(in_z, 0.0, 4294967040.0));
+    f.z = frag_z;
 
     // IN-438: the old words are read only when the outcome depends on them (the passes are bound by memory traffic at
     // high scales). The depth: a test other than ALWAYS, or a Z24 / Z16 write (hw_write_depth_raw keeps the bits
@@ -545,6 +580,12 @@ void main() {
 #endif
     uint frame_old = frame_read ? imageLoad(hw_frame, pixel).x : 0u;
     uint depth_old = depth_read ? imageLoad(hw_depth, pixel).x : 0u;
+    // IN-451: the speculation said "fails"; with the current word the fragment may pass after all (then it needs its
+    // texel now). If it fails, hw_process_pixel discards it at the depth test before the colour matters.
+    if (texel_deferred && hw_depth_passes(s.ztst, hw_clamp_z(f.z, s.zformat), depth_old, s.zformat)) {
+        f.colour = textured_colour(uvs, uvt, frag);
+        if (ST_FOG_ON != 0u) f.colour = fogged(f.colour);
+    }
     HwOutcome o = hw_process_pixel(s, f, frame_old, depth_old);
     if (o.frame_written) {
         if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24) {
