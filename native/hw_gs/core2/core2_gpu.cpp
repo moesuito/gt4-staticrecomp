@@ -164,6 +164,9 @@ struct Gpu::Impl {
   // B4: per slot, the start and end of its command buffer, then up to kPassTimestampPairs draw passes (start, end);
   // read when the slot's fence has signalled.
   static constexpr std::uint32_t kPassTimestampPairs = 64;
+  // IN-465 A/B: GT4_CORE2_PASS_TIMESTAMPS=0 leaves out the draw pass timestamps (gpu_draw_passes reads 0).
+  const bool passTimestampsOn = std::getenv("GT4_CORE2_PASS_TIMESTAMPS") == nullptr ||
+                                std::strcmp(std::getenv("GT4_CORE2_PASS_TIMESTAMPS"), "0") != 0;
   static constexpr std::uint32_t kTimestampsPerSlot = 2u + 2u * kPassTimestampPairs;
   VkQueryPool timestamps = VK_NULL_HANDLE;
   // IN-422: the window of the next texture decode (SetDecodeWindow).
@@ -1348,7 +1351,7 @@ struct Gpu::Impl {
       stats.barriersSkipped++;
     }
     const std::uint32_t pair = slots[slot].passTimestamps;
-    const bool timed = timestamps && pair < kPassTimestampPairs;
+    const bool timed = timestamps && passTimestampsOn && pair < kPassTimestampPairs;
     const std::uint32_t query = slot * kTimestampsPerSlot + 2u + 2u * pair;
     if (timed) gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, query);
     begin_draw_pass();
@@ -1675,7 +1678,12 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   {
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     gt4_hw_vkGetPhysicalDeviceFeatures2(s.physical, &features);
-    if (features.features.pipelineStatisticsQuery) {
+    // IN-465: the pipeline statistics query (prims, fragments and compute invocations of the reports) is diagnostics
+    // only and some drivers pay for it on every command buffer: GT4_CORE2_GPU_STATISTICS=1 turns it on (off, the
+    // report's prims, fragments and compute read 0).
+    const char *statisticsSwitch = std::getenv("GT4_CORE2_GPU_STATISTICS");
+    const bool statisticsOn = statisticsSwitch != nullptr && std::strcmp(statisticsSwitch, "1") == 0;
+    if (features.features.pipelineStatisticsQuery && statisticsOn) {
       VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
       queryInfo.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
       queryInfo.queryCount = Impl::kMaxSlots;
