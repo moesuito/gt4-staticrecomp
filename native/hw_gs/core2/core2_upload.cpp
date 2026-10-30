@@ -54,42 +54,56 @@ const InPageOffsets &InPageOffsetTables() {
 
 // IN-414: `count` consecutive host pixels (from pixel `index` of `data`) stored at their in-page offsets in one page.
 // IN-450: returns the OR of (old ^ new) over the stored bits, so 0 means every pixel already held its value.
+// IN-453: `blocks` gets bit b set when a pixel of block b of the page changed.
 template <std::uint32_t Bpp>
 std::uint32_t StoreRun(std::uint8_t *page, const std::uint32_t *offsets, const std::uint8_t *data, std::uint64_t index,
-                       std::uint32_t count) {
+                       std::uint32_t count, std::uint32_t &blocks) {
     std::uint32_t diff = 0;
     for (std::uint32_t i = 0; i < count; ++i, ++index) {
         std::uint8_t *out = page + (offsets[i] & 0xFFFFu);
+        std::uint32_t pixel = 0;  // this pixel's old ^ new
         if constexpr (Bpp == 32) {
             std::uint32_t value = 0, old = 0;
             std::memcpy(&value, data + index * 4u, 4);
             std::memcpy(&old, out, 4);
-            diff |= value ^ old;
+            pixel = value ^ old;
             std::memcpy(out, &value, 4);
         } else if constexpr (Bpp == 24) {
             std::uint32_t value = 0, old = 0;
             std::memcpy(&value, data + index * 3u, 3);
             std::memcpy(&old, out, 3);
-            diff |= value ^ old;
+            pixel = value ^ old;
             std::memcpy(out, &value, 3);
         } else if constexpr (Bpp == 16) {
             std::uint16_t value = 0, old = 0;
             std::memcpy(&value, data + index * 2u, 2);
             std::memcpy(&old, out, 2);
-            diff |= static_cast<std::uint32_t>(value ^ old);
+            pixel = static_cast<std::uint32_t>(value ^ old);
             std::memcpy(out, &value, 2);
         } else if constexpr (Bpp == 8) {
-            diff |= static_cast<std::uint32_t>(*out ^ data[index]);
+            pixel = static_cast<std::uint32_t>(*out ^ data[index]);
             *out = data[index];
         } else {  // 4 bits, low nibble first in the host stream
             const std::uint32_t shift = offsets[i] >> 16;
             const std::uint8_t nibble =
                 (index & 1u) ? static_cast<std::uint8_t>(data[index / 2] >> 4) : (data[index / 2] & 0x0Fu);
-            diff |= static_cast<std::uint32_t>(((*out >> shift) & 0x0Fu) ^ nibble);
+            pixel = static_cast<std::uint32_t>(((*out >> shift) & 0x0Fu) ^ nibble);
             *out = static_cast<std::uint8_t>((*out & ~(0x0Fu << shift)) | (nibble << shift));
         }
+        diff |= pixel;
+        if (pixel != 0) blocks |= 1u << ((offsets[i] & 0xFFFFu) >> 8);
     }
     return diff;
+}
+
+// IN-453: marks block `pageBlock + b` (mod the memory) for every bit b of `blocks`.
+void MarkBlocks(std::uint64_t *changedBlocks, std::uint32_t pageBlock, std::uint32_t blocks) {
+    while (blocks != 0) {
+        const std::uint32_t b = static_cast<std::uint32_t>(__builtin_ctz(blocks));
+        blocks &= blocks - 1u;
+        const std::uint32_t block = (pageBlock + b) % memory::kBlocksTotal;
+        changedBlocks[block >> 6] |= std::uint64_t{1} << (block & 63u);
+    }
 }
 
 // One host row (transfer row `row`), columns [begin, end): one run per page crossed (and at the transfer coordinate
@@ -98,7 +112,7 @@ template <std::uint32_t Bpp>
 std::uint32_t StoreRowSpan(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
                            std::uint32_t width, const std::uint8_t *data, const std::uint32_t *pageOffsets,
                            std::uint32_t pageWidth, std::uint32_t pageHeight, std::uint32_t row, std::uint32_t begin,
-                           std::uint32_t end) {
+                           std::uint32_t end, std::uint64_t *changedBlocks) {
     std::uint32_t diff = 0;
     const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
     const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
@@ -112,7 +126,9 @@ std::uint32_t StoreRowSpan(std::uint8_t *memoryBytes, const BufferView &view, st
         const std::uint32_t run = std::min({end - column, pageWidth - xInPage, memory::kTransferCoordinateWrap - x});
         const std::uint32_t pageBlock = view.basePointer + memory::kBlocksPerPage * (pageRow + x / pageWidth);
         std::uint8_t *page = memoryBytes + ((pageBlock * memory::kBlockBytes) & (memory::kLocalMemoryBytes - 1u));
-        diff |= StoreRun<Bpp>(page, rowOffsets + xInPage, data, index, run);
+        std::uint32_t blocks = 0;
+        diff |= StoreRun<Bpp>(page, rowOffsets + xInPage, data, index, run, blocks);
+        if (blocks != 0 && changedBlocks) MarkBlocks(changedBlocks, pageBlock, blocks);
         column += run;
         index += run;
     }
@@ -154,7 +170,8 @@ const Ct32Columns &Ct32ColumnTable(const std::vector<std::uint32_t> &offsets) {
 // Rows in pairs (an even GS row and the next one), whole 8-pixel columns with SSE2, the rest through StoreRowSpan.
 std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
                               std::uint32_t width, std::uint32_t height, const std::uint8_t *data,
-                              const std::uint32_t *pageOffsets, const Ct32Columns &columns) {
+                              const std::uint32_t *pageOffsets, const Ct32Columns &columns,
+                              std::uint64_t *changedBlocks) {
     constexpr std::uint32_t kPageWidth = 64, kPageHeight = 32;
     std::uint32_t diff = 0;
     __m128i changed = _mm_setzero_si128();
@@ -164,7 +181,7 @@ std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view,
         const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
         if ((y & 1u) != 0 || row + 1 >= height) {
             diff |= StoreRowSpan<32>(memoryBytes, view, x0, y0, width, data, pageOffsets, kPageWidth, kPageHeight, row, 0,
-                                     width);
+                                     width, changedBlocks);
             ++row;
             continue;
         }
@@ -174,9 +191,9 @@ std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view,
         const std::uint32_t tail = lead + whole * 8u;
         for (std::uint32_t r = 0; r < 2; ++r) {
             diff |= StoreRowSpan<32>(memoryBytes, view, x0, y0, width, data, pageOffsets, kPageWidth, kPageHeight, row + r,
-                                     0, lead);
+                                     0, lead, changedBlocks);
             diff |= StoreRowSpan<32>(memoryBytes, view, x0, y0, width, data, pageOffsets, kPageWidth, kPageHeight, row + r,
-                                     tail, width);
+                                     tail, width, changedBlocks);
         }
         const std::uint32_t pageRow = (y / kPageHeight) * perRow;
         const std::uint32_t *colBase = columns.base[(y % kPageHeight) / 2u];
@@ -195,10 +212,13 @@ std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view,
             const __m128i q0 = _mm_unpacklo_epi64(a, c), q1 = _mm_unpackhi_epi64(a, c);
             const __m128i q2 = _mm_unpacklo_epi64(b, d), q3 = _mm_unpackhi_epi64(b, d);
             __m128i *o = reinterpret_cast<__m128i *>(out);  // a column is 64-byte aligned in its block
-            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 0), q0));
-            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 1), q1));
-            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 2), q2));
-            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 3), q3));
+            const __m128i diffs = _mm_or_si128(
+                _mm_or_si128(_mm_xor_si128(_mm_load_si128(o + 0), q0), _mm_xor_si128(_mm_load_si128(o + 1), q1)),
+                _mm_or_si128(_mm_xor_si128(_mm_load_si128(o + 2), q2), _mm_xor_si128(_mm_load_si128(o + 3), q3)));
+            changed = _mm_or_si128(changed, diffs);
+            if (changedBlocks && _mm_movemask_epi8(_mm_cmpeq_epi8(diffs, _mm_setzero_si128())) != 0xFFFF) {
+                MarkBlocks(changedBlocks, pageBlock, 1u << (colBase[(x % kPageWidth) / 8u] >> 8));  // IN-453
+            }
             _mm_store_si128(o + 0, q0);
             _mm_store_si128(o + 1, q1);
             _mm_store_si128(o + 2, q2);
@@ -214,11 +234,11 @@ template <std::uint32_t Bpp>
 std::uint32_t HostToLocalPageAligned(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0,
                                      std::uint32_t y0, std::uint32_t width, std::uint32_t height,
                                      const std::uint8_t *data, const std::uint32_t *pageOffsets,
-                                     std::uint32_t pageWidth, std::uint32_t pageHeight) {
+                                     std::uint32_t pageWidth, std::uint32_t pageHeight, std::uint64_t *changedBlocks) {
     std::uint32_t diff = 0;
     for (std::uint32_t row = 0; row < height; ++row) {
         diff |= StoreRowSpan<Bpp>(memoryBytes, view, x0, y0, width, data, pageOffsets, pageWidth, pageHeight, row, 0,
-                                  width);
+                                  width, changedBlocks);
     }
     return diff;
 }
@@ -227,7 +247,7 @@ std::uint32_t HostToLocalPageAligned(std::uint8_t *memoryBytes, const BufferView
 
 bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
                      std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount,
-                     UploadSwizzle swizzle, bool *changed) {
+                     UploadSwizzle swizzle, bool *changed, std::uint64_t *changedBlocks) {
     if (changed) *changed = true;
     static const memory::GpuAddressTables tables = memory::gpuAddressTables();
     const memory::PsmInfo &info = memory::psmInfo(view.psm);
@@ -248,17 +268,17 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uin
         if (ct32Columns && view.psm == memory::Psm::Ct32) {
             const Ct32Columns &columns = Ct32ColumnTable(InPageOffsetTables().perPsm[code]);
             if (columns.valid) {
-                diff = HostToLocalCt32(memoryBytes, view, x0, y0, width, height, data, pageOffsets, columns);
+                diff = HostToLocalCt32(memoryBytes, view, x0, y0, width, height, data, pageOffsets, columns, changedBlocks);
                 if (changed) *changed = diff != 0;
                 return true;
             }
         }
         switch (bpp) {
-            case 32: diff = HostToLocalPageAligned<32>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;
-            case 24: diff = HostToLocalPageAligned<24>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;
-            case 16: diff = HostToLocalPageAligned<16>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;
-            case 8: diff = HostToLocalPageAligned<8>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;
-            default: diff = HostToLocalPageAligned<4>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;
+            case 32: diff = HostToLocalPageAligned<32>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight, changedBlocks); break;
+            case 24: diff = HostToLocalPageAligned<24>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight, changedBlocks); break;
+            case 16: diff = HostToLocalPageAligned<16>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight, changedBlocks); break;
+            case 8: diff = HostToLocalPageAligned<8>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight, changedBlocks); break;
+            default: diff = HostToLocalPageAligned<4>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight, changedBlocks); break;
         }
         if (changed) *changed = diff != 0;
         return true;
@@ -282,6 +302,10 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uin
                 (block * memory::kBlockBytes + ((entry >> 5) & 255u) + wordShift / 8u) & (memory::kLocalMemoryBytes - 1u);
             const std::uint32_t shift = wordShift % 8u;
             std::uint8_t *out = memoryBytes + at;
+            if (changedBlocks) {  // IN-453: conservative on this path: every written block counts as changed
+                const std::uint32_t written = at / memory::kBlockBytes;
+                changedBlocks[written >> 6] |= std::uint64_t{1} << (written & 63u);
+            }
             switch (bpp) {
                 case 32: std::memcpy(out, data + index * 4u, 4); break;
                 case 24: std::memcpy(out, data + index * 3u, 3); break;

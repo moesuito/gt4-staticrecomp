@@ -282,7 +282,35 @@ struct TextureEntry {
     ImageId image = kNoImage;
     std::uint64_t bytes = 0;
     std::uint64_t lastUse = 0;
+    std::uint64_t content = 0;  // IN-453: the block key of the decoded blocks (0: unknown)
 };
+
+// IN-453: a 64-bit hash of one 256-byte GS memory block: four independent lanes of xor-multiply over its 32 words,
+// then the lanes rotated together and an avalanche. A collision would reuse a wrong decode; at 64 bits that is far
+// below every other risk in the renderer.
+std::uint64_t HashBlock(const std::uint8_t *block) {
+    constexpr std::uint64_t P0 = 0x9E3779B185EBCA87ull, P1 = 0xC2B2AE3D27D4EB4Full;
+    std::uint64_t lane[4] = {0x243F6A8885A308D3ull, 0x13198A2E03707344ull, 0xA4093822299F31D0ull, 0x082EFA98EC4E6C89ull};
+    for (std::uint32_t i = 0; i < 32; i += 4) {
+        std::uint64_t w[4];
+        std::memcpy(w, block + i * 8, 32);
+        for (std::uint32_t l = 0; l < 4; ++l) lane[l] = (lane[l] ^ w[l]) * P0;
+    }
+    std::uint64_t h = lane[0] ^ ((lane[1] << 17) | (lane[1] >> 47)) ^ ((lane[2] << 31) | (lane[2] >> 33)) ^
+                      ((lane[3] << 47) | (lane[3] >> 17));
+    h ^= h >> 33;
+    h *= P1;
+    h ^= h >> 29;
+    h *= P0;
+    h ^= h >> 32;
+    return h;
+}
+
+// IN-453: mixes one word into a 64-bit key.
+std::uint64_t MixWords(std::uint64_t h, std::uint64_t w) {
+    h ^= w + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+    return h * 0xBF58476D1CE4E5B9ull;
+}
 
 // 1x texels kept on the GPU (IN-431: 192 MiB on an integrated GPU; GT4_CORE2_TEXTURE_MB overrides both).
 constexpr std::uint64_t kTextureCacheBytes = static_cast<std::uint64_t>(768) << 20;
@@ -433,6 +461,22 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::deque<RecentUpload> recentUploads_;
 
     std::array<std::uint64_t, memory::kPagesTotal> pageWrites_{};
+    // IN-453: an identity per GS memory block (4 KiB pages were the unit before: a texture went stale whenever any
+    // other block of its pages was written, GT4's uploads of the textures beside it). EE uploads give the blocks they
+    // change the hash of their bytes (SetUploadIds); every other write (readbacks, moves, clears) gives the blocks of
+    // its span fresh unique identities. A texture's block key (its address key and its blocks' identities) names its
+    // bytes, so an unchanged key is an unchanged decode.
+    std::vector<std::uint64_t> blockIds_ = [] {
+        std::vector<std::uint64_t> ids(kAllBlocks);
+        for (std::uint32_t i = 0; i < kAllBlocks; ++i) ids[i] = i + 1u;
+        return ids;
+    }();
+    std::uint64_t nextBlockId_ = kAllBlocks + 1u;  // never repeated: unique identities count up from here
+    std::vector<std::uint64_t> changedBlocks_ = std::vector<std::uint64_t>(kAllBlocks / 64u);  // set by the swizzle
+    std::unordered_map<std::uint64_t, std::vector<std::uint16_t>> blockLists_;  // the blocks of a texture address key
+    // IN-453: GT4_CORE2_BLOCK_VERSIONS=0 keeps the page versions alone for the texture cache (A/B).
+    const bool contentCacheOn_ = std::getenv("GT4_CORE2_BLOCK_VERSIONS") == nullptr ||
+                                 std::strcmp(std::getenv("GT4_CORE2_BLOCK_VERSIONS"), "0") != 0;
     std::array<std::uint8_t, memory::kPagesTotal> pageWriter_{};  // IN-450: WriteKind of the newest write
     std::uint64_t writeSequence_ = 0;
     std::unordered_map<std::uint64_t, TextureEntry> textures_;
@@ -953,6 +997,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void MarkWritten(const BlockSpan &span, WriteKind kind = kWriteWhole) {
         if (span.count == 0) return;
         ++writeSequence_;
+        if (kind != kWriteUpload) FreshBlockIds(span);  // IN-453 (uploads call SetUploadIds with their exact blocks)
         if (span.count >= kAllBlocks) {
             pageWrites_.fill(writeSequence_);
             pageWriter_.fill(kind);
@@ -963,6 +1008,37 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         for (std::uint32_t page = firstPage; page <= lastBlock / memory::kBlocksPerPage; ++page) {
             pageWrites_[page % memory::kPagesTotal] = writeSequence_;
             pageWriter_[page % memory::kPagesTotal] = kind;
+        }
+    }
+
+    // IN-453: unique identities for every block of `span` (contents nobody can name).
+    void FreshBlockIds(const BlockSpan &span) {
+        const std::uint32_t count = std::min<std::uint32_t>(span.count, kAllBlocks);
+        for (std::uint32_t i = 0; i < count; ++i) blockIds_[(span.begin + i) % kAllBlocks] = nextBlockId_++;
+    }
+
+    // IN-453: an EE upload of `rect` in `view`: the block cells it touches (exactly them: the span of the write would
+    // also take the blocks between them, other textures of the same page rows) get the hash of their 256 bytes as
+    // their identity, so any history that leaves a block with the same bytes gives it the same identity (GT4 sends
+    // textures A, then B over part of A, then A again). With `knownBlocks` only the cells the swizzle saw change are
+    // hashed again (changedBlocks_, cleared here); the others hold their bytes and so their identity.
+    void SetUploadIds(const BufferView &view, const PixelRect &rect, bool knownBlocks) {
+        const std::uint8_t *memory = memory_.Local().bytes().data();
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        const std::int32_t bw = info.blockWidth, bh = info.blockHeight;
+        for (std::int32_t by = rect.y0 / bh; by <= rect.y1 / bh; ++by) {
+            for (std::int32_t bx = rect.x0 / bw; bx <= rect.x1 / bw; ++bx) {
+                const std::uint32_t block = memory::pixelSlot(view, static_cast<std::uint32_t>(bx * bw),
+                                                              static_cast<std::uint32_t>(by * bh))
+                                                .byteOffset /
+                                            memory::kBlockBytes;
+                const std::uint32_t b = block % kAllBlocks;
+                const std::uint64_t bit = std::uint64_t{1} << (b & 63u);
+                if (!knownBlocks || (changedBlocks_[b >> 6] & bit) != 0) {
+                    blockIds_[b] = HashBlock(memory + static_cast<std::size_t>(b) * memory::kBlockBytes);
+                }
+                changedBlocks_[b >> 6] &= ~bit;
+            }
         }
     }
 
@@ -1164,6 +1240,35 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::array<lod::MipLevelAddress, 7> address{};
         std::array<lod::MipSize, 7> size{};
     };
+    // IN-453: the block key of a texture: its address key hash and the versions of every block its levels read (the
+    // block list is computed once per address key).
+    std::uint64_t ContentKey(std::uint64_t addressHash, const writeback::BatchTranslation &t, Psm psm, const MipPlan &mip) {
+        auto [it, inserted] = blockLists_.try_emplace(addressHash);
+        std::vector<std::uint16_t> &blocks = it->second;
+        if (inserted) {
+            const memory::PsmInfo &info = memory::psmInfo(psm);
+            auto addLevel = [&](std::uint32_t bp, std::uint32_t bw, std::uint32_t width, std::uint32_t height) {
+                const BufferView view{bp, bw, psm};
+                for (std::uint32_t by = 0; by * info.blockHeight < height; ++by) {
+                    for (std::uint32_t bx = 0; bx * info.blockWidth < width; ++bx) {
+                        const std::uint32_t block =
+                            memory::pixelSlot(view, (bx * info.blockWidth) % 2048u, (by * info.blockHeight) % 2048u)
+                                .byteOffset /
+                            memory::kBlockBytes;
+                        blocks.push_back(static_cast<std::uint16_t>(block % kAllBlocks));
+                    }
+                }
+            };
+            addLevel(t.glmBp, t.glmBw, t.texWidth, t.texHeight);
+            for (std::uint32_t n = 1; n <= mip.levels; ++n) {
+                addLevel(mip.address[n].tbp, mip.address[n].tbw, mip.size[n].width, mip.size[n].height);
+            }
+        }
+        std::uint64_t h = MixWords(addressHash, blocks.size());
+        for (std::uint16_t block : blocks) h = MixWords(h, blockIds_[block]);
+        return h == 0 ? 1u : h;
+    }
+
     MipPlan PlanMips(const writeback::BatchTranslation &t, std::uint64_t tex1, std::uint64_t miptbp1,
                      std::uint64_t miptbp2) const {
         MipPlan plan;
@@ -1253,6 +1358,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.atlasHits++;
             return found->second.image;
         }
+        // IN-453: the pages changed, but maybe not this texture's blocks (other blocks of its pages were written).
+        std::uint64_t content = 0;
+        if (cacheOn && contentCacheOn_ && !overTargets) {
+            content = ContentKey(hash, t, *texturePsm, mip);
+            if (found != textures_.end() && found->second.key == key && found->second.content == content) {
+                found->second.span = textureSpan;
+                found->second.sequence = writeSequence_;
+                found->second.lastUse = ++textureUses_;
+                stats.contentHits++;
+                return found->second.image;
+            }
+        }
         // B2: why this decode happens.
         if (overTargets) {
             stats.decodesOverTargets++;
@@ -1340,6 +1457,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         entry.image = image;
         entry.bytes = static_cast<std::uint64_t>(key.width) * key.height * 4u;
         entry.lastUse = ++textureUses_;
+        entry.content = content;
         textureBytes_ += entry.bytes;
         textures_[hash] = entry;
         while (textureBytes_ > textureBudget_ && textures_.size() > 1) {
@@ -1992,7 +2110,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             times_.swizzleBytes += static_cast<double>(byteCount);
             swizzled = fast && psm &&
                        FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay,
-                                       c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_, &changed);
+                                       c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_, &changed,
+                                       contentCacheOn_ ? changedBlocks_.data() : nullptr);
             if (!swizzled) memory_.CommitUpload(c, bytes, byteCount);
         }
         if (swizzled) {
@@ -2036,6 +2155,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const PixelRect rect{static_cast<std::int32_t>(c.dsax), static_cast<std::int32_t>(c.dsay),
                              static_cast<std::int32_t>(c.dsax + c.rrw - 1u), static_cast<std::int32_t>(c.dsay + c.rrh - 1u)};
         if (rect.x1 >= 2048 || rect.y1 >= 2048) {
+            std::fill(changedBlocks_.begin(), changedBlocks_.end(), 0u);  // IN-453: every version is fresh below
             MarkWritten(BlockSpan{0, kAllBlocks});
             for (Target &t : targets_) {
                 if (t.alive) PushDirty(t, Dirty{PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1,
@@ -2067,6 +2187,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         OnMemoryWritten(view, rect, true);
+        if (contentCacheOn_) SetUploadIds(view, rect, swizzled);  // IN-453 (block identities are unused when off)
     }
 
     // IN-450: GT4_CORE2_KEEP_UNCHANGED=0 bumps the page versions for every upload (A/B).
@@ -3003,7 +3124,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
-                 "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu\n",
+                 "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
+                 "block_hits=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
@@ -3011,7 +3133,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.hiddenFlareTables, (unsigned long long)g.computeFills,
                  static_cast<double>(g.fillPixels) / 1.0e6, (unsigned long long)c.unchangedUploads,
                  (unsigned long long)c.staleBy[0], (unsigned long long)c.staleBy[1], (unsigned long long)c.staleBy[2],
-                 (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4]);
+                 (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits);
 }
 
 }  // namespace

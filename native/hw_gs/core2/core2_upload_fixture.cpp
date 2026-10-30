@@ -120,12 +120,29 @@ int main(int argc, char **argv) {
         FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &first);
         FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &again);
         data[data.size() / 2] ^= 0x10;  // inside one pixel (the high nibble of a 4-bit pair, a bit of the others)
-        FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &touched);
+        std::vector<std::uint64_t> blocks(kBlocksTotal / 64, 0);  // IN-453: only that pixel's block is reported
+        FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &touched,
+                        blocks.data());
+        const std::uint32_t bpp = psmInfo(psm).transferBpp;
+        const std::size_t pixel = bpp == 4 ? (data.size() / 2) * 2 + 1 : (data.size() / 2) / (bpp / 8);
+        const std::uint32_t expected =
+            pixelSlot(view, 5 + static_cast<std::uint32_t>(pixel % 37), 3 + static_cast<std::uint32_t>(pixel / 37))
+                .byteOffset /
+            kBlockBytes;
+        int reported = 0;
+        bool hasExpected = false;
+        for (std::uint32_t b = 0; b < kBlocksTotal; ++b) {
+            if ((blocks[b >> 6] >> (b & 63u)) & 1u) {
+                ++reported;
+                hasExpected = hasExpected || b == expected;
+            }
+        }
         ++cases;
-        if (!first || again || !touched) {
+        if (!first || again || !touched || reported != 1 || !hasExpected) {
             ++failures;
-            std::fprintf(stderr, "FAIL: %s changed flags first=%d again=%d touched=%d (want 1 0 1)\n", psmInfo(psm).name,
-                         first ? 1 : 0, again ? 1 : 0, touched ? 1 : 0);
+            std::fprintf(stderr, "FAIL: %s changed flags first=%d again=%d touched=%d blocks=%d expected=%u found=%d\n",
+                         psmInfo(psm).name, first ? 1 : 0, again ? 1 : 0, touched ? 1 : 0, reported, expected,
+                         hasExpected ? 1 : 0);
         }
     }
     // Too little data: nothing written, the caller takes the generic path.
