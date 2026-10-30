@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 324: night of CPU and GPU fronts (2026-10-30, owner asleep)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-324`: 313 + IN-446 (GS stream through a
+lock-free ring), IN-447 (draw path without allocations), IN-450 (unchanged uploads keep page versions), IN-451
+(speculative depth rejection before texturing, exact), IN-452 (CT32 uploads by whole columns, SSE2), IN-453 (texture
+cache by block identity). Frames identical to candidate 310 at every check. 3x headless night race against 313: GS
+worker about 7.2 -> 6.3 ms per VBlank, EE stream hooks 0.76 -> 0.47 ms, texture stage 0.84 -> 0.36 ms, decode
+windows 12x less data; 12x: GPU busy 20.65 -> 20.27 ms, frame p50 23.8 -> 22.4 ms. Measured and dropped tonight:
+MTVU journal slot rings (no gain), longer submission intervals (worse), textureGather (+2.6% GPU at 12x). Details in
+the ledger and the journal.
+
 ## TASK-027 CoreGS 2.0 candidate 313: CPU survey done, SSE4.1 adopted (2026-10-30)
 
 `build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-313-sse41`: 309 + the CPU survey

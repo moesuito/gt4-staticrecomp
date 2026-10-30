@@ -2013,6 +2013,18 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       const std::uint32_t colour = static_cast<std::uint32_t>(v0.rgba[0]) | static_cast<std::uint32_t>(v0.rgba[1]) << 8 |
                                    static_cast<std::uint32_t>(v0.rgba[2]) << 16 | static_cast<std::uint32_t>(v0.rgba[3]) << 24;
       const std::uint32_t flags = sc > 1 ? 3u : 0u;  // the push word bits 28 and 30 of a scaled draw
+      if (s.profiling) {  // diagnostics (S3 profile VBlank): the shape of each fill, for the clear-path survey
+        namespace g = gpu::gpufield;
+        const auto &f = state.fields;
+        for (const Rect &r : rects) {
+          std::fprintf(stderr,
+                       "[core2] gpu profile fill rect=%d,%d-%d,%d frame=%ux%u depth=%ux%u same=%d format=%u fbmsk=%08x "
+                       "dither=%u keep_top=%u ztest=%u ztst=%u zmsk=%u zformat=%u fba=%u colour=%08x z=%08x\n",
+                       r.x0, r.y0, r.x1, r.y1, frame->width, frame->height, depth->width, depth->height,
+                       frame == depth ? 1 : 0, f[g::Format], f[g::Fbmsk], f[g::Dither], f[g::KeepTopByte], f[g::Ztest],
+                       f[g::Ztst], f[g::Zmsk], f[g::Zformat], f[g::Fba], colour, v0.z);
+        }
+      }
       for (const Rect &r : rects) {
         const std::uint32_t push[9] = {static_cast<std::uint32_t>(r.x0), static_cast<std::uint32_t>(r.y0),
                                        static_cast<std::uint32_t>(r.x1), static_cast<std::uint32_t>(r.y1), colour, v0.z,

@@ -185,3 +185,28 @@ comparison against the previous candidate), the transport and stage lines before
 
 Together the R tasks bound the GS worker at roughly 4-5 of its 9.4 ms per VBlank at 3x; T2 and T3 bound the EE's
 GS-related time (about 4 ms plus the read waits) at roughly 1 ms.
+
+## Results (night of 2026-10-30, owner asleep)
+
+Every step: one switch for A/B, 2+2 interleaved headless runs (3x or 12x night race), the frame dumps at VBlanks
+8400/9600/10800 compared with candidate 310 (byte for byte), CORE2 CTests.
+
+| Step | Front | Result | Kept |
+|---|---|---|---|
+| IN-446 | T2: GS stream through a lock-free SPSC ring with conditional doorbells | with IN-447: GS worker 7.20 -> 6.65 ms, EE hooks 0.76 -> 0.47 ms, wall -5.6% | yes |
+| IN-447 | R2: barrier access sets as a flat generation-stamped table | draw stage 1.28 -> 1.14 ms | yes |
+| IN-448 | MTVU journal queues as reusable slot rings (EE allocations) | no measurable gain on the quiet desktop | no |
+| R1 | submission interval 64 / 128 instead of 32 | GS -0.4 ms but the flare read waits longer for the GPU: wall +1% / +4% | no (32 kept) |
+| IN-449 | bilinear footprints with textureGather (exact) | +2.6% GPU time at 12x (RDNA4's sampler path is slower than four image loads) | no |
+| IN-450 | uploads that change no byte keep the page versions | GS worker -2.8% | yes |
+| IN-451 | speculative depth rejection before texturing (exact after a fix: a second descriptor for the speculative read) | 12x GPU 20.65 -> 20.27 ms, frame p50 -5.8% | yes |
+| IN-452 | R4: PSMCT32 uploads by whole 8 x 2 columns (SSE2) | 0.61 -> 0.21 ns per pixel; swizzle stage 0.75 -> 0.47 ms | yes |
+| IN-453 | R5: texture cache by block identity (the hash of each changed block) | texture stage 0.84 -> 0.36 ms, decode windows 12x less data, GPU -3% at 3x | yes |
+| IN-454 | whole-image constant fills: the frame by vkCmdClearColorImage, the depth still by the fill shader (Z24 keeps the stored top byte) | exact, but 12x GPU 20.31 -> 20.25 ms (-0.3%): the fills are bound by the depth read-modify-write | no |
+
+Found on the way: GT4's stale texture decodes came from 4 KiB page versions (blocks beside a texture written); the
+largest GPU item at 12x is GT4's clears (strips covering whole targets, 3.7 ms of isolated GPU time per VBlank); the
+exactness check caught a compiler load merge across the pixel interlock (ai-memory gotcha).
+
+Still open from the list above: T3 (zero-copy MTVU intake, P6), R3 draw recording, R6 CLUT, R7 front end vertex path,
+R8 translate, R9 batches split by CLUT loads, a submission thread, M0 replay bench.
