@@ -428,6 +428,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     const bool delayedDownloads_ = std::getenv("GT4_CORE2_DELAYED_DOWNLOADS") != nullptr
                                        ? std::strcmp(std::getenv("GT4_CORE2_DELAYED_DOWNLOADS"), "0") != 0
                                        : performance_;
+    // IN-441 (performance mode, as rc7's TASK-117 does for the PCSX2 GS): GT4's night race reads back its light flare
+    // visibility table, a 64 x 8 PSMCT32 rectangle (2048 bytes), once per frame; the VU1 scales every light flare and the
+    // sun glare by its entry. Answered as zeros, without a readback, the game draws none of them: no GPU wait for the
+    // table and no flare draws. GT4_GS_HIDE_FLARES=0/1 overrides the performance mode default (the same switch as rc7's).
+    const bool hideFlares_ = std::getenv("GT4_GS_HIDE_FLARES") != nullptr
+                                 ? std::strcmp(std::getenv("GT4_GS_HIDE_FLARES"), "0") != 0
+                                 : performance_;
+    bool zeroRead_ = false;  // the pending LOCAL->HOST read is a hidden flare table: its bytes are zeros
     const char *readbackReason_ = "other";  // diagnostics (GT4_CORE2_READBACK_TRACE): why the next readback runs
     // B1: GPU fence wait and readback count per readback reason, between two [core2] lines.
     struct ReasonWait {
@@ -2006,6 +2014,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     void CancelLocalToHost() override {
         pendingRead_.reset();
+        zeroRead_ = false;
         memory_.CancelLocalToHost();
     }
 
@@ -2891,11 +2900,12 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
-                 "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu\n",
+                 "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu hidden_flare_tables=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
-                 (unsigned long long)g.specFailures, (unsigned long long)c.delayedDownloads);
+                 (unsigned long long)g.specFailures, (unsigned long long)c.delayedDownloads,
+                 (unsigned long long)c.hiddenFlareTables);
 }
 
 }  // namespace
@@ -2919,8 +2929,9 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
     } else {
         impl_->textureBudget_ = impl_->gpu_.Integrated() ? kTextureCacheBytesIntegrated : kTextureCacheBytes;
     }
-    if (impl_->delayedDownloads_) {
-        std::fprintf(stderr, "[core2] performance mode: delayed downloads on (decision 0073)\n");
+    if (impl_->delayedDownloads_ || impl_->hideFlares_) {
+        std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
+                     impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");
     }
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
@@ -2951,6 +2962,7 @@ void Renderer::GifReset(std::uint32_t pathMask) {
     impl_->frontEnd_.GifReset(pathMask);
     impl_->memory_.ResetRead();
     impl_->pendingRead_.reset();
+    impl_->zeroRead_ = false;
 }
 
 bool Renderer::WritePrivileged(std::uint32_t address, std::uint64_t value) {
@@ -2991,6 +3003,7 @@ void Renderer::ResetGs() {
     s.memory_.ResetRead();
     s.pendingRead_.reset();
     s.delayed_.clear();
+    s.zeroRead_ = false;
     s.displayRegs_ = {};
     s.displayRegs_.anti_blur = s.settings_.antiBlur;
     s.previousDby_ = {};
@@ -3020,7 +3033,10 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
             const PixelRect rect{static_cast<std::int32_t>(setup.ssax), static_cast<std::int32_t>(setup.ssay),
                                  static_cast<std::int32_t>(setup.ssax + setup.rrw - 1u),
                                  static_cast<std::int32_t>(setup.ssay + setup.rrh - 1u)};
-            if (!s.delayedDownloads_ || !s.AnswerDelayedDownload(view, rect)) {
+            if (s.hideFlares_ && *psm == Psm::Ct32 && setup.rrw == 64u && setup.rrh == 8u) {
+                s.zeroRead_ = true;  // IN-441: no readback; the bytes below are replaced by zeros
+                s.stats.hiddenFlareTables++;
+            } else if (!s.delayedDownloads_ || !s.AnswerDelayedDownload(view, rect)) {
                 const std::uint64_t before = s.stats.readbacks;
                 s.readbackReason_ = "download";
                 s.Readback(SpanOfRect(view, rect), &view, &rect);
@@ -3036,8 +3052,15 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
     bool overrun = false;
     const std::vector<std::uint8_t> data = s.memory_.ReadLocalToHost(byteCount, overrun);
     if (overrun) s.counters.fifoOverruns++;
-    if (s.memory_.ReadDrained()) s.frontEnd_.WriteRegister(reg::kTrxdir, 3);
-    std::memcpy(destination, data.data(), data.size());
+    if (s.zeroRead_) {
+        std::memset(destination, 0, data.size());
+    } else {
+        std::memcpy(destination, data.data(), data.size());
+    }
+    if (s.memory_.ReadDrained()) {
+        s.frontEnd_.WriteRegister(reg::kTrxdir, 3);
+        s.zeroRead_ = false;
+    }
     return data.size();
 }
 

@@ -3949,7 +3949,7 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
-// hw_core2_delayed_downloads (IN-439, decision 0073): every frame draws a 2 x 1 sprite of a new colour into a CT32
+// hw_core2_delayed_downloads (IN-439 and IN-441, decision 0073): every frame draws a 2 x 1 sprite of a new colour into a CT32
 // target and downloads it (GT4's light flare test pattern). With GT4_CORE2_DELAYED_DOWNLOADS=1 the first download is
 // read back exactly and each later one answers with an earlier frame's colour, never its own; with =0 every download
 // is the frame's own colour. At 3x.
@@ -4014,6 +4014,62 @@ int TestCore2DelayedDownloads(const gpu::VulkanHandles& handles) {
         const uint64_t answered = stats ? stats->delayedDownloads : 0;
         std::printf("  %s: delayed answers %llu\n", delayed ? "delayed" : "exact", static_cast<unsigned long long>(answered));
         if (wrong != 0 || renderer.Failed() || (delayed ? answered != 5 : answered != 0)) ++failures;
+    }
+    // IN-441: with GT4_GS_HIDE_FLARES=1 a 64 x 8 CT32 download (GT4's flare visibility table) is answered as zeros
+    // without a readback, and any other download keeps the drawn colour.
+    {
+        _putenv_s("GT4_GS_HIDE_FLARES", "1");
+        _putenv_s("GT4_CORE2_DELAYED_DOWNLOADS", "0");
+        _putenv_s("GT4_CORE2_CPU_SPRITES", "0");
+        _putenv_s("GT4_HW_CORE", "2");
+        writeback::Renderer renderer;
+        _putenv_s("GT4_HW_CORE", "");
+        _putenv_s("GT4_CORE2_CPU_SPRITES", "");
+        _putenv_s("GT4_CORE2_DELAYED_DOWNLOADS", "");
+        _putenv_s("GT4_GS_HIDE_FLARES", "");
+        renderer.SetScale(3, 3.0f);
+        std::string error;
+        if (!renderer.Init(handles, error) || !renderer.Core2()) {
+            std::printf("hw_core2_delayed_downloads: core 2 init failed: %s\n", error.c_str());
+            return 1;
+        }
+        const uint32_t colour = 0x80336699u;
+        int wrong = 0;
+        for (const uint32_t height : {8u, 4u}) {  // the flare table shape, then another shape
+            std::vector<Qword> stream;
+            stream.push_back(PackedTag(14, true, 0, {0xE}));
+            stream.push_back(Qword{uint64_t{0} | (uint64_t{1} << 16), 0x4C});
+            stream.push_back(Qword{uint64_t{64} | (uint64_t{1} << 32), 0x4E});
+            stream.push_back(Qword{(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40});
+            stream.push_back(Qword{0, 0x18});
+            stream.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 17), 0x47});
+            stream.push_back(Qword{6, 0x00});
+            stream.push_back(Qword{rgbaq(colour), 0x01});
+            stream.push_back(Qword{xyz(0, 0), 0x05});
+            stream.push_back(Qword{xyz(64, 8), 0x05});                                    // 64 x 8 pixels
+            stream.push_back(Qword{uint64_t{0} | (uint64_t{1} << 16), 0x50});
+            stream.push_back(Qword{0, 0x51});
+            stream.push_back(Qword{uint64_t{64} | (uint64_t{height} << 32), 0x52});       // TRXREG 64 x height
+            stream.push_back(Qword{1, 0x53});
+            stream.push_back(Qword{0, 0x7F});
+            if (!renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(stream.data()), stream.size() * sizeof(Qword))) {
+                std::printf("hw_core2_delayed_downloads: GIF transfer refused\n");
+                return 1;
+            }
+            std::vector<uint32_t> words(64 * height, 0xFFFFFFFFu);
+            const std::size_t read = renderer.ReadFifo(words.data(), words.size() * 4);
+            const uint32_t expected = height == 8 ? 0u : colour;
+            uint32_t off = 0;
+            for (uint32_t w : words) off += w != expected ? 1u : 0u;
+            std::printf("  hidden flares: 64 x %u download, %u of %zu words not %08X%s\n", height, off, words.size(),
+                        expected, off == 0 && read == words.size() * 4 ? "" : "  WRONG");
+            if (off != 0 || read != words.size() * 4) ++wrong;
+            renderer.Flush();
+        }
+        const core2::Core2Counters* stats = renderer.Core2Stats();
+        const uint64_t hidden = stats ? stats->hiddenFlareTables : 0;
+        std::printf("  hidden flares: tables hidden %llu\n", static_cast<unsigned long long>(hidden));
+        if (wrong != 0 || hidden != 1 || renderer.Failed()) ++failures;
     }
     std::printf("hw_core2_delayed_downloads: %d failures\n", failures);
     return failures == 0 ? 0 : 1;

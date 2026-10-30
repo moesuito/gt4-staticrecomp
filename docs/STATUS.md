@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 308: on the 1.3.0-rc7 base, flares hidden in performance mode (2026-10-30)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-308`. 1.3.0-rc7 (`task/133-rc7-ra-controls`
+c21e934) is merged into the branch as its base (Spec II, rc7 launcher; CoreGS 2.0 stays out of 1.3.0). Performance
+mode (`-Performance`, `GT4_CORE2_PERFORMANCE=1`) now also hides the light flares and the sun glare as rc7's
+Performance mode does for the PCSX2 GS (IN-441): Clubman Stage Route 5 night at 10x 18.1 -> 16.9 ms per VBlank.
+CTest 263/264 in both interlock modes. Next: the owner's fine-tuning of CoreGS 2.0, then a PR to the EE optimisation
+branch.
+
 ## TASK-027 CoreGS 2.0 candidate 307: performance mode starts (2026-10-30)
 
 `build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-307` in this worktree (everything moved off
