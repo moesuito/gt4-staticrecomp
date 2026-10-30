@@ -4,8 +4,11 @@
 
 #include "core2_upload.hpp"
 
+#include <emmintrin.h>
+
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -89,30 +92,133 @@ std::uint32_t StoreRun(std::uint8_t *page, const std::uint32_t *offsets, const s
     return diff;
 }
 
+// One host row (transfer row `row`), columns [begin, end): one run per page crossed (and at the transfer coordinate
+// wrap), so the divisions happen once per run, not per pixel.
+template <std::uint32_t Bpp>
+std::uint32_t StoreRowSpan(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
+                           std::uint32_t width, const std::uint8_t *data, const std::uint32_t *pageOffsets,
+                           std::uint32_t pageWidth, std::uint32_t pageHeight, std::uint32_t row, std::uint32_t begin,
+                           std::uint32_t end) {
+    std::uint32_t diff = 0;
+    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
+    const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
+    const std::uint32_t pageRow = (y / pageHeight) * perRow;
+    const std::uint32_t *rowOffsets = pageOffsets + (y % pageHeight) * pageWidth;
+    std::uint64_t index = static_cast<std::uint64_t>(row) * width + begin;
+    std::uint32_t column = begin;
+    while (column < end) {
+        const std::uint32_t x = (x0 + column) % memory::kTransferCoordinateWrap;
+        const std::uint32_t xInPage = x % pageWidth;
+        const std::uint32_t run = std::min({end - column, pageWidth - xInPage, memory::kTransferCoordinateWrap - x});
+        const std::uint32_t pageBlock = view.basePointer + memory::kBlocksPerPage * (pageRow + x / pageWidth);
+        std::uint8_t *page = memoryBytes + ((pageBlock * memory::kBlockBytes) & (memory::kLocalMemoryBytes - 1u));
+        diff |= StoreRun<Bpp>(page, rowOffsets + xInPage, data, index, run);
+        column += run;
+        index += run;
+    }
+    return diff;
+}
+
+// IN-452: PSMCT32 columns are 8 x 2 pixels in 64 bytes, word w holding pixel (2 * (w / 4) + w % 2, (w / 2) % 2):
+// row 0's pixels 0,1 then row 1's 0,1, then row 0's 2,3 and so on. Two host rows of 8 pixels (four 16-byte vectors
+// A, B of row 0 and C, D of row 1) are therefore the column's four 16-byte quarters unpacklo/hi_epi64(A, C) and
+// unpacklo/hi_epi64(B, D). The table holds each column's offset in its page, and is checked against the in-page
+// offsets at start-up (`valid` false: the scalar path only).
+struct Ct32Columns {
+    bool valid = false;
+    std::uint32_t base[16][8] = {};  // [y % 32 / 2][x % 64 / 8]: the byte offset of pixel (x, y) in its page
+};
+
+const Ct32Columns &Ct32ColumnTable(const std::vector<std::uint32_t> &offsets) {
+    static const Ct32Columns table = [&offsets] {
+        Ct32Columns c;
+        if (offsets.size() != 64u * 32u) return c;
+        c.valid = true;
+        for (std::uint32_t y2 = 0; y2 < 16; ++y2) {
+            for (std::uint32_t x8 = 0; x8 < 8; ++x8) {
+                const std::uint32_t base = offsets[(2 * y2) * 64 + 8 * x8] & 0xFFFFu;
+                c.base[y2][x8] = base;
+                for (std::uint32_t r = 0; r < 2; ++r) {
+                    for (std::uint32_t i = 0; i < 8; ++i) {
+                        const std::uint32_t expected = base + 16 * (i / 2) + 8 * r + 4 * (i % 2);
+                        if ((offsets[(2 * y2 + r) * 64 + 8 * x8 + i] & 0xFFFFu) != expected) c.valid = false;
+                    }
+                }
+            }
+        }
+        return c;
+    }();
+    return table;
+}
+
+// Rows in pairs (an even GS row and the next one), whole 8-pixel columns with SSE2, the rest through StoreRowSpan.
+std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
+                              std::uint32_t width, std::uint32_t height, const std::uint8_t *data,
+                              const std::uint32_t *pageOffsets, const Ct32Columns &columns) {
+    constexpr std::uint32_t kPageWidth = 64, kPageHeight = 32;
+    std::uint32_t diff = 0;
+    __m128i changed = _mm_setzero_si128();
+    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / kPageWidth);
+    std::uint32_t row = 0;
+    while (row < height) {
+        const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
+        if ((y & 1u) != 0 || row + 1 >= height) {
+            diff |= StoreRowSpan<32>(memoryBytes, view, x0, y0, width, data, pageOffsets, kPageWidth, kPageHeight, row, 0,
+                                     width);
+            ++row;
+            continue;
+        }
+        // Columns before the first whole 8-pixel column, the whole columns, the columns after them.
+        const std::uint32_t lead = std::min<std::uint32_t>(width, (8u - (x0 % 8u)) % 8u);
+        const std::uint32_t whole = (width - lead) / 8u;
+        const std::uint32_t tail = lead + whole * 8u;
+        for (std::uint32_t r = 0; r < 2; ++r) {
+            diff |= StoreRowSpan<32>(memoryBytes, view, x0, y0, width, data, pageOffsets, kPageWidth, kPageHeight, row + r,
+                                     0, lead);
+            diff |= StoreRowSpan<32>(memoryBytes, view, x0, y0, width, data, pageOffsets, kPageWidth, kPageHeight, row + r,
+                                     tail, width);
+        }
+        const std::uint32_t pageRow = (y / kPageHeight) * perRow;
+        const std::uint32_t *colBase = columns.base[(y % kPageHeight) / 2u];
+        const std::uint8_t *row0 = data + (static_cast<std::uint64_t>(row) * width) * 4u;
+        const std::uint8_t *row1 = row0 + static_cast<std::uint64_t>(width) * 4u;
+        for (std::uint32_t k = 0; k < whole; ++k) {
+            const std::uint32_t column = lead + 8u * k;
+            const std::uint32_t x = (x0 + column) % memory::kTransferCoordinateWrap;  // a multiple of 8
+            const std::uint32_t pageBlock = view.basePointer + memory::kBlocksPerPage * (pageRow + x / kPageWidth);
+            std::uint8_t *page = memoryBytes + ((pageBlock * memory::kBlockBytes) & (memory::kLocalMemoryBytes - 1u));
+            std::uint8_t *out = page + colBase[(x % kPageWidth) / 8u];
+            const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row0 + column * 4u));
+            const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row0 + column * 4u + 16u));
+            const __m128i c = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row1 + column * 4u));
+            const __m128i d = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row1 + column * 4u + 16u));
+            const __m128i q0 = _mm_unpacklo_epi64(a, c), q1 = _mm_unpackhi_epi64(a, c);
+            const __m128i q2 = _mm_unpacklo_epi64(b, d), q3 = _mm_unpackhi_epi64(b, d);
+            __m128i *o = reinterpret_cast<__m128i *>(out);  // a column is 64-byte aligned in its block
+            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 0), q0));
+            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 1), q1));
+            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 2), q2));
+            changed = _mm_or_si128(changed, _mm_xor_si128(_mm_load_si128(o + 3), q3));
+            _mm_store_si128(o + 0, q0);
+            _mm_store_si128(o + 1, q1);
+            _mm_store_si128(o + 2, q2);
+            _mm_store_si128(o + 3, q3);
+        }
+        row += 2;
+    }
+    if (_mm_movemask_epi8(_mm_cmpeq_epi8(changed, _mm_setzero_si128())) != 0xFFFF) diff |= 1u;
+    return diff;
+}
+
 template <std::uint32_t Bpp>
 std::uint32_t HostToLocalPageAligned(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0,
                                      std::uint32_t y0, std::uint32_t width, std::uint32_t height,
                                      const std::uint8_t *data, const std::uint32_t *pageOffsets,
                                      std::uint32_t pageWidth, std::uint32_t pageHeight) {
     std::uint32_t diff = 0;
-    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
-    std::uint64_t index = 0;
     for (std::uint32_t row = 0; row < height; ++row) {
-        const std::uint32_t y = (y0 + row) % memory::kTransferCoordinateWrap;
-        const std::uint32_t pageRow = (y / pageHeight) * perRow;
-        const std::uint32_t *rowOffsets = pageOffsets + (y % pageHeight) * pageWidth;
-        std::uint32_t column = 0;
-        while (column < width) {
-            // One run per page crossed (and at the transfer coordinate wrap): divisions once per run, not per pixel.
-            const std::uint32_t x = (x0 + column) % memory::kTransferCoordinateWrap;
-            const std::uint32_t xInPage = x % pageWidth;
-            const std::uint32_t run = std::min({width - column, pageWidth - xInPage, memory::kTransferCoordinateWrap - x});
-            const std::uint32_t pageBlock = view.basePointer + memory::kBlocksPerPage * (pageRow + x / pageWidth);
-            std::uint8_t *page = memoryBytes + ((pageBlock * memory::kBlockBytes) & (memory::kLocalMemoryBytes - 1u));
-            diff |= StoreRun<Bpp>(page, rowOffsets + xInPage, data, index, run);
-            column += run;
-            index += run;
-        }
+        diff |= StoreRowSpan<Bpp>(memoryBytes, view, x0, y0, width, data, pageOffsets, pageWidth, pageHeight, row, 0,
+                                  width);
     }
     return diff;
 }
@@ -136,6 +242,17 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uin
     if (swizzle == UploadSwizzle::PageRuns && view.basePointer % memory::kBlocksPerPage == 0) {
         const std::uint32_t *pageOffsets = InPageOffsetTables().perPsm[code].data();
         std::uint32_t diff = 0;
+        // IN-452: PSMCT32 through whole columns (GT4's race uploads are mostly CT32); GT4_CORE2_CT32_COLUMNS=0 for A/B.
+        static const bool ct32Columns = std::getenv("GT4_CORE2_CT32_COLUMNS") == nullptr ||
+                                        std::strcmp(std::getenv("GT4_CORE2_CT32_COLUMNS"), "0") != 0;
+        if (ct32Columns && view.psm == memory::Psm::Ct32) {
+            const Ct32Columns &columns = Ct32ColumnTable(InPageOffsetTables().perPsm[code]);
+            if (columns.valid) {
+                diff = HostToLocalCt32(memoryBytes, view, x0, y0, width, height, data, pageOffsets, columns);
+                if (changed) *changed = diff != 0;
+                return true;
+            }
+        }
         switch (bpp) {
             case 32: diff = HostToLocalPageAligned<32>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;
             case 24: diff = HostToLocalPageAligned<24>(memoryBytes, view, x0, y0, width, height, data, pageOffsets, pageWidth, pageHeight); break;

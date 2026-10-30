@@ -6,10 +6,12 @@
 // writes exactly the bytes of the generic memory::hostToLocal for every PSM: page-aligned and unaligned base
 // pointers, several buffer widths, odd sizes, rectangles across pages and across the 2048 transfer wrap.
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "core2/core2_upload.hpp"
@@ -63,7 +65,28 @@ void CheckCase(std::uint64_t &state, Psm psm, std::uint32_t bp, std::uint32_t bw
 
 }  // namespace
 
-int main() {
+// --bench: the time of FastHostToLocal for GT4-like uploads (512 x 256 CT32 and T8, page aligned), for A/B runs of
+// the swizzle switches (GT4_CORE2_CT32_COLUMNS=0). Not part of the CTest pass/fail.
+int Bench() {
+    std::vector<std::uint8_t> local(kLocalMemoryBytes, 0);
+    for (const Psm psm : {Psm::Ct32, Psm::T8}) {
+        std::vector<std::uint8_t> data(hostBytesFor(psm, 512, 256));
+        std::uint64_t state = 7;
+        for (std::uint8_t &byte : data) byte = static_cast<std::uint8_t>(NextRandom(state));
+        const BufferView view{0, 8, psm};
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < 200; ++i) {
+            data[static_cast<std::size_t>(i)] ^= 1;  // a change every time
+            FastHostToLocal(local.data(), view, 0, 0, 512, 256, data.data(), data.size(), UploadSwizzle::PageRuns);
+        }
+        const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count();
+        std::printf("bench %s: %.2f ns per pixel\n", psmInfo(psm).name, ns / (200.0 * 512 * 256));
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && std::string_view(argv[1]) == "--bench") return Bench();
     const Psm psms[] = {Psm::Ct32, Psm::Ct24, Psm::Ct16, Psm::Ct16S, Psm::T8,  Psm::T4,   Psm::T8H,
                         Psm::T4Hl, Psm::T4Hh, Psm::Z32,  Psm::Z24,   Psm::Z16, Psm::Z16S};
     std::uint64_t state = 0x1A414u;
