@@ -288,6 +288,11 @@ struct Gpu::Impl {
   VkPipelineLayout computeLayout = VK_NULL_HANDLE;
   VkShaderModule patchModule = VK_NULL_HANDLE, reduceModule = VK_NULL_HANDLE, toneModule = VK_NULL_HANDLE,
                  composeModule = VK_NULL_HANDLE;
+  // IN-442: constant fills (core2_fill.comp). GT4_CORE2_COMPUTE_FILLS=0 draws them as sprites (A/B).
+  VkShaderModule fillModule = VK_NULL_HANDLE;
+  VkPipeline fillPipeline = VK_NULL_HANDLE;
+  const bool computeFills = std::getenv("GT4_CORE2_COMPUTE_FILLS") == nullptr ||
+                            std::strcmp(std::getenv("GT4_CORE2_COMPUTE_FILLS"), "0") != 0;
   VkPipeline patchPipeline = VK_NULL_HANDLE, reducePipeline = VK_NULL_HANDLE, tonePipeline = VK_NULL_HANDLE,
              composePipeline = VK_NULL_HANDLE;
 
@@ -1512,6 +1517,10 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.tonePipeline = s.make_compute(s.toneModule, error);
   s.composePipeline = s.make_compute(s.composeModule, error);
   if (!s.patchPipeline || !s.reducePipeline || !s.tonePipeline || !s.composePipeline) return false;
+  s.fillModule = s.make_module(hwgs::shaders::core2_fill_words, hwgs::shaders::core2_fill_word_count, error);
+  if (!s.fillModule) return false;
+  s.fillPipeline = s.make_compute(s.fillModule, error);
+  if (!s.fillPipeline) return false;
   {
     const std::uint32_t deinterlaceCounts[7] = {gpu::kGpuDeinterlaceHistory, 0, 0, 0, 1, 1, 1};
     const std::uint32_t fxaaCounts[2] = {1, 1};
@@ -1838,6 +1847,108 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (paletted) state.fields[gpu::gpufield::TexelKind] = 3u;  // HW_TEXEL_INDEXED
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
+
+  // IN-442: a constant fill as compute dispatches. Every vertex of the batch has the same colour and Z, every
+  // primitive is an axis-aligned rectangle (a sprite as two triangles), and the rectangles of covered pixels, clipped
+  // exactly as the draw's scissor clips them, are disjoint or repeated (a repeated rectangle of one constant fragment
+  // writes what it already wrote: no blend, no DATE). Then each output pixel gets the fragment the uber shader would
+  // give it (core2_fill.comp), with storage writes from compute, about twice as fast at high scales. The covered pixels
+  // are those the rasteriser covers: hw_vertex.vert puts an edge at scale * X + scale_offset / 2 - 1/320 (no IN-388
+  // snap in this core), and a pixel is covered when its centre lies on or right of the left edge and left of the right
+  // one. The 1/320 bias keeps every edge at least 0.003 pixel from a pixel centre, more than the float rounding of the
+  // edge, so this double-precision count matches the GPU's.
+  if (batch.constantFill && s.computeFills && s.fillPipeline) {
+    const std::vector<gpu::GpuVertex> &verts = *batch.vertices;
+    const gpu::GpuVertex &v0 = verts[batch.draws->front().first];
+    const std::uint32_t sc = s.scale;
+    const std::int32_t limitX = static_cast<std::int32_t>(std::min(frame->width, s.framebufferWidth));
+    const std::int32_t limitY = static_cast<std::int32_t>(std::min(frame->height, s.framebufferHeight));
+    struct Rect { std::int32_t x0, y0, x1, y1; };  // output pixels [x0, x1) x [y0, y1)
+    std::vector<Rect> rects;
+    bool eligible = true;
+    for (const gpu::GpuDraw &draw : *batch.draws) {
+      if (draw.topology != gpu::GpuTopology::Triangles || draw.count == 0 || draw.first + draw.count > verts.size()) {
+        eligible = false;
+        break;
+      }
+      std::int32_t nx0 = INT32_MAX, ny0 = INT32_MAX, nx1 = INT32_MIN, ny1 = INT32_MIN;
+      for (std::uint32_t i = draw.first; i < draw.first + draw.count && eligible; ++i) {
+        const gpu::GpuVertex &v = verts[i];
+        const std::int32_t xi = static_cast<std::int16_t>(v.x), yi = static_cast<std::int16_t>(v.y);
+        eligible = std::memcmp(v.rgba, v0.rgba, 4) == 0 && v.z == v0.z;
+        nx0 = std::min(nx0, xi);  // 12.4 units (the vertices already carry XYOFFSET)
+        ny0 = std::min(ny0, yi);
+        nx1 = std::max(nx1, xi);
+        ny1 = std::max(ny1, yi);
+      }
+      for (std::uint32_t i = draw.first; i < draw.first + draw.count && eligible; ++i) {  // corners only
+        const std::int32_t x = static_cast<std::int16_t>(verts[i].x), y = static_cast<std::int16_t>(verts[i].y);
+        eligible = (x == nx0 || x == nx1) && (y == ny0 || y == ny1);
+      }
+      if (!eligible) break;
+      // Covered output pixels [px0, px1) x [py0, py1): centres k + 0.5 in [edge0, edge1).
+      auto edge = [&](std::int32_t coordinate) {
+        return static_cast<double>(sc) * (coordinate / 16.0) + 0.5 * static_cast<double>(s.shift) - 1.0 / 320.0;
+      };
+      const std::int32_t px0 = static_cast<std::int32_t>(std::ceil(edge(nx0) - 0.5));
+      const std::int32_t px1 = static_cast<std::int32_t>(std::ceil(edge(nx1) - 0.5));
+      const std::int32_t py0 = static_cast<std::int32_t>(std::ceil(edge(ny0) - 0.5));
+      const std::int32_t py1 = static_cast<std::int32_t>(std::ceil(edge(ny1) - 0.5));
+      if (px1 <= px0 || py1 <= py0) continue;  // covers no pixel
+      // The draw's scissor (the recording below): the scaled pass's own native rectangle when it has one.
+      const bool own = draw.scaledX1 >= draw.scaledX0 && draw.scaledY1 >= draw.scaledY0;
+      const std::int32_t cx0 = own ? draw.scaledX0 : draw.x0, cy0 = own ? draw.scaledY0 : draw.y0;
+      const std::int32_t cx1 = own ? draw.scaledX1 : draw.x1, cy1 = own ? draw.scaledY1 : draw.y1;
+      const std::int32_t s32 = static_cast<std::int32_t>(sc);
+      Rect r{std::max({px0, std::clamp(cx0 * s32, 0, limitX), 0}), std::max({py0, std::clamp(cy0 * s32, 0, limitY), 0}),
+             std::min(px1, std::clamp((cx1 + 1) * s32, 0, limitX)), std::min(py1, std::clamp((cy1 + 1) * s32, 0, limitY))};
+      if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
+      bool repeated = false;
+      for (const Rect &o : rects) {
+        if (o.x0 == r.x0 && o.y0 == r.y0 && o.x1 == r.x1 && o.y1 == r.y1) {
+          repeated = true;
+        } else if (r.x0 < o.x1 && o.x0 < r.x1 && r.y0 < o.y1 && o.y0 < r.y1) {
+          eligible = false;  // partly overlapping rectangles: drawn in order by the rasteriser
+        }
+      }
+      if (!eligible) break;
+      if (!repeated) rects.push_back(r);
+    }
+    if (eligible) {
+      VkDeviceSize stateOffset = 0;
+      const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
+      if (!s.ring(s.staging, sizeof state.fields, align, stateOffset, error)) return false;
+      if (!s.recording && !s.begin_recording(error)) return false;
+      std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + stateOffset, state.fields, sizeof state.fields);
+      s.outside_pass();
+      s.touch("fill", {frame, depth}, {frame, depth}, 0, 0);
+      VkDescriptorSet fillSet = VK_NULL_HANDLE;
+      if (!s.compute_set(s.staging.buffer, stateOffset, sizeof state.fields, frame->view, depth->view, frame->view,
+                         fillSet, error)) {
+        return false;
+      }
+      const std::uint32_t colour = static_cast<std::uint32_t>(v0.rgba[0]) | static_cast<std::uint32_t>(v0.rgba[1]) << 8 |
+                                   static_cast<std::uint32_t>(v0.rgba[2]) << 16 | static_cast<std::uint32_t>(v0.rgba[3]) << 24;
+      const std::uint32_t flags = sc > 1 ? 3u : 0u;  // the push word bits 28 and 30 of a scaled draw
+      for (const Rect &r : rects) {
+        const std::uint32_t push[9] = {static_cast<std::uint32_t>(r.x0), static_cast<std::uint32_t>(r.y0),
+                                       static_cast<std::uint32_t>(r.x1), static_cast<std::uint32_t>(r.y1), colour, v0.z,
+                                       batch.zMax, flags, sc};
+        // Disjoint rectangles: no barrier between them (dispatch orders nothing, touch ordered the batch).
+        gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.fillPipeline);
+        gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.computeLayout, 0, 1, &fillSet, 0,
+                                        nullptr);
+        gt4_hwd_vkCmdPushConstants(s.cmd, s.computeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+        gt4_hwd_vkCmdDispatch(s.cmd, (static_cast<std::uint32_t>(r.x1 - r.x0) + 7u) / 8u,
+                              (static_cast<std::uint32_t>(r.y1 - r.y0) + 7u) / 8u, 1);
+        s.stats.fillPixels += static_cast<std::uint64_t>(r.x1 - r.x0) * static_cast<std::uint64_t>(r.y1 - r.y0);
+      }
+      s.after_op();
+      s.stats.computeFills++;
+      s.stats.batches++;
+      return true;
+    }
+  }
 
   VkDescriptorSet set = VK_NULL_HANDLE;
   const DrawSetKey setKey{frame->serial, depth->serial, texels->serial, texture->serial};

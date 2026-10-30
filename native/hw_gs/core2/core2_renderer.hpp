@@ -47,6 +47,7 @@ struct Core2Counters {
     std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now
     std::uint64_t dirtyMerged = 0;
     std::uint64_t specialisedBatches = 0;      // IN-437: batches drawn with a pipeline specialised to their state
+    std::uint64_t computeFills = 0;            // IN-442: batches drawn as compute fills
     std::uint64_t forcedBilinearBatches = 0;   // IN-433: textured batches sampled bilinearly by GT4_HW_FILTER             // IN-430: dirty rectangles merged into the target's last pending one
     std::uint64_t cpuSpriteBatches = 0;        // IN-407: small untextured sprite batches drawn into GS memory
     std::uint64_t clutTargetLoads = 0;         // IN-408: CLUT loads read from a drawn target on the GPU

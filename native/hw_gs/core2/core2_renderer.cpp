@@ -2405,6 +2405,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         draw.vertices = &t.vertices;
         draw.draws = &t.draws;
         draw.forceLinear = forcedBilinear_ == 1 || (forcedBilinear_ == 2 && batch.cls != PrimClass::Sprite);
+        {  // IN-442: an untextured sprite batch without blend, fog or DATE may be a constant fill (Gpu::Draw decides)
+            namespace gf = gpu::gpufield;
+            const auto &fields = t.state.fields;
+            draw.constantFill = !t.hasTexture && batch.cls == PrimClass::Sprite && fields[gf::BlendOn] == 0 &&
+                                fields[gf::FogOn] == 0 && fields[gf::DateOn] == 0;
+        }
         if (draw.forceLinear && t.hasTexture) stats.forcedBilinearBatches++;
         const std::uint32_t zFormat = t.state.fields[gpu::gpufield::Zformat];
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
@@ -2562,6 +2568,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs timer(times_.draw);
             drawn = gpu_.Draw(draw, error);
             stats.specialisedBatches = gpu_.Stats().specialisedBatches;
+            stats.computeFills = gpu_.Stats().computeFills;
         }
         if (!drawn) {
             Fail(error);
@@ -2900,12 +2907,14 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
-                 "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu hidden_flare_tables=%llu\n",
+                 "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
+                 "fill_mpx=%.1f\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
                  (unsigned long long)g.specFailures, (unsigned long long)c.delayedDownloads,
-                 (unsigned long long)c.hiddenFlareTables);
+                 (unsigned long long)c.hiddenFlareTables, (unsigned long long)g.computeFills,
+                 static_cast<double>(g.fillPixels) / 1.0e6);
 }
 
 }  // namespace

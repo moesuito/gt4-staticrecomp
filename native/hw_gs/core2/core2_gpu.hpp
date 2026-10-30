@@ -40,6 +40,9 @@ struct DrawBatch {
     // IN-428: the mip parameters of memoryTexture (0: level 0 only), packed as hw_pixel_uber.frag g_mip describes.
     std::uint32_t mipInfo = 0;
     bool forceLinear = false;  // IN-433: bilinear where the game asks for nearest (push word bit 31)
+    // IN-442: an untextured sprite batch with no blend, fog or DATE: drawn by core2_fill.comp when its sprites turn out
+    // to be one constant fragment over disjoint pixel rectangles (Gpu::Draw checks the geometry).
+    bool constantFill = false;
 };
 
 // Diagnostics for the F8 report and the replay summary.
@@ -53,6 +56,8 @@ struct Core2GpuStats {
     std::uint64_t patches = 0;
     std::uint64_t reductions = 0;
     std::uint64_t laterReductions = 0;  // IN-439: reductions taken later (performance mode's delayed downloads)
+    std::uint64_t computeFills = 0;     // IN-442: batches drawn as compute fills
+    std::uint64_t fillPixels = 0;       // IN-442: output pixels they covered
     std::uint64_t tones = 0;
     std::uint64_t composes = 0;
     std::uint64_t deinterlaces = 0;

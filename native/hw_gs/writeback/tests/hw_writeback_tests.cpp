@@ -3949,6 +3949,33 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_compute_fills (IN-442): constant fills drawn by core2_fill.comp (GT4_CORE2_COMPUTE_FILLS, on by default)
+// against the same batches rasterised (=0) on the core 2 streams with untextured sprites: identical images and GS
+// memory at 1x (and equal to the CPU reference where the stream is exact) and at 2x and 3x, with fills counted.
+int TestCore2ComputeFills(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    auto ran = [](const char* what) {
+        return [what](const Core2AbRun& off, const Core2AbRun& on) {
+            std::printf("  %s: compute fills %llu (rasterised run %llu)\n", what,
+                        static_cast<unsigned long long>(on.stats.computeFills),
+                        static_cast<unsigned long long>(off.stats.computeFills));
+            return on.stats.computeFills > 0 && off.stats.computeFills == 0 ? 0 : 1;
+        };
+    };
+    const char* kSwitch = "GT4_CORE2_COMPUTE_FILLS";
+    for (uint32_t scale : {1u, 2u, 3u}) {
+        const std::string tag = " at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(handles, ("palette sprites" + tag).c_str(), Core2PaletteSpritesCapture(4), 4, kSwitch,
+                                 scale == 1, ran("palette sprites"), false, scale);
+        failures += CheckCore2Ab(handles, ("cache stream" + tag).c_str(), CacheFixtureCapture(), kCacheFixtureFrames,
+                                 kSwitch, false, ran("cache stream"), false, scale);
+        failures += CheckCore2Ab(handles, ("GPU palettes" + tag).c_str(), Core2GpuPaletteCapture(4), 4, kSwitch,
+                                 scale == 1, ran("GPU palettes"), false, scale);
+    }
+    std::printf("hw_core2_compute_fills: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_delayed_downloads (IN-439 and IN-441, decision 0073): every frame draws a 2 x 1 sprite of a new colour into a CT32
 // target and downloads it (GT4's light flare test pattern). With GT4_CORE2_DELAYED_DOWNLOADS=1 the first download is
 // read back exactly and each later one answers with an earlier frame's colour, never its own; with =0 every download
@@ -5007,6 +5034,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
+    if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

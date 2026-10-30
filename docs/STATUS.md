@@ -1,8 +1,15 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 309: constant fills as compute (2026-10-30, fine-tuning)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-309`: 308 + IN-442, GT4's full-screen colour,
+depth and alpha clears drawn by a compute shader with the uber shader's per-pixel functions (exact; storage writes from
+compute run about twice as fast as from the fragment stage). GPU busy per VBlank, night race: 12x 21.6 -> 20.6 ms, 6x
+8.0 -> 7.9, 4x 5.4 -> 5.2, 3x 4.3 -> 4.1; frames identical. CTest 264/265 in both interlock modes.
+
 ## TASK-027 CoreGS 2.0 candidate 308: on the 1.3.0-rc7 base, flares hidden in performance mode (2026-10-30)
 
-`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-308`. 1.3.0-rc7 (`task/133-rc7-ra-controls`
+Candidate 308: 1.3.0-rc7 (`task/133-rc7-ra-controls`
 c21e934) is merged into the branch as its base (Spec II, rc7 launcher; CoreGS 2.0 stays out of 1.3.0). Performance
 mode (`-Performance`, `GT4_CORE2_PERFORMANCE=1`) now also hides the light flares and the sun glare as rc7's
 Performance mode does for the PCSX2 GS (IN-441): Clubman Stage Route 5 night at 10x 18.1 -> 16.9 ms per VBlank.

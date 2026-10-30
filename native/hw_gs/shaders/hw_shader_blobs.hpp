@@ -68,6 +68,8 @@ extern const std::uint32_t core2_compose_words[];
 extern const std::size_t core2_compose_word_count;
 extern const std::uint32_t core2_present_scale_words[];
 extern const std::size_t core2_present_scale_word_count;
+extern const std::uint32_t core2_fill_words[];
+extern const std::size_t core2_fill_word_count;
 extern const std::uint32_t core2_clut_target_words[];
 extern const std::size_t core2_clut_target_word_count;
 extern const std::uint32_t core2_materialize_words[];
