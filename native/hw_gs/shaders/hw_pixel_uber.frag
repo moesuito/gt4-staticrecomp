@@ -530,11 +530,21 @@ void main() {
     f.z = depth_from_position ? uint(min(floor(gl_FragCoord.z * 4294967296.0), 4294967040.0))
                               : uint(clamp(in_z, 0.0, 4294967040.0));
 
+    // IN-438: the old words are read only when the outcome depends on them (the passes are bound by memory traffic at
+    // high scales). The depth: a test other than ALWAYS, or a Z24 / Z16 write (hw_write_depth_raw keeps the bits
+    // above the Z; zformat 0 is Z32). The frame: a blend, the destination alpha test, FBMSK bits in the format's
+    // lanes, the alpha test's RGB_ONLY on CT32 (the alpha lane kept) or the CT24 top byte kept. Otherwise the written
+    // word replaces every lane hw_pack_frame_word keeps, and a word that is not read is never written back, so 0
+    // stands in for it. In a specialised pipeline (IN-437) both conditions are constants but FBMSK.
+    const bool depth_read = s.ztest != 0u && (s.ztst != HW_DEPTH_ALWAYS || (s.zmsk == 0u && s.zformat != 0u));
+    const bool frame_read = s.blend_on != 0u || s.date_on != 0u || (s.fbmsk & hw_valid_mask(s.format)) != 0u ||
+                            (s.ate != 0u && s.afail == HW_ALPHA_FAIL_RGB_ONLY && s.format == HW_FORMAT_CT32) ||
+                            (ST_KEEP_TOP_BYTE != 0u && s.format == HW_FORMAT_CT24);
 #if HWR_INTERLOCK
     beginInvocationInterlockARB();
 #endif
-    uint frame_old = imageLoad(hw_frame, pixel).x;
-    uint depth_old = imageLoad(hw_depth, pixel).x;
+    uint frame_old = frame_read ? imageLoad(hw_frame, pixel).x : 0u;
+    uint depth_old = depth_read ? imageLoad(hw_depth, pixel).x : 0u;
     HwOutcome o = hw_process_pixel(s, f, frame_old, depth_old);
     if (o.frame_written) {
         if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24) {
