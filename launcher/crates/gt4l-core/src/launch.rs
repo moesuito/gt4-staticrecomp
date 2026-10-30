@@ -222,6 +222,10 @@ pub fn coregs20_environment(
         variables.insert("GT4_HW_ADAPTER", card.to_string());
     }
     add_common(&mut variables, settings);
+    // "Fast" vsync is not offered under CoreGS 2.0 (owner, 2026-10-30): a stored one, kept for GSdx, draws as On here.
+    if settings.get("vsync") == "fast" {
+        variables.insert("GT4_PRESENT_MODE", "fifo".to_string());
+    }
     variables.into_iter().map(|(name, value)| (name.to_string(), value)).collect()
 }
 
@@ -385,9 +389,13 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
 }
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
-/// `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`].
+/// `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
+/// `hw_present_mode=fifo` over a stored "Fast" vsync (GT4 only, so Spec II under GSdx keeps its `present_mode`).
 pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &Path) -> String {
     let mut text = String::from("renderer=coregs20\n");
+    if settings.get("vsync") == "fast" {
+        text.push_str("hw_present_mode=fifo\n");
+    }
     for (name, value) in coregs20_environment(settings, display, integrated_gpu, textures) {
         let key = match name.as_str() {
             "GT4_HW_SCALE" => "hw_scale",

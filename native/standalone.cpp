@@ -349,6 +349,8 @@ Config parse_config(std::string_view text) {
       valid = value == "1";
     } else if (key == "hw_postfx") {
       valid = value == "fxaa";
+    } else if (key == "hw_present_mode") {
+      valid = value == "fifo";  // CoreGS 2.0 draws a stored "Fast" vsync as On
     } else if (key == "hw_sharpening") {
       valid = value == "0" || value == "0.2" || value == "2";
     } else if (key == "hw_textures" || key == "hw_adapter") {
@@ -440,6 +442,7 @@ Environment coregs20_environment(const Config &config) {
                                   {"hw_textures", "GT4_HW_TEXTURES"},
                                   {"hw_postfx", "GT4_HW_POSTFX"},
                                   {"hw_sharpening", "GT4_CORE2_FSR_SHARPNESS"},
+                                  {"hw_present_mode", "GT4_PRESENT_MODE"},
                                   {"hw_adapter", "GT4_HW_ADAPTER"}}) {
     const auto it = config.values.find(key);
     if (it != config.values.end()) out.emplace_back(name, it->second);
@@ -463,12 +466,13 @@ Resolved resolve(const Inputs &inputs, const Access &access) {
   // Layers, highest first. A name already set in the process environment, or by a higher layer, is left alone.
   Environment layers;
   if (inputs.config) {
-    const Environment from_config = config_environment(*inputs.config);
-    layers.insert(layers.end(), from_config.begin(), from_config.end());
+    // CoreGS 2.0's keys first: hw_present_mode wins over present_mode.
     if (coregs20) {
       const Environment from_choice = coregs20_environment(*inputs.config);
       layers.insert(layers.end(), from_choice.begin(), from_choice.end());
     }
+    const Environment from_config = config_environment(*inputs.config);
+    layers.insert(layers.end(), from_config.begin(), from_config.end());
   }
   if (out.needs_renderer && inputs.renderer) {
     layers.emplace_back("GT4_GS_PROCESS", inputs.renderer->executable.string());

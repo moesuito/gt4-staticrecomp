@@ -40,6 +40,15 @@ PresentMode parse_present_mode(const char *value) {
       "GT4_PRESENT_MODE must be fifo, mailbox or immediate");
 }
 
+PresentMode available_present_mode(PresentMode wanted, bool mailbox_available, bool immediate_available) {
+  if (wanted == PresentMode::fifo) return PresentMode::fifo;
+  const bool wanted_available = wanted == PresentMode::mailbox ? mailbox_available : immediate_available;
+  if (wanted_available) return wanted;
+  if (wanted == PresentMode::mailbox && immediate_available) return PresentMode::immediate;
+  if (wanted == PresentMode::immediate && mailbox_available) return PresentMode::mailbox;
+  return PresentMode::fifo;
+}
+
 const char *present_mode_name(PresentMode mode) {
   switch (mode) {
   case PresentMode::fifo: return "fifo";

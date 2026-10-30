@@ -34,6 +34,9 @@ const char *mode_name(Mode mode);
 enum class PresentMode { fifo, mailbox, immediate };
 PresentMode parse_present_mode(const char *value);
 const char *present_mode_name(PresentMode mode);
+// The mode to use on a surface that may not have the wanted one. FIFO always exists (Vulkan requires it). Mailbox and
+// immediate stand in for each other (both are "do not wait for vsync"), then FIFO.
+PresentMode available_present_mode(PresentMode wanted, bool mailbox_available, bool immediate_available);
 
 // Release schedule on a clock with `frequency` ticks per second. The period is
 // frequency / rate ticks, kept exact by storing the deadline scaled by `rate`,

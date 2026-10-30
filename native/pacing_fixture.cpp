@@ -39,6 +39,13 @@ void test_parsers() {
   require(parse_present_mode(nullptr) == PresentMode::fifo, "default present mode");
   require(parse_present_mode("mailbox") == PresentMode::mailbox, "mailbox token");
   require(parse_present_mode("immediate") == PresentMode::immediate, "immediate token");
+  require(available_present_mode(PresentMode::mailbox, true, true) == PresentMode::mailbox, "mailbox when it exists");
+  require(available_present_mode(PresentMode::mailbox, false, true) == PresentMode::immediate, "no mailbox: immediate (HD 620)");
+  require(available_present_mode(PresentMode::mailbox, false, false) == PresentMode::fifo, "no mailbox or immediate: FIFO");
+  require(available_present_mode(PresentMode::immediate, true, true) == PresentMode::immediate, "immediate when it exists");
+  require(available_present_mode(PresentMode::immediate, true, false) == PresentMode::mailbox, "no immediate: mailbox");
+  require(available_present_mode(PresentMode::immediate, false, false) == PresentMode::fifo, "no immediate or mailbox: FIFO");
+  require(available_present_mode(PresentMode::fifo, true, true) == PresentMode::fifo, "FIFO stays FIFO");
   refused = false;
   try {
     parse_present_mode("vsync");

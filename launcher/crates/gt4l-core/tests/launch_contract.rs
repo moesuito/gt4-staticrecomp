@@ -220,6 +220,18 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     }
     assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "full precision unless Performance Mode is on");
     assert!(!on.contains_key("GT4_CORE2_FSR_SHARPNESS"), "no sharpening by default");
+    assert_eq!(on["GT4_PRESENT_MODE"], "fifo", "vsync On");
+
+    // "Fast" is not a CoreGS 2.0 choice: a value stored for GSdx draws as On, and only there.
+    settings.set("vsync", "fast").unwrap();
+    let stored_fast = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert_eq!(stored_fast["GT4_PRESENT_MODE"], "fifo");
+    assert!(launch::coregs20_section(&settings, None, false, textures).contains("hw_present_mode=fifo\n"));
+    settings.set("vsync", "off").unwrap();
+    let vsync_off = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert_eq!(vsync_off["GT4_PRESENT_MODE"], "immediate", "Off stays a choice");
+    assert!(!launch::coregs20_section(&settings, None, false, textures).contains("hw_present_mode"));
+    settings.set("vsync", "on").unwrap();
 
     settings.set_gs("performance_mode", "no-readbacks").unwrap();
     settings.set_gs("texture_load", "false").unwrap();

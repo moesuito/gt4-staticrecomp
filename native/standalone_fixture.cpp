@@ -378,6 +378,9 @@ void check_resolve() {
     check(lacks(coregs.set, "PS2_GS") && lacks(coregs.set, "GT4_GS_PROCESS") && lacks(coregs.set, "GT4_GS_CONFIG"),
           "nothing of GSdx goes with it");
     check(has(coregs.set, "GT4_FORCE_480P", "1") && has(coregs.set, "GT4_FORCE_WIDESCREEN", "1"), "the fixed holds stay");
+    sa::Inputs fast = inputs_for(*layout, nullptr);
+    fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
+    check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");
     World named = ready_world();
     named.environment["GT4_RENDERER"] = "pcsx2";
     check(sa::renderer_needed(choice, named.access()), "GT4_RENDERER in the environment wins over game.ini");

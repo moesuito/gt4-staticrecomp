@@ -464,19 +464,24 @@ struct Backend::Impl {
     return true;
   }
 
-  bool choose_present_mode(VkPresentModeKHR &chosen, std::string &error) {
+  // A surface without the wanted mode takes the nearest one instead of refusing the game (the HD 620's Vulkan has no
+  // mailbox, which the launcher's "Fast" vsync asks for).
+  bool choose_present_mode(VkPresentModeKHR &chosen) {
     std::uint32_t count = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &count, nullptr);
     std::vector<VkPresentModeKHR> modes(count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &count, modes.data());
-    VkPresentModeKHR wanted = VK_PRESENT_MODE_FIFO_KHR;
-    if (present_mode == gt4::pacing::PresentMode::mailbox) wanted = VK_PRESENT_MODE_MAILBOX_KHR;
-    if (present_mode == gt4::pacing::PresentMode::immediate) wanted = VK_PRESENT_MODE_IMMEDIATE_KHR;
-    if (std::find(modes.begin(), modes.end(), wanted) == modes.end()) {
-      error = std::string("present mode not supported by the surface: ") + gt4::pacing::present_mode_name(present_mode);
-      return false;
+    const auto has = [&](VkPresentModeKHR mode) { return std::find(modes.begin(), modes.end(), mode) != modes.end(); };
+    const gt4::pacing::PresentMode available = gt4::pacing::available_present_mode(
+        present_mode, has(VK_PRESENT_MODE_MAILBOX_KHR), has(VK_PRESENT_MODE_IMMEDIATE_KHR));
+    if (available != present_mode) {
+      std::fprintf(stderr, "[hw] present mode %s is not available on this surface: using %s\n",
+                   gt4::pacing::present_mode_name(present_mode), gt4::pacing::present_mode_name(available));
+      present_mode = available;
     }
-    chosen = wanted;
+    chosen = available == gt4::pacing::PresentMode::mailbox     ? VK_PRESENT_MODE_MAILBOX_KHR
+             : available == gt4::pacing::PresentMode::immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR
+                                                                : VK_PRESENT_MODE_FIFO_KHR;
     return true;
   }
 
@@ -520,7 +525,7 @@ struct Backend::Impl {
     }
 
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    if (!choose_present_mode(mode, error)) return false;
+    choose_present_mode(mode);
 
     std::uint32_t wanted_images = mode == VK_PRESENT_MODE_MAILBOX_KHR ? 3 : 2;
     if (caps.maxImageCount != 0) wanted_images = std::min(wanted_images, caps.maxImageCount);

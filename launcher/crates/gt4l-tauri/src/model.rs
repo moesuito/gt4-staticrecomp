@@ -178,6 +178,7 @@ pub fn settings_table_with_monitors(
             "monitor" => fill_monitor_row(&mut row, settings, monitors),
             "resolution" => fill_resolution_row(&mut row, settings, monitors),
             "render_scale" => fill_render_scale_row(&mut row, settings, monitors, integrated_gpu),
+            "vsync" if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 => without_fast_vsync(&mut row),
             _ => {}
         }
         rows.push(row);
@@ -220,6 +221,18 @@ pub fn settings_table_with_monitors(
         rows.push(stick_row(stick, controls));
     }
     json!({ "max_upscale": MAX_UPSCALE_DEFAULT, "rows": rows })
+}
+
+/// CoreGS 2.0 has no "Fast" vsync (owner, 2026-10-30). A value stored for GSdx stays stored and shows as On here, which is
+/// how this renderer draws it (launch::coregs20_environment).
+fn without_fast_vsync(row: &mut Value) {
+    if let Some(values) = row["values"].as_array_mut() {
+        values.retain(|value| value["value"] != "fast");
+    }
+    if row["current"] == "fast" {
+        row["current"] = json!("on");
+    }
+    row["help_key"] = json!("setting.vsync.help_coregs20");
 }
 
 fn launcher_row(definition: &SettingDef, settings: &Settings) -> Value {
@@ -960,6 +973,16 @@ mod table_tests {
         chosen.set("renderer", "coregs20").unwrap();
         let under_coregs = settings_table(&chosen, &Controls::default());
         assert_eq!(row(&under_coregs, "performance_mode")["help_key"], "setting.performance_mode.help_coregs20");
+        let vsync_values = |table: &Value| -> Vec<String> {
+            row(table, "vsync")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(vsync_values(&table), ["on", "fast", "off"], "GSdx keeps Fast");
+        assert_eq!(vsync_values(&under_coregs), ["on", "off"], "CoreGS 2.0 has no Fast");
+        chosen.set("vsync", "fast").unwrap();
+        let stored_fast = settings_table(&chosen, &Controls::default());
+        assert_eq!(row(&stored_fast, "vsync")["current"], "on", "a stored Fast shows as On under CoreGS 2.0");
+        chosen.set("renderer", "pcsx2").unwrap();
+        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "vsync")["current"], "fast", "and is still there for GSdx");
         let listed = ids(&table);
         for gone in ["internal_scale", "present_filter", "fsr_sharpness", "deinterlacing", "anti_aliasing"] {
             assert!(!listed.contains(&gone.to_string()), "{gone} was a CoreGS 1.1 row");

@@ -161,6 +161,7 @@
   "setting.renderer.label": "Renderizador",
   "setting.renderer.help": "O GSdx desenha o jogo na sua placa de vídeo, em processo próprio; é o renderizador padrão. O CoreGS 2.0 é o nosso próprio renderizador, em beta: usa bem menos processador. O Gran Turismo 4 Spec II continua com o GSdx.",
   "choice.renderer.coregs20": "CoreGS 2.0 (beta)",
+  "setting.vsync.help_coregs20": "Ligado mantém o movimento suave, sem rasgos na imagem. Desligado reduz a latência e pode rasgar a imagem.",
   "setting.coregs_sharpening.label": "Nitidez (FSR1)",
   "setting.coregs_sharpening.help": "Nitidez do AMD FidelityFX Super Resolution 1 na imagem final. Desligado deixa a imagem como o jogo a desenhou.",
   "choice.coregs_sharpening.off": "Desligado",
