@@ -1090,6 +1090,25 @@ struct Gpu::Impl {
   std::vector<FillRect> fillRects;                    // IN-447: reused by every constant-fill batch
   AccessSet drawReads, drawWrites;  // what the deferred batches read and write
 
+  // IN-458: the graphics state recorded since the draw pass began, so record_draw leaves out binds that would set what
+  // is already set (about 27 batches per pass in the 3x race, most with the same viewport, push words and vertex ring).
+  // Only record_draw and fragment barriers record inside a draw pass, and every graphics pipeline uses drawLayout;
+  // begin_draw_pass forgets it all. GT4_CORE2_SKIP_REDUNDANT=0 records every bind (A/B).
+  const bool skipRedundant = std::getenv("GT4_CORE2_SKIP_REDUNDANT") == nullptr ||
+                             std::strcmp(std::getenv("GT4_CORE2_SKIP_REDUNDANT"), "0") != 0;
+  struct PassState {
+    bool vertexRing = false;  // the vertex ring bound at offset 0
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::uint32_t uniformOffset = 0;
+    bool viewportSet = false;
+    VkViewport viewport{};
+    bool pushSet = false;
+    std::uint32_t push[8] = {};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    bool scissorSet = false;
+    VkRect2D scissor{};
+  } passState;
+
   void begin_draw_pass() {
     VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     begin.renderPass = renderPass;
@@ -1098,6 +1117,7 @@ struct Gpu::Impl {
     gt4_hwd_vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
     stats.renderPasses++;
     renderPassOpen = true;
+    passState = PassState{};
   }
 
   // One batch's commands, inside the open render pass; `first` is the pass's first batch (no barrier before it).
@@ -1108,18 +1128,52 @@ struct Gpu::Impl {
       // every batch waits for the one before.
       fragment_barrier();
     }
-    gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawLayout, 0, 1, &draw.set, 1,
-                                    &draw.uniformOffset);
-    gt4_hwd_vkCmdBindVertexBuffers(cmd, 0, 1, &vertices.buffer, &draw.vertexOffset);
-    gt4_hwd_vkCmdSetViewport(cmd, 0, 1, &draw.viewport);
-    gt4_hwd_vkCmdPushConstants(cmd, drawLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof draw.push, draw.push);
+    PassState &bound = passState;
+    if (!skipRedundant || draw.set != bound.set || draw.uniformOffset != bound.uniformOffset) {
+      gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawLayout, 0, 1, &draw.set, 1,
+                                      &draw.uniformOffset);
+      bound.set = draw.set;
+      bound.uniformOffset = draw.uniformOffset;
+    }
+    // IN-458: the ring is bound at offset 0 and the draws start at the batch's first vertex (its ring offset is a
+    // whole number of 32-byte vertices; no shader reads gl_VertexIndex).
+    std::uint32_t baseVertex = 0;
+    if (skipRedundant && draw.vertexOffset % sizeof(gpu::GpuVertex) == 0) {
+      if (!bound.vertexRing) {
+        const VkDeviceSize ringStart = 0;
+        gt4_hwd_vkCmdBindVertexBuffers(cmd, 0, 1, &vertices.buffer, &ringStart);
+        bound.vertexRing = true;
+      }
+      baseVertex = static_cast<std::uint32_t>(draw.vertexOffset / sizeof(gpu::GpuVertex));
+    } else {
+      gt4_hwd_vkCmdBindVertexBuffers(cmd, 0, 1, &vertices.buffer, &draw.vertexOffset);
+      bound.vertexRing = false;
+    }
+    if (!skipRedundant || !bound.viewportSet || std::memcmp(&draw.viewport, &bound.viewport, sizeof draw.viewport) != 0) {
+      gt4_hwd_vkCmdSetViewport(cmd, 0, 1, &draw.viewport);
+      bound.viewportSet = true;
+      bound.viewport = draw.viewport;
+    }
+    if (!skipRedundant || !bound.pushSet || std::memcmp(draw.push, bound.push, sizeof draw.push) != 0) {
+      gt4_hwd_vkCmdPushConstants(cmd, drawLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof draw.push, draw.push);
+      bound.pushSet = true;
+      std::memcpy(bound.push, draw.push, sizeof draw.push);
+    }
     for (std::uint32_t i = 0; i < draw.commandCount; ++i) {
       const DeferredCommand &command = deferredCommands[draw.firstCommand + i];
       if (command.barrierFirst && drewSinceBarrier) fragment_barrier();
-      gt4_hwd_vkCmdSetScissor(cmd, 0, 1, &command.scissor);
-      gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, command.pipeline);
-      gt4_hwd_vkCmdDraw(cmd, command.count, 1, command.first, 0);
+      if (!skipRedundant || !bound.scissorSet ||
+          std::memcmp(&command.scissor, &bound.scissor, sizeof command.scissor) != 0) {
+        gt4_hwd_vkCmdSetScissor(cmd, 0, 1, &command.scissor);
+        bound.scissorSet = true;
+        bound.scissor = command.scissor;
+      }
+      if (!skipRedundant || command.pipeline != bound.pipeline) {
+        gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, command.pipeline);
+        bound.pipeline = command.pipeline;
+      }
+      gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
       stats.draws++;
       drewSinceBarrier = true;
     }
