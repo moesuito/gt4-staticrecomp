@@ -207,6 +207,7 @@ Every step: one switch for A/B, 2+2 interleaved headless runs (3x or 12x night r
 | IN-457 | R6: CSM1 CLUT loads by table, the renderer's CLUT halfwords as ranges | CLUT stage 0.47 -> 0.26 ms, GS worker -5.3%, wall -2.3% | yes |
 | IN-458 | R3: binds equal to the draw pass's held state left out, the vertex ring bound once per pass | draw stage within noise, EE waits for the GS worker -0.09 ms each | yes |
 | IN-459 | T3: the VU1 worker wakes the sleeping EE only past 64 KiB of output, when idle or stopping, or with a full ring | EE wake-ups 650 -> 16 per VBlank, process CPU -12%, VU1 worker -7.6%, wall unchanged (the GS worker is fed in larger pieces) | yes |
+| IN-460 | GPU: GLM patch kernel with the native words shared per tile | no change at 12x (20.21 ms) | no |
 | IN-454 | whole-image constant fills: the frame by vkCmdClearColorImage, the depth still by the fill shader (Z24 keeps the stored top byte) | exact, but 12x GPU 20.31 -> 20.25 ms (-0.3%): the fills are bound by the depth read-modify-write | no |
 
 **Candidate 324 against 313** (interleaved headless night race): 3x, 2+2 runs: GS worker 7.19 -> 6.41 ms per VBlank
