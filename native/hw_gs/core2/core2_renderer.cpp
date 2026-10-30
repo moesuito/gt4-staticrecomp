@@ -433,6 +433,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::deque<RecentUpload> recentUploads_;
 
     std::array<std::uint64_t, memory::kPagesTotal> pageWrites_{};
+    std::array<std::uint8_t, memory::kPagesTotal> pageWriter_{};  // IN-450: WriteKind of the newest write
     std::uint64_t writeSequence_ = 0;
     std::unordered_map<std::uint64_t, TextureEntry> textures_;
     std::unordered_map<std::uint64_t, std::vector<ImageId>> texturePool_;  // free 1x images by size
@@ -947,18 +948,39 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // ---- GS memory page versions (texture cache, 3.7) --------------------------------------------------------
-    void MarkWritten(const BlockSpan &span) {
+    // IN-450: who wrote a page last, so a stale texture decode can be attributed (the stale_by counters).
+    enum WriteKind : std::uint8_t { kWriteUpload, kWriteReadback, kWriteDelayed, kWriteMove, kWriteWhole, kWriteKinds };
+    void MarkWritten(const BlockSpan &span, WriteKind kind = kWriteWhole) {
         if (span.count == 0) return;
         ++writeSequence_;
         if (span.count >= kAllBlocks) {
             pageWrites_.fill(writeSequence_);
+            pageWriter_.fill(kind);
             return;
         }
         const std::uint32_t firstPage = span.begin / memory::kBlocksPerPage;
         const std::uint32_t lastBlock = span.begin + span.count - 1u;
         for (std::uint32_t page = firstPage; page <= lastBlock / memory::kBlocksPerPage; ++page) {
             pageWrites_[page % memory::kPagesTotal] = writeSequence_;
+            pageWriter_[page % memory::kPagesTotal] = kind;
         }
+    }
+
+    // The writer of the newest page write inside `span`.
+    WriteKind NewestWriter(const BlockSpan &span) const {
+        if (span.count == 0 || span.count >= kAllBlocks) return kWriteWhole;
+        const std::uint32_t firstPage = span.begin / memory::kBlocksPerPage;
+        const std::uint32_t lastBlock = span.begin + span.count - 1u;
+        std::uint64_t newest = 0;
+        WriteKind kind = kWriteWhole;
+        for (std::uint32_t page = firstPage; page <= lastBlock / memory::kBlocksPerPage; ++page) {
+            const std::uint32_t p = page % memory::kPagesTotal;
+            if (pageWrites_[p] >= newest) {
+                newest = pageWrites_[p];
+                kind = static_cast<WriteKind>(pageWriter_[p]);
+            }
+        }
+        return kind;
     }
 
     bool UnchangedSince(const BlockSpan &span, std::uint64_t sequence) const {
@@ -1240,6 +1262,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.decodesKeyClash++;
         } else {
             stats.decodesStale++;
+            stats.staleBy[NewestWriter(found->second.span)]++;
             static const bool trace = std::getenv("GT4_CORE2_DECODE_TRACE") != nullptr;  // diagnostics only
             if (trace) {
                 std::fprintf(stderr, "[core2] stale decode vblank=%llu tbp=%u tbw=%u psm=%02x %ux%u span=%u+%u age=%llu\n",
@@ -1670,10 +1693,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (!rows.Empty()) PushDirty(t, Dirty{rows, t.view.psm});
     }
 
-    void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember) {
+    void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember, WriteKind kind = kWriteUpload) {
         ScopedUs writtenTimer(clock_, &PhaseTimes::written);
         const BlockSpan span = WriteSpan(view, rect);
-        MarkWritten(span);
+        MarkWritten(span, kind);
         for (Target &t : targets_) {
             if (!t.alive) continue;
             const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1,
@@ -1700,13 +1723,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 stats.targetsReplaced++;
             }
         }
-        if (remember) {
-            recentUploads_.push_back(RecentUpload{view, rect, span, drawCounter_});
-            while (!recentUploads_.empty() && drawCounter_ - recentUploads_.front().drawNumber > kRecentUploadDraws) {
-                recentUploads_.pop_front();
-            }
-            while (recentUploads_.size() > 4096) recentUploads_.pop_front();
+        if (remember) RememberUpload(view, rect, span);
+    }
+
+    // 2.4b: an EE upload, for the targets created over it in the next kRecentUploadDraws draws.
+    void RememberUpload(const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
+        recentUploads_.push_back(RecentUpload{view, rect, span, drawCounter_});
+        while (!recentUploads_.empty() && drawCounter_ - recentUploads_.front().drawNumber > kRecentUploadDraws) {
+            recentUploads_.pop_front();
         }
+        while (recentUploads_.size() > 4096) recentUploads_.pop_front();
     }
 
     // 4.2: every target over `span` writes its drawn area (inside `limit` when it is given in the same buffer) back
@@ -1796,7 +1822,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const std::uint32_t h = static_cast<std::uint32_t>(area.y1 - area.y0 + 1);
             memory_.Local().writeRect(out, static_cast<std::uint32_t>(area.x0), static_cast<std::uint32_t>(area.y0), w, h,
                                       words.data());
-            MarkWritten(SpanOfRect(out, area));
+            MarkWritten(SpanOfRect(out, area), kWriteReadback);
             if (Contains(area, t->drawn)) {
                 t->drawn = PixelRect{};
                 t->readOnGpu = false;
@@ -1867,7 +1893,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             memory_.Local().writeRect(out, static_cast<std::uint32_t>(rect.x0), static_cast<std::uint32_t>(rect.y0),
                                       static_cast<std::uint32_t>(rect.x1 - rect.x0 + 1),
                                       static_cast<std::uint32_t>(rect.y1 - rect.y0 + 1), d.words.data());
-            MarkWritten(SpanOfRect(out, rect));
+            MarkWritten(SpanOfRect(out, rect), kWriteDelayed);
             stats.delayedDownloads++;
             answered = true;
         }
@@ -1960,12 +1986,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         static const bool fast = std::getenv("GT4_CORE2_FAST_UPLOAD") == nullptr ||
                                  std::strcmp(std::getenv("GT4_CORE2_FAST_UPLOAD"), "0") != 0;  // A/B
         bool swizzled = false;
+        bool changed = true;
         {
             ScopedUs swizzleTimer(clock_, &PhaseTimes::swizzle);
             times_.swizzleBytes += static_cast<double>(byteCount);
             swizzled = fast && psm &&
                        FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay,
-                                       c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_);
+                                       c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_, &changed);
             if (!swizzled) memory_.CommitUpload(c, bytes, byteCount);
         }
         if (swizzled) {
@@ -2017,8 +2044,34 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             return;
         }
+        if (swizzled && !changed && keepUnchanged_) {
+            // IN-450: GT4 uploads most of its textures again every VBlank, byte for byte. When no byte changed and no
+            // target lies over the written blocks (a target's pixels are newer than memory, so it must take the write),
+            // the page versions stay as they were: the cached decodes, palette rows and GLM pages that read these
+            // pages still hold exactly this memory. The upload is still remembered for targets created later (2.4b).
+            const BlockSpan span = WriteSpan(view, rect);
+            bool overTarget = false;
+            for (const Target &t : targets_) {
+                if (!t.alive) continue;
+                const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1,
+                                                                static_cast<std::int32_t>(t.height) - 1});
+                if (SpansOverlap(whole, span)) {
+                    overTarget = true;
+                    break;
+                }
+            }
+            if (!overTarget) {
+                stats.unchangedUploads++;
+                RememberUpload(view, rect, span);
+                return;
+            }
+        }
         OnMemoryWritten(view, rect, true);
     }
+
+    // IN-450: GT4_CORE2_KEEP_UNCHANGED=0 bumps the page versions for every upload (A/B).
+    const bool keepUnchanged_ = std::getenv("GT4_CORE2_KEEP_UNCHANGED") == nullptr ||
+                                std::strcmp(std::getenv("GT4_CORE2_KEEP_UNCHANGED"), "0") != 0;
 
     void LocalToLocalMove(const LocalMoveCommit &move) override {
         const auto spsm = memory::decodePsm(move.spsm);
@@ -2044,7 +2097,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const PixelRect rect{static_cast<std::int32_t>(move.dsax), static_cast<std::int32_t>(move.dsay),
                                  static_cast<std::int32_t>(move.dsax + move.rrw - 1u),
                                  static_cast<std::int32_t>(move.dsay + move.rrh - 1u)};
-            OnMemoryWritten(destination, rect, true);
+            OnMemoryWritten(destination, rect, true, kWriteMove);
         } else {
             MarkWritten(BlockSpan{0, kAllBlocks});
         }
@@ -2950,13 +3003,15 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
-                 "fill_mpx=%.1f\n",
+                 "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
                  (unsigned long long)g.specFailures, (unsigned long long)c.delayedDownloads,
                  (unsigned long long)c.hiddenFlareTables, (unsigned long long)g.computeFills,
-                 static_cast<double>(g.fillPixels) / 1.0e6);
+                 static_cast<double>(g.fillPixels) / 1.0e6, (unsigned long long)c.unchangedUploads,
+                 (unsigned long long)c.staleBy[0], (unsigned long long)c.staleBy[1], (unsigned long long)c.staleBy[2],
+                 (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4]);
 }
 
 }  // namespace

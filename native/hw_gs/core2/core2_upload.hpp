@@ -23,8 +23,10 @@ enum class UploadSwizzle : std::uint8_t {
 // `memoryBytes`, wrapping transfer coordinates at 2048. Returns false (nothing written) when `byteCount` does not
 // cover the whole rectangle or the PSM has no table; the caller then takes the generic path. PageRuns falls back to
 // PerPixel for a base pointer that is not page aligned. Both give the same bytes as memory::hostToLocal.
+// IN-450: `changed`, when given, is set to false when the PageRuns path wrote only pixels equal to the ones already
+// there (GT4 uploads most of its textures again every frame); the PerPixel path always reports a change.
 bool FastHostToLocal(std::uint8_t *memoryBytes, const memory::BufferView &view, std::uint32_t x0, std::uint32_t y0,
                      std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount,
-                     UploadSwizzle swizzle);
+                     UploadSwizzle swizzle, bool *changed = nullptr);
 
 }  // namespace hwgs::core2

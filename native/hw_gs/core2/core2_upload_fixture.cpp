@@ -87,6 +87,24 @@ int main() {
             CheckCase(state, psm, bp, bw, x, y, width, height);
         }
     }
+    // IN-450: the same upload again changes nothing and says so; one changed pixel (or nibble) is reported.
+    for (const Psm psm : psms) {
+        std::vector<std::uint8_t> local(kLocalMemoryBytes, 0);
+        std::vector<std::uint8_t> data(hostBytesFor(psm, 37, 11));
+        for (std::uint8_t &byte : data) byte = static_cast<std::uint8_t>(NextRandom(state));
+        const BufferView view{64, 2, psm};
+        bool first = false, again = true, touched = false;
+        FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &first);
+        FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &again);
+        data[data.size() / 2] ^= 0x10;  // inside one pixel (the high nibble of a 4-bit pair, a bit of the others)
+        FastHostToLocal(local.data(), view, 5, 3, 37, 11, data.data(), data.size(), UploadSwizzle::PageRuns, &touched);
+        ++cases;
+        if (!first || again || !touched) {
+            ++failures;
+            std::fprintf(stderr, "FAIL: %s changed flags first=%d again=%d touched=%d (want 1 0 1)\n", psmInfo(psm).name,
+                         first ? 1 : 0, again ? 1 : 0, touched ? 1 : 0);
+        }
+    }
     // Too little data: nothing written, the caller takes the generic path.
     std::vector<std::uint8_t> memory(kLocalMemoryBytes, 0xA5);
     const std::uint8_t few[16] = {};
