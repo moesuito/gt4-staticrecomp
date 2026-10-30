@@ -9,11 +9,10 @@ file with every step, including the ones that are reverted.
 - **Scene:** the headless night race (Hong Kong Reverse, B-Spec, VW Lupo, 5 AI cars, 3x). The presses are in the
   journal of 2026-10-28; local scripts `night-run.sh` and `title-run2.sh`.
   - Short race: VBlanks 6500-9100. Long race: VBlanks 9000-14000 (`FRAMES=14000 EVERY=1200 FROM=9000`).
-  - Some pixels vary from run to run in every build:
-    - frame 6600 (the first race camera);
-    - 0-2 pixels at frames 7200 and 9000;
-    - the box (1204-1359, 568-621) at frame 12000.
-  - Compare frames against two runs of the same build before calling a difference real.
+  - Until candidate 335 some pixels varied from run to run in every build (frame 6600, the first race camera; 0-2
+    pixels at frames 7200 and 9000; the box (1204-1359, 568-621) at frame 12000; far more at 12x). The cause was
+    batches that sample the target they draw into (IN-463); since then two runs of one build are identical at 3x and
+    12x, so a frame difference between two candidates is real.
 - **Title check:** the GT Mode visit then the title (the IN-411 bug scene), compared byte for byte with candidate 287
   at VBlanks 4200, 4300 and 4400.
 - **Timing lines,** every 600 VBlanks:

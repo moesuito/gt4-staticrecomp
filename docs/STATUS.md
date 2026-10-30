@@ -1,5 +1,9 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 337: 12x determinism fixed, direct intake by default (2026-10-30, afternoon)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-337`: 332 + IN-462 (direct GS intake on by default after the owner's play test of 332; `-NoDirect` sets `GT4_MTVU_DIRECT=0`; frame dumps a row at a time) + IN-463 (spec 8.8: a batch whose texture is the target it draws into samples a copy of the sampled rectangle taken before it). About 35 such batches per race VBlank (glow buffers, the in-place luminance reduction, a full-screen 1:1 pass in strips) read texels other fragments of the same batch were writing, so 12x frames differed from run to run (17-21 of 31 frames, up to 15,500 pixels; full barriers did not help, every renderer counter was equal). With the copy: two 12x runs identical (31 of 31), two 3x long-race runs identical at all 10 checks (frames 6600, 7200, 9000 and 12000 included, the pixels the ledger listed as varying in every build; without the copy the same pair differs at 6600, 9000, 10200, 11400 and 12000), 3x frames equal to 332. Cost: +1.3 ms GPU at 12x (+6%, mostly the full-screen copy), one sixteenth at 3x. New CTest `hw_core2_self_texture`; CORE2 29/29, MTVU and stream sink 13/13, front end 80/80. The branch now also carries `task/134-game-code-optimization-study` (documents only).
+
 ## TASK-027 CoreGS 2.0 candidate 332: transport and CLUT fronts, direct GS intake (2026-10-30, owner asleep)
 
 `build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-332` with `GT4_MTVU_DIRECT=1` (`-NoDirect`
