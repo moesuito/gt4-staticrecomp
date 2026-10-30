@@ -167,8 +167,9 @@ struct Inputs {
 // appended unchanged. `--no-window` (not a donor option) leaves out the window flag: a headless standalone run for tests.
 Resolved resolve(const Inputs &inputs, const Access &access);
 
-// Whether the renderer files are needed: GT4_RENDERER is unset or "pcsx2", and GT4_GS_PROCESS is not given.
-bool renderer_needed(const Access &access);
+// Whether the renderer files are needed: GT4_RENDERER is unset or "pcsx2", GT4_GS_PROCESS is not given and game.ini does
+// not choose CoreGS 2.0 for GT4 (`inputs.layout` and `inputs.config` are read).
+bool renderer_needed(const Inputs &inputs, const Access &access);
 
 // ---- Session folder, messages -------------------------------------------------------------------------------------------
 

@@ -24,13 +24,16 @@ const DERIVED_TABLE_IDS: &[&str] = &["vsync", "mailbox", "upscale"];
 const HIDDEN_LAUNCHER_ROWS: &[&str] = &["async_gs"];
 /// Launcher rows only release-candidate builds ship (the F7/F8 release report and the VU code check).
 const RC_ONLY_ROWS: &[&str] = &["performance_report", "check_vu_code"];
+/// The renderer defines the graphics options (owner, 2026-10-30): the table rows are GSdx's, and of them only these exist
+/// under CoreGS 2.0 too (launch::coregs20_environment). `coregs_sharpening` (FSR1, where GSdx has CAS) exists only there.
+const CORE_GS_20_TABLE_ROWS: &[&str] = &["performance_mode", "texture_load", "fxaa"];
 
 pub fn pcsx2_table_rows() -> Vec<&'static gs_table::Row> {
     gs_table::offered().into_iter().filter(|row| !DERIVED_TABLE_IDS.contains(&row.id.as_str())).collect()
 }
 
 /// The payload of `get_settings_table`: `{max_upscale, rows}`. Launcher rows come from `SETTINGS`, PCSX2 GS rows from
-/// the table file; both use the row shape of ui/dev/README.md. GSdx is the only renderer (TASK-096), so no row depends on it.
+/// the table file; both use the row shape of ui/dev/README.md. The table rows only GSdx honours show only under GSdx.
 pub fn settings_table(settings: &Settings, controls: &Controls) -> Value {
     settings_table_with_monitors(settings, controls, &[], &[], false)
 }
@@ -78,7 +81,10 @@ fn fill_card_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::
     // TASK-118: no "Automatic": the list holds the cards present, and a stored card that is gone is kept so the page
     // still shows it (the run falls back and Play stores the card it used).
     let stored = settings.get("graphics_card").to_string();
-    let mut names: Vec<String> = cards.iter().filter_map(|card| card.name().map(str::to_string)).collect();
+    // CoreGS 2.0 draws with Vulkan: a card without it is not a choice there.
+    let coregs20 = settings.get("renderer") == gt4l_core::settings::CORE_GS_20;
+    let mut names: Vec<String> =
+        cards.iter().filter(|card| !coregs20 || card.has_vulkan()).filter_map(|card| card.name().map(str::to_string)).collect();
     if stored != gt4l_core::gpu::AUTOMATIC && !stored.is_empty() && !names.contains(&stored) {
         names.push(stored.clone());
     }
@@ -158,8 +164,9 @@ pub fn settings_table_with_monitors(
         if !release_candidate && RC_ONLY_ROWS.contains(&definition.id) {
             continue;
         }
-        // TASK-108: the Graphics card row sits after the Graphics API row (added with the table rows below).
-        if definition.id == "graphics_card" {
+        // TASK-108: the Graphics card row sits after the Graphics API row and the FSR1 row after CAS (added with the table
+        // rows below).
+        if definition.id == "graphics_card" || definition.id == "coregs_sharpening" {
             continue;
         }
         let mut row = launcher_row(definition, settings);
@@ -177,6 +184,22 @@ pub fn settings_table_with_monitors(
     }
     for row in pcsx2_table_rows() {
         let mut out = gs_row(row, settings);
+        if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
+            out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::PCSX2_GS });
+        }
+        // What Performance Mode does depends on the renderer.
+        if row.id == "performance_mode" && settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
+            out["help_key"] = json!("setting.performance_mode.help_coregs20");
+        }
+        if row.id == "cas_sharpness" {
+            rows.push(out);
+            if let Some(definition) = gt4l_core::settings::definition("coregs_sharpening") {
+                let mut sharpening = launcher_row(definition, settings);
+                sharpening["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+                rows.push(sharpening);
+            }
+            continue;
+        }
         if row.id == "graphics_api" {
             fill_api_row(&mut out, settings, cards);
             rows.push(out);
@@ -875,7 +898,7 @@ mod table_tests {
                    (Some(50), Some(200), Some(25)));
         assert_eq!(scale["current"], 100);
         assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1344");
-        assert!(scale.get("visible_when").is_none(), "GSdx is the only renderer: no visibility rule");
+        assert!(scale.get("visible_when").is_none(), "shown under both renderers");
         assert_eq!(scale["group"], "graphics");
     }
 
@@ -888,8 +911,8 @@ mod table_tests {
         assert_eq!(mode["group"], Value::Null);
         assert_eq!(mode["default"], json!(false));
         assert_eq!(mode["current"], json!(false));
-        assert!(mode.get("disabled").is_none(), "GSdx is the only renderer: never disabled");
-        assert!(mode.get("visible_when").is_none(), "shown under GSdx without a visibility rule");
+        assert!(mode.get("disabled").is_none(), "a stored renderer never disables it");
+        assert!(mode.get("visible_when").is_none(), "shown under both renderers");
     }
 
     #[test]
@@ -912,7 +935,7 @@ mod table_tests {
     }
 
     #[test]
-    fn renderer_dropdown_offers_gsdx_and_greys_coregs20() {
+    fn renderer_dropdown_offers_gsdx_and_coregs20_beta() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let renderer = row(&table, "renderer");
         assert_eq!(renderer["current"], "pcsx2");
@@ -920,7 +943,23 @@ mod table_tests {
         let values = renderer["values"].as_array().unwrap();
         assert_eq!(values.len(), 2, "GSdx and CoreGS 2.0 only; CoreGS 1.1 is gone (TASK-096)");
         assert_eq!(values[1]["value"], "coregs20");
-        assert_eq!(values[1]["disabled"], true);
+        assert_eq!(values[1]["disabled"], false);
+        assert_eq!(values[1]["label"], "CoreGS 2.0 (beta)");
+        for shared in CORE_GS_20_TABLE_ROWS {
+            assert!(row(&table, shared).get("visible_when").is_none(), "{shared} works under both renderers");
+        }
+        for gsdx_only in ["graphics_api", "cas_mode", "cas_sharpness", "perf_overlay"] {
+            assert_eq!(row(&table, gsdx_only)["visible_when"]["equals"], "pcsx2", "{gsdx_only} is for GSdx");
+        }
+        assert_eq!(row(&table, "coregs_sharpening")["visible_when"]["equals"], "coregs20", "FSR1 is for CoreGS 2.0");
+        for both in ["renderer", "render_scale", "graphics_card", "monitor", "resolution", "fullscreen", "vsync"] {
+            assert!(row(&table, both).get("visible_when").is_none(), "{both} works under both renderers");
+        }
+        assert!(row(&table, "performance_mode").get("help_key").is_none());
+        let mut chosen = Settings::default();
+        chosen.set("renderer", "coregs20").unwrap();
+        let under_coregs = settings_table(&chosen, &Controls::default());
+        assert_eq!(row(&under_coregs, "performance_mode")["help_key"], "setting.performance_mode.help_coregs20");
         let listed = ids(&table);
         for gone in ["internal_scale", "present_filter", "fsr_sharpness", "deinterlacing", "anti_aliasing"] {
             assert!(!listed.contains(&gone.to_string()), "{gone} was a CoreGS 1.1 row");
@@ -978,7 +1017,7 @@ mod table_tests {
     fn pcsx2_rows_are_shown_without_a_renderer_rule() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let fxaa = row(&table, "fxaa");
-        assert!(fxaa.get("visible_when").is_none(), "GSdx is the only renderer");
+        assert!(fxaa.get("visible_when").is_none(), "shown under both renderers");
         assert_eq!(table["max_upscale"], MAX_UPSCALE_DEFAULT);
         assert!(!pcsx2_table_rows().iter().any(|row| row.id == "upscale"), "the internal resolution is derived");
     }

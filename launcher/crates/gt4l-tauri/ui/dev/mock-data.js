@@ -135,12 +135,12 @@
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "pcsx2", label: "GSdx" },
-        { value: "coregs-2.0", label: "CoreGS 2.0 (coming soon)", disabled: true }
+        { value: "coregs20", label: "CoreGS 2.0 (beta)" }
       ],
       default: "pcsx2", current: "pcsx2" },
     // TASK-103: the GSdx Graphics API (the table row graphics_api; the Renderer row above is the engine). Vulkan is the
     // default; Vulkan and Direct3D 12 are recommended, Direct3D 11 is for older PCs. OpenGL is not offered yet.
-    { id: "graphics_api", label: "Graphics API (GSdx)", help: "Vulkan is the default and the best tested; try Direct3D 11 on older graphics cards.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "graphics_api", label: "Graphics API (GSdx)", help: "Vulkan is the default and the best tested; try Direct3D 11 on older graphics cards.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "vulkan", label: "Vulkan (recommended)" },
@@ -158,7 +158,7 @@
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
     { id: "performance_mode", label: "Performance Mode", help: "Faster on weaker PCs. Some effects that read the image back are skipped, such as headlight and sun flares and the car icons next to the gap time. Applies the next time you play.",
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
-    { id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "off", label: "Off" },
@@ -166,7 +166,7 @@
         { value: "sharpen-and-resize", label: "Sharpen and resize" }
       ],
       default: "off", current: "off" },
-    { id: "cas_sharpness", label: "Sharpening amount", help: "How strong the CAS sharpening is. Used when CAS is on.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_sharpness", label: "Sharpening amount", help: "How strong the CAS sharpening is. Used when CAS is on.",
       page: "basic", group: "graphics", control: "slider",
       values: { min: 0, max: 100, step: 1, unit: "%" },
       default: 50, current: 50 },
@@ -189,7 +189,17 @@
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { id: "performance_report", label: "Performance report", help: "Records frame timing while you play for bug reports.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
-    { id: "perf_overlay", label: "Performance overlay", help: "Shows GT4Recomp's own overlay while you play (FPS, frame time, CPU and GPU use).",
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "coregs_sharpening", label: "Sharpening (FSR1)",
+      help: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
+      page: "basic", group: "graphics", control: "dropdown",
+      values: [
+        { value: "off", label: "Off" },
+        { value: "mild", label: "Mild" },
+        { value: "medium", label: "Medium" },
+        { value: "strong", label: "Strong" }
+      ],
+      default: "off", current: "off" },
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "perf_overlay", label: "Performance overlay", help: "Shows GT4Recomp's own overlay while you play (FPS, frame time, CPU and GPU use).",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { id: "perf_overlay_fps", label: "Overlay: FPS", help: "Shows the frame rate in the performance overlay.",
       page: "advanced", control: "toggle", values: null, default: true, current: true },

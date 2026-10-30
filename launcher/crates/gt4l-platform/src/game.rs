@@ -32,8 +32,8 @@ pub struct Running {
 }
 
 /// Starts a session. The disc and the prepared ELF must already be verified by the caller.
-/// `pcsx2` is the installed PCSX2 GS (decision 0070, the only renderer the launcher starts since TASK-096): the
-/// session runs with `GT4_RENDERER=pcsx2` and writes its own gt4-gs.ini.
+/// `pcsx2` is the installed PCSX2 GS (decision 0070): the session runs with `GT4_RENDERER=pcsx2` and writes its own
+/// gt4-gs.ini. `None` is a CoreGS 2.0 session (`launch::uses_coregs20`, TASK-027): `GT4_RENDERER=hw`, nothing to write.
 /// `display` is the resolved Monitor and Resolution (TASK-080 addendum): `GT4_MONITOR`, `GT4_OUTPUT_SIZE` and the
 /// gt4-gs internal resolution follow it; `None` when no monitor could be read.
 #[allow(clippy::too_many_arguments)]
@@ -43,7 +43,7 @@ pub fn start(
     elf: &Path,
     disc: &Path,
     settings: &Settings,
-    pcsx2: &Installed,
+    pcsx2: Option<&Installed>,
     display: Option<&DisplayTarget>,
     textures: &Path,
     extra_environment: &[(String, String)],
@@ -68,10 +68,16 @@ pub fn start(
         card: &card,
         session_dir: &session_dir,
     };
-    let paths = Pcsx2Paths::for_session(pcsx2, &dirs.root().join("gs"), &session_dir, textures);
-    let text = launch::gs_config_text(settings, &paths, display, crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some())?;
-    gs_table::write_ini_atomic(&paths.config, &text).map_err(|error| format!("gt4-gs.ini: {error}"))?;
-    let mut plan = launch::plan_pcsx2_launch(&inputs, settings, &paths, display, &inherited);
+    let integrated = crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
+    let mut plan = match pcsx2 {
+        Some(pcsx2) => {
+            let paths = Pcsx2Paths::for_session(pcsx2, &dirs.root().join("gs"), &session_dir, textures);
+            let text = launch::gs_config_text(settings, &paths, display, integrated)?;
+            gs_table::write_ini_atomic(&paths.config, &text).map_err(|error| format!("gt4-gs.ini: {error}"))?;
+            launch::plan_pcsx2_launch(&inputs, settings, &paths, display, &inherited)
+        }
+        None => launch::plan_coregs20_launch(&inputs, settings, display, integrated, textures, &inherited),
+    };
     plan.environment.extend(extra_environment.iter().cloned());
     let child = spawn(&plan)?;
     Ok(Running {

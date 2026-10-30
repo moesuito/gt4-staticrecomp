@@ -362,6 +362,27 @@ void check_resolve() {
   check(lacks(resolved.set, "GT4_FULLSCREEN") && lacks(resolved.set, "GT4_FORCE_480P"), "a variable that is set is never overwritten");
   check(has(resolved.set, "GT4_PRESENT_MODE", "fifo"), "an empty variable counts as unset");
 
+  // CoreGS 2.0 chosen in game.ini: GT4 runs it with its variables, no GSdx files; a renderer named by hand still wins.
+  {
+    World chosen = ready_world();
+    sa::Inputs choice = inputs_for(*layout, nullptr);
+    choice.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_scale=4\nhw_performance=1\nhw_textures=D:/T\nhw_adapter=Card\n");
+    check(choice.config->warnings.empty(), "the launcher's CoreGS 2.0 keys are accepted");
+    check(!sa::parse_config("renderer=donor\nhw_scale=13\nhw_performance=0\n").warnings.empty(), "other values are refused");
+    check(!sa::renderer_needed(choice, chosen.access()), "CoreGS 2.0 needs no GSdx files");
+    const sa::Resolved coregs = sa::resolve(choice, chosen.access());
+    check(!coregs.needs_renderer && has(coregs.set, "GT4_RENDERER", "hw") && has(coregs.set, "GT4_HW_CORE", "2") &&
+              has(coregs.set, "GT4_HW_SCALE", "4") && has(coregs.set, "GT4_CORE2_PERFORMANCE", "1") &&
+              has(coregs.set, "GT4_HW_TEXTURES", "D:/T") && has(coregs.set, "GT4_HW_ADAPTER", "Card"),
+          "game.ini's CoreGS 2.0 keys become its variables");
+    check(lacks(coregs.set, "PS2_GS") && lacks(coregs.set, "GT4_GS_PROCESS") && lacks(coregs.set, "GT4_GS_CONFIG"),
+          "nothing of GSdx goes with it");
+    check(has(coregs.set, "GT4_FORCE_480P", "1") && has(coregs.set, "GT4_FORCE_WIDESCREEN", "1"), "the fixed holds stay");
+    World named = ready_world();
+    named.environment["GT4_RENDERER"] = "pcsx2";
+    check(sa::renderer_needed(choice, named.access()), "GT4_RENDERER in the environment wins over game.ini");
+  }
+
   // Another renderer, or a GS process given by hand: the installed one is not needed.
   World donor = ready_world();
   donor.environment["GT4_RENDERER"] = "donor";

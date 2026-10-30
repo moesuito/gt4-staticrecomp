@@ -164,7 +164,7 @@
     if (/stick_deadzone$/.test(row.id)) {
       return "setting.stick_deadzone.help";
     }
-    return "setting." + row.id + ".help";
+    return row.help_key || "setting." + row.id + ".help";
   }
 
   function languageParams() {

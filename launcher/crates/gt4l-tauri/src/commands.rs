@@ -349,8 +349,8 @@ pub struct PlayInputs {
     pub elf: PathBuf,
     pub executable: PathBuf,
     pub settings: Settings,
-    /// The installed GSdx (the only renderer, TASK-096); Play does not start without it.
-    pub pcsx2: gs_release::Installed,
+    /// The installed GSdx; a session that uses it does not start without it. `None`: this is a CoreGS 2.0 session.
+    pub pcsx2: Option<gs_release::Installed>,
     /// The resolved Monitor and Resolution (TASK-080 addendum); `None` when no monitor could be read.
     pub display: Option<DisplayTarget>,
     pub extra: Vec<(String, String)>,
@@ -400,7 +400,8 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         // original-game hash or enabled RA options. Native target guard stays intact.
         extra.push(("GT4_RA_ENABLED".into(), "0".into()));
     }
-    // Only GSdx runs the game (decision 0070, TASK-096): without a verified GSdx, Play stops here with the error.
+    // GSdx runs the game (decision 0070) unless the player chose CoreGS 2.0 (GT4 only, in the game executable): without a
+    // verified GSdx such a session stops here with the error.
     // TASK-108 (release 1.3.0): the graphics card and API of this run (automatic unless the player chose them). The
     // stored choices stay as they are; the run uses the resolved API, card and Adapter.
     // TASK-114 rc5: Play probes the cards once, so the run sees the hardware of this moment; the rest of Play reads that list.
@@ -413,8 +414,14 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     let card_name = graphics.card.as_ref().and_then(gt4l_core::gpu::GpuDevice::name).unwrap_or("none");
     let adapter = if graphics.adapter.is_empty() { "system default" } else { graphics.adapter.as_str() };
     state::log(&dirs, &format!("graphics: card {card_name}, API {}, Adapter {adapter}", graphics.api));
-    let installed = gs_release::installed(&dirs.renderer_root());
-    let pcsx2 = launch::choose_renderer(installed.as_ref(), &dirs.logs())?.clone();
+    let coregs20 = launch::uses_coregs20(&settings, game);
+    let pcsx2 = if coregs20 {
+        state::log(&dirs, "graphics: renderer CoreGS 2.0 (Vulkan)");
+        None
+    } else {
+        let installed = gs_release::installed(&dirs.renderer_root());
+        Some(launch::choose_renderer(installed.as_ref(), &dirs.logs())?.clone())
+    };
     // TASK-080 addendum: the stored Monitor and Resolution against the monitors connected now.
     let monitors = gt4l_platform::display::monitors();
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
@@ -463,7 +470,8 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         settings,
         pcsx2,
         extra,
-        graphics_notice: graphics.notice,
+        // The Direct3D 11 fallback note is about GSdx; CoreGS 2.0 always draws with Vulkan.
+        graphics_notice: if coregs20 { None } else { graphics.notice },
         api: graphics.api,
     })
 }
@@ -486,14 +494,15 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         lock(&shared).home_message = message.clone();
     })?;
     let PlayInputs { game, dirs, disc, elf, executable, settings, pcsx2, display, extra, graphics_notice, api } = inputs;
-    let run_api = api.clone();
+    // A lost device under CoreGS 2.0 says nothing about the API GSdx should use next time.
+    let run_api = if pcsx2.is_some() { api.clone() } else { "coregs20".to_string() };
     // TASK-097: a direct start of the game reads these files; they follow the monitors connected now.
     lock(&shared).write_standalone_files(&settings);
     let card = dirs.runtime_card();
     saves::prepare_card(lock(&shared).library_of(game), &card)?;
     let textures = lock(&shared).dirs.textures();
     paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
-    let running = game::start(&dirs, &executable, &elf, &disc, &settings, &pcsx2, display.as_ref(), &textures, &extra)?;
+    let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);

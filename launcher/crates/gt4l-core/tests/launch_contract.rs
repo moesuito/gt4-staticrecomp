@@ -198,11 +198,53 @@ fn the_coregs11_rows_are_gone_and_retired_so_their_stored_values_are_ignored() {
 }
 
 #[test]
-fn gsdx_is_the_only_renderer_and_play_needs_it_installed() {
+fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
+    use gt4l_core::games;
+    let textures = Path::new(r"D:\data\Textures");
+    let mut settings = Settings::default();
+    assert!(!launch::uses_coregs20(&settings, &games::GT4), "GSdx by default");
+    settings.set("renderer", "coregs20").unwrap();
+    assert!(launch::uses_coregs20(&settings, &games::GT4));
+    assert!(!launch::uses_coregs20(&settings, &games::SPEC2), "Spec II keeps GSdx in the beta");
+
+    let display = display_target(r"\\.\DISPLAY1", 1920, 1080);
+    let on = env_map(&launch::coregs20_environment(&settings, Some(&display), false, textures));
+    assert_eq!(on["GT4_RENDERER"], "hw");
+    assert_eq!(on["GT4_HW_CORE"], "2");
+    assert_eq!(on["GT4_HW_SCALE"], "3", "the session plan's multiplier");
+    assert_eq!(on["GT4_HW_TEXTURES"], r"D:\data\Textures", "custom textures are on by default");
+    assert_eq!(on["GT4_FORCE_480P"], "1");
+    assert_eq!(on["GT4_FORCE_WIDESCREEN"], "1");
+    for gsdx_only in ["GT4_GS_PROCESS", "GT4_GS_PROCESS_SHA256", "GT4_GS_CONFIG", "PS2_GS"] {
+        assert!(!on.contains_key(gsdx_only), "{gsdx_only} belongs to GSdx");
+    }
+    assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "full precision unless Performance Mode is on");
+    assert!(!on.contains_key("GT4_CORE2_FSR_SHARPNESS"), "no sharpening by default");
+
+    settings.set_gs("performance_mode", "no-readbacks").unwrap();
+    settings.set_gs("texture_load", "false").unwrap();
+    settings.set_gs("fxaa", "true").unwrap();
+    settings.set("coregs_sharpening", "medium").unwrap();
+    let tuned = env_map(&launch::coregs20_environment(&settings, None, true, textures));
+    assert_eq!(tuned["GT4_CORE2_PERFORMANCE"], "1");
+    assert!(!tuned.contains_key("GT4_HW_TEXTURES"));
+    assert_eq!(tuned["GT4_HW_POSTFX"], "fxaa");
+    assert_eq!(tuned["GT4_CORE2_FSR_SHARPNESS"], "0.2");
+    assert_eq!(tuned["GT4_HW_SCALE"], "1", "the integrated GPU default of the session plan");
+
+    let section = launch::coregs20_section(&settings, Some(&display), false, textures);
+    assert!(section.starts_with("renderer=coregs20\n"));
+    assert!(section.contains("hw_scale=3\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
+    assert!(section.contains("hw_sharpening=0.2\n"));
+    assert!(!section.contains("hw_textures"));
+}
+
+#[test]
+fn gsdx_is_the_default_renderer_and_a_gsdx_session_needs_it_installed() {
     let mut settings = Settings::default();
     assert_eq!(settings.get("renderer"), "pcsx2", "GSdx is the default");
     assert!(settings.set("renderer", "coregs11").is_err(), "CoreGS 1.1 is not a choice (TASK-096)");
-    assert!(settings.set("renderer", "coregs20").is_err(), "coming soon is not selectable");
+    settings.set("renderer", "coregs20").expect("CoreGS 2.0 is a beta choice");
     settings.set("renderer", "pcsx2").unwrap();
 
     let installed = installed_fixture();
@@ -244,7 +286,7 @@ fn session_ini_matches_the_python_writer_for_the_default_settings() {
     let paths = pcsx2_paths();
     let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
     let bytes = gt4l_core::gs_table::ini_file_bytes(&text);
-    let expected = include_bytes!("fixtures/gs/default-session.ini");
+    let expected = gt4l_core::gs_table::ini_file_bytes(include_str!("fixtures/gs/default-session.ini"));  // LF in the file
     assert_eq!(bytes.as_slice(), expected.as_slice(), "Rust gt4-gs.ini differs from scripts/gs_settings.py");
     // A 1920x1080 output at 100% is the same 3x: the default INI did not change with the display plan.
     let full_hd = display_target(r"\\.\DISPLAY1", 1920, 1080);

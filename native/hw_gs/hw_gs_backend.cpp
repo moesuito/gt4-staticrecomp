@@ -379,7 +379,11 @@ struct Backend::Impl {
       }
       VkPhysicalDeviceProperties props{};
       vkGetPhysicalDeviceProperties(candidate, &props);
-      const int score = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 : 1;
+      // The launcher's Graphics card row, by name (GT4_HW_ADAPTER); no card with that name: the best one as usual.
+      const char *wanted_card = std::getenv("GT4_HW_ADAPTER");
+      const int score = wanted_card != nullptr && std::strcmp(wanted_card, props.deviceName) == 0 ? 3
+                        : props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU                ? 2
+                                                                                                  : 1;
       if (score > best_score) {
         best_score = score;
         best = candidate;

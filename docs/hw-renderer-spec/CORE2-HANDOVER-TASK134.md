@@ -13,7 +13,8 @@ agents; the TASK-134 agent is not tainted as long as it keeps away from PCSX2 so
 - **Branch:** `task/027-coregs2`. It already contains `task/134-game-code-optimization-study` (merged on 2026-10-30,
   documents only). The PR back into `task/134-game-code-optimization-study` waits for the owner's approval; never merge
   without it.
-- **Current candidate:** 347 (`build/candidates/coregs2-candidate-347` in the `gt4-wt-027-coregs2` worktree), built from
+- **Newest build (2026-10-30, evening):** candidate 354, the game of 1.3.0-rc8: 347 + texture replacement (IN-470), GPUs without interlock (IN-471), launcher entry (IN-474), PGO retrained (IN-473). None of them changes the CPU figures below by more than noise (GS worker 5.14 ms at 3x).
+- **Candidate of these figures:** 347 (`build/candidates/coregs2-candidate-347` in the `gt4-wt-027-coregs2` worktree), built from
   commit 68af02f with PGO and ThinLTO of the GS libraries. Play script: `build/hwr-play-scale.ps1 -Scale 3`.
 - **State:** frames identical to 337 at 3x and 12x; CTest 267/268 (the known `python_native_contracts` GS settings
   failure from the rc7 merge), 137/137 `hw_` tests without the interlock. The owner played 332 and liked it; 347 is not

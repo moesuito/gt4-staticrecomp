@@ -1688,6 +1688,11 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
+**State 2026-10-30:** in the launcher as a beta in 1.3.0-rc8 (candidate 354, GT4 only, GSdx stays the default): texture
+replacement (IN-470), GPUs without interlock (IN-471), PGO in the release game (IN-473), options by renderer (IN-474).
+Hardware raster path measured and left out pending the laptop test (IN-472). Open: owner's laptop test of rc8, then
+the PR into `task/134-game-code-optimization-study` on their approval.
+
 **Resumed on 2026-10-21 (owner decision)** on branch `task/027-coregs2` (worktree
 `C:\Antigravity\gt4-wt-027-coregs2`): `main` at release 1.0.0 (slice214) merged with
 `task/027-hw-renderer` and the `task/027-cpuref` docs checkpoint. paraLLEl-GS code, pins and launcher modes

@@ -192,9 +192,17 @@ int run_standalone(int argc, char **argv) {
 
   sa::Inputs inputs;
   inputs.layout = &*layout;
+  std::vector<std::string> config_notes;
+  if (const std::optional<std::string> text = access.read_text(layout->config_dir / sa::kConfigFileName)) {
+    sa::Config config = sa::parse_config(*text);
+    config_notes = config.warnings;
+    inputs.config = std::move(config);
+  } else {
+    config_notes.push_back(std::string("no ") + sa::kConfigFileName + " in " + layout->config_dir.string() + ": built-in defaults");
+  }
   sa::Check check = sa::check_game_files(*layout, access, inputs.disc, inputs.elf);
   sa::Renderer renderer;
-  if (check.problem == sa::Problem::None && sa::renderer_needed(access)) {
+  if (check.problem == sa::Problem::None && sa::renderer_needed(inputs, access)) {
     check = sa::find_renderer(*layout, access, renderer);
     if (check.problem == sa::Problem::None) inputs.renderer = &renderer;
   }
@@ -207,14 +215,6 @@ int run_standalone(int argc, char **argv) {
     return kExitAlreadyRunning;
   }
 
-  std::vector<std::string> config_notes;
-  if (const std::optional<std::string> text = access.read_text(layout->config_dir / sa::kConfigFileName)) {
-    sa::Config config = sa::parse_config(*text);
-    config_notes = config.warnings;
-    inputs.config = std::move(config);
-  } else {
-    config_notes.push_back(std::string("no ") + sa::kConfigFileName + " in " + layout->config_dir.string() + ": built-in defaults");
-  }
   inputs.gs_ini_exists = access.stat_file(layout->config_dir / sa::kGsConfigFileName).has_value();
   inputs.controls_exists = access.stat_file(layout->user_root / "controls.toml").has_value();
   for (int i = 1; i < argc; ++i) inputs.user_arguments.emplace_back(argv[i]);

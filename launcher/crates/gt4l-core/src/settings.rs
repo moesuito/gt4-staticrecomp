@@ -74,12 +74,20 @@ pub struct SettingDef {
 
 /// The PCSX2 GS in its own process (downloaded, default when installed). Decision 0070.
 pub const PCSX2_GS: &str = "pcsx2";
-/// Our own hardware renderer, not built yet ("coming soon"). It cannot be selected.
+/// Our own hardware renderer, inside the game executable (beta, GT4 only: Spec II keeps GSdx).
 pub const CORE_GS_20: &str = "coregs20";
 
 const RENDERER_CHOICES: &[Choice] = &[
     Choice { value: PCSX2_GS, label: "GSdx", selectable: true },
-    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (coming soon)", selectable: false },
+    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (beta)", selectable: true },
+];
+
+/// The strength of CoreGS 2.0's FSR1 sharpening (GSdx has CAS instead).
+const COREGS_SHARPENING_CHOICES: &[Choice] = &[
+    Choice { value: "off", label: "Off", selectable: true },
+    Choice { value: "mild", label: "Mild", selectable: true },
+    Choice { value: "medium", label: "Medium", selectable: true },
+    Choice { value: "strong", label: "Strong", selectable: true },
 ];
 
 const CHANNEL_CHOICES: &[Choice] = &[
@@ -128,8 +136,8 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Renderer",
         title: "Renderer",
-        info: "GSdx draws the game on your GPU in its own process; it is the renderer GT4Recomp uses. CoreGS 2.0, \
-               our own renderer, is in development.",
+        info: "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own \
+               renderer, in beta: it uses much less processor. Gran Turismo 4 Spec II keeps GSdx.",
         kind: Kind::Choice(RENDERER_CHOICES),
         default: PCSX2_GS,
         connected: true,
@@ -146,6 +154,16 @@ pub const SETTINGS: &[SettingDef] = &[
             step: crate::display::RENDER_SCALE_STEP,
         },
         default: "100",
+        connected: true,
+    },
+    SettingDef {
+        id: "coregs_sharpening",
+        page: Page::Graphics,
+        group: "Image",
+        title: "Sharpening (FSR1)",
+        info: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
+        kind: Kind::Choice(COREGS_SHARPENING_CHOICES),
+        default: "off",
         connected: true,
     },
     SettingDef {

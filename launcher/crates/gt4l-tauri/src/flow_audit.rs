@@ -182,7 +182,7 @@ fn play_plan(shared: &Shared, program_dir: &Path) -> Result<launch::LaunchPlan, 
     };
     let inherited: Vec<String> = std::env::vars().map(|(name, _)| name).collect();
     let textures = crate::state::lock(shared).dirs.textures();
-    let paths = launch::Pcsx2Paths::for_session(&inputs.pcsx2, &inputs.dirs.root().join("gs"), &session, &textures);
+    let paths = launch::Pcsx2Paths::for_session(inputs.pcsx2.as_ref().expect("a GSdx session"), &inputs.dirs.root().join("gs"), &session, &textures);
     Ok(launch::plan_pcsx2_launch(&launch_inputs, &inputs.settings, &paths, inputs.display.as_ref(), &inherited))
 }
 
@@ -913,7 +913,7 @@ fn retroachievements_options_and_launch_environment() {
         session_dir: &session_gt4,
     };
     let textures = lock(&shared).dirs.textures();
-    let paths_gt4 = launch::Pcsx2Paths::for_session(&play_gt4.pcsx2, &dirs.root().join("gs"), &session_gt4, &textures);
+    let paths_gt4 = launch::Pcsx2Paths::for_session(play_gt4.pcsx2.as_ref().expect("a GSdx session"), &dirs.root().join("gs"), &session_gt4, &textures);
     let mut plan_gt4 = launch::plan_pcsx2_launch(&launch_inputs_gt4, &play_gt4.settings, &paths_gt4, play_gt4.display.as_ref(), &hostile_inherited);
     plan_gt4.environment.extend(play_gt4.extra);
 
@@ -941,7 +941,7 @@ fn retroachievements_options_and_launch_environment() {
         card: &card_spec2,
         session_dir: &session_spec2,
     };
-    let paths_spec2 = launch::Pcsx2Paths::for_session(&play_spec2.pcsx2, &dirs.root().join("gs"), &session_spec2, &textures);
+    let paths_spec2 = launch::Pcsx2Paths::for_session(play_spec2.pcsx2.as_ref().expect("a GSdx session"), &dirs.root().join("gs"), &session_spec2, &textures);
     let mut plan_spec2 = launch::plan_pcsx2_launch(&launch_inputs_spec2, &play_spec2.settings, &paths_spec2, play_spec2.display.as_ref(), &hostile_inherited);
     plan_spec2.environment.extend(play_spec2.extra);
 

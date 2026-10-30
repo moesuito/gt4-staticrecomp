@@ -369,7 +369,11 @@ impl AppState {
         let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
         let config_dir = self.user_dirs.config_dir().to_path_buf();
         let game_ini = config_dir.join(launch::STANDALONE_CONFIG_FILE);
-        let text = launch::standalone_config_text(settings, display.as_ref());
+        let mut text = launch::standalone_config_text(settings, display.as_ref());
+        if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
+            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
+            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.dirs.textures()));
+        }
         if let Err(error) = fs::create_dir_all(&config_dir).and_then(|()| write_text_atomic(&game_ini, &text)) {
             log_error(&self.dirs, &format!("{} not written: {error}", game_ini.display()));
         }

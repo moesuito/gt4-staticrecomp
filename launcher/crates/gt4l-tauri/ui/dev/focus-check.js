@@ -302,6 +302,38 @@
     return active && active.getAttribute ? active.getAttribute("data-setting") || active.getAttribute("data-action") : null;
   }
 
+  // The renderer defines the graphics options (owner, 2026-10-30): what each renderer's Graphics tab shows.
+  async function rendererRowChecks() {
+    function shown() {
+      return Array.prototype.map.call(document.querySelectorAll(".content .row[data-row]"), function (item) {
+        return item.getAttribute("data-row");
+      });
+    }
+    function holds(list, ids) {
+      return ids.every(function (id) { return list.indexOf(id) >= 0; });
+    }
+    function lacks(list, ids) {
+      return ids.every(function (id) { return list.indexOf(id) < 0; });
+    }
+    var both = ["renderer", "render_scale", "monitor", "resolution", "fullscreen", "vsync", "fxaa", "performance_mode"];
+    var gsdxOnly = ["graphics_api", "cas_mode", "cas_sharpness", "perf_overlay"];
+    await setHash("#/settings/about");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    var gsdx = shown();
+    check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, ["coregs_sharpening"]), gsdx.join("|"));
+    await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
+    await setHash("#/settings/about");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    var coregs = shown();
+    check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
+    await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
+    await setHash("#/settings/about");
+    await setHash("#/settings/graphics");
+    await wait(200);
+  }
+
   async function advancedSectionChecks() {
     check("the tab list has no Advanced tab", !sideButton("advanced"), "an Advanced tab is shown");
     check("the tab list has no Display tab", !sideButton("display"), "a Display tab is shown");
@@ -1221,6 +1253,7 @@
       await importEntryCheck();
       await libraryActionChecks();
       await valueChecks();
+      await rendererRowChecks();
       await advancedSectionChecks();
       await controlsChecks();
       await gamesChecks();

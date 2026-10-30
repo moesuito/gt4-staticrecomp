@@ -49,6 +49,10 @@ pub fn run(home_ready: bool, installed: bool, install: &mut dyn FnMut() -> Resul
 pub fn start(app: AppHandle, shared: Shared) {
     let (dirs, home_ready, installed) = {
         let state = lock(&shared);
+        // CoreGS 2.0 is inside the game executable: nothing to install.
+        if state.config.settings.get("renderer") != settings::PCSX2_GS {
+            return;
+        }
         let installed = !gt4l_core::gs_release::needs_install(&state.dirs.renderer_root());
         (state.dirs.clone(), state.home_ready(), installed)
     };

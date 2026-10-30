@@ -6,8 +6,9 @@
 //! - inherited `GT4_*` and `PS2_*` variables are removed, then only the variables below are set.
 //!
 //! The renderer is the PCSX2 GS (`GT4_RENDERER=pcsx2`, the downloaded `gt4-gs.exe` in its own process, see
-//! [`pcsx2_environment`], decision 0070). CoreGS 1.1 is still inside the game executable, but the launcher never
-//! starts it (TASK-096, owner 2026-10-22). Only the child process gets these variables. Nothing is written to the
+//! [`pcsx2_environment`], decision 0070) or, when the player chose it, CoreGS 2.0 (`GT4_RENDERER=hw`, inside the game
+//! executable, see [`coregs20_environment`], TASK-027). CoreGS 1.1 is still inside the game executable, but the launcher
+//! never starts it (TASK-096, owner 2026-10-22). Only the child process gets these variables. Nothing is written to the
 //! user or system environment.
 use crate::language::Language;
 use crate::messages;
@@ -17,10 +18,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::display::{self, DisplayTarget};
-use crate::games::Game;
+use crate::games::{self, Game};
 use crate::gs_release::Installed;
 use crate::gs_table;
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 
 /// Inherited variables with these prefixes are removed before the game starts.
 pub const SCRUBBED_PREFIXES: &[&str] = &["GT4_", "PS2_"];
@@ -179,8 +180,52 @@ pub fn pcsx2_environment(settings: &Settings, paths: &Pcsx2Paths) -> Vec<(String
     variables.into_iter().map(|(name, value)| (name.to_string(), value)).collect()
 }
 
-/// The variables of a GSdx session: the fixed 480p and 16:9 holds, display mode, present mode, async GS and
-/// diagnostics.
+/// Whether this session of `game` runs CoreGS 2.0: the player chose it and the game is GT4 (TASK-027, the beta is not
+/// tested on Spec II, which keeps GSdx).
+pub fn uses_coregs20(settings: &Settings, game: &Game) -> bool {
+    settings.get("renderer") == settings::CORE_GS_20 && game.id == games::GT4.id
+}
+
+/// The variables of a CoreGS 2.0 session (TASK-027). The renderer lives in the game executable, so no process, pin or
+/// INI goes with it. Scale: the session plan's multiplier, as GSdx gets it. Performance Mode (the same row as GSdx):
+/// flares hidden and the delayed downloads. Custom textures: the same Textures folder and the same row as GSdx. The card
+/// is passed by name; the game takes the best card when no card has that name, and `GT4_HW_ADAPTER` is left out when no
+/// card is known.
+pub fn coregs20_environment(
+    settings: &Settings,
+    display: Option<&DisplayTarget>,
+    integrated_gpu: bool,
+    textures: &Path,
+) -> Vec<(String, String)> {
+    let mut variables: BTreeMap<&'static str, String> = BTreeMap::new();
+    variables.insert("GT4_RENDERER", "hw".to_string());
+    variables.insert("GT4_HW_CORE", "2".to_string());
+    variables.insert("GT4_HW_SCALE", session_plan(settings, display, integrated_gpu).multiplier.to_string());
+    if settings.gs_value("performance_mode") == "no-readbacks" {
+        variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
+    }
+    if settings.gs_value("texture_load") == "true" {
+        variables.insert("GT4_HW_TEXTURES", textures.display().to_string());
+    }
+    if settings.gs_value("fxaa") == "true" {
+        variables.insert("GT4_HW_POSTFX", "fxaa".to_string());
+    }
+    // FSR1 RCAS, in stops: 0 is the strongest, 0.2 FSR's usual, 2 mild (absent: off).
+    match settings.get("coregs_sharpening") {
+        "mild" => drop(variables.insert("GT4_CORE2_FSR_SHARPNESS", "2".to_string())),
+        "medium" => drop(variables.insert("GT4_CORE2_FSR_SHARPNESS", "0.2".to_string())),
+        "strong" => drop(variables.insert("GT4_CORE2_FSR_SHARPNESS", "0".to_string())),
+        _ => {}
+    }
+    let card = settings.get("graphics_card");
+    if !card.is_empty() && card != crate::gpu::AUTOMATIC {
+        variables.insert("GT4_HW_ADAPTER", card.to_string());
+    }
+    add_common(&mut variables, settings);
+    variables.into_iter().map(|(name, value)| (name.to_string(), value)).collect()
+}
+
+/// The variables of a session: the fixed 480p and 16:9 holds, display mode, present mode, async GS and diagnostics.
 fn add_common(variables: &mut BTreeMap<&'static str, String>, settings: &Settings) {
     // Fixed (owner, 2026-10-21): the game always runs at 480p with its own 16:9. No setting changes these, and no stored
     // value of the retired `input_resolution` or `widescreen` settings is read (settings::RETIRED_SETTINGS).
@@ -310,6 +355,7 @@ pub const STANDALONE_GS_INI_FILE: &str = "gt4-gs.ini";
 /// `fullscreen`, `present_mode`, `monitor`, `output_size` (only when a monitor is known), `async_gs`, `performance_report`
 /// and `check_vu_code`. Each key stands for the variable [`add_common`] and [`display_environment`] set (the mapping is
 /// tested against them). Anything the game defaults itself (GSdx, 480p, 16:9, automatic ultrawide) is not written.
+/// With CoreGS 2.0 chosen, [`coregs20_section`] adds its keys (the game applies them to GT4 only).
 pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarget>) -> String {
     let present = match settings.get("vsync") {
         "fast" => "mailbox",
@@ -338,6 +384,25 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     text
 }
 
+/// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
+/// `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`].
+pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &Path) -> String {
+    let mut text = String::from("renderer=coregs20\n");
+    for (name, value) in coregs20_environment(settings, display, integrated_gpu, textures) {
+        let key = match name.as_str() {
+            "GT4_HW_SCALE" => "hw_scale",
+            "GT4_CORE2_PERFORMANCE" => "hw_performance",
+            "GT4_HW_TEXTURES" => "hw_textures",
+            "GT4_HW_POSTFX" => "hw_postfx",
+            "GT4_CORE2_FSR_SHARPNESS" => "hw_sharpening",
+            "GT4_HW_ADAPTER" => "hw_adapter",
+            _ => continue,
+        };
+        text.push_str(&format!("{key}={value}\n"));
+    }
+    text
+}
+
 /// Whether the game asked for a restart with the built-in renderer (its log holds the marker line). The launcher
 /// answers with the GSdx error, not with a restart (TASK-096).
 pub fn restart_requested(log_text: &str) -> bool {
@@ -359,6 +424,19 @@ pub fn is_scrubbed(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     !PASSED_THROUGH.iter().any(|p| p.eq_ignore_ascii_case(name))
         && SCRUBBED_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
+}
+
+/// Plans one CoreGS 2.0 launch. Pure.
+pub fn plan_coregs20_launch(
+    inputs: &LaunchInputs<'_>,
+    settings: &Settings,
+    display: Option<&DisplayTarget>,
+    integrated_gpu: bool,
+    textures: &Path,
+    inherited_names: &[String],
+) -> LaunchPlan {
+    let environment = coregs20_environment(settings, display, integrated_gpu, textures);
+    plan_with(inputs, with_display(environment, display), inherited_names)
 }
 
 /// Plans one PCSX2 GS launch. Pure: the caller writes `paths.config` (see [`gs_config_text`]) before starting.
