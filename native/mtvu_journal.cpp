@@ -120,11 +120,24 @@ std::size_t EeJournal::outstanding_jobs() const {
   }));
 }
 
+void GsSink::direct_job(std::uint64_t) { throw std::logic_error("mtvu GS sink without direct intake"); }
+
+void EeJournal::set_direct(bool direct) {
+  if (jobs_posted_ != 0 && direct != direct_) throw std::logic_error("mtvu direct GS intake switched after jobs");
+  direct_ = direct;
+}
+
 void EeJournal::post_job(RecordKind kind, std::uint64_t job, const std::uint8_t *payload, std::size_t bytes) {
-  JournalEntry placeholder;
-  placeholder.kind = EntryKind::Placeholder;
-  placeholder.job = job;
-  journal_.push_back(std::move(placeholder));
+  if (direct_) {
+    // IN-461: the queued EE entries (never behind a placeholder here) go first, so the job keeps its stream position.
+    execute_ready();
+    sink_.direct_job(job);
+  } else {
+    JournalEntry placeholder;
+    placeholder.kind = EntryKind::Placeholder;
+    placeholder.job = job;
+    journal_.push_back(std::move(placeholder));
+  }
 
   RecordHeader header;
   header.kind = static_cast<std::uint16_t>(kind);
@@ -205,8 +218,10 @@ void EeJournal::send_chunks(SpscByteRing &ring, RecordHeader header, const std::
       // that ring. The input bell belongs to the worker alone. Both waits are event waits, never spins.
       const std::uint32_t seen = output_bell_.snapshot();
       if (ring.try_push(header, payload + offset)) break;
-      pump_output();
-      if (ring.try_push(header, payload + offset)) break;
+      if (!direct_) {  // IN-461: in direct intake the GS consumer drains the output ring
+        pump_output();
+        if (ring.try_push(header, payload + offset)) break;
+      }
       bool slept = false;
       output_bell_.wait_changed(seen, slept);
     }

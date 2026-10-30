@@ -32,6 +32,11 @@
 
 #include "gs_stream/gs_stream_protocol.h"
 
+namespace gt4::mtvu {
+class SpscByteRing;
+class Doorbell;
+}  // namespace gt4::mtvu
+
 namespace gt4::gs_stream {
 
 enum class Renderer { donor, pcsx2, hw };
@@ -107,6 +112,12 @@ void on_vsync(bool odd_field);
 // so the GS process sees the frame complete before its VSYNC. Without deferral both calls behave as before.
 void set_vsync_deferral(bool defer);
 bool post_pending_vsync();
+// IN-461 (CPU survey T3, direct GS intake): with GT4_RENDERER=hw the in-process GS worker can read the VU1 worker's
+// output ring itself. mtvu_direct_available() says whether it can (asked once by the MTVU runtime at start);
+// on_mtvu_job() puts VU1 job `job` at this point of the GS stream (EE thread, the job's program position): the GS worker
+// then executes that job's GIF records straight from `output`, waiting on `bell`, up to its JobDone.
+bool mtvu_direct_available();
+void on_mtvu_job(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell);
 // GS hard reset (donor render_reset) and GIF path reset.
 void on_gs_reset();
 void on_gif_reset();

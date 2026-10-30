@@ -1272,6 +1272,23 @@ void hw_privileged(const InProcessSink &sink, std::uint32_t address, std::uint64
 
 }  // namespace
 
+bool mtvu_direct_available() {
+#ifdef GT4_GS_STREAM_HW
+  // The GS worker thread reads the ring; GT4_HW_GS_THREAD=0 runs the stream on the EE thread, which cannot.
+  const char *thread = std::getenv("GT4_HW_GS_THREAD");
+  const bool gsThread = !(thread && std::strcmp(thread, "0") == 0);
+  return renderer() == Renderer::hw && hw_in_process_sink().mtvu_job != nullptr && gsThread;
+#else
+  return false;
+#endif
+}
+
+void on_mtvu_job(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell) {
+  const InProcessSink *sink = hw_sink();
+  if (!sink || !sink->mtvu_job) refuse("IN-461 direct GS intake without the hw GS worker");
+  sink->mtvu_job(job, output, bell);
+}
+
 bool on_gif_render(int path, const std::uint8_t *data, std::uint32_t qwc) {
   if (const InProcessSink *sink = hw_sink()) {
     if (qwc) sink->gif(path, data, qwc);

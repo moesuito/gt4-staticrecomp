@@ -65,12 +65,26 @@ class DonorSink final : public GsSink {
     post_readback_(qwords);
   }
   void set_readback_consumer(void (*post)(std::uint32_t)) { post_readback_ = post; }
+  // IN-461: direct GS intake; the GS consumer reads the job's records from the output ring itself.
+  void direct_job(std::uint64_t job) override {
+    if (!post_gs_job_) throw std::logic_error("mtvu direct GS intake without a consumer");
+    post_gs_job_(job, *output_, *output_bell_);
+  }
+  void set_direct_consumer(void (*post)(std::uint64_t, SpscByteRing &, Doorbell &), SpscByteRing &output,
+                           Doorbell &output_bell) {
+    post_gs_job_ = post;
+    output_ = &output;
+    output_bell_ = &output_bell;
+  }
 
  private:
   void (*render_)(int, const std::uint8_t *, std::uint32_t);
   void (*privileged_)(std::uint32_t, std::uint64_t) = nullptr;
   bool (*post_vsync_)() = nullptr;
   void (*post_readback_)(std::uint32_t) = nullptr;
+  void (*post_gs_job_)(std::uint64_t, SpscByteRing &, Doorbell &) = nullptr;
+  SpscByteRing *output_ = nullptr;
+  Doorbell *output_bell_ = nullptr;
 };
 
 // Cumulative worker totals, published by the worker after each job (before its JobDone). The EE reads them only
@@ -122,6 +136,10 @@ struct Runtime {
   std::vector<SignalWrite> signal_scratch;  // EE thread only: signals of the packet being accepted
 
   std::uint64_t next_job = 1;  // EE thread only
+  // IN-461 (CPU survey T3): direct GS intake. The GS worker reads the output ring, so the EE never sees a JobDone; the
+  // worker stores the job it finished here before its JobDone, and the EE waits on it where it needs the worker idle.
+  bool direct = false;  // set at start
+  std::atomic<std::uint64_t> completed_job{0};
   // TASK-084 step 3: a deferred VSYNC is queued behind the frame's worker output; never more than one at a time.
   bool pending_vblank = false;
   std::uint64_t vblank_posts = 0;
@@ -244,6 +262,8 @@ void worker_main() {
     }
     ++r.worker_jobs;
     publish_worker_totals(r);
+    // IN-461: before the JobDone, so the EE that the JobDone (or the idle wake behind it) wakes sees the job done.
+    r.completed_job.store(header.job, std::memory_order_release);
     r.worker_end->emit_job_done(header.job);
   }
 }
@@ -370,6 +390,15 @@ void reset_worker_baseline() {
 // IN-459: the worker wakes a sleeping EE for its output only every GT4_MTVU_WAKE_KB KiB of output (default 64), at its
 // last queued JobDone and before it waits for output space; the EE slept and woke about 700 times per VBlank of the
 // night race, one wake per few records, and each wake was a system call on the worker. 0 wakes it for every record.
+// IN-461: GT4_MTVU_DIRECT=1 lets the hw renderer's GS worker read the VU1 worker's output ring itself (unset or 0: the
+// EE journal forwards it, as before).
+static bool direct_intake_from_environment() {
+  const char *value = std::getenv("GT4_MTVU_DIRECT");
+  if (value == nullptr || std::strcmp(value, "0") == 0) return false;
+  if (std::strcmp(value, "1") == 0) return true;
+  throw std::invalid_argument("GT4_MTVU_DIRECT must be unset, 0 or 1");
+}
+
 static std::size_t wake_output_bytes_from_environment() {
   const char *value = std::getenv("GT4_MTVU_WAKE_KB");
   if (value == nullptr) return std::size_t{64} << 10;
@@ -399,6 +428,14 @@ void start(const Settings &settings, const Donor &donor) {
   r.journal = std::make_unique<EeJournal>(*r.input, *r.output, r.input_bell, r.output_bell, *r.sink);
   r.worker_end = std::make_unique<WorkerEnd>(*r.input, *r.output, r.input_bell, r.output_bell,
                                              wake_output_bytes_from_environment());
+  // IN-461: direct GS intake (GT4_MTVU_DIRECT=1) needs a GS consumer in this process that reads the output ring (the hw
+  // renderer); verify keeps the journal (its hash covers the GS stream on the EE).
+  r.direct = direct_intake_from_environment() && !settings.verify && donor.direct_gs_available != nullptr &&
+             donor.post_gs_job != nullptr && donor.direct_gs_available();
+  if (r.direct) {
+    r.sink->set_direct_consumer(donor.post_gs_job, *r.output, r.output_bell);
+    r.journal->set_direct(true);
+  }
   r.worker_accounting = gt4::perf::Accounting(gt4::perf::Probe::shared().enabled());
   r.baseline = WorkerTotals{};
   gt4::perf::Probe::set_mtvu_hooks(report_interval, reset_worker_baseline);
@@ -456,6 +493,12 @@ bool queue_readback(std::uint32_t qwords) {
 void drain_download() {
   Runtime &r = rt();
   if (t_on_worker || !enabled() || r.journal->queued_entries() == 0) return;
+  if (r.direct) {
+    // IN-461: the READ_FIFO then waits for the GS worker, which reads the VU1 output itself; the queued EE entries (the
+    // deferred READ_FIFOs) still go first, and never wait.
+    r.journal->drain(true);
+    return;
+  }
   r.download_deferred = false;
   ++r.syncs["download"];
   gt4::perf::Scope waiting(gt4::perf::Category::mtvu_wait_download);
@@ -606,6 +649,20 @@ void note_render(int path, const std::uint8_t *data, std::uint32_t qwc) {
   fnv_bytes(r.frame_hash, data, static_cast<std::size_t>(qwc) * 16);
 }
 
+// IN-461: waits until the worker finished every job posted so far (direct GS intake, where the EE sees no JobDone). The
+// worker stores the finished job before its JobDone, and that JobDone, or its loud ring before it sleeps for input,
+// wakes this thread.
+static void wait_for_jobs(Runtime &r) {
+  const std::uint64_t last = r.next_job - 1;
+  for (;;) {
+    const std::uint32_t seen = r.output_bell.snapshot();
+    if (r.completed_job.load(std::memory_order_acquire) >= last) return;
+    rethrow_worker_error();
+    bool slept = false;
+    r.output_bell.wait_changed(seen, slept);
+  }
+}
+
 void sync(const char *reason) {
   Runtime &r = rt();
   if (!enabled() || t_on_worker) return;
@@ -628,7 +685,11 @@ void sync(const char *reason) {
     r.download_deferred = true;
     return;
   }
-  ++r.syncs[reason];
+  // IN-461: with direct GS intake the journal holds EE entries only. A GS read (download) waits for the GS worker,
+  // which waits for the VU1 output it reads, so it needs no wait here; a held VSYNC only needs the journal run; every
+  // other reason (VU memory, resets, state, GIF reset, a PATH1 signal) waits until the worker finished every job.
+  const bool waitForJobs = r.direct && why != "download" && why != "vblank_pending";
+  ++r.syncs[r.direct && !waitForJobs ? std::string(reason) + "_direct" : std::string(reason)];
   using gt4::perf::Category;
   const Category wait = why == "vblank" ? Category::mtvu_wait_vblank
                       : why == "download" ? Category::mtvu_wait_download
@@ -642,6 +703,7 @@ void sync(const char *reason) {
   {
     gt4::perf::Scope waiting(wait);
     r.journal->drain(true);
+    if (waitForJobs) wait_for_jobs(r);
   }
   if (privileged) r.privileged_wait_us = wall_us() - start;
   r.download_deferred = false;
@@ -746,8 +808,9 @@ void worker_gif(int path, const std::uint8_t *data, std::uint32_t qwc) {
       r.path1_signals.fetch_add(1, std::memory_order_relaxed);
       if (!r.path1_reported) {
         r.path1_reported = true;
-        std::fprintf(stderr, "[mtvu] PATH1 SIGNAL/FINISH/LABEL in job %llu: IRQ applied late (known divergence)\n",
-                     static_cast<unsigned long long>(r.worker_job));
+        // IN-461: with direct GS intake the EE never walks the PATH1 output, so the IRQ is not applied at all.
+        std::fprintf(stderr, "[mtvu] PATH1 SIGNAL/FINISH/LABEL in job %llu: IRQ %s (known divergence)\n",
+                     static_cast<unsigned long long>(r.worker_job), r.direct ? "not applied" : "applied late");
       }
       if (r.settings.strict) throw std::runtime_error("mtvu strict: PATH1 SIGNAL/FINISH/LABEL");
     }
@@ -777,6 +840,7 @@ void report(std::FILE *output) {
                r.settings.enabled ? 1 : 0, r.settings.verify ? 1 : 0, r.settings.strict ? 1 : 0,
                r.worker_failed.load() ? 1 : 0, r.settings.chain_jobs ? 1 : 0, r.settings.gif_fast_path ? 1 : 0,
                r.settings.vblank_journal ? 1 : 0, static_cast<unsigned long long>(r.vblank_posts));
+  std::fprintf(output, "[mtvu] direct GS intake %d (IN-461: the GS worker reads the VU1 output ring)\n", r.direct ? 1 : 0);
   if (r.journal) {
     std::fprintf(output, "[mtvu] jobs %llu vif_packets %llu vif_writes %llu ee_transfers %llu direct_transfers %llu renders %llu\n",
                  static_cast<unsigned long long>(r.journal->jobs_posted()),

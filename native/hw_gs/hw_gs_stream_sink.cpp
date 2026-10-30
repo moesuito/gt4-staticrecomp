@@ -117,6 +117,8 @@ struct TransportCounters {
   // Worker (GS worker thread).
   std::atomic<std::uint64_t> busy_ticks[5] = {};   // per GsCommand::Kind: Gif, Privileged, Vsync, GsReset, GifReset
   std::atomic<std::uint64_t> idle_ticks{0}, wakeups{0}, max_depth{0};
+  // IN-461 (direct GS intake): VU1 jobs and records executed straight from the MTVU output ring, and the waits for them.
+  std::atomic<std::uint64_t> mtvu_jobs{0}, mtvu_records{0}, mtvu_wait_ticks{0}, mtvu_sleeps{0};
 };
 TransportCounters g_transport;
 
@@ -175,7 +177,7 @@ void read_fifo_now(std::uint8_t *data, std::uint32_t qwords) {
 
 // TASK-027 CPU survey: one [hw] transport line per profile interval (per-VBlank averages).
 void print_transport(double n) {
-  constexpr int kValues = 21;
+  constexpr int kValues = 25;
   static std::uint64_t lastTsc = 0;
   static LARGE_INTEGER lastQpc{};
   static std::uint64_t last[kValues] = {};
@@ -190,7 +192,8 @@ void print_transport(double n) {
       t.vsync_waits.load(), t.drain_wait_ticks.load(), t.drains.load(), t.read_fifo_ticks.load(),
       t.read_fifos.load(), t.wake_pushes.load(), t.busy_ticks[0].load(), t.busy_ticks[1].load(),
       t.busy_ticks[2].load(), t.busy_ticks[3].load() + t.busy_ticks[4].load(), t.idle_ticks.load(),
-      t.wakeups.load(), t.max_depth.load()};
+      t.wakeups.load(), t.max_depth.load(), t.mtvu_jobs.load(), t.mtvu_records.load(), t.mtvu_wait_ticks.load(),
+      t.mtvu_sleeps.load()};
   if (lastTsc != 0 && tsc > lastTsc) {
     const double seconds = static_cast<double>(qpc.QuadPart - lastQpc.QuadPart) / static_cast<double>(frequency.QuadPart);
     const double msPerTick = seconds * 1000.0 / static_cast<double>(tsc - lastTsc);
@@ -200,10 +203,10 @@ void print_transport(double n) {
                  "[hw] transport vsync=%llu ee: gif_cmds=%.1f gif_kib=%.0f priv_cmds=%.1f gif_ms=%.3f copy_ms=%.3f "
                  "priv_ms=%.3f vsync_wait_ms=%.3f (%.2f) drain_wait_ms=%.3f (%.2f) read_fifo_ms=%.3f (%.2f) "
                  "wake_pushes=%.1f | worker: gif_ms=%.3f priv_ms=%.3f vsync_ms=%.3f other_ms=%.3f idle_ms=%.3f "
-                 "wakeups=%.1f max_depth=%llu\n",
+                 "wakeups=%.1f max_depth=%llu mtvu_jobs=%.1f mtvu_records=%.1f mtvu_wait_ms=%.3f mtvu_sleeps=%.1f\n",
                  static_cast<unsigned long long>(g_vsyncs), d(0), d(1) / 1024.0, d(2), ms(4), ms(5), ms(6), ms(7), d(8),
                  ms(9), d(10), ms(11), d(12), d(13), ms(14), ms(15), ms(16), ms(17), ms(18), d(19),
-                 static_cast<unsigned long long>(values[20]));
+                 static_cast<unsigned long long>(values[20]), d(21), d(22), ms(23), d(24));
   }
   std::copy(std::begin(values), std::end(values), std::begin(last));
   lastTsc = tsc;
@@ -346,7 +349,7 @@ void gif_reset_now() { backend().reset_gif_paths(); }
 // record that would cross the end). Waking is conditional: the EE rings the work bell after a push, which wakes the
 // worker only when it sleeps; the worker rings the progress bell only when what the EE waits for has happened (free
 // space, a VBlank done, the ring empty).
-enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36 };
+enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37 };
 
 class StreamRing {
 public:
@@ -459,6 +462,17 @@ public:
     }
   }
 
+  // IN-461 (CPU survey T3, direct GS intake; EE thread): VU1 job `job` at this point of the stream. The worker executes
+  // the job's GIF records straight from the MTVU output ring when it reaches this record, so the EE neither copies nor
+  // forwards them. The ring and its bell never change; they are stored before the first record that needs them.
+  void post_mtvu_job(std::uint64_t job, mtvu::SpscByteRing &output, mtvu::Doorbell &bell) {
+    if (mtvuOutput_ == nullptr) {
+      mtvuOutput_ = &output;
+      mtvuBell_ = &bell;
+    }
+    push(SinkRecord::MtvuJob, 0, job, nullptr, 0);
+  }
+
   // Waits until every queued record has executed; the caller then runs with the backend lock held.
   std::unique_lock<std::mutex> drain() {
     const std::uint64_t start = __rdtsc();
@@ -515,6 +529,15 @@ private:
       }
       const SinkRecord kind = static_cast<SinkRecord>(header.kind);
       const std::uint64_t busyStart = __rdtsc();
+      if (kind == SinkRecord::MtvuJob) {
+        // IN-461: the job's records, outside the backend lock while the worker waits for them.
+        const std::uint64_t waited = execute_mtvu_job(header.job);
+        add(g_transport.busy_ticks[0], __rdtsc() - busyStart - waited);
+        add(g_transport.mtvu_wait_ticks, waited);
+        ring_.release();
+        notify_progress(false);
+        continue;
+      }
       {
         std::lock_guard<std::mutex> backendLock(backendMutex_);
         switch (kind) {
@@ -528,6 +551,7 @@ private:
           case SinkRecord::Vsync: vsync_now(header.job != 0); break;
           case SinkRecord::GsReset: gs_reset_now(); break;
           case SinkRecord::GifReset: gif_reset_now(); break;
+          case SinkRecord::MtvuJob: break;  // executed above, outside the lock
         }
       }
       const int slot = kind == SinkRecord::Gif ? 0 : kind == SinkRecord::Privileged ? 1 : kind == SinkRecord::Vsync ? 2 : 3;
@@ -539,7 +563,50 @@ private:
     }
   }
 
+  // IN-461: executes VU1 job `job`'s GIF records from the MTVU output ring up to its JobDone, then frees them (the same
+  // bytes the EE journal forwarded through gif() before; this thread is now the ring's one reader). Sleeps on the
+  // ring's bell while the VU1 worker has not published the next record; the backend lock is taken per record, never
+  // while sleeping. Returns the ticks spent waiting for the VU1 worker.
+  std::uint64_t execute_mtvu_job(std::uint64_t job) {
+    std::uint64_t waited = 0;
+    for (;;) {
+      mtvu::RecordHeader record;
+      const std::uint8_t *bytes = nullptr;
+      if (!mtvuOutput_->try_peek(record, bytes)) {
+        const std::uint32_t seen = mtvuBell_->snapshot();
+        if (!mtvuOutput_->try_peek(record, bytes)) {
+          const std::uint64_t start = __rdtsc();
+          bool slept = false;
+          mtvuBell_->wait_changed(seen, slept);
+          waited += __rdtsc() - start;
+          if (slept) add(g_transport.mtvu_sleeps, 1);
+          continue;
+        }
+      }
+      const auto kind = static_cast<mtvu::RecordKind>(record.kind);
+      if (record.job != job || (kind != mtvu::RecordKind::Gif && kind != mtvu::RecordKind::JobDone)) {
+        std::fprintf(stderr, "[hw] IN-461: VU1 output record kind %u of job %llu while executing job %llu; stopping\n",
+                     static_cast<unsigned>(record.kind), static_cast<unsigned long long>(record.job),
+                     static_cast<unsigned long long>(job));
+        std::exit(EXIT_FAILURE);
+      }
+      if (kind == mtvu::RecordKind::JobDone) {
+        mtvuOutput_->release();
+        add(g_transport.mtvu_jobs, 1);
+        return waited;
+      }
+      {
+        std::lock_guard<std::mutex> backendLock(backendMutex_);
+        gif_now(record.path, bytes, record.bytes);
+      }
+      add(g_transport.mtvu_records, 1);
+      mtvuOutput_->release();
+    }
+  }
+
   StreamRing ring_;
+  mtvu::SpscByteRing *mtvuOutput_ = nullptr;  // IN-461: the VU1 worker's output ring (set by the EE, see post_mtvu_job)
+  mtvu::Doorbell *mtvuBell_ = nullptr;
   mtvu::Doorbell work_;      // EE -> worker: records published (wakes the worker only when it sleeps)
   mtvu::Doorbell progress_;  // worker -> EE: space freed, a VBlank done, the ring empty (only when wanted)
   std::atomic<std::uint64_t> want_{kWantNothing};
@@ -575,6 +642,16 @@ void gif(int path, const std::uint8_t *data, std::uint32_t qwc) {
   add(g_transport.copy_ticks, ticks);  // the copy into the ring is the whole hook now
   add(g_transport.gif_commands, 1);
   add(g_transport.gif_bytes, bytes);
+}
+
+// IN-461 (direct GS intake): the VU1 job's place in the stream. Needs the worker thread: on the EE thread the job's
+// output would be awaited before the job is even sent to the VU1 worker.
+void mtvu_job(std::uint64_t job, mtvu::SpscByteRing &output, mtvu::Doorbell &bell) {
+  if (!g_worker) {
+    std::fprintf(stderr, "[hw] GT4_MTVU_DIRECT=1 needs the GS worker thread (GT4_HW_GS_THREAD is 0); stopping\n");
+    std::exit(EXIT_FAILURE);
+  }
+  g_worker->post_mtvu_job(job, output, bell);
 }
 
 void privileged(std::uint32_t address, std::uint64_t value) {
@@ -772,6 +849,7 @@ const InProcessSink &hw_in_process_sink() {
     s.resize_window = &gt4::hw::resize_window;
     s.display_aspect = &gt4::hw::display_aspect;
     s.finish = &gt4::hw::finish;
+    s.mtvu_job = &gt4::hw::mtvu_job;
     return s;
   }();
   return sink;

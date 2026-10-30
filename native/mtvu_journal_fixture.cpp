@@ -6,6 +6,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -64,6 +68,138 @@ class RecordingSink final : public GsSink {
   std::vector<Event> events;
 };
 
+// IN-461 (direct GS intake): a GS consumer that reads the worker's output ring itself, as the hw GS worker does. The EE
+// side queues every GS operation and every job marker in stream order; the consumer thread executes them in that order
+// into a RecordingSink and takes each job's records from the output ring (reassembling chunked records) up to its
+// JobDone, sleeping on the output bell like the GS worker.
+class DirectConsumer final : public GsSink {
+ public:
+  DirectConsumer(SpscByteRing &output, Doorbell &output_bell) : output_(output), output_bell_(output_bell) {
+    thread_ = std::thread([this] { run(); });
+  }
+  ~DirectConsumer() { finish(); }
+  void gif_transfer(std::uint8_t path, const std::uint8_t *data, std::size_t bytes) override {
+    Item item;
+    item.kind = Item::Gif;
+    item.path = path;
+    item.bytes.assign(data, data + bytes);
+    push(std::move(item));
+  }
+  void gif_reset() override { push(Item{Item::GifReset}); }
+  void vertex_reset() override { push(Item{Item::VertexReset}); }
+  void vblank_flush() override { push(Item{Item::Vblank}); }
+  void privileged_write(std::uint32_t address, std::uint64_t value) override {
+    Item item;
+    item.kind = Item::Privileged;
+    item.address = address;
+    item.value = value;
+    push(std::move(item));
+  }
+  void readback(std::uint32_t qwords) override {
+    Item item;
+    item.kind = Item::Readback;
+    item.value = qwords;
+    push(std::move(item));
+  }
+  void direct_job(std::uint64_t job) override {
+    Item item;
+    item.kind = Item::Job;
+    item.value = job;
+    push(std::move(item));
+  }
+  // Ends the consumer after everything queued and returns what it executed (rethrows its failure).
+  const std::vector<Event> &finish() {
+    if (thread_.joinable()) {
+      push(Item{Item::Stop});
+      thread_.join();
+    }
+    if (failure_) std::rethrow_exception(failure_);
+    return executed_.events;
+  }
+
+ private:
+  struct Item {
+    enum Kind { Gif, GifReset, VertexReset, Vblank, Privileged, Readback, Job, Stop } kind = Gif;
+    std::uint8_t path = 0;
+    std::uint32_t address = 0;
+    std::uint64_t value = 0;
+    std::vector<std::uint8_t> bytes;
+  };
+
+  void push(Item item) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    items_.push_back(std::move(item));
+    ready_.notify_one();
+  }
+
+  void run() {
+    try {
+      for (;;) {
+        Item item;
+        {
+          std::unique_lock<std::mutex> lock(mutex_);
+          ready_.wait(lock, [this] { return !items_.empty(); });
+          item = std::move(items_.front());
+          items_.pop_front();
+        }
+        switch (item.kind) {
+          case Item::Gif: executed_.gif_transfer(item.path, item.bytes.data(), item.bytes.size()); break;
+          case Item::GifReset: executed_.gif_reset(); break;
+          case Item::VertexReset: executed_.vertex_reset(); break;
+          case Item::Vblank: executed_.vblank_flush(); break;
+          case Item::Privileged: executed_.privileged_write(item.address, item.value); break;
+          case Item::Readback: executed_.readback(static_cast<std::uint32_t>(item.value)); break;
+          case Item::Job: execute_job(item.value); break;
+          case Item::Stop: return;
+        }
+      }
+    } catch (...) {
+      failure_ = std::current_exception();
+    }
+  }
+
+  void execute_job(std::uint64_t job) {
+    std::vector<std::uint8_t> record;
+    std::uint8_t path = 0;
+    for (;;) {
+      RecordHeader header;
+      const std::uint8_t *payload = nullptr;
+      if (!output_.try_peek(header, payload)) {
+        const std::uint32_t seen = output_bell_.snapshot();
+        if (!output_.try_peek(header, payload)) {
+          bool slept = false;
+          output_bell_.wait_changed(seen, slept);
+          continue;
+        }
+      }
+      require(header.job == job, "direct consumer: output out of job order");
+      if (header.kind == static_cast<std::uint16_t>(RecordKind::JobDone)) {
+        require(record.empty(), "direct consumer: JobDone inside a chunked record");
+        output_.release();
+        return;
+      }
+      require(header.kind == static_cast<std::uint16_t>(RecordKind::Gif), "direct consumer: unexpected record");
+      record.insert(record.end(), payload, payload + header.bytes);
+      path = header.path;
+      const bool more = (header.flags & kFlagMore) != 0;
+      output_.release();
+      if (!more) {
+        executed_.gif_transfer(path, record.data(), record.size());
+        record.clear();
+      }
+    }
+  }
+
+  SpscByteRing &output_;
+  Doorbell &output_bell_;
+  RecordingSink executed_;  // consumer thread only (read by finish after the join)
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::deque<Item> items_;
+  std::exception_ptr failure_;
+  std::thread thread_;
+};
+
 struct Output {
   std::uint8_t path = 0;
   std::vector<std::uint8_t> bytes;
@@ -117,12 +253,16 @@ struct WorkerRun {
 
 // One random script. Returns the number of operations, and checks the GS log against the serial model.
 void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_bytes, int operations,
-                std::uint64_t &jobs_out, std::uint64_t &fast_path_out, std::size_t wake_bytes = 0) {
+                std::uint64_t &jobs_out, std::uint64_t &fast_path_out, std::size_t wake_bytes = 0, bool direct = false) {
   Doorbell input_bell, output_bell;
   SpscByteRing input(input_bytes, input_bell);
   SpscByteRing output(output_bytes, output_bell);
-  RecordingSink sink;
+  RecordingSink recording;
+  std::unique_ptr<DirectConsumer> consumer;
+  if (direct) consumer = std::make_unique<DirectConsumer>(output, output_bell);  // IN-461
+  GsSink &sink = direct ? static_cast<GsSink &>(*consumer) : static_cast<GsSink &>(recording);
   EeJournal journal(input, output, input_bell, output_bell, sink);
+  journal.set_direct(direct);
 
   std::exception_ptr failure;
   std::thread worker(WorkerRun::run, std::ref(input), std::ref(output), std::ref(input_bell), std::ref(output_bell), seed * 7919u + 1u,
@@ -229,9 +369,10 @@ void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_
   journal.send_stop();
   worker.join();
   if (failure) std::rethrow_exception(failure);
-  require(sink.events.size() == expected.size(), "GS event count matches the serial model");
+  const std::vector<Event> &events = direct ? consumer->finish() : recording.events;
+  require(events.size() == expected.size(), "GS event count matches the serial model");
   for (std::size_t i = 0; i < expected.size(); ++i) {
-    if (!(sink.events[i] == expected[i])) {
+    if (!(events[i] == expected[i])) {
       std::fprintf(stderr, "script seed %llu: first mismatch at event %zu\n", static_cast<unsigned long long>(seed), i);
       throw std::runtime_error("GS order differs from the serial program order");
     }
@@ -255,17 +396,30 @@ void check_random_scripts() {
   run_script(90001, 32 * 1024 * 1024 / 512, 8 * 1024 * 1024 / 512, 100000, jobs, fast);
   if (std::getenv("MTVU_FIXTURE_TRACE")) std::fprintf(stderr, "long script with quiet wakes\n");
   run_script(90002, 32 * 1024 * 1024 / 512, 8 * 1024 * 1024 / 512, 100000, jobs, fast, 64 * 1024);
+  // IN-461: 1,000 scripts and a long one with direct GS intake (a consumer thread reads the output ring).
+  if (std::getenv("MTVU_FIXTURE_TRACE")) std::fprintf(stderr, "direct scripts\n");
+  for (std::uint64_t seed = 3001; seed <= 4000; ++seed) {
+    const std::size_t input = seed % 3 == 0 ? 128 : (seed % 3 == 1 ? 256 : 4096);
+    const std::size_t output = seed % 2 == 0 ? 128 : 512;
+    run_script(seed, input, output, 60, jobs, fast, seed % 4 < 2 ? 0 : 96, true);
+  }
+  run_script(90003, 32 * 1024 * 1024 / 512, 8 * 1024 * 1024 / 512, 100000, jobs, fast, 64 * 1024, true);
   require(jobs > 20000 && fast > 0, "scripts posted jobs and used the fast path");
 }
 
-void check_tiny_ring_deadlock(std::size_t wake_bytes) {
+void check_tiny_ring_deadlock(std::size_t wake_bytes, bool direct = false) {
   // 500 jobs with 200-byte inputs and up to 400-byte outputs through 128-byte rings: both sides must keep
-  // draining each other or this never finishes (CTest TIMEOUT catches a hang).
+  // draining each other or this never finishes (CTest TIMEOUT catches a hang). IN-461: with direct intake the EE never
+  // drains the output ring; the consumer thread does.
   Doorbell input_bell, output_bell;
   SpscByteRing input(128, input_bell);
   SpscByteRing output(128, output_bell);
-  RecordingSink sink;
+  RecordingSink recording;
+  std::unique_ptr<DirectConsumer> consumer;
+  if (direct) consumer = std::make_unique<DirectConsumer>(output, output_bell);
+  GsSink &sink = direct ? static_cast<GsSink &>(*consumer) : static_cast<GsSink &>(recording);
   EeJournal journal(input, output, input_bell, output_bell, sink);
+  journal.set_direct(direct);
   std::exception_ptr failure;
   std::thread worker(WorkerRun::run, std::ref(input), std::ref(output), std::ref(input_bell), std::ref(output_bell), std::uint64_t{99},
                      wake_bytes, std::ref(failure));
@@ -281,8 +435,9 @@ void check_tiny_ring_deadlock(std::size_t wake_bytes) {
   journal.send_stop();
   worker.join();
   if (failure) std::rethrow_exception(failure);
-  require(sink.events.size() == expected.size(), "tiny ring event count");
-  for (std::size_t i = 0; i < expected.size(); ++i) require(sink.events[i] == expected[i], "tiny ring order");
+  const std::vector<Event> &events = direct ? consumer->finish() : recording.events;
+  require(events.size() == expected.size(), "tiny ring event count");
+  for (std::size_t i = 0; i < expected.size(); ++i) require(events[i] == expected[i], "tiny ring order");
 }
 
 void check_blocking_drain_waits_for_worker() {
@@ -371,6 +526,9 @@ int main() {
     check_tiny_ring_deadlock(0);
     if (trace) std::fprintf(stderr, "tiny ring, quiet\n");
     check_tiny_ring_deadlock(64);  // IN-459: quiet publishes; the full ring must still wake the EE
+    if (trace) std::fprintf(stderr, "tiny ring, direct\n");
+    check_tiny_ring_deadlock(0, true);   // IN-461: direct GS intake, both wake modes
+    check_tiny_ring_deadlock(64, true);
     if (trace) std::fprintf(stderr, "blocking drain\n");
     check_blocking_drain_waits_for_worker();
     if (trace) std::fprintf(stderr, "shutdown\n");
@@ -381,6 +539,6 @@ int main() {
     std::fprintf(stderr, "native_mtvu_journal failed: %s\n", error.what());
     return 1;
   }
-  std::printf("native_mtvu_journal ok: 2000 random scripts + two 100000-step scripts vs serial order (half with quiet worker wakes), tiny-ring deadlock in both wake modes, blocking drain, shutdown, protocol error\n");
+  std::printf("native_mtvu_journal ok: 2000 random scripts + three 100000-step scripts vs serial order (half with quiet worker wakes; 1000 scripts and one long one with direct GS intake), tiny-ring deadlock in both wake modes and with direct intake, blocking drain, shutdown, protocol error\n");
   return 0;
 }

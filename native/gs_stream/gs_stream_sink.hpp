@@ -14,6 +14,11 @@
 #include <cstdio>
 #include <string>
 
+namespace gt4::mtvu {
+class SpscByteRing;
+class Doorbell;
+}  // namespace gt4::mtvu
+
 namespace gt4::gs_stream {
 
 struct InProcessSink {
@@ -39,6 +44,9 @@ struct InProcessSink {
   void (*display_aspect)(bool fill, std::uint32_t ratio_millionths) = nullptr;
   // End of the run: wait for the GPU and print the session summary.
   void (*finish)(std::FILE *output) = nullptr;
+  // IN-461 (direct GS intake): VU1 job `job` belongs at this point of the GS stream; the GS worker executes its GIF
+  // records straight from the MTVU output ring `output` (waiting on `bell`) up to its JobDone. Null: not supported.
+  void (*mtvu_job)(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell) = nullptr;
 };
 
 // Provided by the HWR adapter when the build has GT4_HW_GS=ON.

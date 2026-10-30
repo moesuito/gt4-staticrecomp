@@ -13,6 +13,9 @@
 
 namespace gt4::mtvu {
 
+class SpscByteRing;
+class Doorbell;
+
 struct Settings {
   bool enabled = true;  // GT4_MTVU: worker thread and shadow VIF1 (default on; 0 restores the single-thread path)
   bool verify = false;  // GT4_MTVU_VERIFY: per-frame GS stream hash, shadow vs worker VIF1 state at each VBlank
@@ -102,6 +105,12 @@ struct Donor {
   // Returns false when no VSYNC was held. Called from the journal drain, so the record lands after the frame's GIF
   // output in stream order.
   bool (*post_vsync)() = nullptr;
+  // IN-461 (CPU survey T3, direct GS intake; hw renderer only): true when a GS consumer in this process can read the
+  // worker's output ring itself. Asked once, at start.
+  bool (*direct_gs_available)() = nullptr;
+  // IN-461: puts job `job` at this point of the GS stream; the consumer then reads that job's records from `output`
+  // (waiting on `bell`) up to its JobDone. EE thread, at the job's program position.
+  void (*post_gs_job)(std::uint64_t job, SpscByteRing &output, Doorbell &bell) = nullptr;
 };
 
 // Starts the worker when settings.enabled (EE thread, before emulation). Verify hashing works either way.

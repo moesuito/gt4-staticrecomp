@@ -73,6 +73,9 @@ void start_with_donor(const Settings &settings) {
     // TASK-116 step 1: the local flare readback (Performance mode) and the journal services it needs.
     gt4::mtvu::set_download_ordering({&defer_download, &post_readback});
     gt4::gs_stream::set_readback_journal({&gt4::mtvu::queue_readback, &gt4::mtvu::drain_download});
+    // IN-461: the hw renderer's GS worker can read the VU1 output ring itself (GT4_MTVU_DIRECT).
+    donor.direct_gs_available = &gt4::gs_stream::mtvu_direct_available;
+    donor.post_gs_job = &gt4::gs_stream::on_mtvu_job;
   }
 #endif
   start(settings, donor);
