@@ -169,35 +169,38 @@ private:
 
     Batch batch_;
     // IN-366: the vertex queue holds at most 3 vertices (strips keep 2, fans keep the centre and the last, lists and
-    // sprites clear), so a fixed array replaces the vector (no erase of the first element per strip vertex).
+    // sprites clear), so a fixed array replaces the vector. IN-455 (CPU survey R7): a ring over that array, so the
+    // strip advance moves an index instead of copying the remaining vertices.
     class VertexQueue {
     public:
         size_t size() const { return count_; }
         bool empty() const { return count_ == 0; }
-        const Vertex& operator[](size_t index) const { return items_[index]; }
+        const Vertex& operator[](size_t index) const { return items_[(head_ + index) & kMask]; }
         void clear() { count_ = 0; }
         void push_back(const Vertex& vertex) {
             if (count_ == items_.size()) {  // never with the GS primitive rules; kept as a vector-like fallback
-                for (size_t k = 1; k < count_; ++k) items_[k - 1] = items_[k];
+                head_ = (head_ + 1) & kMask;
                 --count_;
                 ++overflows_;
             }
-            items_[count_++] = vertex;
+            items_[(head_ + count_++) & kMask] = vertex;
         }
         void erase_first() {
             if (count_ == 0) return;
-            for (size_t k = 1; k < count_; ++k) items_[k - 1] = items_[k];
+            head_ = (head_ + 1) & kMask;
             --count_;
         }
         void keep_first_and_last() {  // the fan rule: centre and last
             if (count_ < 3) return;
-            items_[1] = items_[count_ - 1];
+            items_[(head_ + 1) & kMask] = items_[(head_ + count_ - 1) & kMask];
             count_ = 2;
         }
         uint64_t overflows() const { return overflows_; }
 
     private:
+        static constexpr size_t kMask = 7;  // items_ holds 8 vertices
         std::array<Vertex, 8> items_{};
+        size_t head_ = 0;
         size_t count_ = 0;
         uint64_t overflows_ = 0;
     };

@@ -1,13 +1,14 @@
 # Current Status
 
-## TASK-027 CoreGS 2.0 candidate 324: night of CPU and GPU fronts (2026-10-30, owner asleep)
+## TASK-027 CoreGS 2.0 candidate 326: night of CPU and GPU fronts (2026-10-30, owner asleep)
 
-`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-324`: 313 + IN-446 (GS stream through a
-lock-free ring), IN-447 (draw path without allocations), IN-450 (unchanged uploads keep page versions), IN-451
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-326`: 313 + IN-446 (GS stream through a
+lock-free ring), IN-447 (draw path without allocations), IN-455 (vertex queue ring), IN-450 (unchanged uploads keep page versions), IN-451
 (speculative depth rejection before texturing, exact), IN-452 (CT32 uploads by whole columns, SSE2), IN-453 (texture
-cache by block identity). Frames identical to candidate 310 at every check. 3x headless night race against 313: GS
-worker about 7.2 -> 6.3 ms per VBlank, EE stream hooks 0.76 -> 0.47 ms, texture stage 0.84 -> 0.36 ms, decode
-windows 12x less data; 12x: GPU busy 20.65 -> 20.27 ms, frame p50 23.8 -> 22.4 ms. Measured and dropped tonight:
+cache by block identity). Frames identical to candidate 310 at every check; CTest 266/267 in both interlock modes
+(the known GS settings contract failure). Final comparison with 313 (headless night race, interleaved): 3x GS worker
+7.19 -> 6.41 ms per VBlank (-11%), process CPU 20.2 -> 18.9 ms, EE critical path 9.69 -> 8.96 ms, frame p50 9.7 ->
+8.9 ms and p95 11.9 -> 10.9 ms, GPU busy 4.16 -> 3.90 ms; 12x GPU busy 20.77 -> 20.25 ms, frame p50 24.0 -> 22.4 ms. Measured and dropped tonight:
 MTVU journal slot rings (no gain), longer submission intervals (worse), textureGather (+2.6% GPU at 12x). Details in
 the ledger and the journal.
 

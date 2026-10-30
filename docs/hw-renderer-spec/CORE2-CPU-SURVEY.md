@@ -202,7 +202,14 @@ Every step: one switch for A/B, 2+2 interleaved headless runs (3x or 12x night r
 | IN-451 | speculative depth rejection before texturing (exact after a fix: a second descriptor for the speculative read) | 12x GPU 20.65 -> 20.27 ms, frame p50 -5.8% | yes |
 | IN-452 | R4: PSMCT32 uploads by whole 8 x 2 columns (SSE2) | 0.61 -> 0.21 ns per pixel; swizzle stage 0.75 -> 0.47 ms | yes |
 | IN-453 | R5: texture cache by block identity (the hash of each changed block) | texture stage 0.84 -> 0.36 ms, decode windows 12x less data, GPU -3% at 3x | yes |
+| IN-455 | R7: the front end vertex queue as a ring (no copy of the remaining vertices per strip vertex) | front end stage 1.80 -> 1.74 ms; totals within noise; front end fixtures (79 tests) and frames identical | yes |
 | IN-454 | whole-image constant fills: the frame by vkCmdClearColorImage, the depth still by the fill shader (Z24 keeps the stored top byte) | exact, but 12x GPU 20.31 -> 20.25 ms (-0.3%): the fills are bound by the depth read-modify-write | no |
+
+**Candidate 324 against 313** (interleaved headless night race): 3x, 2+2 runs: GS worker 7.19 -> 6.41 ms per VBlank
+(-11%), process CPU 20.2 -> 18.9 ms, EE stream hooks 0.74 -> 0.47 ms, EE forwarding of VU1 output 0.93 -> 0.65 ms,
+EE critical path 9.69 -> 8.96 ms, frame p50 9.73 -> 8.93 ms, p95 11.86 -> 10.89 ms, GPU busy 4.16 -> 3.90 ms. 12x, one
+run each: GPU busy 20.77 -> 20.25 ms, frame p50 24.0 -> 22.4 ms, p95 28.2 -> 27.2 ms. 6x, one run each: GPU busy
+7.63 -> 7.59 ms; early-Z alone at 6x, 2+2 runs: GPU busy 7.34 -> 7.22 ms (-1.6%), draw passes 4.86 -> 4.73 ms.
 
 Found on the way: GT4's stale texture decodes came from 4 KiB page versions (blocks beside a texture written); the
 largest GPU item at 12x is GT4's clears (strips covering whole targets, 3.7 ms of isolated GPU time per VBlank); the
