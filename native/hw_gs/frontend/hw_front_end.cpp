@@ -233,10 +233,26 @@ void FrontEnd::ImageQwords(uint32_t path, const Qword* qwords, size_t count) {
 }
 
 void FrontEnd::StripVertices(const StripVertex* vertices, size_t count) {
+    // IN-467: in a triangle strip a vertex only matters to the drawing kicks up to two vertices after it, and most of
+    // GT4's strip vertices do not draw (ADC). Of a run of non-drawing kicks the first goes through Kick (the flush
+    // decision: nothing it reads changes during the run) and the last two (the queue the next kick needs, and the
+    // registers it leaves); the ones between only count, as Kick would count them.
+    const bool skipRuns =
+        options_.fastPaths && static_cast<PrimType>(registers_.EffectivePrim() & 7u) == PrimType::TriangleStrip;
     for (size_t i = 0; i < count; ++i) {
         st_ = vertices[i].st;  // WriteRegister(ST) and WriteRegister(RGBAQ) only store these
         rgbaq_ = vertices[i].rgbaq;
         Kick(vertices[i].kick);
+        if (skipRuns && !vertices[i].kick.drawing) {
+            size_t end = i + 1;
+            while (end < count && !vertices[end].kick.drawing) ++end;
+            if (end - i > 3u) {
+                const size_t skipped = end - i - 3u;
+                counters_.Add(Counter::Vertices, skipped);
+                counters_.Add(Counter::PrimsSkipped, skipped);
+                i += skipped;
+            }
+        }
     }
 }
 

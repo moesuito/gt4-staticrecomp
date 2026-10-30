@@ -158,3 +158,38 @@ target_compile_options(hw_stream_sink_fixture PRIVATE /W4)
 add_executable(hw_cpu_sampler_fixture hw_cpu_sampler_fixture.cpp hw_cpu_sampler.cpp)
 target_compile_options(hw_cpu_sampler_fixture PRIVATE /W4)
 target_compile_definitions(hw_cpu_sampler_fixture PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+# IN-468: profile-guided optimisation of the GS pipeline libraries only (the EE, VU and IOP code is not touched).
+# GT4_HW_PGO=generate instruments them (build only gt4vulkan, the fixtures do not link the profile runtime; a run writes
+# LLVM_PROFILE_FILE at a normal exit); GT4_HW_PGO=use optimises from GT4_HW_PGO_PROFILE (llvm-profdata merge output).
+# GT4_HW_THINLTO=ON adds cross-file inlining between them. Off by default: a build without a profile is unchanged.
+set(GT4_HW_PGO "" CACHE STRING "GS libraries PGO: empty, generate or use")
+set(GT4_HW_PGO_PROFILE "" CACHE FILEPATH "Merged profile for GT4_HW_PGO=use")
+option(GT4_HW_THINLTO "ThinLTO for the GS libraries" OFF)
+set(GT4_HW_PGO_TARGETS gt4_hw_core gt4_hw_gpu gt4_hw_writeback gt4_hw_backend gt4_hw_stream_sink)
+if(GT4_HW_PGO STREQUAL "generate")
+    get_filename_component(GT4_LLVM_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    file(GLOB GT4_PROFILE_RUNTIME "${GT4_LLVM_BIN}/../lib/clang/*/lib/windows/clang_rt.profile-x86_64.lib")
+    if(NOT GT4_PROFILE_RUNTIME)
+        message(FATAL_ERROR "GT4_HW_PGO=generate needs clang_rt.profile-x86_64.lib")
+    endif()
+    foreach(hw_target IN LISTS GT4_HW_PGO_TARGETS)
+        target_compile_options(${hw_target} PRIVATE "/clang:-fprofile-generate")
+    endforeach()
+    target_link_libraries(gt4_hw_core PUBLIC "${GT4_PROFILE_RUNTIME}")
+    target_link_options(gt4_hw_core PUBLIC "/include:__llvm_profile_runtime")
+elseif(GT4_HW_PGO STREQUAL "use")
+    if(NOT EXISTS "${GT4_HW_PGO_PROFILE}")
+        message(FATAL_ERROR "GT4_HW_PGO=use needs GT4_HW_PGO_PROFILE")
+    endif()
+    foreach(hw_target IN LISTS GT4_HW_PGO_TARGETS)
+        target_compile_options(${hw_target} PRIVATE "/clang:-fprofile-use=${GT4_HW_PGO_PROFILE}"
+                               "/clang:-Wno-profile-instr-out-of-date" "/clang:-Wno-profile-instr-unprofiled"
+                               "/clang:-Wno-backend-plugin")
+    endforeach()
+endif()
+if(GT4_HW_THINLTO)
+    foreach(hw_target IN LISTS GT4_HW_PGO_TARGETS)
+        target_compile_options(${hw_target} PRIVATE "/clang:-flto=thin")
+    endforeach()
+endif()
