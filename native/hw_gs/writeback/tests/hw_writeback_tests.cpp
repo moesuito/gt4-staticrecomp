@@ -3949,6 +3949,136 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// Spec 8.8: a 64 x 64 CT32 pattern drawn into pages 0-1 from an uploaded texture, then one FST sprite that samples
+// pages 0-1 themselves and writes their top-left 32 x 32 at half size, as GT4's luminance reduction does in place: pixel
+// (x, y) reads texels near (2x, 2y), which the same sprite also writes when they are inside 32 x 32. The reference
+// rasterises in order, so every such texel is read before the sprite reaches it; the GPU must read a copy taken before
+// the batch. With `selfSampled` false the pattern is also drawn into pages 2-3 and the sprite samples those instead,
+// which the sprite never writes: the same result by definition.
+cpuref::CaptureWriter Core2SelfTextureCapture(bool selfSampled) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kPatternPage = 16;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto tex0 = [](uint64_t page) {  // CT32 64 x 64, TBW 1, TCC, decal
+        return uint64_t{page * 32} | (uint64_t{1} << 14) | (uint64_t{6} << 26) | (uint64_t{6} << 30) |
+               (uint64_t{1} << 34) | (uint64_t{1} << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    ad({(kPatternPage * 32) << 32 | (uint64_t{1} << 48), 0x50, 0, 0x51, uint64_t{64} | (uint64_t{64} << 32), 0x52, 0,
+        0x53});
+    auto texel = [](uint32_t n) {
+        const uint32_t x = n % 64, y = n / 64;
+        return uint64_t{(x * 4u) | ((y * 4u) << 8) | ((((x ^ y) * 4u) & 0xFFu) << 16) | (0x80u << 24)};
+    };
+    std::vector<uint64_t> pixels;
+    for (uint32_t n = 0; n < 64 * 64; n += 2) pixels.push_back(texel(n) | (texel(n + 1) << 32));
+    capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(pixels.size() / 2), true, false, 0, 2, {},
+                                                 pixels));
+    const uint64_t sprite = 6u | (1u << 4) | (1u << 8);  // sprite, TME, FST
+    // The pattern 1:1 into pages 0-1 (a drawn target) and, for the other source, into pages 2-3; then the half-size
+    // sprite into pages 0-1.
+    const uint64_t source = selfSampled ? 0 : 2;
+    ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        uint64_t{1} << 16, 0x4C, tex0(kPatternPage), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0),
+        0x03, xyz(0, 0), 0x05, uv(64, 64), 0x03, xyz(64, 64), 0x05});
+    if (!selfSampled) {
+        ad({source | (uint64_t{1} << 16), 0x4C, sprite, 0x00, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(64, 64), 0x03,
+            xyz(64, 64), 0x05});
+    }
+    ad({uint64_t{1} << 16, 0x4C, 0, 0x3F, tex0(source), 0x06, sprite, 0x00, uv(0, 0), 0x03, xyz(0, 0), 0x05,
+        uv(64, 64), 0x03, xyz(32, 32), 0x05});
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_self_texture (spec 8.8, 12x determinism 2026-10-30): the in-place reduction above, with the batch sampling a
+// copy (GT4_CORE2_SELF_COPY, on by default), leaves pages 0-1 as the same sprite sampling an untouched second copy of
+// the pattern does, at 1x, 2x, 3x and 12x (with internal scaling CORE2 is not bit-exact to the reference, so the second
+// copy stands in for it); at 1x both equal the CPU reference; two 12x runs give the same image and memory.
+int TestCore2SelfTexture(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr size_t kPagesZeroOneBytes = 2u * 8192u;
+    const cpuref::CaptureWriter self = Core2SelfTextureCapture(true), other = Core2SelfTextureCapture(false);
+    std::vector<uint8_t> reference;
+    {
+        cpuref::CpuRenderer renderer;
+        cpuref::ReplaySummary summary;
+        std::string error;
+        if (!cpuref::ReplayCapture(self.Bytes(), renderer, summary,
+                                   [&](uint64_t, const cpuref::FrameImage&) {
+                                       const auto& bytes = renderer.Memory().Local().bytes();
+                                       reference.assign(bytes.begin(), bytes.begin() + kPagesZeroOneBytes);
+                                   },
+                                   error) ||
+            reference.empty()) {
+            std::printf("  reference replay failed: %s\n", error.c_str());
+            return 1;
+        }
+    }
+    auto pages = [](const Core2AbRun& run) {
+        return std::vector<uint8_t>(run.memory.back().begin(), run.memory.back().begin() + kPagesZeroOneBytes);
+    };
+    auto words = [](const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+        uint64_t differing = 0;
+        for (size_t at = 0; at < a.size(); at += 4) differing += std::memcmp(a.data() + at, b.data() + at, 4) != 0;
+        return differing;
+    };
+    std::vector<uint8_t> firstImage, firstMemory;
+    for (uint32_t scale : {1u, 2u, 3u, 12u, 12u}) {
+        Core2AbRun selfRun, otherRun;
+        std::string error;
+        if (!ReplayCore2Ab(handles, self, "GT4_CORE2_SELF_COPY", true, selfRun, error, 0, scale) ||
+            !ReplayCore2Ab(handles, other, "GT4_CORE2_SELF_COPY", true, otherRun, error, 0, scale) ||
+            selfRun.memory.empty() || selfRun.memory.back().empty() || otherRun.memory.empty() ||
+            otherRun.memory.back().empty()) {
+            std::printf("  %ux: replay failed: %s\n", scale, error.c_str());
+            ++failures;
+            continue;
+        }
+        const uint64_t offOther = words(pages(selfRun), pages(otherRun));
+        const uint64_t offReference = words(pages(selfRun), reference);
+        std::printf("  %ux: pages 0-1 words differing from the second-copy run %llu, from the reference %llu; batches "
+                    "that sampled a copy %llu\n",
+                    scale, static_cast<unsigned long long>(offOther), static_cast<unsigned long long>(offReference),
+                    static_cast<unsigned long long>(selfRun.stats.selfCopies));
+        if (offOther != 0 || (scale == 1 && offReference != 0) || selfRun.stats.selfCopies == 0) ++failures;
+        if (scale == 12) {
+            if (firstImage.empty()) {
+                firstImage = selfRun.images.back();
+                firstMemory = selfRun.memory.back();
+            } else if (selfRun.images.back() != firstImage || selfRun.memory.back() != firstMemory) {
+                std::printf("  12x: the second run differs from the first\n");
+                ++failures;
+            }
+        }
+    }
+    // Information only: without the copy the sprite samples its own target while writing it, a race whose outcome
+    // varies by run (no failure either way).
+    {
+        Core2AbRun raceRun, otherRun;
+        std::string error;
+        if (ReplayCore2Ab(handles, self, "GT4_CORE2_SELF_COPY", false, raceRun, error, 0, 12) &&
+            ReplayCore2Ab(handles, other, "GT4_CORE2_SELF_COPY", true, otherRun, error, 0, 12) &&
+            !raceRun.memory.empty() && !raceRun.memory.back().empty() && !otherRun.memory.empty() &&
+            !otherRun.memory.back().empty()) {
+            std::printf("  12x with GT4_CORE2_SELF_COPY=0: %llu words differ from the second-copy run (race, "
+                        "information only)\n",
+                        static_cast<unsigned long long>(words(pages(raceRun), pages(otherRun))));
+        }
+    }
+    std::printf("hw_core2_self_texture: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_compute_fills (IN-442): constant fills drawn by core2_fill.comp (GT4_CORE2_COMPUTE_FILLS, on by default)
 // against the same batches rasterised (=0) on the core 2 streams with untextured sprites: identical images and GS
 // memory at 1x (and equal to the CPU reference where the stream is exact) and at 2x and 3x, with fills counted.
@@ -5035,6 +5165,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
+    if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

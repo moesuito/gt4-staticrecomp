@@ -489,6 +489,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     ImageId textureHit_ = kNoImage;
     // Set by the texture-from-target hook for the batch being translated.
     std::int32_t textureTarget_ = -1;
+    PixelRect textureFootprint_{};  // the footprint the target texture hook was asked for (spec 8.8 copies)
+    // Spec 8.8 copies of a target the batch draws into (OnBatch); GT4_CORE2_SELF_COPY=0 samples the target itself.
+    const bool selfCopy_ =
+        std::getenv("GT4_CORE2_SELF_COPY") == nullptr || std::strcmp(std::getenv("GT4_CORE2_SELF_COPY"), "0") != 0;
 
     // 7.2: the channel-shuffle run in progress.
     bool toneActive_ = false;
@@ -2479,6 +2483,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             Target *target = TextureTarget(view, footprint);
             if (!target) return -1;
             textureTarget_ = static_cast<std::int32_t>(target - targets_.data());
+            textureFootprint_ = footprint;
             return textureTarget_;
         };
         // 3.7: every texture that is not a target hit is decoded from GS memory on the GPU (the GLM). Interim 3.5: an
@@ -2695,6 +2700,62 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         } else if (draw.texture != kNoImage) {
             stats.texturesFromTargets++;
             textureTarget->usedThisFrame = true;
+            // Spec 8.8: a texture that is the colour or depth target this batch draws into, sampled where the batch
+            // draws (GT4's glow buffers and luminance reductions, about 35 batches per race VBlank): the batch samples
+            // a copy of the sampled rectangle taken before it (the auto-flush of 2.6 already splits a batch where a
+            // later primitive must see an earlier one's pixels). Sampling the target itself raced with the batch's own
+            // writes, so 12x frames differed from run to run. GT4_CORE2_SELF_COPY=0 samples the target itself (A/B).
+            if (selfCopy_ && (draw.texture == draw.frame || draw.texture == draw.depth) &&
+                !Intersect(textureFootprint_, t.rect).Empty()) {
+                const PixelRect copy = Intersect(textureFootprint_,
+                                                 PixelRect{0, 0, static_cast<std::int32_t>(textureTarget->width) - 1,
+                                                           static_cast<std::int32_t>(textureTarget->height) - 1});
+                draw.selfCopy = !copy.Empty();
+                draw.copyX0 = copy.x0;
+                draw.copyY0 = copy.y0;
+                draw.copyX1 = copy.x1;
+                draw.copyY1 = copy.y1;
+            }
+        }
+        // Diagnostics: GT4_CORE2_SELF_TRACE=<vblank> lists that VBlank's batches whose texture is the image they draw
+        // into, with their primitives, whether the texture footprint meets the drawn pixels and whether primitives
+        // overlap earlier ones of the batch.
+        {
+            static const long long selfAt =
+                std::getenv("GT4_CORE2_SELF_TRACE") ? std::atoll(std::getenv("GT4_CORE2_SELF_TRACE")) : -1;
+            if (selfAt >= 0 && static_cast<long long>(vblanks_) == selfAt && draw.texture != kNoImage &&
+                (draw.texture == draw.frame || draw.texture == draw.depth)) {
+                std::size_t overlapping = 0;
+                for (std::size_t i = 1; i < batch.prims.size(); ++i) {
+                    for (std::size_t j = 0; j < i; ++j) {
+                        if (!Intersect(batch.prims[i].rect, batch.prims[j].rect).Empty()) {
+                            ++overlapping;
+                            break;
+                        }
+                    }
+                }
+                const PixelRect &f = textureFootprint_;
+                std::fprintf(stderr,
+                             "[core2] self vblank=%llu %s fb=%u fbw=%u psm=%u rect=%d,%d,%d,%d tex footprint=%d,%d,%d,%d "
+                             "meets=%d prims=%zu type=%u overlapping=%zu first=%d,%d,%d,%d\n",
+                             static_cast<unsigned long long>(vblanks_), draw.texture == draw.frame ? "frame" : "depth",
+                             t.frameView.basePointer, t.frameView.bufferWidth, static_cast<unsigned>(t.frameView.psm),
+                             t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1, f.x0, f.y0, f.x1, f.y1,
+                             Intersect(f, t.rect).Empty() ? 0 : 1, batch.prims.size(),
+                             batch.prims.empty() ? 0u : static_cast<unsigned>(batch.prims[0].type), overlapping,
+                             batch.prims.empty() ? 0 : batch.prims[0].rect.x0, batch.prims.empty() ? 0 : batch.prims[0].rect.y0,
+                             batch.prims.empty() ? 0 : batch.prims[0].rect.x1, batch.prims.empty() ? 0 : batch.prims[0].rect.y1);
+                if (!batch.prims.empty() && batch.prims[0].count >= 2) {
+                    const Vertex &a = batch.vertices[batch.prims[0].first];
+                    const Vertex &b = batch.vertices[batch.prims[0].first + 1];
+                    std::fprintf(stderr,
+                                 "[core2] self   tex1=%llx fst=%u xy4 %d,%d %d,%d uv %u,%u %u,%u stq %.4f,%.4f,%.4f "
+                                 "%.4f,%.4f,%.4f\n",
+                                 static_cast<unsigned long long>(batch.state.ctx.tex1),
+                                 static_cast<unsigned>((batch.state.effectivePrim >> 8) & 1u), a.x4, a.y4, b.x4, b.y4,
+                                 a.u, a.v, b.u, b.v, a.s, a.t, a.q, b.s, b.t, b.q);
+                }
+            }
         }
         // Diagnostics: GT4_CORE2_SKIP=<vblank>:<first>[-<last>] leaves out the drawn batches of that VBlank with those
         // indices (counted from 1 in drawing order, as the batch trace numbers them), to find which draw makes an
@@ -2794,6 +2855,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             drawn = gpu_.Draw(draw, error);
             stats.specialisedBatches = gpu_.Stats().specialisedBatches;
             stats.computeFills = gpu_.Stats().computeFills;
+            stats.selfCopies = gpu_.Stats().selfCopies;
         }
         if (!drawn) {
             Fail(error);
@@ -3107,7 +3169,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu forced_bilinear=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
-                 "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f texture_mb=%.1f\n",
+                 "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f texture_mb=%.1f self_texture=%llu self_copies=%llu self_copy_mpx=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
                  (unsigned long long)c.texturesFromTargets, (unsigned long long)c.texturesFromMemory,
@@ -3128,7 +3190,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.materializations, (unsigned long long)c.texturesOverTargets,
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
-                 (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0));
+                 (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0), (unsigned long long)g.selfTextureBatches, (unsigned long long)g.selfCopies,
+                 static_cast<double>(g.selfCopyPixels) / 1.0e6);
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "

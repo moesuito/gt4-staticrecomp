@@ -78,11 +78,16 @@ bool write_dump(Backend &hw, std::uint64_t index) {
   std::FILE *file = std::fopen(path.c_str(), "wb");
   if (!file) return false;
   std::fprintf(file, "P6\n%u %u\n255\n", request.width, request.height);
-  for (std::uint32_t pixel : request.pixels) {
-    const unsigned char rgb[3] = {static_cast<unsigned char>(pixel & 0xFFu),
-                                  static_cast<unsigned char>((pixel >> 8) & 0xFFu),
-                                  static_cast<unsigned char>((pixel >> 16) & 0xFFu)};
-    std::fwrite(rgb, 1, 3, file);
+  // One write per row (a 12x frame has 41 million pixels; a write per pixel took longer than the frame itself).
+  std::vector<unsigned char> row(std::size_t{request.width} * 3u);
+  for (std::size_t y = 0; y < request.height; ++y) {
+    const std::uint32_t *pixels = request.pixels.data() + y * request.width;
+    for (std::size_t x = 0; x < request.width; ++x) {
+      row[3 * x] = static_cast<unsigned char>(pixels[x] & 0xFFu);
+      row[3 * x + 1] = static_cast<unsigned char>((pixels[x] >> 8) & 0xFFu);
+      row[3 * x + 2] = static_cast<unsigned char>((pixels[x] >> 16) & 0xFFu);
+    }
+    std::fwrite(row.data(), 1, row.size(), file);
   }
   std::fclose(file);
   return true;

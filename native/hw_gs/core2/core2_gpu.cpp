@@ -583,6 +583,36 @@ struct Gpu::Impl {
     image = Image{};
   }
 
+  // Spec 8.8: the images a batch samples instead of the target it draws into, one per image size, kept from batch to
+  // batch (GT4 draws its glow and luminance passes into the same few effect buffers every frame); the least recently
+  // used one goes when a fifth size is needed. Only the copied rectangle of one is ever sampled.
+  struct SelfCopy {
+    Image image;
+    std::uint64_t lastUse = 0;
+  };
+  static constexpr std::size_t kSelfCopyImages = 4;
+  std::vector<SelfCopy> selfCopies;
+  std::uint64_t selfCopyUses = 0;
+  Image *self_copy_image(const Image &like, std::string &error) {
+    for (SelfCopy &copy : selfCopies) {
+      if (copy.image.width == like.width && copy.image.height == like.height) {
+        copy.lastUse = ++selfCopyUses;
+        return &copy.image;
+      }
+    }
+    if (selfCopies.size() >= kSelfCopyImages) {
+      auto oldest = std::min_element(selfCopies.begin(), selfCopies.end(),
+                                     [](const SelfCopy &a, const SelfCopy &b) { return a.lastUse < b.lastUse; });
+      doom(oldest->image);
+      selfCopies.erase(oldest);
+    }
+    SelfCopy copy;
+    if (!make_image(copy.image, like.nativeWidth, like.nativeHeight, like.scale, error)) return nullptr;
+    copy.lastUse = ++selfCopyUses;
+    selfCopies.push_back(copy);
+    return &selfCopies.back().image;
+  }
+
   VkShaderModule make_module(const std::uint32_t *words, std::size_t count, std::string &error) {
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     info.codeSize = count * sizeof(std::uint32_t);
@@ -1437,6 +1467,7 @@ Gpu::~Gpu() {
   for (Image &image : s.images) s.release(image);
   for (Image &image : s.doomed) s.release(image);
   for (Image &image : s.recycled) s.release(image);
+  for (Impl::SelfCopy &copy : s.selfCopies) s.release(copy.image);
   s.release(s.atlas);
   s.release(s.display);
   for (Image &image : s.deinterlaceHistory) s.release(image);
@@ -1968,6 +1999,9 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     error = "CORE2 draw names a depth or texture image that does not exist";
     return false;
   }
+  if (batch.texture != kNoImage && (batch.texture == batch.frame || batch.texture == batch.depth)) {
+    s.stats.selfTextureBatches++;
+  }
   if (!s.begin_recording(error)) return false;
   const VkDeviceSize vertexBytes = batch.vertices->size() * sizeof(gpu::GpuVertex);
   VkDeviceSize vertexOffset = 0, uniformOffset = 0;
@@ -1983,6 +2017,33 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (paletted) state.fields[gpu::gpufield::TexelKind] = 3u;  // HW_TEXEL_INDEXED
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
+
+  // Spec 8.8: the texture is the target this batch draws into and the batch samples where it draws. Its sampled
+  // rectangle is copied first (after the draws that wrote it) and the batch samples the copy.
+  if (batch.selfCopy && !paletted) {
+    Image *copy = s.self_copy_image(*texture, error);
+    if (!copy) return false;
+    const std::int32_t sc = static_cast<std::int32_t>(texture->scale);
+    const std::int32_t left = std::max(batch.copyX0, 0), top = std::max(batch.copyY0, 0);
+    const std::int32_t right = std::min(batch.copyX1 + 1, static_cast<std::int32_t>(texture->nativeWidth));
+    const std::int32_t bottom = std::min(batch.copyY1 + 1, static_cast<std::int32_t>(texture->nativeHeight));
+    if (right > left && bottom > top) {
+      s.outside_pass();
+      s.touch("self copy", {texture}, {copy}, 0, 0);
+      VkImageCopy region{};
+      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.srcOffset = {left * sc, top * sc, 0};
+      region.dstOffset = region.srcOffset;
+      region.extent = {static_cast<std::uint32_t>((right - left) * sc), static_cast<std::uint32_t>((bottom - top) * sc), 1};
+      gt4_hwd_vkCmdCopyImage(s.cmd, texture->image, VK_IMAGE_LAYOUT_GENERAL, copy->image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                             &region);
+      s.after_op();
+      s.stats.selfCopies++;
+      s.stats.selfCopyPixels += static_cast<std::uint64_t>(region.extent.width) * region.extent.height;
+    }
+    texture = copy;
+  }
 
   // IN-442: a constant fill as compute dispatches. Every vertex of the batch has the same colour and Z, every
   // primitive is an axis-aligned rectangle (a sprite as two triangles), and the rectangles of covered pixels, clipped

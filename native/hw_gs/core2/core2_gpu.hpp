@@ -43,6 +43,12 @@ struct DrawBatch {
     // IN-442: an untextured sprite batch with no blend, fog or DATE: drawn by core2_fill.comp when its sprites turn out
     // to be one constant fragment over disjoint pixel rectangles (Gpu::Draw checks the geometry).
     bool constantFill = false;
+    // Spec 8.8: `texture` is the colour or depth target this batch draws into and the sampled texels meet the drawn
+    // pixels. The batch then samples a copy of native rectangle [copyX0, copyX1] x [copyY0, copyY1] (inclusive) of the
+    // texture taken before the batch: the GPU runs the batch's fragments in parallel, so sampling the target itself
+    // would read pixels other fragments of the batch may or may not have written yet.
+    bool selfCopy = false;
+    std::int32_t copyX0 = 0, copyY0 = 0, copyX1 = -1, copyY1 = -1;
 };
 
 // Diagnostics for the F8 report and the replay summary.
@@ -52,6 +58,9 @@ struct Core2GpuStats {
     std::uint64_t imagesAllocated = 0;  // S1: images that needed a device allocation of their own
     std::uint64_t imageBlocks = 0;      // S2: 64 MiB image memory blocks allocated
     std::uint64_t recycledImages = 0;  // B4: images taken over from finished ones instead of allocated
+    std::uint64_t selfTextureBatches = 0;  // batches whose texture is the colour or depth image they draw into
+    std::uint64_t selfCopies = 0;          // spec 8.8: of those, batches that sampled a copy taken before them
+    std::uint64_t selfCopyPixels = 0;      // output pixels those copies moved
     std::uint64_t draws = 0;
     std::uint64_t patches = 0;
     std::uint64_t reductions = 0;

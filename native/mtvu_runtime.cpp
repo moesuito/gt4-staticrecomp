@@ -390,12 +390,13 @@ void reset_worker_baseline() {
 // IN-459: the worker wakes a sleeping EE for its output only every GT4_MTVU_WAKE_KB KiB of output (default 64), at its
 // last queued JobDone and before it waits for output space; the EE slept and woke about 700 times per VBlank of the
 // night race, one wake per few records, and each wake was a system call on the worker. 0 wakes it for every record.
-// IN-461: GT4_MTVU_DIRECT=1 lets the hw renderer's GS worker read the VU1 worker's output ring itself (unset or 0: the
-// EE journal forwards it, as before).
+// IN-461: the hw renderer's GS worker reads the VU1 worker's output ring itself (direct GS intake). On by default since
+// the owner's play test of candidate 332; GT4_MTVU_DIRECT=0 keeps the EE journal forwarding it (A/B), and a renderer
+// without a GS worker in this process always uses the journal.
 static bool direct_intake_from_environment() {
   const char *value = std::getenv("GT4_MTVU_DIRECT");
-  if (value == nullptr || std::strcmp(value, "0") == 0) return false;
-  if (std::strcmp(value, "1") == 0) return true;
+  if (value == nullptr || std::strcmp(value, "1") == 0) return true;
+  if (std::strcmp(value, "0") == 0) return false;
   throw std::invalid_argument("GT4_MTVU_DIRECT must be unset, 0 or 1");
 }
 
@@ -428,8 +429,9 @@ void start(const Settings &settings, const Donor &donor) {
   r.journal = std::make_unique<EeJournal>(*r.input, *r.output, r.input_bell, r.output_bell, *r.sink);
   r.worker_end = std::make_unique<WorkerEnd>(*r.input, *r.output, r.input_bell, r.output_bell,
                                              wake_output_bytes_from_environment());
-  // IN-461: direct GS intake (GT4_MTVU_DIRECT=1) needs a GS consumer in this process that reads the output ring (the hw
-  // renderer); verify keeps the journal (its hash covers the GS stream on the EE).
+  // IN-461: direct GS intake (default; GT4_MTVU_DIRECT=0 turns it off) needs a GS consumer in this process that reads
+  // the output ring (the hw renderer with its GS worker); verify keeps the journal (its hash covers the GS stream on
+  // the EE).
   r.direct = direct_intake_from_environment() && !settings.verify && donor.direct_gs_available != nullptr &&
              donor.post_gs_job != nullptr && donor.direct_gs_available();
   if (r.direct) {

@@ -48,6 +48,7 @@ struct Core2Counters {
     std::uint64_t dirtyMerged = 0;
     std::uint64_t specialisedBatches = 0;      // IN-437: batches drawn with a pipeline specialised to their state
     std::uint64_t computeFills = 0;            // IN-442: batches drawn as compute fills
+    std::uint64_t selfCopies = 0;              // spec 8.8: batches that sampled a copy of the target they draw into
     std::uint64_t unchangedUploads = 0;        // IN-450: uploads that changed no byte and kept the page versions
     std::uint64_t contentHits = 0;             // IN-453: stale by page version, but the texture's blocks unchanged
     std::uint64_t staleBy[5] = {};             // IN-450: stale decodes by the newest page writer (upload, readback, delayed download, move, whole memory)
