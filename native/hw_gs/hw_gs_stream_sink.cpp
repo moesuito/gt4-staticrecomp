@@ -10,13 +10,17 @@
 
 #include "gs_stream/gs_stream_sink.hpp"
 
+#include "hw_cpu_sampler.hpp"
 #include "hw_gs_backend.hpp"
 #include "hw_gs_options.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <intrin.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -97,6 +101,29 @@ void maybe_dump(Backend &hw) {
 
 void start_gs_worker();
 
+// TASK-027 CPU survey: the cost of carrying the GS stream from the game (EE) thread to the GS worker, in TSC ticks
+// (converted with the QPC rate between two profile lines). Each counter has one writer: the producer counters are
+// written by the thread that calls the hooks (the EE thread), the worker counters by the GS worker.
+struct TransportCounters {
+  // Producer (EE thread).
+  std::atomic<std::uint64_t> gif_commands{0}, gif_bytes{0}, privileged_commands{0}, vsync_commands{0};
+  std::atomic<std::uint64_t> gif_ticks{0};         // inside gif(): buffer, copy and queue push
+  std::atomic<std::uint64_t> copy_ticks{0};        // the byte copy alone
+  std::atomic<std::uint64_t> privileged_ticks{0};  // inside privileged()
+  std::atomic<std::uint64_t> vsync_wait_ticks{0}, vsync_waits{0};  // back-pressure (kFramesAhead)
+  std::atomic<std::uint64_t> drain_wait_ticks{0}, drains{0};       // read_fifo / window calls waiting for the worker
+  std::atomic<std::uint64_t> read_fifo_ticks{0}, read_fifos{0};    // read_fifo including its drain
+  std::atomic<std::uint64_t> wake_pushes{0};       // pushes that found the worker waiting for work
+  // Worker (GS worker thread).
+  std::atomic<std::uint64_t> busy_ticks[5] = {};   // per GsCommand::Kind: Gif, Privileged, Vsync, GsReset, GifReset
+  std::atomic<std::uint64_t> idle_ticks{0}, wakeups{0}, max_depth{0};
+};
+TransportCounters g_transport;
+
+void add(std::atomic<std::uint64_t> &counter, std::uint64_t value) {
+  counter.store(counter.load(std::memory_order_relaxed) + value, std::memory_order_relaxed);  // single writer
+}
+
 bool start_backend(std::string &error) {
   Options options;
   try {
@@ -106,6 +133,8 @@ bool start_backend(std::string &error) {
     return false;
   }
   read_dump_options();
+  sampler::name_current_thread("ee");
+  if (sampler::start_from_env()) std::fprintf(stderr, "[cpu-sampler] sampling the process (GT4_CPU_SAMPLER)\n");
   if (const char *every = std::getenv("GT4_HW_PROFILE_EVERY")) {
     const long value = std::strtol(every, nullptr, 10);
     g_profile_every = value > 0 ? static_cast<std::uint32_t>(value) : 0u;
@@ -143,6 +172,43 @@ void read_fifo_now(std::uint8_t *data, std::uint32_t qwords) {
 // Once per guest VBlank: submit the recorded work, then present (window) or close the frame (headless).
 // GT4_HW_PROFILE_EVERY=<n>: every n VBlanks, one stderr line with the interval's per-frame averages (CPU ms per
 // pass and work counts), so heavy scenes (3D cars, races) can be profiled from a headless run (M9 work).
+
+// TASK-027 CPU survey: one [hw] transport line per profile interval (per-VBlank averages).
+void print_transport(double n) {
+  constexpr int kValues = 21;
+  static std::uint64_t lastTsc = 0;
+  static LARGE_INTEGER lastQpc{};
+  static std::uint64_t last[kValues] = {};
+  const std::uint64_t tsc = __rdtsc();
+  LARGE_INTEGER qpc{}, frequency{};
+  QueryPerformanceCounter(&qpc);
+  QueryPerformanceFrequency(&frequency);
+  const TransportCounters &t = g_transport;
+  const std::uint64_t values[kValues] = {
+      t.gif_commands.load(), t.gif_bytes.load(), t.privileged_commands.load(), t.vsync_commands.load(),
+      t.gif_ticks.load(), t.copy_ticks.load(), t.privileged_ticks.load(), t.vsync_wait_ticks.load(),
+      t.vsync_waits.load(), t.drain_wait_ticks.load(), t.drains.load(), t.read_fifo_ticks.load(),
+      t.read_fifos.load(), t.wake_pushes.load(), t.busy_ticks[0].load(), t.busy_ticks[1].load(),
+      t.busy_ticks[2].load(), t.busy_ticks[3].load() + t.busy_ticks[4].load(), t.idle_ticks.load(),
+      t.wakeups.load(), t.max_depth.load()};
+  if (lastTsc != 0 && tsc > lastTsc) {
+    const double seconds = static_cast<double>(qpc.QuadPart - lastQpc.QuadPart) / static_cast<double>(frequency.QuadPart);
+    const double msPerTick = seconds * 1000.0 / static_cast<double>(tsc - lastTsc);
+    const auto d = [&](int i) { return static_cast<double>(values[i] - last[i]) / n; };
+    const auto ms = [&](int i) { return d(i) * msPerTick; };
+    std::fprintf(stderr,
+                 "[hw] transport vsync=%llu ee: gif_cmds=%.1f gif_kib=%.0f priv_cmds=%.1f gif_ms=%.3f copy_ms=%.3f "
+                 "priv_ms=%.3f vsync_wait_ms=%.3f (%.2f) drain_wait_ms=%.3f (%.2f) read_fifo_ms=%.3f (%.2f) "
+                 "wake_pushes=%.1f | worker: gif_ms=%.3f priv_ms=%.3f vsync_ms=%.3f other_ms=%.3f idle_ms=%.3f "
+                 "wakeups=%.1f max_depth=%llu\n",
+                 static_cast<unsigned long long>(g_vsyncs), d(0), d(1) / 1024.0, d(2), ms(4), ms(5), ms(6), ms(7), d(8),
+                 ms(9), d(10), ms(11), d(12), d(13), ms(14), ms(15), ms(16), ms(17), ms(18), d(19),
+                 static_cast<unsigned long long>(values[20]));
+  }
+  std::copy(std::begin(values), std::end(values), std::begin(last));
+  lastTsc = tsc;
+  lastQpc = qpc;
+}
 
 void maybe_profile(Backend &hw) {
   if (g_profile_every == 0 || g_vsyncs % g_profile_every != 0) return;
@@ -237,6 +303,7 @@ void maybe_profile(Backend &hw) {
     lastThreadMs = threadMs;
     lastProcessMs = processMs;
   }
+  print_transport(n);
   g_profile_last = now;
   g_profile_wall = wall;
 }
@@ -245,6 +312,7 @@ void vsync_now(bool odd_field) {
   Backend &hw = backend();
   g_odd_field = odd_field;
   ++g_vsyncs;
+  sampler::note_vblank(g_vsyncs);
   hw.set_display_field(odd_field);
   hw.flush();
   hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
@@ -290,10 +358,20 @@ public:
   void push(GsCommand &&command) {
     std::unique_lock<std::mutex> lock(queueMutex_);
     if (command.kind == GsCommand::Kind::Vsync) {
-      canQueue_.wait(lock, [this] { return queuedVsyncs_ < kFramesAhead; });
+      if (queuedVsyncs_ >= kFramesAhead) {
+        const std::uint64_t start = __rdtsc();
+        canQueue_.wait(lock, [this] { return queuedVsyncs_ < kFramesAhead; });
+        add(g_transport.vsync_wait_ticks, __rdtsc() - start);
+        add(g_transport.vsync_waits, 1);
+      }
       ++queuedVsyncs_;
     }
+    if (waiting_) add(g_transport.wake_pushes, 1);
     queue_.push_back(std::move(command));
+    if (queue_.size() > maxDepth_) {
+      maxDepth_ = queue_.size();
+      g_transport.max_depth.store(maxDepth_, std::memory_order_relaxed);
+    }
     hasWork_.notify_one();
   }
 
@@ -308,23 +386,36 @@ public:
 
   // Waits until every queued command has executed; the caller then runs with the backend lock held.
   std::unique_lock<std::mutex> drain() {
+    const std::uint64_t start = __rdtsc();
     std::unique_lock<std::mutex> lock(queueMutex_);
     drained_.wait(lock, [this] { return queue_.empty() && !busy_; });
     lock.unlock();
-    return std::unique_lock<std::mutex>(backendMutex_);
+    std::unique_lock<std::mutex> backend(backendMutex_);
+    add(g_transport.drain_wait_ticks, __rdtsc() - start);
+    add(g_transport.drains, 1);
+    return backend;
   }
 
 private:
   void run() {
+    sampler::name_current_thread("gs-worker");
     for (;;) {
       GsCommand command;
       {
         std::unique_lock<std::mutex> lock(queueMutex_);
-        hasWork_.wait(lock, [this] { return !queue_.empty(); });
+        if (queue_.empty()) {
+          const std::uint64_t start = __rdtsc();
+          waiting_ = true;
+          hasWork_.wait(lock, [this] { return !queue_.empty(); });
+          waiting_ = false;
+          add(g_transport.idle_ticks, __rdtsc() - start);
+          add(g_transport.wakeups, 1);
+        }
         command = std::move(queue_.front());
         queue_.pop_front();
         busy_ = true;
       }
+      const std::uint64_t busyStart = __rdtsc();
       {
         std::lock_guard<std::mutex> backendLock(backendMutex_);
         switch (command.kind) {
@@ -335,6 +426,7 @@ private:
           case GsCommand::Kind::GifReset: gif_reset_now(); break;
         }
       }
+      add(g_transport.busy_ticks[static_cast<int>(command.kind)], __rdtsc() - busyStart);
       {
         std::lock_guard<std::mutex> lock(queueMutex_);
         busy_ = false;
@@ -360,7 +452,9 @@ private:
   std::deque<GsCommand> queue_;
   std::vector<std::vector<std::uint8_t>> spare_;
   std::size_t queuedVsyncs_ = 0;
+  std::size_t maxDepth_ = 0;
   bool busy_ = false;
+  bool waiting_ = false;  // the worker waits for work (TASK-027 CPU survey: pushes that wake it)
 };
 
 GsWorker *g_worker = nullptr;  // null: synchronous (GT4_HW_GS_THREAD=0)
@@ -380,12 +474,18 @@ void gif(int path, const std::uint8_t *data, std::uint32_t qwc) {
     gif_now(path, data, bytes);
     return;
   }
+  const std::uint64_t start = __rdtsc();
   GsCommand command;
   command.kind = GsCommand::Kind::Gif;
   command.path = path;
   command.bytes = g_worker->buffer();
+  const std::uint64_t copyStart = __rdtsc();
   command.bytes.assign(data, data + bytes);
+  add(g_transport.copy_ticks, __rdtsc() - copyStart);
   g_worker->push(std::move(command));
+  add(g_transport.gif_ticks, __rdtsc() - start);
+  add(g_transport.gif_commands, 1);
+  add(g_transport.gif_bytes, bytes);
 }
 
 void privileged(std::uint32_t address, std::uint64_t value) {
@@ -393,11 +493,14 @@ void privileged(std::uint32_t address, std::uint64_t value) {
     privileged_now(address, value);
     return;
   }
+  const std::uint64_t start = __rdtsc();
   GsCommand command;
   command.kind = GsCommand::Kind::Privileged;
   command.address = address;
   command.value = value;
   g_worker->push(std::move(command));
+  add(g_transport.privileged_ticks, __rdtsc() - start);
+  add(g_transport.privileged_commands, 1);
 }
 
 void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
@@ -405,8 +508,13 @@ void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
     read_fifo_now(data, qwords);
     return;
   }
-  const std::unique_lock<std::mutex> lock = g_worker->drain();  // the read observes everything queued before it
-  read_fifo_now(data, qwords);
+  const std::uint64_t start = __rdtsc();
+  {
+    const std::unique_lock<std::mutex> lock = g_worker->drain();  // the read observes everything queued before it
+    read_fifo_now(data, qwords);
+  }
+  add(g_transport.read_fifo_ticks, __rdtsc() - start);
+  add(g_transport.read_fifos, 1);
 }
 
 void vsync(bool odd_field) {
@@ -418,6 +526,7 @@ void vsync(bool odd_field) {
   command.kind = GsCommand::Kind::Vsync;
   command.oddField = odd_field;
   g_worker->push(std::move(command));
+  add(g_transport.vsync_commands, 1);
 }
 
 void gs_reset() {
@@ -478,6 +587,7 @@ RenderCounters stats_counters() { return g_backend ? g_backend->render_counters(
 
 void finish(std::FILE *output) {
   if (!g_backend) return;
+  sampler::finish(output);
   std::unique_lock<std::mutex> lock;
   if (g_worker) lock = g_worker->drain();
   g_backend->wait_idle();

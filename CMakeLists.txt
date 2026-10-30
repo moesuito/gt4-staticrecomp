@@ -25,6 +25,14 @@ endif()
 if(GT4_X86_64_V3)
     add_compile_options(/clang:-march=x86-64-v3)
 endif()
+# Owner rule (2026-10-30, decision isa-sse41-mandatory): builds target SSE4.1, the launcher's CPU floor; AVX2
+# (GT4_X86_64_V3) is an A/B experiment only. SSE4.1 adds no fused multiply-add, so floating-point results are unchanged.
+# Measured on the 3x night race (TASK-027 CPU survey, medians of 3): SSE2 -> SSE4.1 -3.8% wall time per VBlank, VU1
+# worker -16%; SSE4.1 -> AVX2 no gain. The pinned EE game library is not rebuilt by this tree (TASK-134 P4).
+option(GT4_SSE41 "Build for SSE4.1 (the launcher's CPU floor)" ON)
+if(GT4_SSE41 AND NOT GT4_X86_64_V3)
+    add_compile_options(/clang:-msse4.1)
+endif()
 # HWR hardware GS renderer (TASK-027, chapter 12.10): default OFF until qualified.
 option(GT4_HW_GS "Build the HWR hardware GS renderer (native/hw_gs)" OFF)
 # enable_testing() comes before the subdirectories so their add_test() calls register (native_memcard_store,
@@ -194,6 +202,13 @@ if(GT4_HW_GS)
     add_test(NAME hw_stream_sink_deferred_vsync COMMAND $<TARGET_FILE:hw_stream_sink_fixture> --deferred-vsync)
     set_tests_properties(hw_stream_sink_deferred_vsync PROPERTIES ENVIRONMENT "GT4_RENDERER=hw"
         PASS_REGULAR_EXPRESSION "vsyncs=3 frames=3 presents=0 black_presents=0 gif_bytes=128 .*PASS: hw stream sink")
+    # TASK-027 CPU survey: the transport line (EE-side hook cost, back-pressure, worker busy/idle) with the profile.
+    add_test(NAME hw_stream_sink_transport COMMAND $<TARGET_FILE:hw_stream_sink_fixture>)
+    set_tests_properties(hw_stream_sink_transport PROPERTIES ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_PROFILE_EVERY=1"
+        PASS_REGULAR_EXPRESSION "hw. transport vsync=2 ee: gif_cmds=[0-9.]+ gif_kib=[0-9]+ .* worker: gif_ms=[0-9.]+ .*PASS: hw stream sink")
+    add_test(NAME hw_cpu_sampler COMMAND $<TARGET_FILE:hw_cpu_sampler_fixture>)
+    set_tests_properties(hw_cpu_sampler PROPERTIES RUN_SERIAL TRUE TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "hw_cpu_sampler: all checks passed")
     add_test(NAME hw_stream_sink_capture_refused COMMAND $<TARGET_FILE:hw_stream_sink_fixture>)
     set_tests_properties(hw_stream_sink_capture_refused PROPERTIES
         ENVIRONMENT "GT4_RENDERER=hw;GT4_GS_CAPTURE=${CMAKE_BINARY_DIR}/hw-capture-refused.gscap" WILL_FAIL TRUE)

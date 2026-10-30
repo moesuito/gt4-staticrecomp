@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 313: CPU survey done, SSE4.1 adopted (2026-10-30)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-313-sse41`: 309 + the CPU survey
+instruments (IN-445: `GT4_CPU_SAMPLER` process sampler, `[hw] transport` line, exclusive stage times) built with
+SSE4.1 (`GT4_SSE41`, now ON by default; owner rule). No visual change: frames identical to SSE2 and AVX2 builds. 3x
+headless night race, medians of 3: SSE2 -> SSE4.1 10.00 -> 9.62 ms per VBlank (-3.8%, the VU1 worker -16%); AVX2 no
+further gain, so no AVX2 executable. The survey (`docs/hw-renderer-spec/CORE2-CPU-SURVEY.md`) lists the CPU fronts
+of the GS pipeline and transport with measured costs and a proposed task order (replay bench first, zero-copy MTVU
+intake last); they wait for the owner's go-ahead. CTest 266/267 in both interlock modes (the known GS settings
+contract failure from the rc7 merge).
+
 ## TASK-027 CoreGS 2.0 candidate 309: constant fills as compute (2026-10-30, fine-tuning)
 
 `build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-309`: 308 + IN-442, GT4's full-screen colour,

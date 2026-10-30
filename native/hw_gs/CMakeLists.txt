@@ -134,7 +134,8 @@ add_subdirectory(shaders)
 
 # TASK-027 hookup on main's GS stream seam (task/027-coregs2): GT4_RENDERER=hw sends the stream hooks to the
 # backend in process (native/gs_stream/gs_stream_sink.hpp). Linked into gt4_gs_stream_client by native/CMakeLists.txt.
-add_library(gt4_hw_stream_sink STATIC hw_gs_stream_sink.cpp)
+# hw_cpu_sampler.cpp: the TASK-027 CPU survey sampler (GT4_CPU_SAMPLER, diagnostic, off by default).
+add_library(gt4_hw_stream_sink STATIC hw_gs_stream_sink.cpp hw_cpu_sampler.cpp)
 target_include_directories(gt4_hw_stream_sink PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(gt4_hw_stream_sink PUBLIC gt4_hw_backend)
 target_compile_options(gt4_hw_stream_sink PRIVATE /W4)
@@ -152,3 +153,8 @@ add_subdirectory(replace)
 add_executable(hw_stream_sink_fixture hw_stream_sink_fixture.cpp)
 target_link_libraries(hw_stream_sink_fixture PRIVATE gt4_gs_stream_client)
 target_compile_options(hw_stream_sink_fixture PRIVATE /W4)
+
+# TASK-027 CPU survey: the GT4_CPU_SAMPLER sampler on a known busy thread (registered as hw_cpu_sampler).
+add_executable(hw_cpu_sampler_fixture hw_cpu_sampler_fixture.cpp hw_cpu_sampler.cpp)
+target_compile_options(hw_cpu_sampler_fixture PRIVATE /W4)
+target_compile_definitions(hw_cpu_sampler_fixture PRIVATE _CRT_SECURE_NO_WARNINGS)

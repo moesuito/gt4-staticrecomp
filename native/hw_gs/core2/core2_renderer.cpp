@@ -9,6 +9,7 @@
 #include <map>
 #include <bit>
 #include <chrono>
+#include <intrin.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -303,20 +304,61 @@ int RowFieldOfDisplayField(bool csrFieldOdd) { return csrFieldOdd ? 0 : 1; }
 struct PhaseTimes {
     double gif = 0, batch = 0, upload = 0, written = 0, clut = 0, clutLoads = 0, uploads = 0, hook = 0, glmHook = 0, translate = 0, targets = 0, texture = 0, draw = 0, readback = 0, patch = 0, compose = 0,
            flush = 0, cpuSprites = 0, spriteCheck = 0, glm = 0, glmPages = 0, glmCalls = 0, swizzle = 0, swizzleBytes = 0;
+    // TASK-027 CPU survey: the VBlank work (Renderer::Flush) and LOCAL->HOST reads (Renderer::ReadFifo).
+    double vblank = 0, fifo = 0;
 };
+
+class ScopedUs;
+
+// TASK-027 CPU survey: each timed stage is kept inclusive (its whole duration, as before) and exclusive (minus the
+// timed stages nested in it), so the exclusive times add up to the time spent inside any stage.
+struct PhaseClock {
+    PhaseTimes inclusive;
+    PhaseTimes exclusive;
+    ScopedUs *open = nullptr;  // the innermost running stage
+};
+
+// Microseconds per TSC tick, measured once against the QPC clock (the TSC rate is constant on the qualified CPUs);
+// one TSC read costs a few nanoseconds, a fraction of a steady_clock read, and a VBlank times thousands of stages.
+double MicrosecondsPerTick() {
+    static const double value = [] {
+        const auto start = std::chrono::steady_clock::now();
+        const std::uint64_t startTicks = __rdtsc();
+        while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(2)) {
+        }
+        const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+        return us / static_cast<double>(__rdtsc() - startTicks);
+    }();
+    return value;
+}
 
 class ScopedUs {
 public:
-    explicit ScopedUs(double &sum) : sum_(sum), start_(std::chrono::steady_clock::now()) {}
-    ~ScopedUs() {
-        sum_ += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start_).count();
+    ScopedUs(PhaseClock &clock, double PhaseTimes::*field)
+        : clock_(clock), field_(field), parent_(clock.open), start_(__rdtsc()) {
+        clock.open = this;
+    }
+    ~ScopedUs() { Stop(); }
+    // Ends the stage before the end of its scope (stages end in the reverse order they began).
+    void Stop() {
+        if (stopped_) return;
+        stopped_ = true;
+        const double us = static_cast<double>(__rdtsc() - start_) * MicrosecondsPerTick();
+        clock_.inclusive.*field_ += us;
+        clock_.exclusive.*field_ += us - children_;
+        if (parent_) parent_->children_ += us;
+        clock_.open = parent_;
     }
     ScopedUs(const ScopedUs &) = delete;
     ScopedUs &operator=(const ScopedUs &) = delete;
 
 private:
-    double &sum_;
-    std::chrono::steady_clock::time_point start_;
+    PhaseClock &clock_;
+    double PhaseTimes::*field_;
+    ScopedUs *parent_;
+    std::uint64_t start_;
+    double children_ = 0;
+    bool stopped_ = false;
 };
 
 }  // namespace
@@ -332,7 +374,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::string failure_;
     writeback::Counters counters;
     Core2Counters stats;
-    PhaseTimes times_;
+    PhaseClock clock_;
+    PhaseTimes &times_ = clock_.inclusive;  // the inclusive stage times (the [core2] ms/vblank line)
 
     display::DisplayRegisters displayRegs_;
     std::array<std::uint32_t, 2> previousDby_{};
@@ -634,7 +677,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // A CLUT load reads GS memory. GT4 draws some of its palettes (the race colour filter's ramp), so a load over
         // a drawn target reduces that target into memory first, like any host read of drawn pixels (4.2).
         frontEnd_.SetBeforeLocalRead([this](const BlockRange &range) {
-            ScopedUs clutTimer(times_.clut);
+            ScopedUs clutTimer(clock_, &PhaseTimes::clut);
             times_.clutLoads += 1;
             const BlockSpan span{range.begin, range.count};
             // IN-408: one drawn 32-bit colour target under a CSM1 palette is read on the GPU when the load happens.
@@ -653,7 +696,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         });
         frontEnd_.SetClutLoaded([this](const clut::Tex0Write &write) {
-            ScopedUs clutTimer(times_.clut);
+            ScopedUs clutTimer(clock_, &PhaseTimes::clut);
             OnClutLoaded(write);
         });
     }
@@ -1040,7 +1083,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // 3.7: the GLM pages a texture reads are made current (uploaded where GS memory changed since).
     bool MakeGlmCurrent(const BlockSpan &span) {
-        ScopedUs timer(times_.glm);
+        ScopedUs timer(clock_, &PhaseTimes::glm);
         std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
         static const bool full = std::getenv("GT4_CORE2_GLM_FULL") != nullptr;  // diagnostics A/B
         auto add = [&](std::uint32_t page) {
@@ -1129,7 +1172,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     ImageId MemoryTexture(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa, std::uint64_t tex1,
                           std::uint64_t miptbp1, std::uint64_t miptbp2, std::uint32_t &mipInfo) {
-        ScopedUs timer(times_.texture);
+        ScopedUs timer(clock_, &PhaseTimes::texture);
         writeback::TextureKey key;
         key.tbp = t.glmBp;
         key.tbw = t.glmBw;
@@ -1335,7 +1378,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // Makes the image of `t` hold every rectangle the EE wrote into it (4.1, applied lazily at the next use).
     bool ApplyDirty(Target &t) {
         if (t.dirty.empty()) return true;
-        ScopedUs timer(times_.patch);
+        ScopedUs timer(clock_, &PhaseTimes::patch);
         std::vector<Dirty> pending;
         pending.swap(t.dirty);
         for (const Dirty &d : pending) {
@@ -1628,7 +1671,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember) {
-        ScopedUs writtenTimer(times_.written);
+        ScopedUs writtenTimer(clock_, &PhaseTimes::written);
         const BlockSpan span = WriteSpan(view, rect);
         MarkWritten(span);
         for (Target &t : targets_) {
@@ -1675,7 +1718,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     const bool batchReadback_ = std::getenv("GT4_CORE2_BATCH_READBACK") == nullptr ||
                                 std::strcmp(std::getenv("GT4_CORE2_BATCH_READBACK"), "0") != 0;
     bool Readback(const BlockSpan &span, const BufferView *limitView = nullptr, const PixelRect *limit = nullptr) {
-        ScopedUs timer(times_.readback);
+        ScopedUs timer(clock_, &PhaseTimes::readback);
         std::vector<Target *> order;
         for (Target &t : targets_) {
             if (!t.alive || t.drawn.Empty()) continue;
@@ -1905,7 +1948,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                              : UploadSwizzle::PageRuns;
 
     void CommitUpload(const UploadCommit &c, const std::uint8_t *bytes, std::size_t byteCount) override {
-        ScopedUs uploadTimer(times_.upload);
+        ScopedUs uploadTimer(clock_, &PhaseTimes::upload);
         times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
         if (psm && c.rrw != 0 && c.rrh != 0) {
@@ -1918,7 +1961,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                  std::strcmp(std::getenv("GT4_CORE2_FAST_UPLOAD"), "0") != 0;  // A/B
         bool swizzled = false;
         {
-            ScopedUs swizzleTimer(times_.swizzle);
+            ScopedUs swizzleTimer(clock_, &PhaseTimes::swizzle);
             times_.swizzleBytes += static_cast<double>(byteCount);
             swizzled = fast && psm &&
                        FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay,
@@ -2227,11 +2270,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     void OnBatch(Batch &&batch) override {
-        ScopedUs batchTimer(times_.batch);
+        ScopedUs batchTimer(clock_, &PhaseTimes::batch);
         if (failed_) return;
         counters.batches++;
         {
-            ScopedUs timer(times_.hook);
+            ScopedUs timer(clock_, &PhaseTimes::hook);
             if (ToneHook(batch)) return;
         }
 
@@ -2260,7 +2303,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // (the reference reduces it on the GPU at 1x; the result is the same).
         const writeback::TextureFromGlmHook fromGlm = [this](const BufferView &view, std::uint32_t width,
                                                              std::uint32_t height, bool indexed, bool &gpuClut) {
-            ScopedUs hookTimer(times_.glmHook);
+            ScopedUs hookTimer(clock_, &PhaseTimes::glmHook);
             gpuClut = false;
             static const bool readAll = std::getenv("GT4_CORE2_TEXTURE_READBACK") == nullptr ||
                                         std::strcmp(std::getenv("GT4_CORE2_TEXTURE_READBACK"), "0") != 0;
@@ -2296,7 +2339,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             return true;
         };
         {
-            ScopedUs timer(times_.translate);
+            ScopedUs timer(clock_, &PhaseTimes::translate);
             writeback::TranslateBatchHooked(batch, memory_.Local(), frontEnd_.Clut(), t, counters, {}, this, fromTarget,
                                             fromGlm);
         }
@@ -2341,11 +2384,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }();
         bool cpuSprite = false;
         {
-            ScopedUs timer(times_.spriteCheck);
+            ScopedUs timer(clock_, &PhaseTimes::spriteCheck);
             cpuSprite = CpuSmallSprites(batch, t, depthUsed);
         }
         if (cpuSprite) {
-            ScopedUs timer(times_.cpuSprites);
+            ScopedUs timer(clock_, &PhaseTimes::cpuSprites);
             cpuref::DrawStats drawStats;
             cpuref::DrawBatch(batch, memory_.Local(), frontEnd_.Clut(), drawStats);
             OnMemoryWritten(t.frameView, t.rect, true);
@@ -2381,7 +2424,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                              static_cast<unsigned>(tex0::Tbp0(batch.state.ctx.tex0)), depthUsed ? 1 : 0, holder);
             }
         }
-        auto targetsStart = std::chrono::steady_clock::now();
+        ScopedUs targetsTimer(clock_, &PhaseTimes::targets);
         Target *frameTarget = DrawTarget(t.frameView, t.rect);
         if (!frameTarget) {
             counters.batchesEmpty++;
@@ -2395,8 +2438,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         Target *textureTarget = textureTarget_ >= 0 ? &targets_[static_cast<std::size_t>(textureTarget_)] : nullptr;
         if (textureTarget && textureTarget->alive && !ApplyDirty(*textureTarget)) return;
 
-        times_.targets +=
-            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - targetsStart).count();
+        targetsTimer.Stop();
         DrawBatch draw;
         draw.frame = frameTarget->image;
         draw.depth = depthTarget ? depthTarget->image : kNoImage;
@@ -2565,7 +2607,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::string error;
         bool drawn = false;
         {
-            ScopedUs timer(times_.draw);
+            ScopedUs timer(clock_, &PhaseTimes::draw);
             drawn = gpu_.Draw(draw, error);
             stats.specialisedBatches = gpu_.Stats().specialisedBatches;
             stats.computeFills = gpu_.Stats().computeFills;
@@ -2951,7 +2993,7 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
 bool Renderer::GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::size_t byteCount) {
     if (path == 0 || path > 3 || byteCount % 16 != 0) return false;
     Impl &s = *impl_;
-    ScopedUs gifTimer(s.times_.gif);
+    ScopedUs gifTimer(s.clock_, &PhaseTimes::gif);
     const std::size_t count = byteCount / 16;
     if constexpr (std::endian::native == std::endian::little && sizeof(Qword) == 16) {
         if (reinterpret_cast<std::uintptr_t>(bytes) % alignof(Qword) == 0) {
@@ -3033,6 +3075,7 @@ void Renderer::ClearVram() {
 std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
     Impl &s = *impl_;
     if (byteCount == 0) return 0;
+    ScopedUs fifoTimer(s.clock_, &PhaseTimes::fifo);
     s.frontEnd_.FlushBatch(FlushReason::Transfer);
     if (s.pendingRead_ && s.memory_.LocalToHostPending()) {
         const LocalToHostSetup &setup = *s.pendingRead_;
@@ -3075,6 +3118,7 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
 
 void Renderer::Flush() {
     Impl &s = *impl_;
+    ScopedUs vblankTimer(s.clock_, &PhaseTimes::vblank);
     static const BlockRange kEverything{0, kAllBlocks};
     s.frontEnd_.VBlank(&kEverything, 1);
     s.frontEnd_.FlushBatch(FlushReason::VBlank);
@@ -3120,6 +3164,24 @@ void Renderer::Flush() {
                      static_cast<double>(s.gpu_.Stats().primitives - s.lastPrimitives_) / 600.0,
                      static_cast<double>(s.gpu_.Stats().fragments - s.lastFragments_) / 600.0,
                      static_cast<double>(s.gpu_.Stats().computeInvocations - s.lastCompute_) / 600.0);
+        {
+            // TASK-027 CPU survey: exclusive stage times (each minus the stages nested in it); gif_parse is the GIF
+            // front end itself, vblank_own the VBlank work outside the stages it runs.
+            const PhaseTimes &x = s.clock_.exclusive;
+            const double all = x.gif + x.batch + x.upload + x.written + x.clut + x.hook + x.glmHook + x.translate +
+                               x.targets + x.texture + x.draw + x.readback + x.patch + x.compose + x.flush +
+                               x.cpuSprites + x.spriteCheck + x.glm + x.swizzle + x.vblank + x.fifo;
+            std::fprintf(stderr,
+                         "[core2] exclusive ms/vblank total=%.2f gif_parse=%.2f batch_own=%.2f translate=%.2f "
+                         "targets=%.2f texture=%.2f clut=%.2f draw=%.2f upload_own=%.2f swizzle=%.2f written=%.2f "
+                         "readback=%.2f patch=%.2f glm=%.2f glm_hook=%.2f hook=%.2f sprite_check=%.2f cpu_sprites=%.2f "
+                         "flush=%.2f compose=%.2f vblank_own=%.2f fifo_own=%.2f\n",
+                         all / f, x.gif / f, x.batch / f, x.translate / f, x.targets / f, x.texture / f, x.clut / f,
+                         x.draw / f, x.upload / f, x.swizzle / f, x.written / f, x.readback / f, x.patch / f,
+                         x.glm / f, x.glmHook / f, x.hook / f, x.spriteCheck / f, x.cpuSprites / f, x.flush / f,
+                         x.compose / f, x.vblank / f, x.fifo / f);
+            s.clock_.exclusive = PhaseTimes{};
+        }
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;
         s.lastCompute_ = s.gpu_.Stats().computeInvocations;
@@ -3150,13 +3212,13 @@ void Renderer::Flush() {
     }
     std::string error;
     {
-        ScopedUs timer(s.times_.flush);
+        ScopedUs timer(s.clock_, &PhaseTimes::flush);
         if (s.gpu_.Ready() && !s.gpu_.Submit(false, error)) s.Fail(error);
     }
 }
 
 bool Renderer::ComposeFrameGpu(writeback::GpuFrame &out) {
-    ScopedUs timer(impl_->times_.compose);
+    ScopedUs timer(impl_->clock_, &PhaseTimes::compose);
     return impl_->ComposeGpu(out);
 }
 
