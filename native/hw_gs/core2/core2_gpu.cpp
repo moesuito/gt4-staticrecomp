@@ -876,15 +876,65 @@ struct Gpu::Impl {
     Use(const Image *image) : serial(image ? image->serial : 0u) {}
     Use(const Image *image, std::uint32_t row) : serial(image ? image->serial : 0u), region(row) {}
   };
+  // IN-447 (TASK-027 CPU survey, front R2): the images a set touches live in a flat table with generation stamps (an
+  // open-addressing index by serial into an entry array), so clear() frees nothing and adding an image after a barrier
+  // allocates nothing once the arrays are warm. The answers are those of the former unordered_map of row vectors.
   struct AccessSet {
     struct Entry {
+      std::uint32_t serial = 0;
       bool whole = false;
-      std::vector<std::uint32_t> rows;
+      std::vector<std::uint32_t> rows;  // kept allocated across clears
     };
-    std::unordered_map<std::uint32_t, Entry> images;
+    struct Slot {
+      std::uint32_t serial = 0;
+      std::uint32_t generation = 0;  // the slot is in use when this equals the set's generation
+      std::uint32_t entry = 0;
+    };
+    std::vector<Slot> slots = std::vector<Slot>(2048);  // a power of two; doubled when half full
+    std::vector<Entry> entries;  // entries[0, live) are this generation's
+    std::size_t live = 0;
+    std::uint32_t generation = 1;
+
+    std::size_t size() const { return live; }
+    std::size_t home(std::uint32_t serial) const { return (serial * 2654435761u) & (slots.size() - 1); }
+    const Entry *find(std::uint32_t serial) const {
+      for (std::size_t i = home(serial);; i = (i + 1) & (slots.size() - 1)) {
+        const Slot &slot = slots[i];
+        if (slot.generation != generation) return nullptr;
+        if (slot.serial == serial) return &entries[slot.entry];
+      }
+    }
+    Entry &insert(std::uint32_t serial) {
+      if (2 * (live + 1) > slots.size()) grow();
+      for (std::size_t i = home(serial);; i = (i + 1) & (slots.size() - 1)) {
+        Slot &slot = slots[i];
+        if (slot.generation == generation) {
+          if (slot.serial == serial) return entries[slot.entry];
+          continue;
+        }
+        if (live == entries.size()) entries.emplace_back();
+        Entry &entry = entries[live];
+        entry.serial = serial;
+        entry.whole = false;
+        entry.rows.clear();
+        slot = Slot{serial, generation, static_cast<std::uint32_t>(live)};
+        ++live;
+        return entry;
+      }
+    }
+    // Doubles the index and re-inserts this generation's entries (a probe always finds a free slot).
+    void grow() {
+      std::vector<Slot> bigger(slots.size() * 2);
+      slots.swap(bigger);
+      for (std::size_t e = 0; e < live; ++e) {
+        std::size_t i = home(entries[e].serial);
+        while (slots[i].generation == generation) i = (i + 1) & (slots.size() - 1);
+        slots[i] = Slot{entries[e].serial, generation, static_cast<std::uint32_t>(e)};
+      }
+    }
     void add(std::uint32_t serial, std::uint32_t region) {
       if (serial == 0) return;
-      Entry &entry = images[serial];
+      Entry &entry = insert(serial);
       if (region == kWholeImage) {
         entry.whole = true;
       } else if (!entry.whole && std::find(entry.rows.begin(), entry.rows.end(), region) == entry.rows.end()) {
@@ -893,19 +943,25 @@ struct Gpu::Impl {
     }
     bool conflicts(std::uint32_t serial, std::uint32_t region) const {
       if (serial == 0) return false;
-      const auto found = images.find(serial);
-      if (found == images.end()) return false;
-      const Entry &entry = found->second;
-      return entry.whole || region == kWholeImage ||
-             std::find(entry.rows.begin(), entry.rows.end(), region) != entry.rows.end();
+      const Entry *entry = find(serial);
+      if (!entry) return false;
+      return entry->whole || region == kWholeImage ||
+             std::find(entry->rows.begin(), entry->rows.end(), region) != entry->rows.end();
     }
     void merge(const AccessSet &other) {
-      for (const auto &[serial, entry] : other.images) {
-        if (entry.whole) add(serial, kWholeImage);
-        for (std::uint32_t row : entry.rows) add(serial, row);
+      for (std::size_t i = 0; i < other.live; ++i) {
+        const Entry &entry = other.entries[i];
+        if (entry.whole) add(entry.serial, kWholeImage);
+        for (std::uint32_t row : entry.rows) add(entry.serial, row);
       }
     }
-    void clear() { images.clear(); }
+    void clear() {
+      live = 0;
+      if (++generation == 0) {  // after 2^32 clears: reset the stamps once
+        for (Slot &slot : slots) slot.generation = 0;
+        generation = 1;
+      }
+    }
   };
   bool lazyBarriers =
       std::getenv("GT4_CORE2_LAZY_BARRIERS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_LAZY_BARRIERS"), "0") != 0;
@@ -920,7 +976,7 @@ struct Gpu::Impl {
     for (const Use &use : writes) {
       hazard = hazard || pendingWrites.conflicts(use.serial, use.region) || pendingReads.conflicts(use.serial, use.region);
     }
-    if (hazard || pendingReads.images.size() + pendingWrites.images.size() > 512) {
+    if (hazard || pendingReads.size() + pendingWrites.size() > 512) {
       full_barrier();
     } else {
       stats.barriersSkipped++;
@@ -1010,6 +1066,8 @@ struct Gpu::Impl {
                                      std::strcmp(std::getenv("GT4_CORE2_DEFER_DRAWS"), "0") != 0);
   std::vector<DeferredDraw> deferred;
   std::vector<DeferredCommand> deferredCommands;
+  struct FillRect { std::int32_t x0, y0, x1, y1; };  // IN-442 constant fills: output pixels [x0, x1) x [y0, y1)
+  std::vector<FillRect> fillRects;                    // IN-447: reused by every constant-fill batch
   AccessSet drawReads, drawWrites;  // what the deferred batches read and write
 
   void begin_draw_pass() {
@@ -1052,16 +1110,19 @@ struct Gpu::Impl {
   void flush_draws() {
     if (deferred.empty()) return;
     bool hazard = false;
-    for (const auto &[serial, entry] : drawReads.images) {
-      if (entry.whole) hazard = hazard || pendingWrites.conflicts(serial, kWholeImage);
-      for (std::uint32_t row : entry.rows) hazard = hazard || pendingWrites.conflicts(serial, row);
+    for (std::size_t i = 0; i < drawReads.live; ++i) {
+      const AccessSet::Entry &entry = drawReads.entries[i];
+      if (entry.whole) hazard = hazard || pendingWrites.conflicts(entry.serial, kWholeImage);
+      for (std::uint32_t row : entry.rows) hazard = hazard || pendingWrites.conflicts(entry.serial, row);
     }
-    for (const auto &[serial, entry] : drawWrites.images) {
+    for (std::size_t i = 0; i < drawWrites.live; ++i) {
+      const AccessSet::Entry &entry = drawWrites.entries[i];
       if (entry.whole) {
-        hazard = hazard || pendingWrites.conflicts(serial, kWholeImage) || pendingReads.conflicts(serial, kWholeImage);
+        hazard = hazard || pendingWrites.conflicts(entry.serial, kWholeImage) ||
+                 pendingReads.conflicts(entry.serial, kWholeImage);
       }
       for (std::uint32_t row : entry.rows) {
-        hazard = hazard || pendingWrites.conflicts(serial, row) || pendingReads.conflicts(serial, row);
+        hazard = hazard || pendingWrites.conflicts(entry.serial, row) || pendingReads.conflicts(entry.serial, row);
       }
     }
     if (hazard) {
@@ -1863,8 +1924,9 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     const std::uint32_t sc = s.scale;
     const std::int32_t limitX = static_cast<std::int32_t>(std::min(frame->width, s.framebufferWidth));
     const std::int32_t limitY = static_cast<std::int32_t>(std::min(frame->height, s.framebufferHeight));
-    struct Rect { std::int32_t x0, y0, x1, y1; };  // output pixels [x0, x1) x [y0, y1)
-    std::vector<Rect> rects;
+    using Rect = Impl::FillRect;
+    std::vector<Rect> &rects = s.fillRects;  // IN-447: reused across batches
+    rects.clear();
     bool eligible = true;
     for (const gpu::GpuDraw &draw : *batch.draws) {
       if (draw.topology != gpu::GpuTopology::Triangles || draw.count == 0 || draw.first + draw.count > verts.size()) {

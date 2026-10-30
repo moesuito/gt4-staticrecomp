@@ -13,6 +13,7 @@
 #include "hw_cpu_sampler.hpp"
 #include "hw_gs_backend.hpp"
 #include "hw_gs_options.hpp"
+#include "mtvu_ring.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -22,11 +23,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -103,7 +102,8 @@ void start_gs_worker();
 
 // TASK-027 CPU survey: the cost of carrying the GS stream from the game (EE) thread to the GS worker, in TSC ticks
 // (converted with the QPC rate between two profile lines). Each counter has one writer: the producer counters are
-// written by the thread that calls the hooks (the EE thread), the worker counters by the GS worker.
+// written by the thread that calls the hooks (the EE thread), the worker counters by the GS worker. With the stream
+// ring (IN-446) the hook's whole cost is the copy into the ring, so copy_ms equals gif_ms, and max_depth is in bytes.
 struct TransportCounters {
   // Producer (EE thread).
   std::atomic<std::uint64_t> gif_commands{0}, gif_bytes{0}, privileged_commands{0}, vsync_commands{0};
@@ -338,58 +338,131 @@ void gif_reset_now() { backend().reset_gif_paths(); }
 // first wait until the worker has executed everything queued before them, then run under the lock the worker
 // holds for each command. At a VBlank the EE waits while kFramesAhead VBlanks are still queued (back-pressure).
 // GT4_HW_GS_THREAD=0 keeps the synchronous path (diagnostic switch, not a 12.8 option).
-struct GsCommand {
-  enum class Kind : std::uint8_t { Gif, Privileged, Vsync, GsReset, GifReset } kind = Kind::Gif;
-  int path = 0;
-  std::vector<std::uint8_t> bytes;
-  std::uint32_t address = 0;
-  std::uint64_t value = 0;
-  bool oddField = false;
+//
+// IN-446 (TASK-027 CPU survey, front T2): the stream travels through one single-producer/single-consumer byte ring
+// instead of a deque of commands with a byte vector each, a mutex and a notify per command. The EE copies a GIF chunk
+// once, into the ring, and takes no lock; the worker executes each record in place and then releases it. Records use
+// the MTVU ring's framing (mtvu_ring.hpp: a 16-byte header, the payload padded to 16 bytes, a wrap filler before a
+// record that would cross the end). Waking is conditional: the EE rings the work bell after a push, which wakes the
+// worker only when it sleeps; the worker rings the progress bell only when what the EE waits for has happened (free
+// space, a VBlank done, the ring empty).
+enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36 };
+
+class StreamRing {
+public:
+  explicit StreamRing(std::size_t capacity) : capacity_(capacity), storage_(capacity) {}
+
+  std::size_t capacity() const { return capacity_; }
+  std::size_t max_payload() const { return capacity_ / 2 - mtvu::kRecordHeaderBytes; }
+  std::uint64_t head() const { return head_.load(std::memory_order_seq_cst); }
+  std::uint64_t tail() const { return tail_.load(std::memory_order_seq_cst); }
+
+  // Producer only. False when the record does not fit now.
+  bool try_push(const mtvu::RecordHeader &header, const std::uint8_t *payload) {
+    const std::size_t total = mtvu::record_bytes(header.bytes);
+    const std::uint64_t head = head_.load(std::memory_order_relaxed);
+    const std::uint64_t tail = tail_.load(std::memory_order_seq_cst);  // pairs with the producer's want_ store
+    const std::size_t offset = static_cast<std::size_t>(head % capacity_);
+    const std::size_t filler = offset + total > capacity_ ? capacity_ - offset : 0;
+    if (capacity_ - static_cast<std::size_t>(head - tail) < filler + total) return false;
+    std::size_t at = offset;
+    if (filler != 0) {
+      mtvu::RecordHeader wrap;
+      wrap.kind = static_cast<std::uint16_t>(mtvu::RecordKind::Wrap);
+      wrap.bytes = static_cast<std::uint32_t>(filler - mtvu::kRecordHeaderBytes);
+      std::memcpy(storage_.data() + offset, &wrap, mtvu::kRecordHeaderBytes);
+      at = 0;
+    }
+    std::memcpy(storage_.data() + at, &header, mtvu::kRecordHeaderBytes);
+    if (header.bytes != 0) std::memcpy(storage_.data() + at + mtvu::kRecordHeaderBytes, payload, header.bytes);
+    head_.store(head + filler + total, std::memory_order_seq_cst);
+    return true;
+  }
+
+  // Consumer only. Lends the next record (skipping wrap fillers) until release(). False when empty.
+  bool try_peek(mtvu::RecordHeader &header, const std::uint8_t *&payload) {
+    std::uint64_t tail = tail_.load(std::memory_order_relaxed);
+    const std::uint64_t head = head_.load(std::memory_order_seq_cst);
+    while (tail != head) {
+      const std::size_t offset = static_cast<std::size_t>(tail % capacity_);
+      std::memcpy(&header, storage_.data() + offset, mtvu::kRecordHeaderBytes);
+      const std::size_t total = mtvu::record_bytes(header.bytes);
+      if (header.kind == static_cast<std::uint16_t>(mtvu::RecordKind::Wrap)) {
+        tail += total;
+        continue;
+      }
+      peekedTail_ = tail + total;
+      payload = storage_.data() + offset + mtvu::kRecordHeaderBytes;
+      return true;
+    }
+    return false;
+  }
+
+  // Consumer only: frees the record lent by the last try_peek (and the fillers before it).
+  void release() { tail_.store(peekedTail_, std::memory_order_seq_cst); }
+
+private:
+  std::size_t capacity_;
+  std::vector<std::uint8_t> storage_;
+  alignas(64) std::atomic<std::uint64_t> head_{0};
+  alignas(64) std::atomic<std::uint64_t> tail_{0};
+  std::uint64_t peekedTail_ = 0;  // consumer only
 };
 
 class GsWorker {
 public:
   static constexpr std::size_t kFramesAhead = 2;
+  // Two busy race VBlanks (about 6 MB of GIF data each) fit; a larger chunk is split into several records.
+  static constexpr std::size_t kRingBytes = std::size_t{16} << 20;
+  static constexpr std::uint64_t kWantNothing = 0;
+  static constexpr std::uint64_t kWantEmpty = ~std::uint64_t{0};
+
+  GsWorker() : ring_(kRingBytes) {}
 
   void start() {
     thread_ = std::thread([this] { run(); });
   }
 
-  void push(GsCommand &&command) {
-    std::unique_lock<std::mutex> lock(queueMutex_);
-    if (command.kind == GsCommand::Kind::Vsync) {
-      if (queuedVsyncs_ >= kFramesAhead) {
+  // Producer (EE thread): one record, in stream order. A GIF chunk larger than a record is split at qword boundaries
+  // (the GIF parser keeps each path's state across transfers).
+  void push(SinkRecord kind, std::uint8_t path, std::uint64_t value, const std::uint8_t *payload, std::size_t bytes) {
+    if (kind == SinkRecord::Vsync) {
+      if (queuedVsyncs_.load(std::memory_order_seq_cst) >= kFramesAhead) {
         const std::uint64_t start = __rdtsc();
-        canQueue_.wait(lock, [this] { return queuedVsyncs_ < kFramesAhead; });
+        wait_for([this] { return queuedVsyncs_.load(std::memory_order_seq_cst) < kFramesAhead; }, kWantNothing);
         add(g_transport.vsync_wait_ticks, __rdtsc() - start);
         add(g_transport.vsync_waits, 1);
       }
-      ++queuedVsyncs_;
+      queuedVsyncs_.fetch_add(1, std::memory_order_seq_cst);
     }
-    if (waiting_) add(g_transport.wake_pushes, 1);
-    queue_.push_back(std::move(command));
-    if (queue_.size() > maxDepth_) {
-      maxDepth_ = queue_.size();
-      g_transport.max_depth.store(maxDepth_, std::memory_order_relaxed);
+    const std::size_t limit = ring_.max_payload() & ~std::size_t{15};
+    do {
+      const std::size_t part = bytes < limit ? bytes : limit;
+      mtvu::RecordHeader header;
+      header.kind = static_cast<std::uint16_t>(kind);
+      header.path = path;
+      header.bytes = static_cast<std::uint32_t>(part);
+      header.job = value;
+      if (!ring_.try_push(header, payload)) {
+        const std::uint64_t need = mtvu::record_bytes(part) * 2;  // the record and a worst-case wrap filler
+        wait_for([&] { return ring_.try_push(header, payload); }, need);
+      }
+      if (sleeping_.load(std::memory_order_relaxed)) add(g_transport.wake_pushes, 1);
+      work_.ring();
+      payload += part;
+      bytes -= part;
+    } while (bytes != 0);
+    const std::uint64_t depth = ring_.head() - ring_.tail();
+    if (depth > maxDepth_) {
+      maxDepth_ = depth;
+      g_transport.max_depth.store(depth, std::memory_order_relaxed);
     }
-    hasWork_.notify_one();
   }
 
-  // A recycled byte buffer for a GIF command (no allocation per packet once warm).
-  std::vector<std::uint8_t> buffer() {
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    if (spare_.empty()) return {};
-    std::vector<std::uint8_t> bytes = std::move(spare_.back());
-    spare_.pop_back();
-    return bytes;
-  }
-
-  // Waits until every queued command has executed; the caller then runs with the backend lock held.
+  // Waits until every queued record has executed; the caller then runs with the backend lock held.
   std::unique_lock<std::mutex> drain() {
     const std::uint64_t start = __rdtsc();
-    std::unique_lock<std::mutex> lock(queueMutex_);
-    drained_.wait(lock, [this] { return queue_.empty() && !busy_; });
-    lock.unlock();
+    if (ring_.head() != ring_.tail()) wait_for([this] { return ring_.head() == ring_.tail(); }, kWantEmpty);
     std::unique_lock<std::mutex> backend(backendMutex_);
     add(g_transport.drain_wait_ticks, __rdtsc() - start);
     add(g_transport.drains, 1);
@@ -397,64 +470,85 @@ public:
   }
 
 private:
+  // Producer side: sleeps on the progress bell until `ready()` holds. `want` tells the worker when to ring: the free
+  // bytes needed, kWantEmpty, or kWantNothing (a VBlank done always rings). The want/snapshot/re-check/wait order
+  // pairs with the worker's release/check/ring order (all sequentially consistent), so no wakeup is lost.
+  // waitMutex_ keeps one waiter at a time (a window message may drain while the EE waits for space).
+  template <typename Ready> void wait_for(Ready ready, std::uint64_t want) {
+    std::lock_guard<std::mutex> waiting(waitMutex_);
+    want_.store(want, std::memory_order_seq_cst);
+    for (;;) {
+      const std::uint32_t seen = progress_.snapshot();
+      if (ready()) break;
+      bool slept = false;
+      progress_.wait_changed(seen, slept);
+    }
+    want_.store(kWantNothing, std::memory_order_seq_cst);
+  }
+
+  // Worker side, after a release: rings the progress bell when what the producer waits for has happened.
+  void notify_progress(bool vsyncDone) {
+    const std::uint64_t want = want_.load(std::memory_order_seq_cst);
+    if (want == kWantNothing && !vsyncDone) return;
+    const std::uint64_t used = ring_.head() - ring_.tail();
+    const bool ready = vsyncDone || (want == kWantEmpty ? used == 0 : ring_.capacity() - used >= want);
+    if (ready) progress_.ring();
+  }
+
   void run() {
     sampler::name_current_thread("gs-worker");
     for (;;) {
-      GsCommand command;
-      {
-        std::unique_lock<std::mutex> lock(queueMutex_);
-        if (queue_.empty()) {
+      mtvu::RecordHeader header;
+      const std::uint8_t *payload = nullptr;
+      if (!ring_.try_peek(header, payload)) {
+        const std::uint32_t seen = work_.snapshot();
+        if (!ring_.try_peek(header, payload)) {
           const std::uint64_t start = __rdtsc();
-          waiting_ = true;
-          hasWork_.wait(lock, [this] { return !queue_.empty(); });
-          waiting_ = false;
+          sleeping_.store(true, std::memory_order_relaxed);
+          bool slept = false;
+          work_.wait_changed(seen, slept);
+          sleeping_.store(false, std::memory_order_relaxed);
           add(g_transport.idle_ticks, __rdtsc() - start);
-          add(g_transport.wakeups, 1);
+          if (slept) add(g_transport.wakeups, 1);
+          continue;
         }
-        command = std::move(queue_.front());
-        queue_.pop_front();
-        busy_ = true;
       }
+      const SinkRecord kind = static_cast<SinkRecord>(header.kind);
       const std::uint64_t busyStart = __rdtsc();
       {
         std::lock_guard<std::mutex> backendLock(backendMutex_);
-        switch (command.kind) {
-          case GsCommand::Kind::Gif: gif_now(command.path, command.bytes.data(), command.bytes.size()); break;
-          case GsCommand::Kind::Privileged: privileged_now(command.address, command.value); break;
-          case GsCommand::Kind::Vsync: vsync_now(command.oddField); break;
-          case GsCommand::Kind::GsReset: gs_reset_now(); break;
-          case GsCommand::Kind::GifReset: gif_reset_now(); break;
+        switch (kind) {
+          case SinkRecord::Gif: gif_now(header.path, payload, header.bytes); break;
+          case SinkRecord::Privileged: {
+            std::uint32_t address = 0;
+            std::memcpy(&address, payload, sizeof address);
+            privileged_now(address, header.job);
+            break;
+          }
+          case SinkRecord::Vsync: vsync_now(header.job != 0); break;
+          case SinkRecord::GsReset: gs_reset_now(); break;
+          case SinkRecord::GifReset: gif_reset_now(); break;
         }
       }
-      add(g_transport.busy_ticks[static_cast<int>(command.kind)], __rdtsc() - busyStart);
-      {
-        std::lock_guard<std::mutex> lock(queueMutex_);
-        busy_ = false;
-        if (command.kind == GsCommand::Kind::Vsync) {
-          --queuedVsyncs_;
-          canQueue_.notify_all();
-        }
-        if (command.kind == GsCommand::Kind::Gif && spare_.size() < 4096) {
-          command.bytes.clear();
-          spare_.push_back(std::move(command.bytes));
-        }
-        if (queue_.empty()) drained_.notify_all();
-      }
+      const int slot = kind == SinkRecord::Gif ? 0 : kind == SinkRecord::Privileged ? 1 : kind == SinkRecord::Vsync ? 2 : 3;
+      add(g_transport.busy_ticks[slot], __rdtsc() - busyStart);
+      ring_.release();
+      const bool vsyncDone = kind == SinkRecord::Vsync;
+      if (vsyncDone) queuedVsyncs_.fetch_sub(1, std::memory_order_seq_cst);
+      notify_progress(vsyncDone);
     }
   }
 
+  StreamRing ring_;
+  mtvu::Doorbell work_;      // EE -> worker: records published (wakes the worker only when it sleeps)
+  mtvu::Doorbell progress_;  // worker -> EE: space freed, a VBlank done, the ring empty (only when wanted)
+  std::atomic<std::uint64_t> want_{kWantNothing};
+  std::atomic<std::size_t> queuedVsyncs_{0};
+  std::atomic<bool> sleeping_{false};  // the worker waits for work (TASK-027 CPU survey: pushes that wake it)
+  std::uint64_t maxDepth_ = 0;         // producer only: deepest ring use, in bytes
   std::thread thread_;
-  std::mutex queueMutex_;
   std::mutex backendMutex_;
-  std::condition_variable hasWork_;
-  std::condition_variable canQueue_;
-  std::condition_variable drained_;
-  std::deque<GsCommand> queue_;
-  std::vector<std::vector<std::uint8_t>> spare_;
-  std::size_t queuedVsyncs_ = 0;
-  std::size_t maxDepth_ = 0;
-  bool busy_ = false;
-  bool waiting_ = false;  // the worker waits for work (TASK-027 CPU survey: pushes that wake it)
+  std::mutex waitMutex_;
 };
 
 GsWorker *g_worker = nullptr;  // null: synchronous (GT4_HW_GS_THREAD=0)
@@ -475,15 +569,10 @@ void gif(int path, const std::uint8_t *data, std::uint32_t qwc) {
     return;
   }
   const std::uint64_t start = __rdtsc();
-  GsCommand command;
-  command.kind = GsCommand::Kind::Gif;
-  command.path = path;
-  command.bytes = g_worker->buffer();
-  const std::uint64_t copyStart = __rdtsc();
-  command.bytes.assign(data, data + bytes);
-  add(g_transport.copy_ticks, __rdtsc() - copyStart);
-  g_worker->push(std::move(command));
-  add(g_transport.gif_ticks, __rdtsc() - start);
+  g_worker->push(SinkRecord::Gif, static_cast<std::uint8_t>(path), 0, data, bytes);
+  const std::uint64_t ticks = __rdtsc() - start;
+  add(g_transport.gif_ticks, ticks);
+  add(g_transport.copy_ticks, ticks);  // the copy into the ring is the whole hook now
   add(g_transport.gif_commands, 1);
   add(g_transport.gif_bytes, bytes);
 }
@@ -494,11 +583,9 @@ void privileged(std::uint32_t address, std::uint64_t value) {
     return;
   }
   const std::uint64_t start = __rdtsc();
-  GsCommand command;
-  command.kind = GsCommand::Kind::Privileged;
-  command.address = address;
-  command.value = value;
-  g_worker->push(std::move(command));
+  std::uint8_t payload[sizeof address];
+  std::memcpy(payload, &address, sizeof address);
+  g_worker->push(SinkRecord::Privileged, 0, value, payload, sizeof payload);
   add(g_transport.privileged_ticks, __rdtsc() - start);
   add(g_transport.privileged_commands, 1);
 }
@@ -522,10 +609,7 @@ void vsync(bool odd_field) {
     vsync_now(odd_field);
     return;
   }
-  GsCommand command;
-  command.kind = GsCommand::Kind::Vsync;
-  command.oddField = odd_field;
-  g_worker->push(std::move(command));
+  g_worker->push(SinkRecord::Vsync, 0, odd_field ? 1 : 0, nullptr, 0);
   add(g_transport.vsync_commands, 1);
 }
 
@@ -534,9 +618,7 @@ void gs_reset() {
     gs_reset_now();
     return;
   }
-  GsCommand command;
-  command.kind = GsCommand::Kind::GsReset;
-  g_worker->push(std::move(command));
+  g_worker->push(SinkRecord::GsReset, 0, 0, nullptr, 0);
 }
 
 void gif_reset() {
@@ -544,9 +626,7 @@ void gif_reset() {
     gif_reset_now();
     return;
   }
-  GsCommand command;
-  command.kind = GsCommand::Kind::GifReset;
-  g_worker->push(std::move(command));
+  g_worker->push(SinkRecord::GifReset, 0, 0, nullptr, 0);
 }
 
 bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t height) {
