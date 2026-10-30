@@ -79,7 +79,9 @@ The reading:
   depth test.
   - Cheap at 3x today, because the GPU waits on the CPU.
   - At 6x-12x, the interlock and per-pixel read-modify-write grow with the pixel count.
-  - Mobile GPUs often lack the interlock.
+  - Mobile GPUs often lack the interlock. Measured 2026-10-30 (IN-466, `GT4_HW_INTERLOCK=0` on the RX 9060 XT): the
+    3x night race needs 43.7 ms of GPU per VBlank without it against 3.9 ms with it (frames identical), so on such
+    GPUs CoreGS 2.0 needs another fast path for the common draws (the hardware raster path D1, or CoreGS 3.0).
 - **Every image has its own `vkAllocateMemory`:** each target and each pooled texture, zero-cleared at creation.
   - A race start creates dozens of targets and textures in a few frames.
   - That burst is the prime suspect for the start-of-race spikes (Hypothesis: the timing per frame is not

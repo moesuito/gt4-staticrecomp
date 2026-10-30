@@ -416,7 +416,11 @@ struct Backend::Impl {
     features2.features.pipelineStatisticsQuery = supported.features.pipelineStatisticsQuery;
 
     // IN-345: pixel interlock lets the GPU path draw a batch of triangles in one draw (no barriers).
-    pixel_interlock = gt4::hw::vulkan_loader::pixel_interlock_supported(physical);
+    // GT4_HW_INTERLOCK=0 leaves it off on a device that has it: the path of GPUs without it (most mobile GPUs), for
+    // measuring what that path costs (diagnostics).
+    const char *interlockSwitch = std::getenv("GT4_HW_INTERLOCK");
+    pixel_interlock = gt4::hw::vulkan_loader::pixel_interlock_supported(physical) &&
+                      !(interlockSwitch != nullptr && std::strcmp(interlockSwitch, "0") == 0);
     VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlock{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
     interlock.fragmentShaderPixelInterlock = VK_TRUE;

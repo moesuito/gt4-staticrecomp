@@ -1230,6 +1230,12 @@ struct Gpu::Impl {
                                      std::strcmp(std::getenv("GT4_CORE2_DEFER_DRAWS"), "0") != 0);
   std::vector<DeferredDraw> deferred;
   std::vector<DeferredCommand> deferredCommands;
+  // IN-466: the rectangles of a batch's per-primitive commands since the last wait (Gpu::Draw), at most
+  // kDisjointGroupMax before a wait anyway.
+  static constexpr std::size_t kDisjointGroupMax = 64;
+  const bool groupDisjoint =
+      std::getenv("GT4_CORE2_GROUP_DISJOINT") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GROUP_DISJOINT"), "0") != 0;
+  std::vector<VkRect2D> disjointGroup;
   struct FillRect { std::int32_t x0, y0, x1, y1; };  // IN-442 constant fills: output pixels [x0, x1) x [y0, y1)
   std::vector<FillRect> fillRects;                    // IN-447: reused by every constant-fill batch
   AccessSet drawReads, drawWrites;  // what the deferred batches read and write
@@ -2407,6 +2413,18 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       s.deferredCommands.push_back(command);
     }
   } else {
+    // IN-466: a primitive waits for the ones before it only when its rectangle (the scissor of its command: its box
+    // with a native pixel of slack) meets the rectangle of one drawn since the last wait. Primitives with disjoint
+    // rectangles write disjoint pixels, so their read-modify-writes need no order. The first primitive of a batch
+    // keeps its wait. GT4_CORE2_GROUP_DISJOINT=0 waits before every primitive (A/B).
+    std::vector<VkRect2D> &group = s.disjointGroup;
+    group.clear();
+    auto meets = [](const VkRect2D &a, const VkRect2D &b) {
+      return a.offset.x < b.offset.x + static_cast<std::int32_t>(b.extent.width) &&
+             b.offset.x < a.offset.x + static_cast<std::int32_t>(a.extent.width) &&
+             a.offset.y < b.offset.y + static_cast<std::int32_t>(b.extent.height) &&
+             b.offset.y < a.offset.y + static_cast<std::int32_t>(a.extent.height);
+    };
     for (const gpu::GpuDraw &draw : *batch.draws) {
       if (draw.count == 0 || draw.first + draw.count > vertexCount) continue;
       std::int32_t a, b, c, d;
@@ -2420,6 +2438,18 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       command.first = draw.first;
       command.count = draw.count;
       command.barrierFirst = true;
+      if (s.groupDisjoint && !group.empty() && group.size() < Impl::kDisjointGroupMax) {
+        bool overlaps = false;
+        for (const VkRect2D &earlier : group) {
+          if (meets(earlier, command.scissor)) {
+            overlaps = true;
+            break;
+          }
+        }
+        command.barrierFirst = overlaps;
+      }
+      if (command.barrierFirst) group.clear();
+      group.push_back(command.scissor);
       s.deferredCommands.push_back(command);
     }
   }
