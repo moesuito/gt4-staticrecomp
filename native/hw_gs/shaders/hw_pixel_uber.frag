@@ -442,9 +442,57 @@ ivec4 sample_texture(int uvs, int uvt) {
     return (c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11) >> 8;
 }
 
+// IN-470 (chapter 11): a replacement image, any size, covers the native rectangle of the texture (2^TW x 2^TH or its
+// region), so a native coordinate maps onto it by the ratio of the sizes. The wrap modes work on native coordinates as
+// the GS does; the game's filter choice applies to the image's own texels. RGBA8 words, alpha on the PS2 scale. Fields:
+// tex_origin_x = image width | height << 16, tex_origin_y = rectangle width | height << 16, ta0 = its x | y << 16.
+float wrap_replaced(float u, uint log2_size, uint mode, uint minimum, uint maximum) {
+    float size = float(1u << log2_size);
+    if (mode == 0u) return u - floor(u / size) * size;
+    if (mode == 1u) return clamp(u, 0.0, size - 0.0001);
+    if (mode == 2u) return clamp(u, float(minimum), float(maximum + 1u) - 0.0001);
+    uint whole = uint(int(floor(u))) & ((1u << log2_size) - 1u);
+    return float((whole & minimum) | maximum) + fract(u);
+}
+
+ivec4 fetch_replaced(int x, int y) {
+    return hw_texel_colour(HW_TEXEL_RGBA8, imageLoad(hw_texels, ivec2(x, y)).x, 0u, 0u, false);
+}
+
+ivec4 sample_replaced() {
+    vec2 native;
+    if (ST_TEX_FST != 0u) {
+        native = in_uv / 16.0;
+    } else {
+        float q = in_q == 0.0 ? 1.0 : in_q;
+        native = (in_st / q) * vec2(float(1u << state.tex_log2_w), float(1u << state.tex_log2_h));
+    }
+    const ivec2 image_size = ivec2(int(state.tex_origin_x & 0xFFFFu), int(state.tex_origin_x >> 16));
+    const vec2 rect_size = vec2(float(state.tex_origin_y & 0xFFFFu), float(state.tex_origin_y >> 16));
+    const vec2 rect_origin = vec2(float(state.ta0 & 0xFFFFu), float(state.ta0 >> 16));
+    const vec2 wrapped = vec2(wrap_replaced(native.x, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s),
+                              wrap_replaced(native.y, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t));
+    const vec2 at = (wrapped - rect_origin) / rect_size * vec2(image_size);
+    if (ST_TEX_LINEAR == 0u && !g_force_linear) {
+        const ivec2 texel = clamp(ivec2(floor(at)), ivec2(0), image_size - 1);
+        return fetch_replaced(texel.x, texel.y);
+    }
+    const vec2 corner = at - 0.5;
+    const ivec2 low = ivec2(floor(corner));
+    const ivec2 weight = ivec2((corner - vec2(low)) * 16.0);
+    // A repeating axis continues at the other side of the image, the others stop at its edge.
+    const bool repeat_s = ST_WRAP_S == 0u || ST_WRAP_S == 3u, repeat_t = ST_WRAP_T == 0u || ST_WRAP_T == 3u;
+    const int x0 = repeat_s ? (low.x + image_size.x) % image_size.x : clamp(low.x, 0, image_size.x - 1);
+    const int x1 = repeat_s ? (low.x + 1 + image_size.x) % image_size.x : clamp(low.x + 1, 0, image_size.x - 1);
+    const int y0 = repeat_t ? (low.y + image_size.y) % image_size.y : clamp(low.y, 0, image_size.y - 1);
+    const int y1 = repeat_t ? (low.y + 1 + image_size.y) % image_size.y : clamp(low.y + 1, 0, image_size.y - 1);
+    return (fetch_replaced(x0, y0) * ((16 - weight.x) * (16 - weight.y)) + fetch_replaced(x1, y0) * (weight.x * (16 - weight.y)) +
+            fetch_replaced(x0, y1) * ((16 - weight.x) * weight.y) + fetch_replaced(x1, y1) * (weight.x * weight.y)) >> 8;
+}
+
 // The texture function's colour for the fragment colour `frag` at texel coordinate (uvs, uvt) (12.4 units).
 ivec4 textured_colour(int uvs, int uvt, ivec4 frag) {
-    ivec4 texel = g_mip ? sample_mipmapped(uvs, uvt, in_q)
+    ivec4 texel = (PUSH_WORD & 0x00400000u) != 0u ? sample_replaced() : g_mip ? sample_mipmapped(uvs, uvt, in_q)
                   : (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
                                                                  : sample_texture(uvs, uvt);
     if ((PUSH_WORD & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
@@ -468,7 +516,7 @@ void main() {
     g_dither_fine = (PUSH_WORD & 0x40000000u) != 0u;
     // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale; IN-392: bit 28 asks for the
     // position depth below.
-    g_tex_scale = PUSH_WORD & 0x007FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    g_tex_scale = PUSH_WORD & 0x003FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
     g_texture_from_target = (PUSH_WORD & 0x01000000u) != 0u;
     g_mip = (PUSH_WORD & 0x00800000u) != 0u;
     if (g_mip) {

@@ -2108,18 +2108,26 @@ bool Gpu::UploadImage(ImageId id, std::uint32_t width, std::uint32_t height, con
     return false;
   }
   if (!s.begin_recording(error)) return false;
-  const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  VkDeviceSize offset = 0;
-  if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
-  std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels, static_cast<std::size_t>(bytes));
-  s.outside_pass();
-  s.touch("upload image", {}, {image}, 0, 0);
-  VkBufferImageCopy region{};
-  region.bufferOffset = offset;
-  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.imageExtent = {width, height, 1};
-  gt4_hwd_vkCmdCopyBufferToImage(s.cmd, s.staging.buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-  s.after_op();
+  // IN-470: in pieces no larger than half a recording's share of the staging ring (a 4K replacement is 64 MiB).
+  const std::uint32_t rowsPerPiece = std::max<std::uint32_t>(
+      1u, static_cast<std::uint32_t>(s.ring_share(s.staging) / 2u / std::max<VkDeviceSize>(VkDeviceSize{width} * 4u, 1u)));
+  for (std::uint32_t top = 0; top < height; top += rowsPerPiece) {
+    const std::uint32_t rows = std::min(rowsPerPiece, height - top);
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * rows * 4u;
+    VkDeviceSize offset = 0;
+    if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
+    std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels + static_cast<std::size_t>(top) * width,
+                static_cast<std::size_t>(bytes));
+    s.outside_pass();
+    s.touch("upload image", {}, {image}, 0, 0);
+    VkBufferImageCopy region{};
+    region.bufferOffset = offset;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageOffset = {0, static_cast<std::int32_t>(top), 0};
+    region.imageExtent = {width, rows, 1};
+    gt4_hwd_vkCmdCopyBufferToImage(s.cmd, s.staging.buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    s.after_op();
+  }
   s.stats.atlasUploads++;
   return true;
 }
@@ -2158,6 +2166,12 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   state.fields[gpu::gpufield::TexOriginX] = batch.mipInfo;  // IN-428: the mip parameters (0 without mips)
   state.fields[gpu::gpufield::TexOriginY] = paletted ? static_cast<std::uint32_t>(batch.paletteRow) : 0u;
   if (paletted) state.fields[gpu::gpufield::TexelKind] = 3u;  // HW_TEXEL_INDEXED
+  if (batch.replacedWidth != 0) {  // IN-470: these fields mean nothing else for RGBA8 words (hw_pixel_uber.frag)
+    state.fields[gpu::gpufield::TexelKind] = 0u;
+    state.fields[gpu::gpufield::TexOriginX] = batch.replacedWidth | (batch.replacedHeight << 16);
+    state.fields[gpu::gpufield::TexOriginY] = batch.logicalWidth | (batch.logicalHeight << 16);
+    state.fields[gpu::gpufield::Ta0] = batch.logicalX | (batch.logicalY << 16);
+  }
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
 
@@ -2351,6 +2365,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // are on.
   record.push[7] = (batch.texture != kNoImage ? (sc | 0x01000000u) : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u) |
                    (batch.mipInfo != 0 ? 0x00800000u : 0u) |  // IN-428: tex_origin_x holds the mip parameters
+                   (batch.replacedWidth != 0 ? 0x00400000u : 0u) |  // IN-470: a replacement image
                    (batch.forceLinear ? 0x80000000u : 0u);    // IN-433: forced bilinear
   record.textureFromTarget = batch.texture != kNoImage;
   if (s.profiling) {

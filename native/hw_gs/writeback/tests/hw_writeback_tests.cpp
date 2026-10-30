@@ -12,6 +12,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <process.h>
+#include "png_encode.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -3949,6 +3953,130 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_texture_replacement (IN-470, chapter 11): an uploaded 64 x 64 CT32 pattern drawn 1:1 into pages 0-1. A first
+// run dumps it under its Format P name; a 4x image with that name in a pack folder then replaces it. Each native pixel
+// shows a texel of its 4 x 4 cell of the image, in GS memory, and with no pack the run is unchanged.
+cpuref::CaptureWriter Core2ReplacementCapture() {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kPatternPage = 16;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    const uint64_t tex0 = uint64_t{kPatternPage * 32} | (uint64_t{1} << 14) | (uint64_t{6} << 26) | (uint64_t{6} << 30) |
+                          (uint64_t{1} << 34) | (uint64_t{1} << 35);  // CT32 64 x 64, TBW 1, TCC, decal
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    ad({(kPatternPage * 32) << 32 | (uint64_t{1} << 48), 0x50, 0, 0x51, uint64_t{64} | (uint64_t{64} << 32), 0x52, 0,
+        0x53});
+    std::vector<uint64_t> pixels;
+    for (uint32_t n = 0; n < 64 * 64; n += 2) {
+        auto texel = [](uint32_t i) { return uint64_t{0x80000000u | ((i * 2654435761u) >> 8)}; };
+        pixels.push_back(texel(n) | (texel(n + 1) << 32));
+    }
+    capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(pixels.size() / 2), true, false, 0, 2, {}, pixels));
+    const uint64_t sprite = 6u | (1u << 4) | (1u << 8);  // sprite, TME, FST
+    ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        uint64_t{1} << 16, 0x4C, tex0, 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0),
+        0x05, uv(64, 64), 0x03, xyz(64, 64), 0x05});
+    capture.FrameEnd(0);
+    return capture;
+}
+
+int TestCore2TextureReplacement(const gpu::VulkanHandles& handles) {
+    namespace fs = std::filesystem;
+    int failures = 0;
+    const fs::path work = fs::temp_directory_path() / ("gt4_replacement_test_" + std::to_string(_getpid()));
+    const fs::path dumps = work / "dumps", pack = work / "pack";
+    std::error_code ignored;
+    fs::remove_all(work, ignored);
+    fs::create_directories(pack);
+    const cpuref::CaptureWriter capture = Core2ReplacementCapture();
+    const memory::BufferView page0{0, 1, memory::Psm::Ct32};
+    auto replay = [&](Core2AbRun& run, uint32_t scale) {
+        std::string error;
+        if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_UNUSED_SWITCH", true, run, error, 0, scale) || run.memory.empty() ||
+            run.memory.back().empty()) {
+            std::printf("  replay failed: %s\n", error.c_str());
+            ++failures;
+            return false;
+        }
+        return true;
+    };
+
+    // The dump names the texture.
+    Core2AbRun plain;
+    const bool plainOk = replay(plain, 1);
+    _putenv_s("GT4_HW_DUMP_TEXTURES", "1");
+    _putenv_s("GT4_HW_TEXTURE_DUMP_DIR", dumps.string().c_str());
+    Core2AbRun dumped;
+    replay(dumped, 1);
+    _putenv_s("GT4_HW_DUMP_TEXTURES", "");
+    _putenv_s("GT4_HW_TEXTURE_DUMP_DIR", "");
+    std::string name;
+    uint64_t dumpCount = 0;
+    for (const fs::directory_entry& entry : fs::directory_iterator(dumps, ignored)) {
+        name = entry.path().filename().string();
+        ++dumpCount;
+    }
+    std::printf("  dump: %llu file(s), %s\n", static_cast<unsigned long long>(dumpCount), name.c_str());
+    // bits of CT32 64 x 64: PSM 0, TW 6, TH 6.
+    if (dumpCount != 1 || name.find("-00001980.png") == std::string::npos || dumped.stats.replacementDumps != 1) ++failures;
+    if (!plainOk || dumped.memory.empty() || dumped.memory.back() != plain.memory.back()) {
+        std::printf("  a dump changed the picture\n");
+        ++failures;
+    }
+
+    // A 256 x 256 image with that name: red and green hold its own x and y.
+    if (dumpCount == 1) {
+        std::vector<uint8_t> image(256u * 256u * 4u);
+        for (uint32_t y = 0; y < 256; ++y) {
+            for (uint32_t x = 0; x < 256; ++x) {
+                const uint8_t texel[4] = {static_cast<uint8_t>(x), static_cast<uint8_t>(y), 0x55, 0x80};
+                std::memcpy(image.data() + (y * 256u + x) * 4u, texel, 4);
+            }
+        }
+        const std::vector<uint8_t> png = hw_gs_replace::testing::EncodePng(256, 256, 8, 6, image, 4);
+        std::ofstream(pack / name, std::ios::binary).write(reinterpret_cast<const char*>(png.data()),
+                                                           static_cast<std::streamsize>(png.size()));
+        _putenv_s("GT4_HW_TEXTURES", pack.string().c_str());
+        _putenv_s("GT4_HW_TEXTURES_SYNC", "1");
+        for (uint32_t scale : {1u, 3u}) {
+            Core2AbRun replaced;
+            if (!replay(replaced, scale)) continue;
+            memory::LocalMemory local;
+            std::memcpy(local.bytes().data(), replaced.memory.back().data(), kGsMemoryBytes);
+            uint64_t wrong = 0;
+            for (uint32_t y = 0; y < 64; ++y) {
+                for (uint32_t x = 0; x < 64; ++x) {
+                    const uint32_t word = local.readPixel(page0, x, y);
+                    const uint32_t want = 0x80550000u | (4u * y) << 8 | (4u * x);
+                    // At 1x a pixel samples at U = x, the first texel of its cell. The reduction at scale takes some
+                    // sub-pixel of the cell, so there only the cell is checked.
+                    const uint32_t mask = scale == 1 ? 0xFFFFFFFFu : 0xFFFCFCFCu;
+                    if ((word & mask) != (want & mask)) {
+                        if (wrong++ == 0) std::printf("    first at (%u, %u): %08x, want %08x\n", x, y, word, want);
+                    }
+                }
+            }
+            std::printf("  %ux: %llu of 4096 pixels off the image, %llu batches replaced, %llu images loaded\n", scale,
+                        static_cast<unsigned long long>(wrong), static_cast<unsigned long long>(replaced.stats.replacementHits),
+                        static_cast<unsigned long long>(replaced.stats.replacementLoads));
+            if (wrong != 0 || replaced.stats.replacementHits == 0 || replaced.stats.replacementLoads != 1) ++failures;
+        }
+        _putenv_s("GT4_HW_TEXTURES", "");
+        _putenv_s("GT4_HW_TEXTURES_SYNC", "");
+    }
+    fs::remove_all(work, ignored);
+    std::printf("hw_core2_texture_replacement: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // Spec 8.8: a 64 x 64 CT32 pattern drawn into pages 0-1 from an uploaded texture, then one FST sprite that samples
 // pages 0-1 themselves and writes their top-left 32 x 32 at half size, as GT4's luminance reduction does in place: pixel
 // (x, y) reads texels near (2x, 2y), which the same sprite also writes when they are inside 32 x 32. The reference
@@ -5166,6 +5294,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
+    if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

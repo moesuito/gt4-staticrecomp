@@ -49,6 +49,10 @@ struct DrawBatch {
     // would read pixels other fragments of the batch may or may not have written yet.
     bool selfCopy = false;
     std::int32_t copyX0 = 0, copyY0 = 0, copyX1 = -1, copyY1 = -1;
+    // IN-470 (chapter 11): memoryTexture is a replacement image of this size (0: none), RGBA8 words. It covers the
+    // native rectangle at (logicalX, logicalY) of size logicalWidth x logicalHeight: 2^TW x 2^TH or the region.
+    std::uint32_t replacedWidth = 0, replacedHeight = 0;
+    std::uint32_t logicalX = 0, logicalY = 0, logicalWidth = 0, logicalHeight = 0;
 };
 
 // Diagnostics for the F8 report and the replay summary.

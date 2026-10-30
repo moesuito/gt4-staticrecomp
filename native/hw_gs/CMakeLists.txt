@@ -49,8 +49,8 @@ target_compile_definitions(gt4_hw_gpu PRIVATE _CRT_SECURE_NO_WARNINGS)
 # Renderer of the write-back mode: front end, batch translation, GPU draw, SLM write-back, display.
 add_library(gt4_hw_writeback STATIC writeback/hw_gs_writeback.cpp
     writeback/hw_gs_present_scheduler.cpp
-    core2/core2_renderer.cpp core2/core2_gpu.cpp)
-target_link_libraries(gt4_hw_writeback PUBLIC gt4_hw_core gt4_hw_gpu hw_gs_lod)
+    core2/core2_renderer.cpp core2/core2_gpu.cpp core2/core2_replace.cpp)
+target_link_libraries(gt4_hw_writeback PUBLIC gt4_hw_core gt4_hw_gpu hw_gs_lod hw_gs_replace)
 # CORE2 (the core rewrite, CORE2-DESIGN.md): its GPU file includes Vulkan headers.
 target_include_directories(gt4_hw_writeback PRIVATE "${GT4_HW_VULKAN_SDK}/Include" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(gt4_hw_writeback PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -81,7 +81,7 @@ foreach(hw_writeback_test IN ITEMS hw_flat_provoking hw_sprite_corners hw_presen
         hw_gpu_equivalence_scissor hw_gpu_raster_blend hw_gpu_raster_pabe hw_gpu_raster_atest
         hw_gpu_raster_date hw_gpu_raster_frame hw_gpu_gouraud_report
         hw_gpu_writeback_aliased_depth hw_readback_pending_draw hw_replay_parity_double_buffer
-        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present hw_core2_cpu_sprites hw_core2_gpu_clut hw_core2_mipmaps hw_core2_present_scale hw_core2_forced_bilinear hw_core2_specialised hw_core2_delayed_downloads hw_core2_compute_fills hw_core2_self_texture
+        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present hw_core2_cpu_sprites hw_core2_gpu_clut hw_core2_mipmaps hw_core2_present_scale hw_core2_forced_bilinear hw_core2_specialised hw_core2_delayed_downloads hw_core2_compute_fills hw_core2_self_texture hw_core2_texture_replacement
         hw_scale_target_extent
         hw_tone_hle_exact
         hw_glm_decode hw_glm_swizzle hw_glm_clut hw_glm_unswizzle hw_glm_upload_merge

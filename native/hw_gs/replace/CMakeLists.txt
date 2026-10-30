@@ -17,9 +17,10 @@ add_library(hw_gs_replace STATIC
   src/packs.cpp
   src/images.cpp
   src/stb_image_impl.cpp
+  tests/png_encode.cpp  # the stored-deflate PNG writer also writes texture dumps (chapter 11.6)
 )
 target_include_directories(hw_gs_replace
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/tests
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 if(MSVC)
@@ -29,7 +30,7 @@ else()
 endif()
 
 enable_testing()
-add_executable(hw_gs_replace_tests tests/hw_gs_replace_tests.cpp tests/reference_gs_memory.cpp tests/png_encode.cpp)
+add_executable(hw_gs_replace_tests tests/hw_gs_replace_tests.cpp tests/reference_gs_memory.cpp)
 target_link_libraries(hw_gs_replace_tests PRIVATE hw_gs_replace)
 target_include_directories(hw_gs_replace_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME hw_replace_all COMMAND hw_gs_replace_tests)

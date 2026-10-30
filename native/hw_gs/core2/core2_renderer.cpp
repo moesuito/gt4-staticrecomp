@@ -14,9 +14,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core2_gpu.hpp"
+#include "core2_replace.hpp"
 #include "core2_upload.hpp"
 #include "hw_batch.hpp"
 #include "hw_clut.hpp"
@@ -26,6 +33,11 @@
 #include "hw_gs_types.hpp"
 #include "hw_gs_lod.hpp"
 #include "hw_memory.hpp"
+#include "hw_gs_replace/clut.hpp"
+#include "hw_gs_replace/gs_types.hpp"
+#include "hw_gs_replace/keys.hpp"
+#include "hw_gs_replace/names.hpp"
+#include "hw_gs_replace/packs.hpp"
 #include "../cpuref/cpuref_draw.hpp"
 #include "../cpuref/cpuref_memory.hpp"
 
@@ -1496,6 +1508,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // Images in the pool past the budget are released (the pool only saves allocations).
     void TrimTexturePool() {
+        PumpReplacements(replacementSync_);
         for (const auto &[image, size] : uncachedTextures_) texturePool_[size].push_back(image);
         uncachedTextures_.clear();
         std::uint64_t pooled = 0;
@@ -2456,6 +2469,352 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         t.draws.swap(draws);
     }
 
+    // ---- Texture replacement and dumping (chapter 11, Format P: the names of existing packs) --------------------
+    // IN-470: GT4_HW_TEXTURES=<folder> scans the folder recursively for replacement names (the launcher's flat Textures
+    // folder). A batch's texture is looked up by what it holds: a cheap key and the page versions first, then the block
+    // key, and only for new content the Format P hash over GS memory. A hit loads on the worker thread and the native
+    // decode draws until the image arrives at a VBlank. GT4_HW_TEXTURES_SYNC=1 waits for the load instead (fixtures).
+    // GT4_HW_DUMP_TEXTURES=1 writes every texture without a replacement to GT4_HW_TEXTURE_DUMP_DIR (default TextureDumps
+    // beside the folder). GT4_HW_TEXTURES_MB sets the budget of replacement images on the GPU.
+    struct ReplacedTexture {
+        ImageId image = kNoImage;  // kNoImage: not on the GPU
+        bool loading = false;
+        bool failed = false;
+        std::uint32_t width = 0, height = 0;
+        std::uint32_t logicalX = 0, logicalY = 0, logicalWidth = 0, logicalHeight = 0;
+        std::uint64_t bytes = 0;
+        std::uint64_t lastUse = 0;
+        hw_gs_replace::PackEntry entry;
+    };
+    struct ReplacementLookup {
+        BlockSpan span;
+        std::uint64_t sequence = 0;
+        std::uint64_t id = 0;      // 0: no replacement
+        bool triedUpload = false;  // the hash ran with an upload extent (chapter 04.6)
+    };
+    class SlmTexels final : public hw_gs_replace::TexelSource {
+    public:
+        explicit SlmTexels(const memory::LocalMemory &local) : local_(local) {}
+        void ReadBlock(std::uint32_t blockNumber, std::span<std::uint8_t, 256> out) const override {
+            std::memcpy(out.data(), local_.bytes().data() + static_cast<std::size_t>(blockNumber) * 256u, 256);
+        }
+        std::uint32_t ReadPixel(hw_gs_replace::Psm psm, std::uint32_t basePointer, std::uint32_t bufferWidth, std::uint32_t x,
+                                std::uint32_t y) const override {
+            return local_.readPixel(BufferView{basePointer, bufferWidth, static_cast<Psm>(psm)}, x, y);
+        }
+        void ReadRow(hw_gs_replace::Psm psm, std::uint32_t basePointer, std::uint32_t bufferWidth, std::uint32_t x,
+                     std::uint32_t y, std::uint32_t count, std::uint32_t *out) const override {
+            if (x + count <= 2048u && y < 2048u) {
+                local_.readRect(BufferView{basePointer, bufferWidth, static_cast<Psm>(psm)}, x, y, count, 1, out);
+            } else {
+                hw_gs_replace::TexelSource::ReadRow(psm, basePointer, bufferWidth, x, y, count, out);
+            }
+        }
+
+    private:
+        const memory::LocalMemory &local_;
+    };
+    std::unique_ptr<ReplacementLoader> replacementLoader_;
+    hw_gs_replace::ReplacementIndex replacementIndex_;
+    bool replacementSync_ = false;
+    bool textureDumps_ = false;
+    std::filesystem::path textureDumpDir_;
+    std::unordered_set<std::string> textureDumpsDone_;
+    std::unordered_map<std::uint64_t, ReplacementLookup> replacementLookups_;    // by the cheap key
+    std::unordered_map<std::uint64_t, ReplacementLookup> replacementByContent_;  // by the block key and the cheap key
+    std::unordered_map<std::uint64_t, ReplacedTexture> replacedTextures_;        // by id
+    std::unordered_map<std::string, std::uint64_t> replacedByFile_;              // one image per file
+    std::uint64_t nextReplacementId_ = 1;
+    std::uint64_t replacedBytes_ = 0;
+    std::uint64_t replacedBudget_ = 0;
+    std::uint64_t replacementUses_ = 0;
+    std::deque<ReplacementLoader::Loaded> replacementArrivals_;
+
+    void StartTextureReplacement() {
+        const char *root = std::getenv("GT4_HW_TEXTURES");
+        const char *dump = std::getenv("GT4_HW_DUMP_TEXTURES");
+        textureDumps_ = dump != nullptr && std::strcmp(dump, "0") != 0;
+        replacementSync_ = std::getenv("GT4_HW_TEXTURES_SYNC") != nullptr;
+        const char *megabytes = std::getenv("GT4_HW_TEXTURES_MB");
+        replacedBudget_ = megabytes != nullptr && std::atoll(megabytes) > 0
+                              ? static_cast<std::uint64_t>(std::atoll(megabytes)) << 20
+                              : static_cast<std::uint64_t>(gpu_.Integrated() ? 512 : 1536) << 20;
+        const std::filesystem::path folder =
+            root != nullptr && *root != 0 ? std::filesystem::u8path(root) : std::filesystem::path{};
+        if (!folder.empty()) {
+            hw_gs_replace::UnsupportedArchiveReader archives;
+            const hw_gs_replace::ScanReport report = replacementIndex_.ScanFormatPFolder(folder, archives);
+            std::fprintf(stderr, "[core2] texture replacement: %zu files registered, %zu duplicates, %zu other names\n",
+                         report.filesRegistered, report.duplicatesIgnored, report.unparsedNames);
+            stats.replacementFiles = report.filesRegistered;
+        }
+        if (textureDumps_) {
+            const char *dumpDir = std::getenv("GT4_HW_TEXTURE_DUMP_DIR");
+            textureDumpDir_ = dumpDir != nullptr ? std::filesystem::u8path(dumpDir)
+                                                 : (folder.empty() ? std::filesystem::path("TextureDumps")
+                                                                   : folder.parent_path() / "TextureDumps");
+        }
+        if (stats.replacementFiles != 0 || textureDumps_) replacementLoader_ = std::make_unique<ReplacementLoader>();
+    }
+
+    // The extent the batch's vertices read (chapter 04.6), in texels.
+    static void ReadExtentOf(const Batch &batch, std::uint64_t tex0, bool fst, std::uint32_t &width, std::uint32_t &height) {
+        double maxU = 0.0, maxV = 0.0;
+        const double sizeU = static_cast<double>(1u << tex0::Tw(tex0)), sizeV = static_cast<double>(1u << tex0::Th(tex0));
+        for (const Vertex &v : batch.vertices) {
+            if (fst) {
+                maxU = std::max(maxU, v.u / 16.0);
+                maxV = std::max(maxV, v.v / 16.0);
+            } else if (v.q != 0.0f) {
+                maxU = std::max(maxU, static_cast<double>(v.s) / v.q * sizeU);
+                maxV = std::max(maxV, static_cast<double>(v.t) / v.q * sizeV);
+            }
+        }
+        width = static_cast<std::uint32_t>(std::min(std::ceil(maxU), sizeU));
+        height = static_cast<std::uint32_t>(std::min(std::ceil(maxV), sizeV));
+    }
+
+    // Chapter 11.6: the texture with its palette applied, as RGBA8, once per name.
+    void DumpTexture(const hw_gs_replace::TexelSource &source, const hw_gs_replace::TextureDescription &desc,
+                     const hw_gs_replace::FormatPKeys &keys) {
+        namespace rp = hw_gs_replace;
+        const std::string name = rp::FormatPDumpName(keys.fullChain, rp::ImageExtension::Png);
+        if (!textureDumpsDone_.insert(name).second) return;
+        const rp::Region regionX = rp::ResolveRegion(desc.wrapU, desc.tw), regionY = rp::ResolveRegion(desc.wrapV, desc.th);
+        const std::uint32_t x0 = regionX.present ? regionX.minimum : 0u, y0 = regionY.present ? regionY.minimum : 0u;
+        const std::uint32_t width = keys.fullChain.regionWidth != 0 ? keys.fullChain.regionWidth : 1u << desc.tw;
+        const std::uint32_t height = keys.fullChain.regionHeight != 0 ? keys.fullChain.regionHeight : 1u << desc.th;
+        std::vector<std::uint32_t> palette;
+        if (rp::IsIndexedPsm(desc.psm)) {
+            const bool eightBit = desc.psm == rp::Psm::T8 || desc.psm == rp::Psm::T8H;
+            palette = rp::DecodeClut(*desc.clut, desc.clutPsm, desc.csa, eightBit ? 256u : 16u, desc.texa);
+        }
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u);
+        for (std::uint32_t y = 0; y < height; ++y) {
+            for (std::uint32_t x = 0; x < width; ++x) {
+                const std::uint32_t stored = source.ReadPixel(desc.psm, desc.tbp, desc.tbw, x0 + x, y0 + y);
+                const std::uint32_t word = !palette.empty() ? palette[stored & (static_cast<std::uint32_t>(palette.size()) - 1u)]
+                                                            : rp::ExpandDirectTexel(desc.psm, stored, desc.texa);
+                std::memcpy(rgba.data() + (static_cast<std::size_t>(y) * width + x) * 4u, &word, 4);
+            }
+        }
+        replacementLoader_->Dump(textureDumpDir_ / name, width, height, std::move(rgba));
+        stats.replacementDumps++;
+    }
+
+    // Puts finished images on the GPU; at a VBlank at most kReplacementUploadBytes of them (the rest at the next ones).
+    static constexpr std::uint64_t kReplacementUploadBytes = static_cast<std::uint64_t>(48) << 20;
+    void PumpReplacements(bool everything) {
+        if (!replacementLoader_) return;
+        ReplacementLoader::Loaded loaded;
+        while (replacementLoader_->Take(loaded)) replacementArrivals_.push_back(std::move(loaded));
+        std::uint64_t uploaded = 0;
+        while (!replacementArrivals_.empty() && (everything || uploaded < kReplacementUploadBytes)) {
+            ReplacementLoader::Loaded &arrival = replacementArrivals_.front();
+            auto it = replacedTextures_.find(arrival.id);
+            if (it != replacedTextures_.end()) {
+                ReplacedTexture &texture = it->second;
+                texture.loading = false;
+                std::string error = arrival.error;
+                if (error.empty() && arrival.rgba.size() != std::size_t{arrival.width} * arrival.height * 4u) {
+                    error = "unexpected image size";
+                }
+                ImageId image = kNoImage;
+                if (error.empty()) image = gpu_.CreateImage(arrival.width, arrival.height, false, error);
+                if (image != kNoImage && !gpu_.UploadImage(image, arrival.width, arrival.height,
+                                                           reinterpret_cast<const std::uint32_t *>(arrival.rgba.data()), error)) {
+                    Fail(error);
+                    return;
+                }
+                if (!error.empty()) {
+                    std::fprintf(stderr, "[core2] texture replacement %s refused: %s\n", texture.entry.basename.c_str(),
+                                 error.c_str());
+                    texture.failed = true;
+                    stats.replacementFailed++;
+                } else {
+                    texture.image = image;
+                    texture.width = arrival.width;
+                    texture.height = arrival.height;
+                    texture.bytes = arrival.rgba.size();
+                    texture.lastUse = ++replacementUses_;
+                    replacedBytes_ += texture.bytes;
+                    uploaded += texture.bytes;
+                    stats.replacementLoads++;
+                    stats.replacementBytes = replacedBytes_;
+                    EvictReplacements(it->first);
+                }
+            }
+            replacementArrivals_.pop_front();
+        }
+    }
+
+    // Least recently used images leave the GPU past the budget; a later use loads them again.
+    void EvictReplacements(std::uint64_t keep) {
+        while (replacedBytes_ > replacedBudget_) {
+            ReplacedTexture *oldest = nullptr;
+            for (auto &[id, texture] : replacedTextures_) {
+                if (id == keep || texture.image == kNoImage) continue;
+                if (!oldest || texture.lastUse < oldest->lastUse) oldest = &texture;
+            }
+            if (!oldest) return;
+            gpu_.DestroyImage(oldest->image);
+            oldest->image = kNoImage;
+            replacedBytes_ -= std::min(replacedBytes_, oldest->bytes);
+            stats.replacementBytes = replacedBytes_;
+        }
+    }
+
+    // The batch's replacement image, or null: none, not eligible, or still loading (the native decode draws).
+    const ReplacedTexture *FindReplacement(const Batch &batch, const writeback::BatchTranslation &t) {
+        namespace rp = hw_gs_replace;
+        if (!replacementLoader_ || !t.glmTexture) return nullptr;
+        ScopedUs timer(clock_, &PhaseTimes::texture);
+        const std::uint64_t tex0 = batch.state.ctx.tex0, texa = batch.state.env.texa, clamp = batch.state.ctx.clamp;
+        const std::uint64_t tex1 = batch.state.ctx.tex1;
+        // Chapter 11.1: memory sources only. A palette written on the GPU is unknown here, so it cannot be hashed.
+        if (t.glmIndexed && GpuPaletteKey(t.glmPsm, tex0::Cpsm(tex0), tex0::Csa(tex0)) != 0) return nullptr;
+        const auto texturePsm = memory::decodePsm(t.glmPsm);
+        if (!texturePsm) return nullptr;
+        namespace gf = gpu::gpufield;
+        const auto &fields = t.state.fields;
+        const std::uint32_t tw = tex0::Tw(tex0), th = tex0::Th(tex0);
+        const rp::WrapAxis wrapU{static_cast<rp::WrapMode>(fields[gf::WrapS]), fields[gf::WrapMinS], fields[gf::WrapMaxS]};
+        const rp::WrapAxis wrapV{static_cast<rp::WrapMode>(fields[gf::WrapT]), fields[gf::WrapMinT], fields[gf::WrapMaxT]};
+        // Chapter 04.6: an upload may shrink a clamp-clamp texture to what the batch reads.
+        std::uint32_t readWidth = 0, readHeight = 0;
+        const bool inferable = fields[gf::WrapS] == 1u && fields[gf::WrapT] == 1u;
+        if (inferable) ReadExtentOf(batch, tex0, fields[gf::TexFst] != 0u, readWidth, readHeight);
+
+        std::uint64_t key = MixWords(MixWords(0, tex0 & ((std::uint64_t{1} << 34) - 1u)), clamp);
+        key = MixWords(MixWords(key, tex1), batch.state.ctx.miptbp1);
+        key = MixWords(MixWords(key, batch.state.ctx.miptbp2), texa);
+        key = MixWords(key, (std::uint64_t{readWidth} << 32) | readHeight);
+        if (t.glmIndexed) key = MixWords(key, writeback::HashPaletteWords(t.palette));
+
+        std::uint64_t id = 0;
+        auto lookup = replacementLookups_.find(key);
+        if (lookup != replacementLookups_.end() && UnchangedSince(lookup->second.span, lookup->second.sequence)) {
+            id = lookup->second.id;
+        } else {
+            const MipPlan mip = PlanMips(t, tex1, batch.state.ctx.miptbp1, batch.state.ctx.miptbp2);
+            writeback::TextureKey address;
+            address.tbp = t.glmBp;
+            address.tbw = t.glmBw;
+            address.psm = t.glmPsm;
+            address.width = mip.levels > 0 ? mip.imageWidth : t.texWidth;
+            address.height = mip.levels > 0 ? mip.imageHeight : t.texHeight;
+            address.mipHash = mip.hash;
+            BlockSpan span = SpanOfRect(BufferView{t.glmBp, t.glmBw, *texturePsm}, 0, 0, static_cast<std::int32_t>(t.texWidth) - 1,
+                                        static_cast<std::int32_t>(t.texHeight) - 1);
+            for (std::uint32_t n = 1; n <= mip.levels; ++n) {
+                span = UnionSpans(span, SpanOfRect(BufferView{mip.address[n].tbp, mip.address[n].tbw, *texturePsm}, 0, 0,
+                                                   static_cast<std::int32_t>(mip.size[n].width) - 1,
+                                                   static_cast<std::int32_t>(mip.size[n].height) - 1));
+            }
+            const std::uint64_t content = MixWords(ContentKey(KeyHash(address), t, *texturePsm, mip), key);
+            // The upload of chapter 04.6, in the last 10 batches.
+            std::optional<rp::UploadExtent> upload;
+            if (inferable) {
+                for (auto u = recentUploads_.rbegin(); u != recentUploads_.rend() && drawCounter_ - u->drawNumber <= 10u; ++u) {
+                    if (u->view.basePointer == t.glmBp && u->view.bufferWidth == t.glmBw && u->view.psm == *texturePsm) {
+                        upload = rp::UploadExtent{static_cast<std::uint32_t>(u->rect.x1 + 1),
+                                                  static_cast<std::uint32_t>(u->rect.y1 + 1)};
+                        break;
+                    }
+                }
+            }
+            auto known = replacementByContent_.find(content);
+            ReplacementLookup result;
+            if (known != replacementByContent_.end() && (known->second.id != 0 || known->second.triedUpload || !upload)) {
+                result = known->second;
+            } else {
+                result = HashAndFind(t, tex0, texa, wrapU, wrapV, tw, th, mip, upload, readWidth, readHeight);
+                replacementByContent_[content] = result;
+            }
+            result.span = span;
+            result.sequence = writeSequence_;
+            replacementLookups_[key] = result;
+            id = result.id;
+        }
+        if (id == 0) return nullptr;
+        ReplacedTexture &texture = replacedTextures_[id];
+        if (texture.image == kNoImage) {
+            if (!texture.loading && !texture.failed) {
+                texture.loading = true;
+                replacementLoader_->Request(id, texture.entry);
+                stats.replacementRequests++;
+            }
+            if (replacementSync_ && texture.loading) {
+                ReplacementLoader::Loaded loaded;
+                if (replacementLoader_->Take(loaded, true)) replacementArrivals_.push_back(std::move(loaded));
+                PumpReplacements(true);
+            }
+            if (texture.image == kNoImage) return nullptr;
+        }
+        texture.lastUse = ++replacementUses_;
+        return &texture;
+    }
+
+    // Format P key over GS memory, then the pack index.
+    ReplacementLookup HashAndFind(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa,
+                                  const hw_gs_replace::WrapAxis &wrapU, const hw_gs_replace::WrapAxis &wrapV, std::uint32_t tw,
+                                  std::uint32_t th, const MipPlan &mip, const std::optional<hw_gs_replace::UploadExtent> &upload,
+                                  std::uint32_t readWidth, std::uint32_t readHeight) {
+        namespace rp = hw_gs_replace;
+        ReplacementLookup result;
+        result.triedUpload = upload.has_value();
+        const rp::Region regionX = rp::ResolveRegion(wrapU, tw), regionY = rp::ResolveRegion(wrapV, th);
+        // Chapter 11.1: a texture over 1024 texels on an axis without a region is never replaced.
+        if ((tw > 10u && !regionX.present) || (th > 10u && !regionY.present)) return result;
+        if (!rp::IsKnownPsmCode(t.glmPsm) || !rp::IsKnownPsmCode(tex0::Cpsm(tex0))) return result;
+        rp::ClutBuffer clut;
+        std::memcpy(clut.halfwords.data(), frontEnd_.Clut().Halfwords(), sizeof clut.halfwords);
+        rp::TextureDescription desc;
+        desc.psm = rp::PsmFromCode(t.glmPsm);
+        desc.texa = rp::TexaState{static_cast<std::uint8_t>(texa & 0xFFu), ((texa >> 15) & 1u) != 0,
+                                  static_cast<std::uint8_t>((texa >> 32) & 0xFFu)};
+        desc.wrapU = wrapU;
+        desc.wrapV = wrapV;
+        desc.tw = tw;
+        desc.th = th;
+        desc.tbp = t.glmBp;
+        desc.tbw = t.glmBw;
+        desc.clut = &clut;
+        desc.clutPsm = rp::PsmFromCode(tex0::Cpsm(tex0));
+        desc.csa = tex0::Csa(tex0);
+        for (std::uint32_t n = 1; n <= mip.levels; ++n) {
+            desc.mipLevels.push_back(rp::MipLevelAddress{mip.address[n].tbp, mip.address[n].tbw});
+        }
+        desc.mipmappingActive = mip.levels > 0;
+        desc.exactUploadInLast10Batches = upload;
+        desc.readExtent = rp::UploadExtent{readWidth, readHeight};
+        const SlmTexels source(memory_.Local());
+        const rp::FormatPKeys keys = rp::ComputeFormatPKeys(source, desc);
+        stats.replacementKeys++;
+        std::optional<rp::PackEntry> entry = replacementIndex_.FindFormatP(keys.fullChain);
+        if (!entry && keys.baseOnly) entry = replacementIndex_.FindFormatP(*keys.baseOnly);
+        if (!entry) {
+            if (textureDumps_) DumpTexture(source, desc, keys);
+            return result;
+        }
+        const std::u8string fileText = entry->file.u8string();
+        const std::string file(reinterpret_cast<const char *>(fileText.data()), fileText.size());
+        auto existing = replacedByFile_.find(file);
+        if (existing != replacedByFile_.end()) {
+            result.id = existing->second;
+            return result;
+        }
+        result.id = nextReplacementId_++;
+        replacedByFile_[file] = result.id;
+        ReplacedTexture &texture = replacedTextures_[result.id];
+        texture.entry = std::move(*entry);
+        texture.logicalX = regionX.present ? regionX.minimum : 0u;
+        texture.logicalY = regionY.present ? regionY.minimum : 0u;
+        texture.logicalWidth = keys.fullChain.regionWidth != 0 ? keys.fullChain.regionWidth : 1u << tw;
+        texture.logicalHeight = keys.fullChain.regionHeight != 0 ? keys.fullChain.regionHeight : 1u << th;
+        return result;
+    }
+
     void OnBatch(Batch &&batch) override {
         ScopedUs batchTimer(clock_, &PhaseTimes::batch);
         if (failed_) return;
@@ -2644,7 +3003,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (draw.forceLinear && t.hasTexture) stats.forcedBilinearBatches++;
         const std::uint32_t zFormat = t.state.fields[gpu::gpufield::Zformat];
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
-        if (t.hasTexture && draw.texture == kNoImage) {
+        const ReplacedTexture *replaced =
+            t.hasTexture && draw.texture == kNoImage ? FindReplacement(batch, t) : nullptr;
+        if (replaced) {  // IN-470: chapter 11, a replacement instead of the decode
+            draw.memoryTexture = replaced->image;
+            draw.replacedWidth = replaced->width;
+            draw.replacedHeight = replaced->height;
+            draw.logicalX = replaced->logicalX;
+            draw.logicalY = replaced->logicalY;
+            draw.logicalWidth = replaced->logicalWidth;
+            draw.logicalHeight = replaced->logicalHeight;
+            stats.replacementHits++;
+        } else if (t.hasTexture && draw.texture == kNoImage) {
             if (!t.glmTexture) return;  // every memory texture is decoded on the GPU (the hook above)
             draw.memoryTexture = MemoryTexture(t, batch.state.ctx.tex0, batch.state.env.texa, batch.state.ctx.tex1,
                                                batch.state.ctx.miptbp1, batch.state.ctx.miptbp2, draw.mipInfo);
@@ -3196,6 +3566,15 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
     static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
     if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
+    if (c.replacementFiles != 0 || c.replacementDumps != 0) {
+        std::fprintf(stderr,
+                     "[core2] texture replacement files=%llu keys=%llu requests=%llu loads=%llu failed=%llu hits=%llu "
+                     "mb=%.1f dumps=%llu\n",
+                     (unsigned long long)c.replacementFiles, (unsigned long long)c.replacementKeys,
+                     (unsigned long long)c.replacementRequests, (unsigned long long)c.replacementLoads,
+                     (unsigned long long)c.replacementFailed, (unsigned long long)c.replacementHits,
+                     static_cast<double>(c.replacementBytes) / (1024.0 * 1024.0), (unsigned long long)c.replacementDumps);
+    }
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
@@ -3235,6 +3614,7 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
     } else {
         impl_->textureBudget_ = impl_->gpu_.Integrated() ? kTextureCacheBytesIntegrated : kTextureCacheBytes;
     }
+    impl_->StartTextureReplacement();
     if (impl_->delayedDownloads_ || impl_->hideFlares_) {
         std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
                      impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");

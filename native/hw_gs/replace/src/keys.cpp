@@ -178,14 +178,23 @@ void HashPackLevel(Xxh3Stream& hash, const TexelSource& memory, Psm psm, TexaSta
   // Zero padding after the block rows so that the last row's over-read (below) stays in range.
   const size_t bufferSize = static_cast<size_t>(pitch) * blockRows + rect.width * bytesPerTexel + pitch;
   std::vector<uint8_t> buffer(bufferSize, 0);
+  // A whole-row read and no allocation per texel: a large menu texture took 33 ms here on the GS thread.
+  std::vector<uint32_t> stored(blockRight - blockLeft);
   for (uint32_t y = blockTop; y < blockBottom; ++y) {
-    for (uint32_t x = blockLeft; x < blockRight; ++x) {
-      std::vector<uint8_t> texel;
-      texel.reserve(4);
-      AppendTexelBytes(memory, psm, level, texa, x, y, texel);
-      const size_t offset = static_cast<size_t>(y - blockTop) * pitch +
-                            static_cast<size_t>(x - blockLeft) * bytesPerTexel;
-      std::copy(texel.begin(), texel.end(), buffer.begin() + static_cast<std::ptrdiff_t>(offset));
+    memory.ReadRow(psm, level.tbp, level.tbw, blockLeft, y, blockRight - blockLeft, stored.data());
+    uint8_t* row = buffer.data() + static_cast<size_t>(y - blockTop) * pitch;
+    if (indexed) {
+      for (size_t i = 0; i < stored.size(); ++i) {
+        row[i] = static_cast<uint8_t>(stored[i] & 0xFFu);
+      }
+    } else {
+      for (size_t i = 0; i < stored.size(); ++i) {
+        const uint32_t rgba = ExpandDirectTexel(psm, stored[i], texa);
+        row[i * 4] = static_cast<uint8_t>(rgba & 0xFFu);
+        row[i * 4 + 1] = static_cast<uint8_t>((rgba >> 8) & 0xFFu);
+        row[i * 4 + 2] = static_cast<uint8_t>((rgba >> 16) & 0xFFu);
+        row[i * 4 + 3] = static_cast<uint8_t>((rgba >> 24) & 0xFFu);
+      }
     }
   }
 

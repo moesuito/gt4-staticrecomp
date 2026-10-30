@@ -67,6 +67,9 @@ class ReplacementIndex {
   // <root>/<serial>.zip.
   ScanReport ScanFormatP(const std::filesystem::path& root, std::string_view serial,
                          const ArchiveReader& archives);
+  // Format P names in `folder` recursively, then its .zip archives (the launcher's flat Textures folder, where a pack
+  // is one more subfolder and no serial folder exists).
+  ScanReport ScanFormatPFolder(const std::filesystem::path& folder, const ArchiveReader& archives);
 
   std::optional<PackEntry> FindFormatG(const FormatGKey& key) const;
   // Full-chain lookup first, then base-only, as chapter 11.3.4 asks (the caller passes both).
@@ -76,6 +79,9 @@ class ReplacementIndex {
   size_t FormatPCount() const { return formatP_.size(); }
 
  private:
+  ScanReport ScanFormatPPlaces(const std::filesystem::path& folder, const std::filesystem::path& rootArchive,
+                               const ArchiveReader& archives);
+
   using FormatGMapKey = std::tuple<uint64_t, uint64_t, uint32_t, uint32_t>;
   // texture hash, clut present, clut hash, region width, region height, bits
   using FormatPMapKey = std::tuple<uint64_t, bool, uint64_t, uint32_t, uint32_t, uint32_t>;

@@ -120,6 +120,13 @@ class TexelSource {
   //   T8H: bits 24..31; T4HL: bits 24..27; T4HH: bits 28..31 (each as 0..255 / 0..15).
   virtual uint32_t ReadPixel(Psm psm, uint32_t basePointer, uint32_t bufferWidth, uint32_t x,
                              uint32_t y) const = 0;
+  // `count` pixels of row y from x, as ReadPixel gives them. A source can do this faster than one call per pixel.
+  virtual void ReadRow(Psm psm, uint32_t basePointer, uint32_t bufferWidth, uint32_t x, uint32_t y, uint32_t count,
+                       uint32_t* out) const {
+    for (uint32_t i = 0; i < count; ++i) {
+      out[i] = ReadPixel(psm, basePointer, bufferWidth, x + i, y);
+    }
+  }
 };
 
 }  // namespace hw_gs_replace

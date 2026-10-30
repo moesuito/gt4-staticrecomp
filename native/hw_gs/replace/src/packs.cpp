@@ -21,8 +21,15 @@ std::string Lower(std::string text) {
   return text;
 }
 
+// A path as UTF-8. path::string() converts to the ANSI code page and throws on any other character (real packs hold
+// Japanese file names).
+std::string PathText(const fs::path& path) {
+  const std::u8string text = path.u8string();
+  return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
 bool HasZipExtension(const fs::path& path) {
-  return Lower(path.extension().string()) == ".zip";
+  return Lower(PathText(path.extension())) == ".zip";
 }
 
 // Regular files under `directory`, recursively, hidden files included, sorted by path text.
@@ -37,7 +44,7 @@ std::vector<fs::path> SortedFilesRecursive(const fs::path& directory, std::vecto
        end;
        it != end; it.increment(error)) {
     if (error) {
-      messages.push_back("pack scan stopped under " + directory.string() + ": " + error.message());
+      messages.push_back("pack scan stopped under " + PathText(directory) + ": " + error.message());
       break;
     }
     if (it->is_regular_file(error)) {
@@ -45,7 +52,7 @@ std::vector<fs::path> SortedFilesRecursive(const fs::path& directory, std::vecto
     }
   }
   std::sort(files.begin(), files.end(), [](const fs::path& a, const fs::path& b) {
-    return a.generic_string() < b.generic_string();
+    return a.native() < b.native();  // not generic_string(): it throws on a name outside the ANSI code page
   });
   return files;
 }
@@ -66,7 +73,7 @@ std::vector<fs::path> SortedZipsRecursive(const fs::path& directory, std::vector
 
 std::vector<std::string> UnsupportedArchiveReader::EntryBasenames(const fs::path& archive,
                                                                   std::string& error) const {
-  error = "zip support is not built into this HWR core: " + archive.string();
+  error = "zip support is not built into this HWR core: " + PathText(archive);
   return {};
 }
 
@@ -74,7 +81,7 @@ bool UnsupportedArchiveReader::ReadEntry(const fs::path& archive, std::string_vi
                                          std::vector<uint8_t>& bytes, std::string& error) const {
   (void)entryPath;
   bytes.clear();
-  error = "zip support is not built into this HWR core: " + archive.string();
+  error = "zip support is not built into this HWR core: " + PathText(archive);
   return false;
 }
 
@@ -110,7 +117,7 @@ ScanReport ReplacementIndex::ScanFormatG(const fs::path& root, std::string_view 
     if (HasZipExtension(file)) {
       continue;
     }
-    registerEntry(file, {}, file.filename().string());
+    registerEntry(file, {}, PathText(file.filename()));
   }
   for (const fs::path& zip : SortedZipsRecursive(folder, report.messages)) {
     std::string error;
@@ -129,8 +136,16 @@ ScanReport ReplacementIndex::ScanFormatG(const fs::path& root, std::string_view 
 
 ScanReport ReplacementIndex::ScanFormatP(const fs::path& root, std::string_view serial,
                                          const ArchiveReader& archives) {
+  return ScanFormatPPlaces(root / std::string(serial) / "replacements", root / (std::string(serial) + ".zip"), archives);
+}
+
+ScanReport ReplacementIndex::ScanFormatPFolder(const fs::path& folder, const ArchiveReader& archives) {
+  return ScanFormatPPlaces(folder, fs::path{}, archives);
+}
+
+ScanReport ReplacementIndex::ScanFormatPPlaces(const fs::path& folder, const fs::path& rootArchive,
+                                               const ArchiveReader& archives) {
   ScanReport report;
-  const fs::path folder = root / std::string(serial) / "replacements";
 
   const auto registerEntry = [&](const fs::path& file, const std::string& member,
                                  const std::string& basename) {
@@ -156,14 +171,13 @@ ScanReport ReplacementIndex::ScanFormatP(const fs::path& root, std::string_view 
 
   for (const fs::path& file : SortedFilesRecursive(folder, report.messages)) {
     if (!HasZipExtension(file)) {
-      registerEntry(file, {}, file.filename().string());
+      registerEntry(file, {}, PathText(file.filename()));
     }
   }
 
   std::vector<fs::path> archivePaths = SortedZipsRecursive(folder, report.messages);
-  const fs::path rootArchive = root / (std::string(serial) + ".zip");
   std::error_code error;
-  if (fs::is_regular_file(rootArchive, error)) {
+  if (!rootArchive.empty() && fs::is_regular_file(rootArchive, error)) {
     archivePaths.push_back(rootArchive);
   }
   for (const fs::path& zip : archivePaths) {
@@ -207,7 +221,7 @@ bool ReadPackEntryBytes(const PackEntry& entry, const ArchiveReader& archives,
   }
   std::ifstream stream(entry.file, std::ios::binary);
   if (!stream) {
-    error = "cannot open " + entry.file.string();
+    error = "cannot open " + PathText(entry.file);
     return false;
   }
   bytes.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
