@@ -132,10 +132,8 @@ BlockSpan WriteSpan(const BufferView &view, const PixelRect &r) {
             std::uint32_t first = kAllBlocks, last = 0;
             for (std::int32_t by = y0 / bh; by <= y1 / bh; ++by) {
                 for (std::int32_t bx = x0 / bw; bx <= x1 / bw; ++bx) {
-                    const std::uint32_t block = memory::pixelSlot(view, static_cast<std::uint32_t>(bx * bw),
-                                                                  static_cast<std::uint32_t>(by * bh))
-                                                    .byteOffset /
-                                                memory::kBlockBytes;
+                    const std::uint32_t block = BlockOfPixel(view, static_cast<std::uint32_t>(bx * bw),
+                                                             static_cast<std::uint32_t>(by * bh));  // IN-456
                     first = std::min(first, block);
                     last = std::max(last, block);
                 }
@@ -1028,11 +1026,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const std::int32_t bw = info.blockWidth, bh = info.blockHeight;
         for (std::int32_t by = rect.y0 / bh; by <= rect.y1 / bh; ++by) {
             for (std::int32_t bx = rect.x0 / bw; bx <= rect.x1 / bw; ++bx) {
-                const std::uint32_t block = memory::pixelSlot(view, static_cast<std::uint32_t>(bx * bw),
-                                                              static_cast<std::uint32_t>(by * bh))
-                                                .byteOffset /
-                                            memory::kBlockBytes;
-                const std::uint32_t b = block % kAllBlocks;
+                const std::uint32_t b = BlockOfPixel(view, static_cast<std::uint32_t>(bx * bw),
+                                                     static_cast<std::uint32_t>(by * bh));  // IN-456
                 const std::uint64_t bit = std::uint64_t{1} << (b & 63u);
                 if (!knownBlocks || (changedBlocks_[b >> 6] & bit) != 0) {
                     blockIds_[b] = HashBlock(memory + static_cast<std::size_t>(b) * memory::kBlockBytes);
@@ -1252,10 +1247,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 for (std::uint32_t by = 0; by * info.blockHeight < height; ++by) {
                     for (std::uint32_t bx = 0; bx * info.blockWidth < width; ++bx) {
                         const std::uint32_t block =
-                            memory::pixelSlot(view, (bx * info.blockWidth) % 2048u, (by * info.blockHeight) % 2048u)
-                                .byteOffset /
-                            memory::kBlockBytes;
-                        blocks.push_back(static_cast<std::uint16_t>(block % kAllBlocks));
+                            BlockOfPixel(view, (bx * info.blockWidth) % 2048u, (by * info.blockHeight) % 2048u);
+                        blocks.push_back(static_cast<std::uint16_t>(block));
                     }
                 }
             };

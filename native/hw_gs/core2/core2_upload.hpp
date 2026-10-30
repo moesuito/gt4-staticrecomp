@@ -30,4 +30,8 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const memory::BufferView &view, 
                      std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount,
                      UploadSwizzle swizzle, bool *changed = nullptr, std::uint64_t *changedBlocks = nullptr);
 
+// IN-456: the block (0..16383) holding pixel (x, y) of `view` (x, y < 2048), from the same in-page tables: equal to
+// memory::pixelSlot(view, x, y).byteOffset / 256 for every PSM and base pointer, a table read instead of the divisions.
+std::uint32_t BlockOfPixel(const memory::BufferView &view, std::uint32_t x, std::uint32_t y);
+
 }  // namespace hwgs::core2

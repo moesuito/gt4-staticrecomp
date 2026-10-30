@@ -245,6 +245,21 @@ std::uint32_t HostToLocalPageAligned(std::uint8_t *memoryBytes, const BufferView
 
 }  // namespace
 
+std::uint32_t BlockOfPixel(const BufferView &view, std::uint32_t x, std::uint32_t y) {
+    static const memory::GpuAddressTables tables = memory::gpuAddressTables();
+    const std::uint32_t code = static_cast<std::uint32_t>(view.psm) & 63u;
+    const std::uint32_t tableOffset = tables.directory[code * 4u];
+    const std::uint32_t pageWidth = tables.directory[code * 4u + 1u];
+    const std::uint32_t pageHeight = tables.directory[code * 4u + 2u];
+    const bool zXor = tables.directory[code * 4u + 3u] != 0;
+    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
+    const std::uint32_t entry = tables.entries[tableOffset + (y % pageHeight) * pageWidth + (x % pageWidth)];
+    std::uint32_t block = view.basePointer + memory::kBlocksPerPage * ((y / pageHeight) * perRow + x / pageWidth) +
+                          (entry & 31u);
+    if (zXor) block ^= 24u;
+    return block & (memory::kBlocksTotal - 1u);
+}
+
 bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
                      std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount,
                      UploadSwizzle swizzle, bool *changed, std::uint64_t *changedBlocks) {

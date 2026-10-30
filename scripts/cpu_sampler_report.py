@@ -132,7 +132,7 @@ def llvm_symbolize(exe, addresses, symbolizer):
     """{preferred VA: [innermost .. outermost function names]} for the executable's addresses."""
     if not addresses:
         return {}
-    command = [symbolizer, '--obj=' + str(exe), '--output-style=JSON', '--demangle', '--functions=linkage',
+    command = [symbolizer, '--obj=' + str(Path(exe).resolve()), '--output-style=JSON', '--demangle', '--functions=linkage',
                '--inlining']
     text = '\n'.join(hex(a) for a in addresses)
     # The executable names its PDB without a folder (/PDBALTPATH:%_PDB%), so look it up next to the executable.

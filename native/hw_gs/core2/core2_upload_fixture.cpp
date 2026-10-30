@@ -19,6 +19,7 @@
 
 namespace {
 
+using hwgs::core2::BlockOfPixel;
 using hwgs::core2::FastHostToLocal;
 using hwgs::core2::UploadSwizzle;
 using namespace hwgs::memory;
@@ -144,6 +145,25 @@ int main(int argc, char **argv) {
                          psmInfo(psm).name, first ? 1 : 0, again ? 1 : 0, touched ? 1 : 0, reported, expected,
                          hasExpected ? 1 : 0);
         }
+    }
+    // IN-456: BlockOfPixel equals pixelSlot's block for every PSM, base pointer (aligned or not) and buffer width.
+    for (const Psm psm : psms) {
+        for (int i = 0; i < 400; ++i) {
+            const std::uint32_t bp = static_cast<std::uint32_t>(NextRandom(state) % kBlocksTotal);
+            const std::uint32_t bw = 1u + static_cast<std::uint32_t>(NextRandom(state) % 32u);
+            const std::uint32_t x = static_cast<std::uint32_t>(NextRandom(state) % 2048u);
+            const std::uint32_t y = static_cast<std::uint32_t>(NextRandom(state) % 2048u);
+            const BufferView view{bp, bw, psm};
+            const std::uint32_t expected = pixelSlot(view, x, y).byteOffset / kBlockBytes;
+            const std::uint32_t got = BlockOfPixel(view, x, y);
+            if (got != expected) {
+                ++failures;
+                std::fprintf(stderr, "FAIL: BlockOfPixel %s bp=%u bw=%u (%u,%u) = %u, pixelSlot says %u\n",
+                             psmInfo(psm).name, bp, bw, x, y, got, expected);
+                break;
+            }
+        }
+        ++cases;
     }
     // Too little data: nothing written, the caller takes the generic path.
     std::vector<std::uint8_t> memory(kLocalMemoryBytes, 0xA5);
