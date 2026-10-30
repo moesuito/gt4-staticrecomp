@@ -37,7 +37,13 @@ class GsSink {
 // Worker side: receives whole logical input records and emits outputs. Single thread only.
 class WorkerEnd {
  public:
-  WorkerEnd(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell);
+  // IN-459: with `wake_output_bytes` > 0 the worker wakes a sleeping EE only when the EE has something worth waking
+  // for: the output ring holds at least that many bytes (a quarter of the ring at most), the worker goes idle or stops
+  // with quiet publishes behind it (an EE waiting for every job can go on), or the output ring is full (before the
+  // worker waits for space); a pop wakes it only while it waits for input space. Other publishes advance the bell
+  // quietly, and an EE that is awake sees them at its next snapshot. 0: every record and every pop wake a sleeping EE.
+  WorkerEnd(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell,
+            std::size_t wake_output_bytes = 0);
 
   // Blocks until one whole logical record arrived (chunks are reassembled).
   void receive(RecordHeader &header, std::vector<std::uint8_t> &payload);
@@ -50,6 +56,11 @@ class WorkerEnd {
   SpscByteRing &output_;
   Doorbell &input_bell_;   // the worker sleeps here; the EE rings it when it posts input
   Doorbell &output_bell_;  // worker progress: output data and freed input space; the EE waits here
+  std::size_t wake_output_bytes_ = 0;
+  // IN-459: a quiet publish since the last loud one; the worker rings loudly before it sleeps for input or stops.
+  bool quiet_pending_ = false;
+
+  void progress(bool wake);  // rings the output bell, loudly (wakes a sleeper) or quietly
 };
 
 // EE side. Not thread safe: one EE thread calls every method.

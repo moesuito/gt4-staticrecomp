@@ -4,8 +4,10 @@
 // TASK-041: privileged writes queued in the journal keep their place between the GIF outputs.
 #include "mtvu_journal.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <functional>
 #include <random>
@@ -88,10 +90,10 @@ std::vector<Output> outputs_for_job(std::uint64_t job, const std::vector<std::ui
 struct WorkerRun {
   // Worker thread body. Exceptions are captured and rethrown on the EE thread at join (section 5.6).
   static void run(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell,
-                  std::uint64_t seed,
+                  std::uint64_t seed, std::size_t wake_bytes,
                   std::exception_ptr &failure) {
     try {
-      WorkerEnd end(input, output, input_bell, output_bell);
+      WorkerEnd end(input, output, input_bell, output_bell, wake_bytes);
       std::mt19937_64 rng(seed);
       RecordHeader header;
       std::vector<std::uint8_t> payload;
@@ -115,7 +117,7 @@ struct WorkerRun {
 
 // One random script. Returns the number of operations, and checks the GS log against the serial model.
 void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_bytes, int operations,
-                std::uint64_t &jobs_out, std::uint64_t &fast_path_out) {
+                std::uint64_t &jobs_out, std::uint64_t &fast_path_out, std::size_t wake_bytes = 0) {
   Doorbell input_bell, output_bell;
   SpscByteRing input(input_bytes, input_bell);
   SpscByteRing output(output_bytes, output_bell);
@@ -124,7 +126,26 @@ void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_
 
   std::exception_ptr failure;
   std::thread worker(WorkerRun::run, std::ref(input), std::ref(output), std::ref(input_bell), std::ref(output_bell), seed * 7919u + 1u,
-                     std::ref(failure));
+                     wake_bytes, std::ref(failure));
+  // MTVU_FIXTURE_TRACE=1 (diagnostics of a hang): every 2 s of a long script, the step (step * 100 + operation), the
+  // ring fill and the bell counters, so a stuck run shows which side sleeps.
+  std::atomic<bool> done{false};
+  std::atomic<int> op{0};
+  std::thread monitor;
+  if (std::getenv("MTVU_FIXTURE_TRACE") && operations > 1000) {
+    monitor = std::thread([&] {
+      using Count = unsigned long long;
+      while (!done.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        const Doorbell::Stats in = input_bell.stats(), out = output_bell.stats();
+        std::fprintf(stderr,
+                     "op %d input used %zu output used %zu | in rings %llu waits %llu wakeups %llu | out rings %llu "
+                     "waits %llu wakeups %llu notifies %llu\n",
+                     op.load(), input.used(), output.used(), Count{in.rings}, Count{in.waits}, Count{in.wakeups},
+                     Count{out.rings}, Count{out.waits}, Count{out.wakeups}, Count{out.notifies});
+      }
+    });
+  }
 
   std::mt19937_64 rng(seed);
   std::vector<Event> expected;
@@ -132,6 +153,7 @@ void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_
   std::uint64_t fast_path = 0;
   for (int step = 0; step < operations; ++step) {
     const unsigned choice = static_cast<unsigned>(rng() % 100);
+    op.store(step * 100 + static_cast<int>(choice));
     if (choice < 35) {
       const std::size_t bytes = rng() % 300;
       std::vector<std::uint8_t> payload(bytes);
@@ -199,7 +221,10 @@ void run_script(std::uint64_t seed, std::size_t input_bytes, std::size_t output_
       require(journal.drain(true) && journal.can_execute_now(), "blocking drain empties the journal");
     }
   }
+  op.store(-1);
   require(journal.drain(true), "final blocking drain");
+  done.store(true);
+  if (monitor.joinable()) monitor.join();
   require(journal.can_execute_now() && journal.outstanding_jobs() == 0, "journal idle at the end");
   journal.send_stop();
   worker.join();
@@ -222,13 +247,18 @@ void check_random_scripts() {
   for (std::uint64_t seed = 1; seed <= 2000; ++seed) {
     const std::size_t input = seed % 3 == 0 ? 128 : (seed % 3 == 1 ? 256 : 4096);
     const std::size_t output = seed % 2 == 0 ? 128 : 512;
-    run_script(seed, input, output, 60, jobs, fast);
+    // IN-459: half of them with quiet worker publishes (wake past 96 bytes, a quarter of the ring at most).
+    if (std::getenv("MTVU_FIXTURE_TRACE")) std::fprintf(stderr, "script %llu\n", static_cast<unsigned long long>(seed));
+    run_script(seed, input, output, 60, jobs, fast, seed % 4 < 2 ? 0 : 96);
   }
+  if (std::getenv("MTVU_FIXTURE_TRACE")) std::fprintf(stderr, "long scripts\n");
   run_script(90001, 32 * 1024 * 1024 / 512, 8 * 1024 * 1024 / 512, 100000, jobs, fast);
+  if (std::getenv("MTVU_FIXTURE_TRACE")) std::fprintf(stderr, "long script with quiet wakes\n");
+  run_script(90002, 32 * 1024 * 1024 / 512, 8 * 1024 * 1024 / 512, 100000, jobs, fast, 64 * 1024);
   require(jobs > 20000 && fast > 0, "scripts posted jobs and used the fast path");
 }
 
-void check_tiny_ring_deadlock() {
+void check_tiny_ring_deadlock(std::size_t wake_bytes) {
   // 500 jobs with 200-byte inputs and up to 400-byte outputs through 128-byte rings: both sides must keep
   // draining each other or this never finishes (CTest TIMEOUT catches a hang).
   Doorbell input_bell, output_bell;
@@ -238,7 +268,7 @@ void check_tiny_ring_deadlock() {
   EeJournal journal(input, output, input_bell, output_bell, sink);
   std::exception_ptr failure;
   std::thread worker(WorkerRun::run, std::ref(input), std::ref(output), std::ref(input_bell), std::ref(output_bell), std::uint64_t{99},
-                     std::ref(failure));
+                     wake_bytes, std::ref(failure));
   std::vector<Event> expected;
   std::mt19937_64 rng(5);
   for (std::uint64_t job = 1; job <= 500; ++job) {
@@ -263,7 +293,7 @@ void check_blocking_drain_waits_for_worker() {
   EeJournal journal(input, output, input_bell, output_bell, sink);
   std::exception_ptr failure;
   std::thread worker(WorkerRun::run, std::ref(input), std::ref(output), std::ref(input_bell), std::ref(output_bell), std::uint64_t{7},
-                     std::ref(failure));
+                     std::size_t{0}, std::ref(failure));
   std::vector<std::uint8_t> payload(64, 0x5A);
   journal.post_job(RecordKind::VifPacket, 1, payload.data(), payload.size());
   journal.append_vblank_flush();
@@ -286,7 +316,7 @@ void check_shutdown_after_jobs() {
   EeJournal journal(input, output, input_bell, output_bell, sink);
   std::exception_ptr failure;
   std::thread worker(WorkerRun::run, std::ref(input), std::ref(output), std::ref(input_bell), std::ref(output_bell), std::uint64_t{3},
-                     std::ref(failure));
+                     std::size_t{64}, std::ref(failure));
   std::vector<Event> expected;
   for (std::uint64_t job = 1; job <= 10; ++job) {
     std::vector<std::uint8_t> payload(job * 9, static_cast<std::uint8_t>(job));
@@ -335,15 +365,22 @@ void check_worker_protocol_error_is_reported() {
 
 int main() {
   try {
+    const bool trace = std::getenv("MTVU_FIXTURE_TRACE") != nullptr;
     check_random_scripts();
-    check_tiny_ring_deadlock();
+    if (trace) std::fprintf(stderr, "tiny ring, loud\n");
+    check_tiny_ring_deadlock(0);
+    if (trace) std::fprintf(stderr, "tiny ring, quiet\n");
+    check_tiny_ring_deadlock(64);  // IN-459: quiet publishes; the full ring must still wake the EE
+    if (trace) std::fprintf(stderr, "blocking drain\n");
     check_blocking_drain_waits_for_worker();
+    if (trace) std::fprintf(stderr, "shutdown\n");
     check_shutdown_after_jobs();
+    if (trace) std::fprintf(stderr, "protocol error\n");
     check_worker_protocol_error_is_reported();
   } catch (const std::exception &error) {
     std::fprintf(stderr, "native_mtvu_journal failed: %s\n", error.what());
     return 1;
   }
-  std::printf("native_mtvu_journal ok: 2000 random scripts + one 100000-step script vs serial order, tiny-ring deadlock, blocking drain, shutdown, protocol error\n");
+  std::printf("native_mtvu_journal ok: 2000 random scripts + two 100000-step scripts vs serial order (half with quiet worker wakes), tiny-ring deadlock in both wake modes, blocking drain, shutdown, protocol error\n");
   return 0;
 }

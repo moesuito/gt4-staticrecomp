@@ -350,11 +350,12 @@ void report_interval(std::FILE *file, const gt4::perf::IntervalTime &ee, std::ui
   const auto &out_now = now.output_bell;
   const auto &out_base = r.baseline.output_bell;
   std::fprintf(file,
-               "[mtvu] doorbells/frame: ee_to_worker rings=%.1f waits=%.1f wakeups=%.1f; worker_to_ee rings=%.1f "
-               "waits=%.1f wakeups=%.1f\n",
+               "[mtvu] doorbells/frame: ee_to_worker rings=%.1f waits=%.1f wakeups=%.1f notifies=%.1f; worker_to_ee "
+               "rings=%.1f waits=%.1f wakeups=%.1f notifies=%.1f\n",
                per_frame(in_now.rings, in_base.rings), per_frame(in_now.waits, in_base.waits),
-               per_frame(in_now.wakeups, in_base.wakeups), per_frame(out_now.rings, out_base.rings),
-               per_frame(out_now.waits, out_base.waits), per_frame(out_now.wakeups, out_base.wakeups));
+               per_frame(in_now.wakeups, in_base.wakeups), per_frame(in_now.notifies, in_base.notifies),
+               per_frame(out_now.rings, out_base.rings), per_frame(out_now.waits, out_base.waits),
+               per_frame(out_now.wakeups, out_base.wakeups), per_frame(out_now.notifies, out_base.notifies));
   // Worker GIF output the EE forwarded to the GS stream: records and bytes per frame (the copy the fast path removes).
   std::fprintf(file, "[mtvu] worker output executed by the EE/frame: records=%.1f bytes=%.0f\n",
                per_frame(now.executed_records, r.baseline.executed_records),
@@ -364,6 +365,19 @@ void report_interval(std::FILE *file, const gt4::perf::IntervalTime &ee, std::ui
 void reset_worker_baseline() {
   Runtime &r = rt();
   r.baseline = published_totals(r);
+}
+
+// IN-459: the worker wakes a sleeping EE for its output only every GT4_MTVU_WAKE_KB KiB of output (default 64), at its
+// last queued JobDone and before it waits for output space; the EE slept and woke about 700 times per VBlank of the
+// night race, one wake per few records, and each wake was a system call on the worker. 0 wakes it for every record.
+static std::size_t wake_output_bytes_from_environment() {
+  const char *value = std::getenv("GT4_MTVU_WAKE_KB");
+  if (value == nullptr) return std::size_t{64} << 10;
+  const std::string_view digits(value);
+  if (digits.empty() || digits.find_first_not_of("0123456789") != std::string_view::npos || digits.size() > 6) {
+    throw std::invalid_argument("GT4_MTVU_WAKE_KB must be a size in KiB");
+  }
+  return static_cast<std::size_t>(std::stoul(value)) << 10;
 }
 
 void start(const Settings &settings, const Donor &donor) {
@@ -383,7 +397,8 @@ void start(const Settings &settings, const Donor &donor) {
   r.sink->set_privileged_consumer(r.ordered_privileged);
   r.sink->set_readback_consumer(r.download.post_readback);
   r.journal = std::make_unique<EeJournal>(*r.input, *r.output, r.input_bell, r.output_bell, *r.sink);
-  r.worker_end = std::make_unique<WorkerEnd>(*r.input, *r.output, r.input_bell, r.output_bell);
+  r.worker_end = std::make_unique<WorkerEnd>(*r.input, *r.output, r.input_bell, r.output_bell,
+                                             wake_output_bytes_from_environment());
   r.worker_accounting = gt4::perf::Accounting(gt4::perf::Probe::shared().enabled());
   r.baseline = WorkerTotals{};
   gt4::perf::Probe::set_mtvu_hooks(report_interval, reset_worker_baseline);
