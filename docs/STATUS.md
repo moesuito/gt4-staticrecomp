@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 307: performance mode starts (2026-10-30)
+
+`build\hwr-play-scale.ps1` points at `build\candidates\coregs2-candidate-307` in this worktree (everything moved off
+the external SSD). 307 (gt4vulkan.exe sha256 a7884470...) = 306 + IN-438 (frame/depth reads only when needed, exact) + IN-439, the first performance
+mode item (decision 0073, `-Performance` / `GT4_CORE2_PERFORMANCE=1`): GT4's flare-test downloads answered one VBlank
+late without a GPU wait. Owner test of 306 at 10x: 43-52 FPS, GPU-bound (128-136 W). Next levers measured at 12x:
+fixed-cost upkeep batching (exact, up to ~2 ms), hardware texture filtering in performance mode (up to ~1.8 ms),
+full-screen fills as clears (~1 ms).
+
 ## TASK-027 CoreGS 2.0 candidate 306: specialised pipelines (2026-10-29, waiting for the owner test)
 
 `build\hwr-play-scale.ps1` now points at `O:\gt4recomp-scratch\coregs2-candidate-306` (gt4vulkan.exe sha256

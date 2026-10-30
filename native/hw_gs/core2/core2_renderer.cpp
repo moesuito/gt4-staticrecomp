@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <bit>
 #include <chrono>
 #include <cstdio>
@@ -408,6 +409,25 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::uint32_t toneFbmsk_ = 0;
 
     std::optional<LocalToHostSetup> pendingRead_;
+
+    // IN-439 (performance mode, decision 0073; GT4_CORE2_PERFORMANCE=1, or GT4_CORE2_DELAYED_DOWNLOADS=1 alone): an EE
+    // download of a rectangle inside one target with no pending dirty rectangles is answered with the words of the
+    // previous download of the same rectangle, reduced on the GPU without a wait; this one's reduction is taken next
+    // time. GT4 downloads one tiny row per VBlank in a race (its light flare visibility test, the same buffer for 10-25
+    // VBlanks in a row), and each download made the CPU wait for all the GPU work so far: at 10x, 3 ms of waiting
+    // per VBlank and the GPU idle afterwards. The answer is one download (about one VBlank) late; the first download
+    // of a rectangle, and any other download, is read back as before (exact).
+    struct DelayedDownload {
+        std::vector<std::uint32_t> words;  // the last result taken (empty: none yet)
+        bool pending = false;              // a reduction in flight under `ticket`
+        std::uint32_t ticket = 0;
+    };
+    std::map<std::array<std::uint32_t, 7>, DelayedDownload> delayed_;
+    const bool performance_ = std::getenv("GT4_CORE2_PERFORMANCE") != nullptr &&
+                              std::strcmp(std::getenv("GT4_CORE2_PERFORMANCE"), "0") != 0;
+    const bool delayedDownloads_ = std::getenv("GT4_CORE2_DELAYED_DOWNLOADS") != nullptr
+                                       ? std::strcmp(std::getenv("GT4_CORE2_DELAYED_DOWNLOADS"), "0") != 0
+                                       : performance_;
     const char *readbackReason_ = "other";  // diagnostics (GT4_CORE2_READBACK_TRACE): why the next readback runs
     // B1: GPU fence wait and readback count per readback reason, between two [core2] lines.
     struct ReasonWait {
@@ -1712,15 +1732,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 reasonWait.waitNs += gpu_.Stats().waitNs - waitBefore;
                 reasonWait.readbacks++;
             }
-            // A 32/24 target that was only ever drawn as 24-bit leaves the top byte to memory.
-            Psm psm = t->view.psm;
-            if (!t->fullWordWritten) {
-                if (t->cls == FormatClass::Colour32) psm = Psm::Ct24;
-                if (t->cls == FormatClass::Depth32) psm = Psm::Z24;
-            } else {
-                if (t->cls == FormatClass::Colour32) psm = Psm::Ct32;
-                if (t->cls == FormatClass::Depth32) psm = Psm::Z32;
-            }
+            const Psm psm = ReadbackPsm(*t);
             const BufferView out{t->view.basePointer, t->view.bufferWidth, psm};
             static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
             if (trace) {
@@ -1745,6 +1757,81 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     bool ReadbackAll() { return Readback(BlockSpan{0, kAllBlocks}); }
+
+    // The format a target's words are written back to GS memory in: a 32/24 target that was only ever drawn as 24-bit
+    // leaves the top byte to memory.
+    static Psm ReadbackPsm(const Target &t) {
+        if (t.cls == FormatClass::Colour32) return t.fullWordWritten ? Psm::Ct32 : Psm::Ct24;
+        if (t.cls == FormatClass::Depth32) return t.fullWordWritten ? Psm::Z32 : Psm::Z24;
+        return t.view.psm;
+    }
+
+    // IN-439: answers an EE download of `rect` in `view` from the previous same download (see delayed_). Returns
+    // false when it did not answer (the caller reads back as before); a failure is recorded with Fail.
+    bool AnswerDelayedDownload(const BufferView &view, const PixelRect &rect) {
+        const BlockSpan span = SpanOfRect(view, rect);
+        static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
+        auto decline = [&](const char *why) {
+            if (trace) {
+                std::fprintf(stderr, "[core2] delayed download declined vblank=%llu bp=%u: %s\n",
+                             static_cast<unsigned long long>(vblanks_), view.basePointer, why);
+            }
+            return false;
+        };
+        Target *only = nullptr;
+        for (Target &t : targets_) {
+            if (!t.alive || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (only) return decline("several targets");  // the exact path orders them
+            only = &t;
+        }
+        if (!only) return decline("no target");
+        if (!only->dirty.empty()) return decline("dirty rectangles");
+        if (view.basePointer != only->view.basePointer || view.bufferWidth != only->view.bufferWidth ||
+            ClassOf(view.psm) != only->cls) {
+            return decline("another view");
+        }
+        if (!Contains(PixelRect{0, 0, static_cast<std::int32_t>(only->width) - 1,
+                                static_cast<std::int32_t>(only->height) - 1},
+                      rect)) {
+            return decline("outside the target");
+        }
+        const std::array<std::uint32_t, 7> key{view.basePointer, view.bufferWidth, static_cast<std::uint32_t>(view.psm),
+                                               static_cast<std::uint32_t>(rect.x0), static_cast<std::uint32_t>(rect.y0),
+                                               static_cast<std::uint32_t>(rect.x1), static_cast<std::uint32_t>(rect.y1)};
+        DelayedDownload &d = delayed_[key];
+        std::string error;
+        if (d.pending) {  // the previous download's words (GT4 recreates the target between them; the words are kept)
+            std::vector<std::uint32_t> words;
+            if (gpu_.TakeReduced(d.ticket, words, error)) {
+                d.words.swap(words);
+                d.pending = false;
+            } else if (!error.empty()) {
+                Fail(error);
+                return false;
+            }
+        }
+        bool answered = false;
+        if (!d.words.empty()) {
+            const BufferView out{only->view.basePointer, only->view.bufferWidth, ReadbackPsm(*only)};
+            memory_.Local().writeRect(out, static_cast<std::uint32_t>(rect.x0), static_cast<std::uint32_t>(rect.y0),
+                                      static_cast<std::uint32_t>(rect.x1 - rect.x0 + 1),
+                                      static_cast<std::uint32_t>(rect.y1 - rect.y0 + 1), d.words.data());
+            MarkWritten(SpanOfRect(out, rect));
+            stats.delayedDownloads++;
+            answered = true;
+        }
+        if (!d.pending) {
+            std::uint32_t ticket = 0;
+            if (gpu_.ReduceLater(only->image, rect.x0, rect.y0, rect.x1, rect.y1, ticket, error)) {
+                d.pending = true;
+                d.ticket = ticket;
+            } else if (!error.empty()) {
+                Fail(error);
+                return false;
+            }
+        }
+        return answered;
+    }
 
     // IN-411: before a write into GS memory (an EE upload, a local move) lands, a drawn target that will get WHOLE page
     // rows as dirty (4.1: a write in another base, width or format, or one past the 2048 range) and whose drawn pixels
@@ -2804,11 +2891,11 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
-                 "compile_max_ms=%.1f failures=%llu\n",
+                 "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
-                 (unsigned long long)g.specFailures);
+                 (unsigned long long)g.specFailures, (unsigned long long)c.delayedDownloads);
 }
 
 }  // namespace
@@ -2831,6 +2918,9 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
         impl_->textureBudget_ = static_cast<std::uint64_t>(std::atoll(textureMb)) << 20;
     } else {
         impl_->textureBudget_ = impl_->gpu_.Integrated() ? kTextureCacheBytesIntegrated : kTextureCacheBytes;
+    }
+    if (impl_->delayedDownloads_) {
+        std::fprintf(stderr, "[core2] performance mode: delayed downloads on (decision 0073)\n");
     }
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
@@ -2900,6 +2990,7 @@ void Renderer::ResetGs() {
     s.clutMirrorAnyPending_ = false;
     s.memory_.ResetRead();
     s.pendingRead_.reset();
+    s.delayed_.clear();
     s.displayRegs_ = {};
     s.displayRegs_.anti_blur = s.settings_.antiBlur;
     s.previousDby_ = {};
@@ -2910,6 +3001,7 @@ void Renderer::ResetGs() {
 void Renderer::ClearVram() {
     Impl &s = *impl_;
     for (Target &t : s.targets_) s.DestroyTarget(t);
+    s.delayed_.clear();
     auto bytes = s.memory_.Local().bytes();
     std::fill(bytes.begin(), bytes.end(), std::uint8_t{0});
     s.MarkWritten(BlockSpan{0, kAllBlocks});
@@ -2928,11 +3020,13 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
             const PixelRect rect{static_cast<std::int32_t>(setup.ssax), static_cast<std::int32_t>(setup.ssay),
                                  static_cast<std::int32_t>(setup.ssax + setup.rrw - 1u),
                                  static_cast<std::int32_t>(setup.ssay + setup.rrh - 1u)};
-            const std::uint64_t before = s.stats.readbacks;
-            s.readbackReason_ = "download";
-            s.Readback(SpanOfRect(view, rect), &view, &rect);
-            s.readbackReason_ = "other";
-            if (s.stats.readbacks != before) s.stats.downloadReadbacks++;
+            if (!s.delayedDownloads_ || !s.AnswerDelayedDownload(view, rect)) {
+                const std::uint64_t before = s.stats.readbacks;
+                s.readbackReason_ = "download";
+                s.Readback(SpanOfRect(view, rect), &view, &rect);
+                s.readbackReason_ = "other";
+                if (s.stats.readbacks != before) s.stats.downloadReadbacks++;
+            }
         } else {
             s.ReadbackAll();
             s.stats.downloadReadbacks++;

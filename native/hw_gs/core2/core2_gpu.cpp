@@ -117,6 +117,7 @@ struct Gpu::Impl {
     bool inFlight = false;
     std::uint32_t passTimestamps = 0;  // B4: draw pass timestamp pairs written in this slot's recording
     std::vector<Image> doomed;  // released once this slot's submission is complete
+    std::uint64_t serial = 0;   // IN-439: the number of the submission this slot carries (1, 2, ...)
   };
   // S4: up to kMaxSlots submissions in flight (GT4_CORE2_SLOTS, default 8, 2 to 8). With two, the CPU could run only
   // one submission ahead of the GPU: with the GPU at a low clock and full of small dependent commands, the GS thread
@@ -196,6 +197,17 @@ struct Gpu::Impl {
   bool drewSinceBarrier = false;
 
   Buffer staging, vertices, uniforms, readback;
+  // IN-439: results of the reductions taken later (ReduceLater), kLaterSlots of up to kLaterWords words each, and the
+  // submission that carries each one. The recording in progress becomes submission submitCount + 1.
+  static constexpr std::uint32_t kLaterSlots = 64, kLaterWords = 1024;
+  Buffer later;
+  struct LaterReduce {
+    std::uint64_t serial = 0;  // 0: free
+    std::uint32_t count = 0;
+  };
+  LaterReduce laterReduces[kLaterSlots];
+  std::uint32_t laterNext = 0;
+  std::uint64_t submitCount = 0;
 
   std::vector<Image> images;
   std::vector<ImageId> freeIds;
@@ -1203,6 +1215,7 @@ struct Gpu::Impl {
     stats.submissions++;
     batchesSinceSubmit = 0;
     slots[slot].inFlight = true;
+    slots[slot].serial = ++submitCount;
     slots[slot].doomed.insert(slots[slot].doomed.end(), doomed.begin(), doomed.end());
     doomed.clear();
     lastSubmitted = slot;
@@ -1381,6 +1394,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (!s.make_buffer(s.vertices, kVertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0, error)) return false;
   if (!s.make_buffer(s.uniforms, kUniformBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0, error)) return false;
   if (!s.make_buffer(s.readback, kReadbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
+  if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
+                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
 
   // Draw set (hw_pixel_uber.frag): 0 pixel state, 1 frame, 2 depth, 3 1x texel atlas, 4 a target sampled at scale.
   {
@@ -2553,6 +2568,75 @@ bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std
     words[i].resize(count);
     std::memcpy(words[i].data(), static_cast<const std::uint8_t *>(s.readback.mapped) + offsets[i], count * 4u);
   }
+  return true;
+}
+
+// IN-439: true once submission `serial` has completed (a fence poll, no wait); one still being recorded has not.
+static bool SubmissionComplete(const VkDevice device, const VkFence fence, bool inFlight, std::string &error) {
+  if (!inFlight) return true;
+  const VkResult result = gt4_hw_vkWaitForFences(device, 1, &fence, VK_TRUE, 0);
+  if (result == VK_TIMEOUT) return false;
+  return check(result, "vkWaitForFences", error);
+}
+
+bool Gpu::ReduceLater(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
+                      std::uint32_t &ticket, std::string &error) {
+  Impl &s = *impl_;
+  error.clear();
+  const Image *image = s.image_of(id);
+  if (!image || x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0) {
+    error = "CORE2 reduces an image or rectangle that does not exist";
+    return false;
+  }
+  const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
+  const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
+  if (static_cast<std::uint64_t>(width) * height > Impl::kLaterWords) return false;
+  const std::uint32_t index = s.laterNext;
+  Impl::LaterReduce &slotResult = s.laterReduces[index];
+  if (slotResult.serial != 0) {  // its last result was never taken: reuse it once that submission is done
+    std::vector<std::uint32_t> unused;
+    if (!TakeReduced(index, unused, error)) return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  s.full_barrier();  // a host read: ordered at once
+  const VkDeviceSize offset = static_cast<VkDeviceSize>(index) * Impl::kLaterWords * 4u;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.compute_set(s.later.buffer, offset, static_cast<VkDeviceSize>(width) * height * 4u, image->view, image->view,
+                     image->view, set, error)) {
+    return false;
+  }
+  const std::uint32_t push[6] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
+                                 FloatBits(static_cast<float>(image->scale))};
+  s.dispatch(s.reducePipeline, set, push, 6, width, height);
+  s.full_barrier();  // the host reads the result after the fence
+  s.stats.reductions++;
+  s.stats.laterReductions++;
+  slotResult.serial = s.submitCount + 1u;  // the recording in progress (compute_set may have submitted the one before)
+  slotResult.count = width * height;
+  s.laterNext = (index + 1u) % Impl::kLaterSlots;
+  ticket = index;
+  return true;
+}
+
+bool Gpu::TakeReduced(std::uint32_t ticket, std::vector<std::uint32_t> &words, std::string &error) {
+  Impl &s = *impl_;
+  error.clear();
+  if (ticket >= Impl::kLaterSlots || s.laterReduces[ticket].serial == 0) return false;
+  Impl::LaterReduce &result = s.laterReduces[ticket];
+  if (result.serial > s.submitCount) return false;  // still in the recording
+  for (std::uint32_t i = 0; i < s.slotCount; ++i) {
+    const Impl::Slot &slot = s.slots[i];
+    if (slot.serial != result.serial) continue;
+    if (!SubmissionComplete(s.device, slot.fence, slot.inFlight, error)) return false;
+    break;
+  }  // no slot carries it any more: that slot was waited for and reused, so it is complete
+  words.resize(result.count);
+  std::memcpy(words.data(), static_cast<const std::uint8_t *>(s.later.mapped) + static_cast<std::size_t>(ticket) *
+                                                                                  Impl::kLaterWords * 4u,
+              static_cast<std::size_t>(result.count) * 4u);
+  result.serial = 0;
   return true;
 }
 

@@ -40,6 +40,7 @@ struct Core2Counters {
     std::uint64_t indexedFromTargetReadbacks = 0;  // interim 3.5: a T8/T4 texture over a drawn target
     std::uint64_t directFromTargetReadbacks = 0;   // a 16/24/32-bit memory texture over a drawn target (not a hit)
     std::uint64_t clutReadbacks = 0;
+    std::uint64_t delayedDownloads = 0;        // IN-439: downloads answered with the previous same download's words
     std::uint64_t downloadReadbacks = 0;       // EE downloads (local-to-host transfers) that read back a target
     std::uint64_t batchedReadbacks = 0;        // IN-429: target readbacks reduced together in one submission
     std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now

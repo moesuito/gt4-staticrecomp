@@ -9,12 +9,14 @@
 // and Gouraud cases are reported, not asserted (IN-500).
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../../core2/core2_renderer.hpp"
@@ -3947,6 +3949,76 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_delayed_downloads (IN-439, decision 0073): every frame draws a 2 x 1 sprite of a new colour into a CT32
+// target and downloads it (GT4's light flare test pattern). With GT4_CORE2_DELAYED_DOWNLOADS=1 the first download is
+// read back exactly and each later one answers with an earlier frame's colour, never its own; with =0 every download
+// is the frame's own colour. At 3x.
+int TestCore2DelayedDownloads(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    const uint32_t colours[6] = {0x80102030u, 0x80405060u, 0x80708090u, 0x80A0B0C0u, 0x80D0E0F0u, 0x80123456u};
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    for (bool delayed : {false, true}) {
+        _putenv_s("GT4_CORE2_DELAYED_DOWNLOADS", delayed ? "1" : "0");
+        _putenv_s("GT4_CORE2_CPU_SPRITES", "0");  // the tiny sprite on the GPU, as GT4's flare tests are
+        _putenv_s("GT4_HW_CORE", "2");
+        writeback::Renderer renderer;
+        _putenv_s("GT4_HW_CORE", "");
+        _putenv_s("GT4_CORE2_CPU_SPRITES", "");
+        _putenv_s("GT4_CORE2_DELAYED_DOWNLOADS", "");
+        renderer.SetScale(3, 3.0f);
+        std::string error;
+        if (!renderer.Init(handles, error) || !renderer.Core2()) {
+            std::printf("hw_core2_delayed_downloads: core 2 init failed: %s\n", error.c_str());
+            return 1;
+        }
+        int wrong = 0;
+        for (uint32_t frame = 0; frame < 6; ++frame) {
+            std::vector<Qword> stream;
+            stream.push_back(PackedTag(14, true, 0, {0xE}));
+            stream.push_back(Qword{uint64_t{0} | (uint64_t{1} << 16), 0x4C});            // FRAME_1: FBP 0, FBW 1, CT32
+            stream.push_back(Qword{uint64_t{64} | (uint64_t{1} << 32), 0x4E});           // ZBUF_1: ZBP 64, ZMSK
+            stream.push_back(Qword{(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40});  // SCISSOR_1: 0..63 x 0..63
+            stream.push_back(Qword{0, 0x18});                                             // XYOFFSET_1 = 0
+            stream.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 17), 0x47});    // TEST_1: ZTE, ZTST ALWAYS
+            stream.push_back(Qword{6, 0x00});                                             // PRIM: sprite
+            stream.push_back(Qword{rgbaq(colours[frame]), 0x01});
+            stream.push_back(Qword{xyz(0, 0), 0x05});
+            stream.push_back(Qword{xyz(2, 1), 0x05});                                     // kick: 2 x 1 pixels
+            stream.push_back(Qword{uint64_t{0} | (uint64_t{1} << 16), 0x50});             // BITBLTBUF: SBP 0, SBW 1, CT32
+            stream.push_back(Qword{0, 0x51});                                             // TRXPOS 0, 0
+            stream.push_back(Qword{uint64_t{2} | (uint64_t{1} << 32), 0x52});             // TRXREG 2 x 1
+            stream.push_back(Qword{1, 0x53});                                             // TRXDIR 1: local -> host
+            stream.push_back(Qword{0, 0x7F});                                             // NOP (pads the packet)
+            if (!renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(stream.data()), stream.size() * sizeof(Qword))) {
+                std::printf("hw_core2_delayed_downloads: GIF transfer refused\n");
+                return 1;
+            }
+            uint32_t words[2] = {};
+            const std::size_t read = renderer.ReadFifo(words, sizeof words);
+            bool ok = read == sizeof words && words[0] == words[1];
+            if (!delayed || frame == 0) {
+                ok = ok && words[0] == colours[frame];
+            } else {
+                bool earlier = false;
+                for (uint32_t k = 0; k < frame; ++k) earlier = earlier || words[0] == colours[k];
+                ok = ok && earlier;
+            }
+            std::printf("  %s frame %u: downloaded %08X %08X (drawn %08X)%s\n", delayed ? "delayed" : "exact", frame,
+                        words[0], words[1], colours[frame], ok ? "" : "  WRONG");
+            if (!ok) ++wrong;
+            renderer.Flush();  // VBlank: the frame's work is submitted
+            for (int spin = 0; spin < 200 && delayed; ++spin) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const core2::Core2Counters* stats = renderer.Core2Stats();
+        const uint64_t answered = stats ? stats->delayedDownloads : 0;
+        std::printf("  %s: delayed answers %llu\n", delayed ? "delayed" : "exact", static_cast<unsigned long long>(answered));
+        if (wrong != 0 || renderer.Failed() || (delayed ? answered != 5 : answered != 0)) ++failures;
+    }
+    std::printf("hw_core2_delayed_downloads: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_specialised (IN-437): pipelines specialised per draw state (GT4_CORE2_SPECIALIZE=sync: every batch waits
 // for its variant) against the uber pipeline (=0) on the core 2 streams of the other tests: identical images and GS
 // memory, and the 1x streams equal to the CPU reference. Without pixel interlock nothing is specialised.
@@ -4878,6 +4950,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
+    if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

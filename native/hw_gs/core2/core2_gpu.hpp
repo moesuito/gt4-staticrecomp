@@ -52,6 +52,7 @@ struct Core2GpuStats {
     std::uint64_t draws = 0;
     std::uint64_t patches = 0;
     std::uint64_t reductions = 0;
+    std::uint64_t laterReductions = 0;  // IN-439: reductions taken later (performance mode's delayed downloads)
     std::uint64_t tones = 0;
     std::uint64_t composes = 0;
     std::uint64_t deinterlaces = 0;
@@ -200,6 +201,13 @@ public:
     };
     bool ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std::vector<std::uint32_t>> &words,
                     std::string &error);
+    // IN-439 (performance mode, decision 0073): a reduction recorded with the work in flight and no wait. `ticket`
+    // names its result; TakeReduced copies the words once the submission that carries it has completed and returns
+    // false until then. Both return false with an empty error when they cannot (no free result slot, a rectangle
+    // larger than a slot, an unknown ticket); a non-empty error is a failure.
+    bool ReduceLater(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
+                     std::uint32_t &ticket, std::string &error);
+    bool TakeReduced(std::uint32_t ticket, std::vector<std::uint32_t> &words, std::string &error);
     // 7.2: GT4's channel-shuffle hook over the image's native rectangle [0, width) x [0, height).
     bool Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight, const std::uint32_t palette[256],
               std::string &error);
