@@ -11,6 +11,12 @@
 #include "../shaders/hw_shader_blobs.hpp"
 #include "../memory/hw_memory.hpp"
 
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -837,6 +843,11 @@ struct Gpu::Impl {
   }
 
   void spec_worker() {
+#ifdef _WIN32
+    // IN-476: a variant can take seconds on some drivers (2.2 s on the HD 620); on two cores it must not take time from
+    // the game's own threads. The game draws with the uber pipeline meanwhile.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+#endif
     for (;;) {
       SpecKey key;
       {
@@ -1743,9 +1754,25 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
 
   const VkBufferUsageFlags stagingUsage =
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  if (!s.make_buffer(s.staging, kStagingBytes, stagingUsage, 0, error)) return false;
-  if (!s.make_buffer(s.vertices, kVertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0, error)) return false;
-  if (!s.make_buffer(s.uniforms, kUniformBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0, error)) return false;
+  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
+  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
+  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
+  const VkMemoryPropertyFlags uploadMemory =
+      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
+  if (!s.make_buffer(s.staging, kStagingBytes, stagingUsage, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.vertices, kVertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.uniforms, kUniformBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
+  {
+    std::string types;
+    for (std::uint32_t i = 0; i < s.memoryProperties.memoryTypeCount; ++i) {
+      const VkMemoryPropertyFlags flags = s.memoryProperties.memoryTypes[i].propertyFlags;
+      types += std::string(" ") + std::to_string(i) + ":" + ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "L" : "") +
+               ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "V" : "") + ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "C" : "") +
+               ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? "H" : "");
+    }
+    std::fprintf(stderr, "[core2] memory types (L local, V visible, C coherent, H cached):%s; upload buffers %s\n", types.c_str(),
+                 uploadMemory ? "prefer cached" : "first visible");
+  }
   if (!s.make_buffer(s.readback, kReadbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
   if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
