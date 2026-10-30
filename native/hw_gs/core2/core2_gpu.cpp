@@ -89,6 +89,42 @@ struct DrawSetKeyHash {
   }
 };
 
+// IN-471: the pixels a primitive of a batch can cover, in 12.4 native units, for deciding without the pixel interlock
+// whether it must wait for earlier ones. A triangle, or (lines, points) only a box.
+struct PrimitiveShape {
+  std::int32_t x[3] = {}, y[3] = {};
+  std::int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
+  bool triangle = false;
+};
+
+// Whether an edge of `a` has all of `b` on its outer side. A vertex of `b` that is also a vertex of `a` may lie on the
+// edge: identical vertices snap identically and the rasteriser's fill rule gives each sample of a shared edge or vertex
+// to one triangle. Any other vertex needs a gap of 1/16 native pixel, more than the GPU's vertex snapping can close.
+inline bool EdgeSeparates(const PrimitiveShape &a, const PrimitiveShape &b) {
+  for (int i = 0; i < 3; ++i) {
+    const int j = (i + 1) % 3, k = (i + 2) % 3;
+    const std::int64_t ex = a.x[j] - a.x[i], ey = a.y[j] - a.y[i];
+    const std::int64_t third = ex * (a.y[k] - a.y[i]) - ey * (a.x[k] - a.x[i]);
+    if (third == 0) return true;  // no area: covers nothing
+    const std::int64_t sign = third > 0 ? 1 : -1;
+    const std::int64_t gap = (ex < 0 ? -ex : ex) + (ey < 0 ? -ey : ey);
+    bool outside = true;
+    for (int m = 0; m < 3 && outside; ++m) {
+      const bool sharedVertex = (b.x[m] == a.x[0] && b.y[m] == a.y[0]) || (b.x[m] == a.x[1] && b.y[m] == a.y[1]) ||
+                                (b.x[m] == a.x[2] && b.y[m] == a.y[2]);
+      outside = sign * (ex * (b.y[m] - a.y[i]) - ey * (b.x[m] - a.x[i])) <= (sharedVertex ? 0 : -gap);
+    }
+    if (outside) return true;
+  }
+  return false;
+}
+
+inline bool ShapesMayShareAPixel(const PrimitiveShape &a, const PrimitiveShape &b) {
+  if (a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY) return false;
+  if (!a.triangle || !b.triangle) return true;
+  return !EdgeSeparates(a, b) && !EdgeSeparates(b, a);
+}
+
 // IN-464: a set of the GLM's 512 pages of 8 KiB (32 blocks each), for page-granular GLM hazards (Impl::order).
 struct GlmPages {
   std::array<std::uint64_t, 8> bits{};
@@ -791,7 +827,7 @@ struct Gpu::Impl {
       ++count;
     }
     VkSpecializationInfo info{count, entries, 4 * count, values};
-    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, interlockModule, error, &info);  // the driver caches
+    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, interlock ? interlockModule : fragmentModule, error, &info);  // the driver caches
   }
 
   // Records a compile time (specMutex held).
@@ -842,7 +878,9 @@ struct Gpu::Impl {
 
   // The pipeline of an interlocked triangle batch with this state block and push word (GS thread).
   VkPipeline triangle_pipeline(const std::uint32_t *fields, std::uint32_t pushWord) {
-    if (specMode == SpecMode::off) return interlockTriangles;
+    // IN-471: without the interlock the triangle pipeline is the plain one, specialised the same way.
+    const VkPipeline uber = interlock ? interlockTriangles : pipelines[2];
+    if (specMode == SpecMode::off) return uber;
     const SpecKey key = spec_key(fields, pushWord);
     auto found = specLocal.find(key);
     if (found == specLocal.end() && specDoneCount.load(std::memory_order_acquire) != specDoneSeen) {
@@ -884,7 +922,7 @@ struct Gpu::Impl {
       }
     }
     stats.uberBatches++;
-    return interlockTriangles;
+    return uber;
   }
 
   VkPipeline make_compute(VkShaderModule module, std::string &error, VkPipelineLayout layout = VK_NULL_HANDLE) {
@@ -1230,12 +1268,13 @@ struct Gpu::Impl {
                                      std::strcmp(std::getenv("GT4_CORE2_DEFER_DRAWS"), "0") != 0);
   std::vector<DeferredDraw> deferred;
   std::vector<DeferredCommand> deferredCommands;
-  // IN-466: the rectangles of a batch's per-primitive commands since the last wait (Gpu::Draw), at most
-  // kDisjointGroupMax before a wait anyway.
-  static constexpr std::size_t kDisjointGroupMax = 64;
+  // IN-466, IN-471: the shapes of the per-primitive commands since the last wait (Gpu::Draw), at most kDisjointGroupMax
+  // before a wait anyway, and the images they draw into.
+  static constexpr std::size_t kDisjointGroupMax = 256;
   const bool groupDisjoint =
       std::getenv("GT4_CORE2_GROUP_DISJOINT") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GROUP_DISJOINT"), "0") != 0;
-  std::vector<VkRect2D> disjointGroup;
+  std::vector<PrimitiveShape> disjointGroup;
+  std::uint32_t disjointFrame = 0, disjointDepth = 0;
   struct FillRect { std::int32_t x0, y0, x1, y1; };  // IN-442 constant fills: output pixels [x0, x1) x [y0, y1)
   std::vector<FillRect> fillRects;                    // IN-447: reused by every constant-fill batch
   AccessSet drawReads, drawWrites;  // what the deferred batches read and write
@@ -1273,9 +1312,9 @@ struct Gpu::Impl {
   // One batch's commands, inside the open render pass; `first` is the pass's first batch (no barrier before it).
   void record_draw(const DeferredDraw &draw, bool first) {
     prof_begin(draw.profileLabel);
-    if (!first && drewSinceBarrier && (!interlock || draw.textureFromTarget)) {
-      // A texture taken from a target reads pixels other than its own (no interlock order); without pixel interlock
-      // every batch waits for the one before.
+    if (!first && drewSinceBarrier && ((!interlock && !groupDisjoint) || draw.textureFromTarget)) {
+      // A texture taken from a target reads pixels other than its own (no interlock order). Without pixel interlock a
+      // batch waits for the one before through its first command (IN-471), or always with GT4_CORE2_GROUP_DISJOINT=0.
       fragment_barrier();
     }
     PassState &bound = passState;
@@ -1814,8 +1853,6 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     s.interlockTriangles = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.interlockModule, error);
     if (!s.interlockTriangles) return false;
     s.interlock = true;
-  } else {
-    s.specMode = Impl::SpecMode::off;  // IN-437: only the interlocked triangle pipeline is specialised
   }
   s.patchModule = s.make_module(hwgs::shaders::core2_patch_words, hwgs::shaders::core2_patch_word_count, error);
   s.reduceModule = s.make_module(hwgs::shaders::core2_reduce_words, hwgs::shaders::core2_reduce_word_count, error);
@@ -2428,18 +2465,37 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       s.deferredCommands.push_back(command);
     }
   } else {
-    // IN-466: a primitive waits for the ones before it only when its rectangle (the scissor of its command: its box
-    // with a native pixel of slack) meets the rectangle of one drawn since the last wait. Primitives with disjoint
-    // rectangles write disjoint pixels, so their read-modify-writes need no order. The first primitive of a batch
-    // keeps its wait. GT4_CORE2_GROUP_DISJOINT=0 waits before every primitive (A/B).
-    std::vector<VkRect2D> &group = s.disjointGroup;
-    group.clear();
-    auto meets = [](const VkRect2D &a, const VkRect2D &b) {
-      return a.offset.x < b.offset.x + static_cast<std::int32_t>(b.extent.width) &&
-             b.offset.x < a.offset.x + static_cast<std::int32_t>(a.extent.width) &&
-             a.offset.y < b.offset.y + static_cast<std::int32_t>(b.extent.height) &&
-             b.offset.y < a.offset.y + static_cast<std::int32_t>(a.extent.height);
+    // IN-466, IN-471: a primitive waits for the earlier ones only when it may cover a pixel one of them covered since
+    // the last wait: the triangles are tested, not their boxes (the triangles of a strip share edges, not pixels).
+    // Primitives that share no pixel need no order for their read-modify-writes, so they also become one draw. Without
+    // the interlock this runs across the batches of a draw pass into the same images; with it (line and point batches
+    // only) and after a texture taken from a target, each batch starts over with a wait. GT4_CORE2_GROUP_DISJOINT=0 waits
+    // before every primitive (A/B).
+    std::vector<PrimitiveShape> &group = s.disjointGroup;
+    if (s.interlock || record.textureFromTarget || s.deferred.empty() || s.disjointFrame != frame->serial ||
+        s.disjointDepth != depth->serial) {
+      group.clear();
+    }
+    s.disjointFrame = frame->serial;
+    s.disjointDepth = depth->serial;
+    const std::vector<gpu::GpuVertex> &vertexList = *batch.vertices;
+    auto shapeOf = [&](std::uint32_t first, bool triangle) {
+      PrimitiveShape shape;
+      shape.triangle = triangle;
+      shape.minX = shape.minY = INT32_MAX;
+      shape.maxX = shape.maxY = INT32_MIN;
+      for (std::uint32_t v = 0; v < (triangle ? 3u : 1u); ++v) {
+        shape.x[v] = static_cast<std::int16_t>(vertexList[first + v].x);
+        shape.y[v] = static_cast<std::int16_t>(vertexList[first + v].y);
+        shape.minX = std::min(shape.minX, shape.x[v]);
+        shape.minY = std::min(shape.minY, shape.y[v]);
+        shape.maxX = std::max(shape.maxX, shape.x[v]);
+        shape.maxY = std::max(shape.maxY, shape.y[v]);
+      }
+      return shape;
     };
+    std::array<PrimitiveShape, 2> shapes;
+    const VkPipeline trianglePipeline = s.interlock ? s.pipelines[2] : s.triangle_pipeline(state.fields, record.push[7]);
     for (const gpu::GpuDraw &draw : *batch.draws) {
       if (draw.count == 0 || draw.first + draw.count > vertexCount) continue;
       std::int32_t a, b, c, d;
@@ -2449,22 +2505,53 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       const std::size_t pipeline = draw.topology == gpu::GpuTopology::Points  ? 0
                                    : draw.topology == gpu::GpuTopology::Lines ? 1
                                                                               : 2;
-      command.pipeline = s.pipelines[pipeline];
+      command.pipeline = pipeline == 2 ? trianglePipeline : s.pipelines[pipeline];
       command.first = draw.first;
       command.count = draw.count;
       command.barrierFirst = true;
-      if (s.groupDisjoint && !group.empty() && group.size() < Impl::kDisjointGroupMax) {
-        bool overlaps = false;
-        for (const VkRect2D &earlier : group) {
-          if (meets(earlier, command.scissor)) {
-            overlaps = true;
-            break;
+      std::size_t shapeCount = 0;
+      if (s.groupDisjoint) {
+        if (draw.topology == gpu::GpuTopology::Triangles) {
+          for (std::uint32_t v = 0; v + 3u <= draw.count && shapeCount < shapes.size(); v += 3u) {
+            shapes[shapeCount++] = shapeOf(draw.first + v, true);
           }
+        } else {  // a box with a native pixel of slack
+          PrimitiveShape box = shapeOf(draw.first, false);
+          const PrimitiveShape end = shapeOf(draw.first + draw.count - 1u, false);
+          box.minX = std::min(box.minX, end.minX) - 16;
+          box.minY = std::min(box.minY, end.minY) - 16;
+          box.maxX = std::max(box.maxX, end.maxX) + 16;
+          box.maxY = std::max(box.maxY, end.maxY) + 16;
+          shapes[shapeCount++] = box;
         }
-        command.barrierFirst = overlaps;
+        if (!group.empty() && group.size() + shapeCount <= Impl::kDisjointGroupMax) {
+          bool overlaps = false;
+          for (const PrimitiveShape &earlier : group) {
+            for (std::size_t n = 0; n < shapeCount && !overlaps; ++n) overlaps = ShapesMayShareAPixel(earlier, shapes[n]);
+            if (overlaps) break;
+          }
+          command.barrierFirst = overlaps;
+        }
+        if (command.barrierFirst) group.clear();
+        group.insert(group.end(), shapes.begin(), shapes.begin() + static_cast<std::ptrdiff_t>(shapeCount));
       }
-      if (command.barrierFirst) group.clear();
-      group.push_back(command.scissor);
+      // No wait and the next vertices of the same pipeline: the same draw, under both scissors.
+      const std::size_t commandsOfBatch = s.deferredCommands.size() - record.firstCommand;
+      if (!command.barrierFirst && commandsOfBatch != 0) {
+        Impl::DeferredCommand &previous = s.deferredCommands.back();
+        if (previous.pipeline == command.pipeline && previous.first + previous.count == command.first) {
+          const std::int32_t right = std::max(previous.scissor.offset.x + static_cast<std::int32_t>(previous.scissor.extent.width),
+                                              command.scissor.offset.x + static_cast<std::int32_t>(command.scissor.extent.width));
+          const std::int32_t bottom = std::max(previous.scissor.offset.y + static_cast<std::int32_t>(previous.scissor.extent.height),
+                                               command.scissor.offset.y + static_cast<std::int32_t>(command.scissor.extent.height));
+          previous.scissor.offset.x = std::min(previous.scissor.offset.x, command.scissor.offset.x);
+          previous.scissor.offset.y = std::min(previous.scissor.offset.y, command.scissor.offset.y);
+          previous.scissor.extent = {static_cast<std::uint32_t>(right - previous.scissor.offset.x),
+                                     static_cast<std::uint32_t>(bottom - previous.scissor.offset.y)};
+          previous.count += command.count;
+          continue;
+        }
+      }
       s.deferredCommands.push_back(command);
     }
   }

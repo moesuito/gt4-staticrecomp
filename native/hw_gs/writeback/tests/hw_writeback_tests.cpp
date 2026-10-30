@@ -3953,6 +3953,60 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_overlap_order (IN-471): strips that fold over themselves, blended, so the result depends on the order of every
+// overlapping pair, and whole sprites over them. Without the pixel interlock (GT4_HW_TEST_NO_INTERLOCK=1) primitives
+// wait only for the ones they may share a pixel with; GS memory must equal that of waiting before every primitive. The
+// slivers of these random strips also round a few words off the CPU reference, the same words with and without the waits.
+cpuref::CaptureWriter Core2OverlapCapture() {
+    cpuref::CaptureWriter capture;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x} | (uint64_t{y} << 16); };  // 12.4
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    uint32_t seed = 12345u;
+    auto next = [&seed](uint32_t range) {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 16) % range;
+    };
+    std::vector<uint64_t> words = {(uint64_t{127} << 16) | (uint64_t{127} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,
+                                   uint64_t{1} << 32, 0x4E, uint64_t{2} << 16, 0x4C, 0x44, 0x42,  // (Cs - Cd) * As + Cd
+                                   4u | (1u << 3) | (1u << 6), 0x00};                              // strip, Gouraud, blend
+    for (int v = 0; v < 400; ++v) {
+        words.push_back(rgbaq(0x40000000u | next(0x1000000u)));
+        words.push_back(0x01);
+        words.push_back(xyz(next(127 * 16), next(127 * 16)));
+        words.push_back(0x05);
+    }
+    words.push_back(6u | (1u << 6));  // blended sprites over them, some overlapping, some not
+    words.push_back(0x00);
+    for (int s = 0; s < 40; ++s) {
+        const uint32_t x = next(100), y = next(100);
+        words.push_back(rgbaq(0x60000000u | next(0x1000000u)));
+        words.push_back(0x01);
+        words.push_back(xyz(x * 16, y * 16));
+        words.push_back(0x05);
+        words.push_back(xyz((x + 8 + next(20)) * 16, (y + 8 + next(20)) * 16));
+        words.push_back(0x05);
+    }
+    ad(words);
+    capture.FrameEnd(0);
+    return capture;
+}
+
+int TestCore2OverlapOrder(const gpu::VulkanHandles& handles) {
+    const int failures = CheckCore2Ab(handles, "overlapping strips and sprites", Core2OverlapCapture(), 1,
+                                      "GT4_CORE2_GROUP_DISJOINT", false,
+                                      [](const Core2AbRun&, const Core2AbRun&) { return 0; }, false, 1, "1");
+    std::printf("hw_core2_overlap_order: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_texture_replacement (IN-470, chapter 11): an uploaded 64 x 64 CT32 pattern drawn 1:1 into pages 0-1. A first
 // run dumps it under its Format P name; a 4x image with that name in a pack folder then replaces it. Each native pixel
 // shows a texel of its 4 x 4 cell of the image, in GS memory, and with no pack the run is unchanged.
@@ -5295,6 +5349,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
     if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);
+    if (name == "hw_core2_overlap_order") return TestCore2OverlapOrder(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());
