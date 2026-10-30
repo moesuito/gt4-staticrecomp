@@ -3303,10 +3303,11 @@ struct Core2AbRun {
 
 constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
 
+// `onValue` is the switch's value for the "on" run ("" = its default); "0" turns it off.
 bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, const char* abSwitch,
                    bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0, uint32_t scale = 2,
-                   const std::function<void(writeback::Renderer&)>& configure = {}) {
-    _putenv_s(abSwitch, on ? "" : "0");
+                   const std::function<void(writeback::Renderer&)>& configure = {}, const char* onValue = "") {
+    _putenv_s(abSwitch, on ? onValue : "0");
     _putenv_s("GT4_HW_CORE", "2");
     writeback::Renderer renderer;
     _putenv_s("GT4_HW_CORE", "");
@@ -3346,13 +3347,13 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
 int CheckCore2Ab(const gpu::VulkanHandles& handles, const char* name, const cpuref::CaptureWriter& capture,
                  uint32_t frames, const char* abSwitch, bool exact,
                  const std::function<int(const Core2AbRun& off, const Core2AbRun& on)>& counters,
-                 bool memoryLastOnly = false, uint32_t scale = 2) {
+                 bool memoryLastOnly = false, uint32_t scale = 2, const char* onValue = "") {
     Core2AbRun off, on;
     std::vector<std::vector<uint8_t>> reference;
     std::string error;
     const uint32_t memoryFrom = memoryLastOnly ? frames - 1 : 0;
-    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom, scale) &&
-              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom, scale);
+    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom, scale, {}, onValue) &&
+              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom, scale, {}, onValue);
     if (ok) {
         cpuref::CpuRenderer renderer;
         cpuref::ReplaySummary summary;
@@ -3943,6 +3944,38 @@ int TestCore2ForcedBilinear(const gpu::VulkanHandles& handles) {
         if ((greys != 0) != expectGreys) ++failures;
     }
     std::printf("hw_core2_forced_bilinear: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// hw_core2_specialised (IN-437): pipelines specialised per draw state (GT4_CORE2_SPECIALIZE=sync: every batch waits
+// for its variant) against the uber pipeline (=0) on the core 2 streams of the other tests: identical images and GS
+// memory, and the 1x streams equal to the CPU reference. Without pixel interlock nothing is specialised.
+int TestCore2Specialised(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    auto ran = [&handles](const char* what) {
+        return [what, &handles](const Core2AbRun& off, const Core2AbRun& on) {
+            std::printf("  %s: specialised batches %llu (uber run %llu)\n", what,
+                        static_cast<unsigned long long>(on.stats.specialisedBatches),
+                        static_cast<unsigned long long>(off.stats.specialisedBatches));
+            if (off.stats.specialisedBatches != 0) return 1;
+            return handles.pixelInterlock && on.stats.specialisedBatches == 0 ? 1 : 0;
+        };
+    };
+    const char* kSwitch = "GT4_CORE2_SPECIALIZE";
+    failures += CheckCore2Ab(handles, "cache stream", CacheFixtureCapture(), kCacheFixtureFrames, kSwitch, false,
+                             ran("cache stream"), false, 2, "sync");
+    failures += CheckCore2Ab(handles, "stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6, kSwitch, true,
+                             ran("stream over a GPU-read render"), false, 2, "sync");
+    failures += CheckCore2Ab(handles, "GPU palettes", Core2GpuPaletteCapture(4), 4, kSwitch, true, ran("GPU palettes"),
+                             false, 2, "sync");
+    for (uint32_t scale : {1u, 3u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "texture from a target at 1x" : "texture from a target at 3x",
+                                 Core2TargetTextureCapture(3), 3, kSwitch, scale == 1, ran("texture from a target"),
+                                 false, scale, "sync");
+        failures += CheckCore2Ab(handles, scale == 1 ? "mip levels at 1x" : "mip levels at 3x", Core2MipCapture(), 1,
+                                 kSwitch, false, ran("mip levels"), false, scale, "sync");
+    }
+    std::printf("hw_core2_specialised: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
 
@@ -4844,6 +4877,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
+    if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

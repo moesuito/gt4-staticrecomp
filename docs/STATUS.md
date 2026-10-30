@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 306: specialised pipelines (2026-10-29, waiting for the owner test)
+
+`build\hwr-play-scale.ps1` now points at `O:\gt4recomp-scratch\coregs2-candidate-306` (gt4vulkan.exe sha256
+213c29b7...): candidate 305 plus IN-437. The 12x cost was the uber pixel shader re-deciding its draw-state branches in
+every wave (IN-436); pipelines specialised per draw state cut the night race GPU time per VBlank by 25-36% (12x
+33.3 -> 21.4 ms, 10x 23.8 -> 15.5, 8x 15.9 -> 11.2, 3x 5.6 -> 4.2) with byte-identical frames.
+`GT4_CORE2_SPECIALIZE=0` is the A/B switch. Next GPU levers, measured at 12x: the remaining fragment cost against
+the 0.41 ms per full-screen pass of a fully folded shader, then D1 (ROP path, 0.21 ms per pass).
+
 ## TASK-027 CoreGS 2.0 beta candidate 305 (2026-10-29, waiting for the owner test)
 
 Branch `task/027-coregs2`, `build\hwr-play-scale.ps1` points at `O:\gt4recomp-scratch\coregs2-candidate-305`

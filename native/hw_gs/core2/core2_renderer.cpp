@@ -2465,6 +2465,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         {
             ScopedUs timer(times_.draw);
             drawn = gpu_.Draw(draw, error);
+            stats.specialisedBatches = gpu_.Stats().specialisedBatches;
         }
         if (!drawn) {
             Fail(error);
@@ -2800,6 +2801,14 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.paletteRowsWritten, (unsigned long long)c.paletteRowHits,
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
                  (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0));
+    // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
+    std::fprintf(stderr,
+                 "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
+                 "compile_max_ms=%.1f failures=%llu\n",
+                 (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
+                 (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
+                 static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
+                 (unsigned long long)g.specFailures);
 }
 
 }  // namespace

@@ -12,8 +12,15 @@
 #include "../memory/hw_memory.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <map>
+#include <mutex>
+#include <thread>
+#include <unordered_set>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -221,6 +228,49 @@ struct Gpu::Impl {
   VkShaderModule vertexModule = VK_NULL_HANDLE, fragmentModule = VK_NULL_HANDLE, interlockModule = VK_NULL_HANDLE;
   VkPipeline pipelines[3] = {};  // points, lines, triangles
   VkPipeline interlockTriangles = VK_NULL_HANDLE;
+
+  // IN-437: the interlocked triangle pipeline specialised per draw state. hw_pixel_uber.frag reads the state block
+  // and branches on about 50 of its fields in every wave; with the fields as specialization constants the compiler
+  // folds those branches (about 3x less fragment cost at 12x in the fill benchmark, IN-436). The source and
+  // the values are the same, so a specialised draw is exactly the uber draw. Variants compile on a worker thread; a
+  // batch whose variant is not ready yet draws with interlockTriangles. GT4_CORE2_SPECIALIZE=0 turns this off;
+  // =sync compiles each variant on first use (deterministic, for the tests).
+  enum class SpecMode { off, async, sync };
+  SpecMode specMode = [] {
+    const char *text = std::getenv("GT4_CORE2_SPECIALIZE");
+    if (text && (std::strcmp(text, "0") == 0 || std::strcmp(text, "off") == 0)) return SpecMode::off;
+    if (text && std::strcmp(text, "sync") == 0) return SpecMode::sync;
+    return SpecMode::async;
+  }();
+  static constexpr std::uint32_t kSpecFieldCount = 30;
+  // Diagnostics: GT4_CORE2_SPEC_FIELDS=<hex> specialises only the key slots whose bit is set (slot 30: the push word,
+  // slot 31: the anisotropy of a mipmapped draw).
+  const std::uint32_t specFieldMask = [] {
+    const char *text = std::getenv("GT4_CORE2_SPEC_FIELDS");
+    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 16)) : 0xFFFFFFFFu;
+  }();
+  static constexpr std::size_t kMaxSpecPipelines = 2048;  // beyond this many draw states the uber pipeline draws
+  // The specialised fields, then the push word, then the anisotropy (tex_origin_x bits 21-23) of a mipmapped draw.
+  using SpecKey = std::array<std::uint32_t, kSpecFieldCount + 2>;
+  struct SpecKeyHash {
+    std::size_t operator()(const SpecKey &key) const {
+      std::uint64_t h = 1469598103934665603ull;
+      for (std::uint32_t v : key) h = (h ^ v) * 1099511628211ull;
+      return static_cast<std::size_t>(h);
+    }
+  };
+  std::unordered_map<SpecKey, VkPipeline, SpecKeyHash> specLocal;  // GS thread: variants known to be ready
+  std::unordered_set<SpecKey, SpecKeyHash> specSeen;               // GS thread: variants ready, compiling or queued
+  std::mutex specMutex;  // guards the members below up to specThread, except the atomic
+  std::condition_variable specWake;
+  std::deque<SpecKey> specQueue;
+  std::vector<std::pair<SpecKey, VkPipeline>> specDone;  // compiled, not yet moved into specLocal
+  std::vector<VkPipeline> specAll;                       // every compiled variant (destroyed with the renderer)
+  bool specStop = false;
+  std::uint64_t specCompileNs = 0, specCompileMaxNs = 0, specFailures = 0;
+  std::atomic<std::uint32_t> specDoneCount{0};
+  std::uint32_t specDoneSeen = 0;  // GS thread: specDoneCount when specDone was last emptied
+  std::thread specThread;
 
   VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout computeLayout = VK_NULL_HANDLE;
@@ -522,7 +572,8 @@ struct Gpu::Impl {
     return module;
   }
 
-  VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error) {
+  VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error,
+                           const VkSpecializationInfo *specialization = nullptr) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -532,6 +583,7 @@ struct Gpu::Impl {
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragment;
     stages[1].pName = "main";
+    stages[1].pSpecializationInfo = specialization;
     VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[7]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};   // S, T
@@ -580,6 +632,158 @@ struct Gpu::Impl {
     check(gt4_hwd_vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
           "vkCreateGraphicsPipelines", error);
     return pipeline;
+  }
+
+  // IN-437: the state block fields that hw_pixel_uber.frag reads as specialization constants (constant id = 1 + the
+  // field index), in key order.
+  static constexpr std::uint32_t kSpecFields[kSpecFieldCount] = {
+      gpu::gpufield::Format,  gpu::gpufield::Fba,   gpu::gpufield::Dither,    gpu::gpufield::Ate,
+      gpu::gpufield::Atst,    gpu::gpufield::Afail, gpu::gpufield::DateOn,    gpu::gpufield::Datm,
+      gpu::gpufield::Ztest,   gpu::gpufield::Ztst,  gpu::gpufield::Zmsk,      gpu::gpufield::Zformat,
+      gpu::gpufield::BlendOn, gpu::gpufield::Pabe,  gpu::gpufield::BlendA,    gpu::gpufield::BlendB,
+      gpu::gpufield::BlendC,  gpu::gpufield::BlendD, gpu::gpufield::Colclamp, gpu::gpufield::TexOn,
+      gpu::gpufield::Tfx,     gpu::gpufield::Tcc,   gpu::gpufield::TexelKind, gpu::gpufield::Aem,
+      gpu::gpufield::FogOn,   gpu::gpufield::TexFst, gpu::gpufield::TexLinear, gpu::gpufield::WrapS,
+      gpu::gpufield::WrapT,   gpu::gpufield::KeepTopByte};
+
+  // IN-437: the key of a draw state. Fields the draw cannot reach are zeroed so equal draws share one variant: the
+  // texture fields without TexOn, the blend selectors without BlendOn, the alpha test fields without Ate, DATM
+  // without DATE, the depth fields without Ztest, dither unless CT16, the kept top byte unless CT24; of the push word
+  // bit 29 (read by the vertex stage only), the texture bits without TexOn, the position depth without Ztest and the
+  // fine dither without dither. The shader never reads a zeroed value in that state.
+  static SpecKey spec_key(const std::uint32_t *fields, std::uint32_t pushWord) {
+    namespace g = gpu::gpufield;
+    std::uint32_t f[g::Count] = {};
+    for (std::uint32_t index : kSpecFields) f[index] = fields[index];
+    std::uint32_t push = pushWord & ~0x20000000u;
+    if (f[g::TexOn] == 0) {
+      f[g::Tfx] = f[g::Tcc] = f[g::TexelKind] = f[g::Aem] = f[g::TexFst] = f[g::TexLinear] = f[g::WrapS] = f[g::WrapT] = 0;
+      push = (push & ~(0x007FFFFFu | 0x01000000u | 0x00800000u | 0x04000000u | 0x80000000u)) | 1u;
+    }
+    if (f[g::BlendOn] == 0) f[g::Pabe] = f[g::BlendA] = f[g::BlendB] = f[g::BlendC] = f[g::BlendD] = 0;
+    if (f[g::Ate] == 0) f[g::Atst] = f[g::Afail] = 0;
+    if (f[g::DateOn] == 0) f[g::Datm] = 0;
+    if (f[g::Ztest] == 0) {
+      f[g::Ztst] = f[g::Zmsk] = f[g::Zformat] = 0;
+      push &= ~0x10000000u;
+    }
+    if (f[g::Format] != 2u) f[g::Dither] = 0;  // HW_FORMAT_CT16
+    if (f[g::Dither] == 0) push &= ~0x40000000u;
+    if (f[g::Format] != 1u) f[g::KeepTopByte] = 0;  // HW_FORMAT_CT24
+    SpecKey key{};
+    for (std::uint32_t i = 0; i < kSpecFieldCount; ++i) key[i] = f[kSpecFields[i]];
+    key[kSpecFieldCount] = push;
+    key[kSpecFieldCount + 1] = (push & 0x00800000u) != 0 ? (fields[g::TexOriginX] >> 21) & 7u : 0u;
+    return key;
+  }
+
+  // Compiles one variant (on the worker thread, or on the GS thread in sync mode). Key slots outside specFieldMask
+  // (diagnostics, GT4_CORE2_SPEC_FIELDS) stay dynamic: the shader reads them from the state block.
+  VkPipeline make_specialised(const SpecKey &key, std::string &error) {
+    std::uint32_t values[kSpecFieldCount + 2];
+    VkSpecializationMapEntry entries[kSpecFieldCount + 2];
+    std::uint32_t count = 0;
+    for (std::uint32_t i = 0; i < kSpecFieldCount + 2; ++i) {
+      if ((specFieldMask >> i & 1u) == 0) continue;
+      values[count] = key[i];
+      entries[count] = {i == kSpecFieldCount ? 100u : i == kSpecFieldCount + 1 ? 101u : 1u + kSpecFields[i], 4 * count, 4};
+      ++count;
+    }
+    VkSpecializationInfo info{count, entries, 4 * count, values};
+    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, interlockModule, error, &info);  // the driver caches
+  }
+
+  // Records a compile time (specMutex held).
+  void note_compile(std::uint64_t ns) {
+    specCompileNs += ns;
+    specCompileMaxNs = std::max(specCompileMaxNs, ns);
+  }
+
+  void spec_worker() {
+    for (;;) {
+      SpecKey key;
+      {
+        std::unique_lock<std::mutex> lock(specMutex);
+        specWake.wait(lock, [&] { return specStop || !specQueue.empty(); });
+        if (specStop) return;
+        key = specQueue.front();
+        specQueue.pop_front();
+      }
+      const auto start = std::chrono::steady_clock::now();
+      std::string error;
+      VkPipeline pipeline = make_specialised(key, error);
+      const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
+      {
+        std::lock_guard<std::mutex> lock(specMutex);
+        note_compile(static_cast<std::uint64_t>(ns.count()));
+        if (pipeline) {
+          specDone.push_back({key, pipeline});
+          specAll.push_back(pipeline);
+        } else if (specFailures++ == 0) {
+          std::fprintf(stderr, "[core2] a specialised pipeline failed (%s); its draws keep the uber pipeline\n",
+                       error.c_str());
+        }
+      }
+      specDoneCount.fetch_add(1, std::memory_order_release);
+    }
+  }
+
+  // Copies the worker's results and statistics for the GS thread (specMutex held).
+  void take_spec_results() {
+    for (const auto &[key, pipeline] : specDone) specLocal[key] = pipeline;
+    specDone.clear();
+    specDoneSeen = specDoneCount.load(std::memory_order_acquire);
+    stats.specPipelines = specAll.size();
+    stats.specCompileNs = specCompileNs;
+    stats.specCompileMaxNs = specCompileMaxNs;
+    stats.specFailures = specFailures;
+  }
+
+  // The pipeline of an interlocked triangle batch with this state block and push word (GS thread).
+  VkPipeline triangle_pipeline(const std::uint32_t *fields, std::uint32_t pushWord) {
+    if (specMode == SpecMode::off) return interlockTriangles;
+    const SpecKey key = spec_key(fields, pushWord);
+    auto found = specLocal.find(key);
+    if (found == specLocal.end() && specDoneCount.load(std::memory_order_acquire) != specDoneSeen) {
+      std::lock_guard<std::mutex> lock(specMutex);
+      take_spec_results();
+      found = specLocal.find(key);
+    }
+    if (found != specLocal.end()) {
+      stats.specialisedBatches++;
+      return found->second;
+    }
+    if (specSeen.size() < kMaxSpecPipelines && specSeen.insert(key).second) {
+      stats.specRequested = specSeen.size();
+      if (specMode == SpecMode::sync) {
+        const auto start = std::chrono::steady_clock::now();
+        std::string error;
+        VkPipeline pipeline = make_specialised(key, error);
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
+        std::lock_guard<std::mutex> lock(specMutex);
+        note_compile(static_cast<std::uint64_t>(ns.count()));
+        if (pipeline) {
+          specAll.push_back(pipeline);
+          specLocal[key] = pipeline;
+        } else {
+          specFailures++;
+        }
+        take_spec_results();
+        if (pipeline) {
+          stats.specialisedBatches++;
+          return pipeline;
+        }
+      } else {
+        {
+          std::lock_guard<std::mutex> lock(specMutex);
+          specQueue.push_back(key);
+        }
+        if (!specThread.joinable()) specThread = std::thread([this] { spec_worker(); });
+        specWake.notify_one();
+      }
+    }
+    stats.uberBatches++;
+    return interlockTriangles;
   }
 
   VkPipeline make_compute(VkShaderModule module, std::string &error, VkPipelineLayout layout = VK_NULL_HANDLE) {
@@ -1065,9 +1269,18 @@ Gpu::Gpu() : impl_(std::make_unique<Impl>()) {}
 
 Gpu::~Gpu() {
   Impl &s = *impl_;
+  if (s.specThread.joinable()) {  // IN-437: the worker may be compiling against the device
+    {
+      std::lock_guard<std::mutex> lock(s.specMutex);
+      s.specStop = true;
+    }
+    s.specWake.notify_all();
+    s.specThread.join();
+  }
   if (!s.device) return;
   std::string ignored;
   s.submit(true, ignored);
+  for (VkPipeline pipeline : s.specAll) gt4_hwd_vkDestroyPipeline(s.device, pipeline, nullptr);
   for (Image &image : s.images) s.release(image);
   for (Image &image : s.doomed) s.release(image);
   for (Image &image : s.recycled) s.release(image);
@@ -1271,6 +1484,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     s.interlockTriangles = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.interlockModule, error);
     if (!s.interlockTriangles) return false;
     s.interlock = true;
+  } else {
+    s.specMode = Impl::SpecMode::off;  // IN-437: only the interlocked triangle pipeline is specialised
   }
   s.patchModule = s.make_module(hwgs::shaders::core2_patch_words, hwgs::shaders::core2_patch_word_count, error);
   s.reduceModule = s.make_module(hwgs::shaders::core2_reduce_words, hwgs::shaders::core2_reduce_word_count, error);
@@ -1712,7 +1927,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
     Impl::DeferredCommand command;
     if (end > first && scissorOf(x0, y0, x1, y1, command.scissor)) {
-      command.pipeline = s.interlockTriangles;
+      command.pipeline = s.triangle_pipeline(state.fields, record.push[7]);  // IN-437
       command.first = first;
       command.count = end - first;
       s.deferredCommands.push_back(command);

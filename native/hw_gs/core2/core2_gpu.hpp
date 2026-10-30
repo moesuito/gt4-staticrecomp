@@ -57,6 +57,14 @@ struct Core2GpuStats {
     std::uint64_t deinterlaces = 0;
     std::uint64_t fxaaFrames = 0;
     std::uint64_t presentScales = 0;  // IN-432: frames resampled to the window rectangle
+    // IN-437: pipelines specialised per draw state (GT4_CORE2_SPECIALIZE).
+    std::uint64_t specialisedBatches = 0;  // triangle batches drawn with their specialised pipeline
+    std::uint64_t uberBatches = 0;         // triangle batches drawn with the uber pipeline while theirs compiled
+    std::uint64_t specPipelines = 0;       // specialised pipelines compiled
+    std::uint64_t specRequested = 0;       // draw states seen (compiled, compiling or queued)
+    std::uint64_t specCompileNs = 0;       // time spent compiling them
+    std::uint64_t specCompileMaxNs = 0;
+    std::uint64_t specFailures = 0;
     std::uint64_t submissions = 0;
     std::uint64_t waits = 0;
     std::uint64_t atlasUploads = 0;

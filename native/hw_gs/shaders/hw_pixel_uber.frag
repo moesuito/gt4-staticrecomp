@@ -91,6 +91,77 @@ layout(std140, set = 0, binding = 0) uniform PixelStateBlock {
     uint keep_top_byte;
 } state;
 
+// IN-437: specialised pipelines. A pipeline may give any of the draw-state fields that choose the code paths
+// (formats, tests, blend selectors, texture modes) and the flag bits of the tex_scale push word as specialization
+// constants: the compiler then folds every branch on them. The value is the state block's own (the caller only
+// zeroes fields the draw cannot reach); kDynamic (the default, the uber pipeline) reads the field at run time.
+// Constant id of a field = 1 + its index in the state block (gpufield), so the CPU side maps them one to one.
+const uint kDynamic = 0xFFFFFFFFu;
+layout(constant_id = 1) const uint SPEC_FORMAT = kDynamic;
+layout(constant_id = 3) const uint SPEC_FBA = kDynamic;
+layout(constant_id = 4) const uint SPEC_DITHER = kDynamic;
+layout(constant_id = 7) const uint SPEC_ATE = kDynamic;
+layout(constant_id = 8) const uint SPEC_ATST = kDynamic;
+layout(constant_id = 9) const uint SPEC_AFAIL = kDynamic;
+layout(constant_id = 11) const uint SPEC_DATE_ON = kDynamic;
+layout(constant_id = 12) const uint SPEC_DATM = kDynamic;
+layout(constant_id = 13) const uint SPEC_ZTEST = kDynamic;
+layout(constant_id = 14) const uint SPEC_ZTST = kDynamic;
+layout(constant_id = 15) const uint SPEC_ZMSK = kDynamic;
+layout(constant_id = 16) const uint SPEC_ZFORMAT = kDynamic;
+layout(constant_id = 17) const uint SPEC_BLEND_ON = kDynamic;
+layout(constant_id = 18) const uint SPEC_PABE = kDynamic;
+layout(constant_id = 19) const uint SPEC_BLEND_A = kDynamic;
+layout(constant_id = 20) const uint SPEC_BLEND_B = kDynamic;
+layout(constant_id = 21) const uint SPEC_BLEND_C = kDynamic;
+layout(constant_id = 22) const uint SPEC_BLEND_D = kDynamic;
+layout(constant_id = 24) const uint SPEC_COLCLAMP = kDynamic;
+layout(constant_id = 25) const uint SPEC_TEX_ON = kDynamic;
+layout(constant_id = 26) const uint SPEC_TFX = kDynamic;
+layout(constant_id = 27) const uint SPEC_TCC = kDynamic;
+layout(constant_id = 28) const uint SPEC_TEXEL_KIND = kDynamic;
+layout(constant_id = 31) const uint SPEC_AEM = kDynamic;
+layout(constant_id = 32) const uint SPEC_FOG_ON = kDynamic;
+layout(constant_id = 36) const uint SPEC_TEX_FST = kDynamic;
+layout(constant_id = 37) const uint SPEC_TEX_LINEAR = kDynamic;
+layout(constant_id = 38) const uint SPEC_WRAP_S = kDynamic;
+layout(constant_id = 39) const uint SPEC_WRAP_T = kDynamic;
+layout(constant_id = 48) const uint SPEC_KEEP_TOP_BYTE = kDynamic;
+layout(constant_id = 100) const uint SPEC_PUSH_WORD = kDynamic;  // tex_scale without bit 29 (vertex stage's snap)
+layout(constant_id = 101) const uint SPEC_MIP_ANISO = kDynamic;  // tex_origin_x bits 21-23 of a mipmapped draw
+#define ST_FORMAT (SPEC_FORMAT != kDynamic ? SPEC_FORMAT : state.format)
+#define ST_FBA (SPEC_FBA != kDynamic ? SPEC_FBA : state.fba)
+#define ST_DITHER (SPEC_DITHER != kDynamic ? SPEC_DITHER : state.dither)
+#define ST_ATE (SPEC_ATE != kDynamic ? SPEC_ATE : state.ate)
+#define ST_ATST (SPEC_ATST != kDynamic ? SPEC_ATST : state.atst)
+#define ST_AFAIL (SPEC_AFAIL != kDynamic ? SPEC_AFAIL : state.afail)
+#define ST_DATE_ON (SPEC_DATE_ON != kDynamic ? SPEC_DATE_ON : state.date_on)
+#define ST_DATM (SPEC_DATM != kDynamic ? SPEC_DATM : state.datm)
+#define ST_ZTEST (SPEC_ZTEST != kDynamic ? SPEC_ZTEST : state.ztest)
+#define ST_ZTST (SPEC_ZTST != kDynamic ? SPEC_ZTST : state.ztst)
+#define ST_ZMSK (SPEC_ZMSK != kDynamic ? SPEC_ZMSK : state.zmsk)
+#define ST_ZFORMAT (SPEC_ZFORMAT != kDynamic ? SPEC_ZFORMAT : state.zformat)
+#define ST_BLEND_ON (SPEC_BLEND_ON != kDynamic ? SPEC_BLEND_ON : state.blend_on)
+#define ST_PABE (SPEC_PABE != kDynamic ? SPEC_PABE : state.pabe)
+#define ST_BLEND_A (SPEC_BLEND_A != kDynamic ? SPEC_BLEND_A : state.blend_a)
+#define ST_BLEND_B (SPEC_BLEND_B != kDynamic ? SPEC_BLEND_B : state.blend_b)
+#define ST_BLEND_C (SPEC_BLEND_C != kDynamic ? SPEC_BLEND_C : state.blend_c)
+#define ST_BLEND_D (SPEC_BLEND_D != kDynamic ? SPEC_BLEND_D : state.blend_d)
+#define ST_COLCLAMP (SPEC_COLCLAMP != kDynamic ? SPEC_COLCLAMP : state.colclamp)
+#define ST_TEX_ON (SPEC_TEX_ON != kDynamic ? SPEC_TEX_ON : state.tex_on)
+#define ST_TFX (SPEC_TFX != kDynamic ? SPEC_TFX : state.tfx)
+#define ST_TCC (SPEC_TCC != kDynamic ? SPEC_TCC : state.tcc)
+#define ST_TEXEL_KIND (SPEC_TEXEL_KIND != kDynamic ? SPEC_TEXEL_KIND : state.texel_kind)
+#define ST_AEM (SPEC_AEM != kDynamic ? SPEC_AEM : state.aem)
+#define ST_FOG_ON (SPEC_FOG_ON != kDynamic ? SPEC_FOG_ON : state.fog_on)
+#define ST_TEX_FST (SPEC_TEX_FST != kDynamic ? SPEC_TEX_FST : state.tex_fst)
+#define ST_TEX_LINEAR (SPEC_TEX_LINEAR != kDynamic ? SPEC_TEX_LINEAR : state.tex_linear)
+#define ST_WRAP_S (SPEC_WRAP_S != kDynamic ? SPEC_WRAP_S : state.wrap_s)
+#define ST_WRAP_T (SPEC_WRAP_T != kDynamic ? SPEC_WRAP_T : state.wrap_t)
+#define ST_KEEP_TOP_BYTE (SPEC_KEEP_TOP_BYTE != kDynamic ? SPEC_KEEP_TOP_BYTE : state.keep_top_byte)
+#define PUSH_WORD (SPEC_PUSH_WORD != kDynamic ? SPEC_PUSH_WORD : pc.tex_scale)
+#define ST_MIP_ANISO (SPEC_MIP_ANISO != kDynamic ? SPEC_MIP_ANISO : (state.tex_origin_x >> 21) & 7u)
+
 #if HWR_INTERLOCK
 // Inside the interlock the next fragment of the same pixel must see this one's stores: coherent images.
 layout(set = 0, binding = 1, r32ui) coherent uniform uimage2D hw_frame;
@@ -105,7 +176,7 @@ layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D hw_texels;
 bool g_force_linear = false;
 uint g_mip_aniso = 0u;    // IN-434: log2 of the most anisotropic samples (0: off), tex_origin_x bits 21-23
 vec2 g_tex_dx = vec2(0.0), g_tex_dy = vec2(0.0);  // IN-434: texel coordinate per screen pixel in x and y
-uint g_tex_scale = 1u;  // pc.tex_scale without the filter/dither bits
+uint g_tex_scale = 1u;  // PUSH_WORD without the filter/dither bits
 // IN-427 (CORE2): bit 24 says the texture is a target sampled at binding 4, whatever the scale. At 1x the scale alone
 // (1) also meant "the 1x texel atlas", so core 2 read the atlas instead of the target and GT4's scene copies came out
 // black (only the HUD showed).
@@ -167,13 +238,13 @@ int wrap_texel(int texel, uint log2_size, uint mode, uint minimum, uint maximum)
 // tex_origin_y, an image bound where a target texture would be (binding 4, unused by memory textures). A palette that
 // changes then never needs the texture decoded again, and bilinear filtering blends looked-up colours, as the GS does.
 ivec4 fetch_texel(int x, int y) {
-    if (state.texel_kind == HW_TEXEL_INDEXED) {
+    if (ST_TEXEL_KIND == HW_TEXEL_INDEXED) {
         uint index = imageLoad(hw_texels, ivec2(x, y)).x & 255u;
         uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
-        return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, state.aem != 0u);
+        return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, ST_AEM != 0u);
     }
     uint raw = imageLoad(hw_texels, ivec2(x + int(state.tex_origin_x), y + int(state.tex_origin_y))).x;
-    return hw_texel_colour(state.texel_kind, raw, state.ta0, state.ta1, state.aem != 0u);
+    return hw_texel_colour(ST_TEXEL_KIND, raw, state.ta0, state.ta1, ST_AEM != 0u);
 }
 
 // IN-374: wrap of a scaled texel coordinate. The native texel (floor division by s) takes the 03.5 wrap of its
@@ -193,7 +264,7 @@ ivec4 fetch_texel_scaled(int x, int y, int s) {
     // there, sized to the sampled footprint), so the 1x atlas origin must NOT be added here: adding it made every
     // texture after the first in a run sample the wrong region (the leaking cuts on the car at 6x).
     uint raw = imageLoad(hw_texels_scaled, ivec2(x, y)).x;
-    return hw_texel_colour(state.texel_kind, raw, state.ta0, state.ta1, state.aem != 0u);
+    return hw_texel_colour(ST_TEXEL_KIND, raw, state.ta0, state.ta1, ST_AEM != 0u);
 }
 
 // IN-428: one texel of mip level `level` (0..MXL) of a memory texture laid out as described at g_mip.
@@ -205,13 +276,13 @@ ivec4 fetch_level(int level, int x, int y) {
         ox = 1 << int(state.tex_log2_w);
         oy = h - (h >> (level - 1));
     }
-    if (state.texel_kind == HW_TEXEL_INDEXED) {
+    if (ST_TEXEL_KIND == HW_TEXEL_INDEXED) {
         uint index = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x & 255u;
         uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
-        return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, state.aem != 0u);
+        return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, ST_AEM != 0u);
     }
     uint raw = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x;
-    return hw_texel_colour(state.texel_kind, raw, state.ta0, state.ta1, state.aem != 0u);
+    return hw_texel_colour(ST_TEXEL_KIND, raw, state.ta0, state.ta1, ST_AEM != 0u);
 }
 
 // IN-428: SampleTexture on mip level `level`: coordinates, sizes and clamp bounds halved once per level (03.6).
@@ -223,16 +294,16 @@ ivec4 sample_level(int level, int uvs, int uvt, bool linear) {
     int s = uvs >> level;
     int t = uvt >> level;
     if (!linear) {
-        int x = wrap_texel(s >> 4, lw, state.wrap_s, min_s, max_s);
-        int y = wrap_texel(t >> 4, lh, state.wrap_t, min_t, max_t);
+        int x = wrap_texel(s >> 4, lw, ST_WRAP_S, min_s, max_s);
+        int y = wrap_texel(t >> 4, lh, ST_WRAP_T, min_t, max_t);
         return fetch_level(level, x, y);
     }
     int bs = s - 8;
     int bt = t - 8;
-    int x0 = wrap_texel(bs >> 4, lw, state.wrap_s, min_s, max_s);
-    int x1 = wrap_texel((bs >> 4) + 1, lw, state.wrap_s, min_s, max_s);
-    int y0 = wrap_texel(bt >> 4, lh, state.wrap_t, min_t, max_t);
-    int y1 = wrap_texel((bt >> 4) + 1, lh, state.wrap_t, min_t, max_t);
+    int x0 = wrap_texel(bs >> 4, lw, ST_WRAP_S, min_s, max_s);
+    int x1 = wrap_texel((bs >> 4) + 1, lw, ST_WRAP_S, min_s, max_s);
+    int y0 = wrap_texel(bt >> 4, lh, ST_WRAP_T, min_t, max_t);
+    int y1 = wrap_texel((bt >> 4) + 1, lh, ST_WRAP_T, min_t, max_t);
     int fx = bs & 15;
     int fy = bt & 15;
     ivec4 c00 = fetch_level(level, x0, y0);
@@ -272,12 +343,12 @@ ivec4 sample_at_lod(int uvs, int uvt, float lod) {
 // short axis keeps its detail.
 ivec4 sample_mipmapped(int uvs, int uvt, float q) {
     float lod = float(g_mip_k) / 16.0;
-    if (!g_mip_lcm && state.tex_fst == 0u) {
+    if (!g_mip_lcm && ST_TEX_FST == 0u) {
         float magnitude = abs(q);
         lod = magnitude > 0.0 ? lod - log2(magnitude) * float(1u << g_mip_l) : 1.0e9;
     }
     if (lod <= 0.0 || g_mip_mmin < 2u) {
-        bool linear = g_force_linear || (lod <= 0.0 ? state.tex_linear != 0u : (g_mip_mmin & 1u) != 0u);
+        bool linear = g_force_linear || (lod <= 0.0 ? ST_TEX_LINEAR != 0u : (g_mip_mmin & 1u) != 0u);
         return sample_level(0, uvs, uvt, linear);
     }
     if (g_mip_aniso != 0u && lod < 1.0e8) {
@@ -304,17 +375,17 @@ ivec4 sample_mipmapped(int uvs, int uvt, float q) {
 
 // The texture at s x s texels per native texel: the coordinate times s, the same 4-bit weights.
 ivec4 sample_texture_scaled(int uvs, int uvt, int s) {
-    if (state.tex_linear == 0u && !g_force_linear) {
-        int x = wrap_scaled((uvs * s) >> 4, s, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
-        int y = wrap_scaled((uvt * s) >> 4, s, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
+    if (ST_TEX_LINEAR == 0u && !g_force_linear) {
+        int x = wrap_scaled((uvs * s) >> 4, s, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s);
+        int y = wrap_scaled((uvt * s) >> 4, s, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t);
         return fetch_texel_scaled(x, y, s);
     }
     int bs = uvs * s - 8;
     int bt = uvt * s - 8;
-    int x0 = wrap_scaled(bs >> 4, s, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
-    int x1 = wrap_scaled((bs >> 4) + 1, s, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
-    int y0 = wrap_scaled(bt >> 4, s, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
-    int y1 = wrap_scaled((bt >> 4) + 1, s, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
+    int x0 = wrap_scaled(bs >> 4, s, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s);
+    int x1 = wrap_scaled((bs >> 4) + 1, s, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s);
+    int y0 = wrap_scaled(bt >> 4, s, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t);
+    int y1 = wrap_scaled((bt >> 4) + 1, s, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t);
     int fx = bs & 15;
     int fy = bt & 15;
     ivec4 c00 = fetch_texel_scaled(x0, y0, s);
@@ -334,17 +405,17 @@ ivec4 sample_texture(int uvs, int uvt) {
     // asks to sample nearest, but only at an internal scale > 1 and only for the 1x texel atlas. A 1x texture
     // magnified 6x with nearest shows the source's 6-pixel steps (the menu background grid, the map's dashes); the
     // reference renderer smooths them with its upscaling filter. Off by default (faithful to the GS).
-    if (state.tex_linear == 0u && !(g_force_linear && g_tex_scale <= 1u)) {
-        int x = wrap_texel(uvs >> 4, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
-        int y = wrap_texel(uvt >> 4, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
+    if (ST_TEX_LINEAR == 0u && !(g_force_linear && g_tex_scale <= 1u)) {
+        int x = wrap_texel(uvs >> 4, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s);
+        int y = wrap_texel(uvt >> 4, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t);
         return fetch_texel(x, y);
     }
     int bs = uvs - 8;
     int bt = uvt - 8;
-    int x0 = wrap_texel(bs >> 4, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
-    int x1 = wrap_texel((bs >> 4) + 1, state.tex_log2_w, state.wrap_s, state.wrap_min_s, state.wrap_max_s);
-    int y0 = wrap_texel(bt >> 4, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
-    int y1 = wrap_texel((bt >> 4) + 1, state.tex_log2_h, state.wrap_t, state.wrap_min_t, state.wrap_max_t);
+    int x0 = wrap_texel(bs >> 4, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s);
+    int x1 = wrap_texel((bs >> 4) + 1, state.tex_log2_w, ST_WRAP_S, state.wrap_min_s, state.wrap_max_s);
+    int y0 = wrap_texel(bt >> 4, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t);
+    int y1 = wrap_texel((bt >> 4) + 1, state.tex_log2_h, ST_WRAP_T, state.wrap_min_t, state.wrap_max_t);
     int fx = bs & 15;
     int fy = bt & 15;
     ivec4 c00 = fetch_texel(x0, y0);
@@ -361,13 +432,13 @@ ivec4 sample_texture(int uvs, int uvt) {
 void main() {
     ivec2 pixel = ivec2(floor(gl_FragCoord.xy));
     // IN-384 follow-up: the top bit of the tex_scale push word requests the forced linear filter for 1x textures.
-    g_force_linear = (pc.tex_scale & 0x80000000u) != 0u;
-    g_dither_fine = (pc.tex_scale & 0x40000000u) != 0u;
+    g_force_linear = (PUSH_WORD & 0x80000000u) != 0u;
+    g_dither_fine = (PUSH_WORD & 0x40000000u) != 0u;
     // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale; IN-392: bit 28 asks for the
     // position depth below.
-    g_tex_scale = pc.tex_scale & 0x007FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
-    g_texture_from_target = (pc.tex_scale & 0x01000000u) != 0u;
-    g_mip = (pc.tex_scale & 0x00800000u) != 0u;
+    g_tex_scale = PUSH_WORD & 0x007FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    g_texture_from_target = (PUSH_WORD & 0x01000000u) != 0u;
+    g_mip = (PUSH_WORD & 0x00800000u) != 0u;
     if (g_mip) {
         uint info = state.tex_origin_x;
         g_mip_mxl = info & 7u;
@@ -375,44 +446,44 @@ void main() {
         g_mip_lcm = ((info >> 6) & 1u) != 0u;
         g_mip_l = (info >> 7) & 3u;
         g_mip_k = int(info << 11) >> 20;  // bits 9-20, sign extended
-        g_mip_aniso = (info >> 21) & 7u;
+        g_mip_aniso = ST_MIP_ANISO;
     }
-    const bool depth_from_position = (pc.tex_scale & 0x10000000u) != 0u;
+    const bool depth_from_position = (PUSH_WORD & 0x10000000u) != 0u;
 
     HwPixelState s;
-    s.format = state.format;
+    s.format = ST_FORMAT;
     s.fbmsk = state.fbmsk;
-    s.fba = state.fba;
-    s.dither = state.dither;
+    s.fba = ST_FBA;
+    s.dither = ST_DITHER;
     s.dimx_lo = state.dimx_lo;
     s.dimx_hi = state.dimx_hi;
-    s.ate = ((pc.tex_scale & 0x08000000u) != 0u && state.afail == 0u && state.atst != 0u) ? 0u : state.ate;
-    s.atst = state.atst;
-    s.afail = state.afail;
+    s.ate = ((PUSH_WORD & 0x08000000u) != 0u && ST_AFAIL == 0u && ST_ATST != 0u) ? 0u : ST_ATE;
+    s.atst = ST_ATST;
+    s.afail = ST_AFAIL;
     s.aref = state.aref;
-    s.date_on = state.date_on;
-    s.datm = state.datm;
-    s.ztest = state.ztest;
-    s.ztst = (pc.tex_scale & 0x02000000u) != 0u && state.ztst >= 2u ? 1u : state.ztst;  // diagnostic: GT4_HW_SCALED_DIAG=noz
-    s.zmsk = state.zmsk;
-    s.zformat = state.zformat;
-    s.blend_on = state.blend_on;
-    s.pabe = state.pabe;
-    s.blend_a = state.blend_a;
-    s.blend_b = state.blend_b;
-    s.blend_c = state.blend_c;
-    s.blend_d = state.blend_d;
+    s.date_on = ST_DATE_ON;
+    s.datm = ST_DATM;
+    s.ztest = ST_ZTEST;
+    s.ztst = (PUSH_WORD & 0x02000000u) != 0u && ST_ZTST >= 2u ? 1u : ST_ZTST;  // diagnostic: GT4_HW_SCALED_DIAG=noz
+    s.zmsk = ST_ZMSK;
+    s.zformat = ST_ZFORMAT;
+    s.blend_on = ST_BLEND_ON;
+    s.pabe = ST_PABE;
+    s.blend_a = ST_BLEND_A;
+    s.blend_b = ST_BLEND_B;
+    s.blend_c = ST_BLEND_C;
+    s.blend_d = ST_BLEND_D;
     s.fix = state.fix;
-    s.colclamp = state.colclamp;
+    s.colclamp = ST_COLCLAMP;
 
     // Colour and fog: truncation of the interpolated 0..255 values (IN-304). The 0.001 tolerance
     // absorbs float interpolation noise on exact integer vertices (IN-500).
     ivec4 frag = ivec4(floor(clamp(in_rgba, 0.0, 255.0) + vec4(0.001)));
     ivec4 colour = frag;
-    if (state.tex_on != 0u) {
+    if (ST_TEX_ON != 0u) {
         int uvs;
         int uvt;
-        if (state.tex_fst != 0u) {
+        if (ST_TEX_FST != 0u) {
             uvs = to_texel_104(in_uv.x);
             uvt = to_texel_104(in_uv.y);
         } else {
@@ -422,18 +493,23 @@ void main() {
             float scale_t = float(1u << state.tex_log2_h) * 16.0;
             uvs = to_texel_104((in_st.x / q) * scale_s);
             uvt = to_texel_104((in_st.y / q) * scale_t);
-            // IN-434: derivatives in uniform control flow (tex_on and tex_fst are draw-wide), in texels.
-            vec2 texel_coord = (in_st / q) * vec2(float(1u << state.tex_log2_w), float(1u << state.tex_log2_h));
-            g_tex_dx = dFdx(texel_coord);
-            g_tex_dy = dFdy(texel_coord);
+            // IN-434: derivatives in uniform control flow (tex_on, tex_fst and the mip parameters are draw-wide), in
+            // texels, only for anisotropic filtering. IN-437: with the derivatives computed for every STQ draw, the
+            // pipeline specialised to TEX_FST = 0 moved some pixels of a mipmapped draw without anisotropy to
+            // level 0 (hw_core2_mipmaps); they are now compiled only into anisotropic variants.
+            if (g_mip && g_mip_aniso != 0u) {
+                vec2 texel_coord = (in_st / q) * vec2(float(1u << state.tex_log2_w), float(1u << state.tex_log2_h));
+                g_tex_dx = dFdx(texel_coord);
+                g_tex_dy = dFdy(texel_coord);
+            }
         }
         ivec4 texel = g_mip ? sample_mipmapped(uvs, uvt, in_q)
                       : (g_tex_scale > 1u || g_texture_from_target) ? sample_texture_scaled(uvs, uvt, int(max(g_tex_scale, 1u)))
                                                                      : sample_texture(uvs, uvt);
-        if ((pc.tex_scale & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
-        colour = hw_texture_function(state.tfx, state.tcc != 0u, texel, frag);
+        if ((PUSH_WORD & 0x04000000u) != 0u) texel = ivec4(128, 128, 128, 128);  // diagnostic: GT4_HW_SCALED_DIAG=notex
+        colour = hw_texture_function(ST_TFX, ST_TCC != 0u, texel, frag);
     }
-    if (state.fog_on != 0u) {
+    if (ST_FOG_ON != 0u) {
         int fog = int(clamp(floor(clamp(in_fog, 0.0, 255.0) + 0.001), 0.0, 255.0));
         ivec3 fog_colour = ivec3(int(state.fog_r), int(state.fog_g), int(state.fog_b));
         colour.r = (fog * colour.r + (255 - fog) * fog_colour.r) >> 8;
@@ -461,7 +537,7 @@ void main() {
     uint depth_old = imageLoad(hw_depth, pixel).x;
     HwOutcome o = hw_process_pixel(s, f, frame_old, depth_old);
     if (o.frame_written) {
-        if (state.keep_top_byte != 0u && state.format == HW_FORMAT_CT24) {
+        if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24) {
             o.frame_stored = (o.frame_stored & 0x00FFFFFFu) | (frame_old & 0xFF000000u);
         }
         imageStore(hw_frame, pixel, uvec4(o.frame_stored));
