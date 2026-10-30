@@ -255,6 +255,8 @@ public:
 
     bool Submit(bool wait, std::string &error);
     const Core2GpuStats &Stats() const;
+    // Diagnostics: cumulative full barriers as " label[/kind]=count" (the command that needed one and its hazard).
+    std::string BarrierReport() const;
 
 private:
     struct Impl;

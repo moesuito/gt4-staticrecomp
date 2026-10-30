@@ -3163,7 +3163,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 namespace {
 
 // The [core2] session line (replay summary, game log every 600 VBlanks).
-void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64_t vblanks) {
+void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64_t vblanks,
+                     const std::string &barrierReport) {
     std::fprintf(stderr,
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
@@ -3192,6 +3193,9 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
                  (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0), (unsigned long long)g.selfTextureBatches, (unsigned long long)g.selfCopies,
                  static_cast<double>(g.selfCopyPixels) / 1.0e6);
+    // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
+    static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
+    if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
@@ -3211,7 +3215,9 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
 }  // namespace
 
 Renderer::Renderer() : impl_(std::make_unique<Impl>()) {}
-Renderer::~Renderer() { PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_); }
+Renderer::~Renderer() {
+    PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_, impl_->gpu_.BarrierReport());
+}
 
 void Renderer::SetScale(std::uint32_t scale, float shift) {
     impl_->scale_ = std::max<std::uint32_t>(scale, 1u);
@@ -3390,7 +3396,7 @@ void Renderer::Flush() {
         s.stats.liveTargets = 0;
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
         s.stats.targetSlots = s.targets_.size();
-        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_);
+        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_, s.gpu_.BarrierReport());
         if (s.d1Stats_) s.PrintD1Classes();
         const PhaseTimes &p = s.times_;
         const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank

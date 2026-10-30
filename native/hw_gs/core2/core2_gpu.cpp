@@ -89,6 +89,37 @@ struct DrawSetKeyHash {
   }
 };
 
+// IN-464: a set of the GLM's 512 pages of 8 KiB (32 blocks each), for page-granular GLM hazards (Impl::order).
+struct GlmPages {
+  std::array<std::uint64_t, 8> bits{};
+  static GlmPages all() {
+    GlmPages pages;
+    pages.bits.fill(~std::uint64_t{0});
+    return pages;
+  }
+  // Pages [first, first + count) of the 512, wrapping at the end of GS memory.
+  void add_run(std::uint32_t first, std::uint32_t count) {
+    if (count >= 512u) {
+      bits.fill(~std::uint64_t{0});
+      return;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+      const std::uint32_t page = (first + i) % 512u;
+      bits[page >> 6] |= std::uint64_t{1} << (page & 63u);
+    }
+  }
+  bool meets(const GlmPages &other) const {
+    for (std::size_t i = 0; i < bits.size(); ++i) {
+      if ((bits[i] & other.bits[i]) != 0) return true;
+    }
+    return false;
+  }
+  void merge(const GlmPages &other) {
+    for (std::size_t i = 0; i < bits.size(); ++i) bits[i] |= other.bits[i];
+  }
+  void clear() { bits.fill(0); }
+};
+
 // B4: device memory kept in finished images for reuse by size (see Impl::retire).
 constexpr VkDeviceSize kRecycledImageBytes = static_cast<VkDeviceSize>(128) << 20;
 constexpr VkDeviceSize kRecycledImageBytesIntegrated = static_cast<VkDeviceSize>(32) << 20;  // IN-431
@@ -899,6 +930,17 @@ struct Gpu::Impl {
   }
 
   // ---- Recording ---------------------------------------------------------------------------------------
+  // Diagnostics: full barriers by the command that needed one and why (BarrierReport, GT4_CORE2_BARRIER_TRACE=1).
+  // Labels are string literals, so they are compared by address.
+  const char *barrierLabel = "other";
+  const char *barrierKind = "";
+  struct BarrierReason {
+    const char *label;
+    const char *kind;
+    std::uint64_t count;
+  };
+  std::vector<BarrierReason> barrierReasons;
+
   void full_barrier() {
     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
@@ -906,8 +948,19 @@ struct Gpu::Impl {
     gt4_hw_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                                 &barrier, 0, nullptr, 0, nullptr);
     stats.fullBarriers++;
+    bool counted = false;
+    for (BarrierReason &reason : barrierReasons) {
+      if (reason.label == barrierLabel && reason.kind == barrierKind) {
+        ++reason.count;
+        counted = true;
+        break;
+      }
+    }
+    if (!counted) barrierReasons.push_back({barrierLabel, barrierKind, 1});
     drewSinceBarrier = false;
     pendingBufferReads = pendingBufferWrites = 0;  // everything before is ordered against everything after
+    pendingGlmReads.clear();
+    pendingGlmWrites.clear();
     pendingReads.clear();
     pendingWrites.clear();
   }
@@ -1018,29 +1071,83 @@ struct Gpu::Impl {
   unsigned pendingBufferReads = 0, pendingBufferWrites = 0;
   AccessSet pendingReads, pendingWrites;
 
-  // Records a barrier first when accesses depend on the pending ones, then adds them.
+  // IN-464: GLM accesses by 8 KiB page (512 pages of 32 blocks) instead of the whole 4 MiB buffer. A decode, a dirty
+  // patch, a CLUT load or a target written into the GLM names the pages it reads or writes, so a GLM write needs a
+  // barrier only after a command that read or wrote one of its pages (about half the full barriers of a race VBlank
+  // were whole-buffer GLM hazards between unrelated pages). GT4_CORE2_GLM_PAGES=0 treats every GLM access as all pages.
+  const bool glmPages =
+      std::getenv("GT4_CORE2_GLM_PAGES") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GLM_PAGES"), "0") != 0;
+  GlmPages pendingGlmReads, pendingGlmWrites;
+
+  // The pages of rectangle [x0, x1] x [y0, y1] of buffer (bp, bw, psm), conservatively: every page of the page rows
+  // it crosses (more rows when it runs past the buffer width) and one more page when bp is not page aligned, as the
+  // renderer's SpanOfRect counts them. An unknown format or a rectangle outside 2048 x 2048 is every page.
+  GlmPages glm_pages_of_rect(std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, std::int32_t x0, std::int32_t y0,
+                             std::int32_t x1, std::int32_t y1) const {
+    const std::optional<memory::Psm> format = memory::decodePsm(psm);
+    if (!glmPages || !format || x0 < 0 || y0 < 0 || x1 >= 2048 || y1 >= 2048) return GlmPages::all();
+    GlmPages pages;
+    if (x1 < x0 || y1 < y0) return pages;
+    const memory::PsmInfo &info = memory::psmInfo(*format);
+    const std::uint32_t bufferWidth = std::max<std::uint32_t>(bw, 1u) * 64u;
+    const std::uint32_t pagesPerRow = std::max<std::uint32_t>(1u, (bufferWidth + info.pageWidth - 1u) / info.pageWidth);
+    const std::uint32_t firstRow = static_cast<std::uint32_t>(y0) / info.pageHeight;
+    std::uint32_t rows = static_cast<std::uint32_t>(y1) / info.pageHeight - firstRow + 1u;
+    if (static_cast<std::uint32_t>(x1) >= bufferWidth) rows += 1u + static_cast<std::uint32_t>(x1) / bufferWidth;
+    const std::uint64_t count = static_cast<std::uint64_t>(rows) * pagesPerRow + (bp % 32u != 0 ? 1u : 0u);
+    pages.add_run((bp / 32u + firstRow * pagesPerRow) % 512u,
+                  static_cast<std::uint32_t>(std::min<std::uint64_t>(count, 512u)));
+    return pages;
+  }
+  // Blocks [first, first + count), wrapping.
+  GlmPages glm_pages_of_blocks(std::uint32_t first, std::uint32_t count) const {
+    if (!glmPages) return GlmPages::all();
+    GlmPages pages;
+    if (count == 0) return pages;
+    const std::uint32_t firstPage = (first % 16384u) / 32u;
+    const std::uint32_t lastPage = ((first % 16384u) + count - 1u) / 32u;
+    pages.add_run(firstPage, static_cast<std::uint32_t>(std::min<std::uint64_t>(lastPage - firstPage + 1u, 512u)));
+    return pages;
+  }
+
+  // Records a barrier first when accesses depend on the pending ones, then adds them. GLM accesses come as pages
+  // (IN-464); `bufferReads` and `bufferWrites` name the GPU CLUT only.
   void order(std::initializer_list<Use> reads, std::initializer_list<Use> writes, unsigned bufferReads,
-             unsigned bufferWrites) {
-    bool hazard = ((bufferReads | bufferWrites) & pendingBufferWrites) != 0 || (bufferWrites & pendingBufferReads) != 0;
+             unsigned bufferWrites, const GlmPages &glmReads = GlmPages{}, const GlmPages &glmWrites = GlmPages{}) {
+    const bool clutHazard =
+        ((bufferReads | bufferWrites) & pendingBufferWrites) != 0 || (bufferWrites & pendingBufferReads) != 0;
+    const bool glmRaw = glmReads.meets(pendingGlmWrites) || glmWrites.meets(pendingGlmWrites);
+    const bool glmWar = glmWrites.meets(pendingGlmReads);
+    bool hazard = clutHazard || glmRaw || glmWar;
     for (const Use &use : reads) hazard = hazard || pendingWrites.conflicts(use.serial, use.region);
     for (const Use &use : writes) {
       hazard = hazard || pendingWrites.conflicts(use.serial, use.region) || pendingReads.conflicts(use.serial, use.region);
     }
     if (hazard || pendingReads.size() + pendingWrites.size() > 512) {
+      barrierKind = clutHazard ? ((pendingBufferWrites & (bufferReads | bufferWrites)) != 0 ? "clut buffer" : "clut buffer war")
+                    : glmRaw   ? "glm pages"
+                    : glmWar   ? "glm pages war"
+                    : hazard   ? "image"
+                               : "overflow";
       full_barrier();
+      barrierKind = "";
     } else {
       stats.barriersSkipped++;
     }
     pendingBufferReads |= bufferReads;
     pendingBufferWrites |= bufferWrites;
+    pendingGlmReads.merge(glmReads);
+    pendingGlmWrites.merge(glmWrites);
     for (const Use &use : reads) pendingReads.add(use.serial, use.region);
     for (const Use &use : writes) pendingWrites.add(use.serial, use.region);
   }
 
   // Declares the accesses of the compute or transfer command about to be recorded. With IN-420 the deferred draws are
   // recorded first when the command depends on them (reads what they write, writes what they read or write).
+  // kGlmBuffer in `bufferReads` / `bufferWrites` means the GLM pages `glmReads` / `glmWrites` (every page when null).
   void touch(const char *label, std::initializer_list<Use> reads, std::initializer_list<Use> writes,
-             unsigned bufferReads, unsigned bufferWrites) {
+             unsigned bufferReads, unsigned bufferWrites, const GlmPages *glmReads = nullptr,
+             const GlmPages *glmWrites = nullptr) {
     if (!lazyBarriers) {  // outside_pass and after_op already order every command
       prof_begin(label);
       return;
@@ -1054,7 +1161,11 @@ struct Gpu::Impl {
       }
       if (dependsOnDraws) flush_draws();
     }
-    order(reads, writes, bufferReads, bufferWrites);
+    const GlmPages glmRead = (bufferReads & kGlmBuffer) == 0 ? GlmPages{} : glmReads ? *glmReads : GlmPages::all();
+    const GlmPages glmWrite = (bufferWrites & kGlmBuffer) == 0 ? GlmPages{} : glmWrites ? *glmWrites : GlmPages::all();
+    barrierLabel = label;
+    order(reads, writes, bufferReads & ~kGlmBuffer, bufferWrites & ~kGlmBuffer, glmRead, glmWrite);
+    barrierLabel = "other";
     prof_begin(label);
   }
 
@@ -1230,7 +1341,9 @@ struct Gpu::Impl {
       }
     }
     if (hazard) {
+      barrierLabel = "draws";
       full_barrier();
+      barrierLabel = "other";
     } else {
       stats.barriersSkipped++;
     }
@@ -1361,7 +1474,9 @@ struct Gpu::Impl {
     recording = true;
     // A barrier's first scope covers every command submitted before it on this queue (the presentation's copy of
     // the display image included), so the new recording never overwrites what an earlier submission still reads.
+    barrierLabel = "begin recording";
     full_barrier();
+    barrierLabel = "other";
     return true;
   }
 
@@ -1493,6 +1608,20 @@ std::uint32_t Gpu::MaxNativeSide() const {
 }
 
 const Core2GpuStats &Gpu::Stats() const { return impl_->stats; }
+
+std::string Gpu::BarrierReport() const {
+  std::string report;
+  for (const Impl::BarrierReason &reason : impl_->barrierReasons) {
+    report += ' ';
+    report += reason.label;
+    if (*reason.kind) {
+      report += '/';
+      report += reason.kind;
+    }
+    report += '=' + std::to_string(reason.count);
+  }
+  return report;
+}
 
 bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shift, std::string &error) {
   Impl &s = *impl_;
@@ -2327,15 +2456,17 @@ bool Gpu::UploadGlm(const std::uint8_t *memory,
   if (!s.begin_recording(error)) return false;
   std::vector<VkBufferCopy> copies;
   copies.reserve(ranges.size());
+  GlmPages written;  // IN-464
   for (const auto &[offset, size] : ranges) {
     if (offset + size > (4u << 20)) continue;
     VkDeviceSize at = 0;
     if (!s.ring(s.staging, size, 16, at, error)) return false;
     std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + at, memory + offset, size);
     copies.push_back(VkBufferCopy{at, offset, size});
+    if (size != 0) written.merge(s.glm_pages_of_blocks(offset / 256u, (offset + size - 1u) / 256u - offset / 256u + 1u));
   }
   s.outside_pass();
-  s.touch("glm upload", {}, {}, 0, s.kGlmBuffer);
+  s.touch("glm upload", {}, {}, 0, s.kGlmBuffer, nullptr, &written);
   if (!copies.empty()) {
     gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.glm, static_cast<std::uint32_t>(copies.size()), copies.data());
   }
@@ -2362,7 +2493,10 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   if (!s.ring(s.staging, 256 * 4, align, paletteOffset, error)) return false;
   if (palette) std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + paletteOffset, palette, 256 * 4);
   s.outside_pass();
-  s.touch("decode", {}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
+  const GlmPages texturePages = s.glm_pages_of_rect(bp, bw, psm, 0, 0, static_cast<std::int32_t>(width) - 1,
+                                                          static_cast<std::int32_t>(height) - 1);  // IN-464
+  // IN-464: palette modes 0 and 1 never read the GPU CLUT (DecodeTextureGpuClut is mode 2), so no CLUT hazard.
+  s.touch("decode", {}, {image}, windowWords != 0 ? 0u : s.kGlmBuffer, 0, &texturePages);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {glmRange,
@@ -2487,7 +2621,9 @@ bool Gpu::DecodeTextureGpuClut(ImageId id, std::uint32_t bp, std::uint32_t bw, s
   std::uint32_t windowBase = 0, windowWords = 0;
   if (!s.bind_window(glmRange, windowBase, windowWords, error)) return false;
   s.outside_pass();
-  s.touch("decode gpu clut", {}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0);
+  const GlmPages texturePages = s.glm_pages_of_rect(bp, bw, psm, 0, 0, static_cast<std::int32_t>(width) - 1,
+                                                          static_cast<std::int32_t>(height) - 1);  // IN-464
+  s.touch("decode gpu clut", {}, {image}, (windowWords != 0 ? 0u : s.kGlmBuffer) | s.kClutBuffer, 0, &texturePages);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {glmRange,
@@ -2599,7 +2735,11 @@ bool Gpu::ClutFromTarget(ImageId target, const ClutTargetLoad &load, std::string
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch("clut from target", {image}, {}, s.kGlmBuffer, s.kClutBuffer);
+  // IN-464: a CSM1 palette lies in the page of CBP and the next one (as the front end reports it before a load); a
+  // CSM2 TEXCLUT row can be anywhere.
+  const GlmPages palettePages =
+      load.csm == 0 ? s.glm_pages_of_blocks(load.cbp & ~31u, 64u) : GlmPages::all();
+  s.touch("clut from target", {image}, {}, s.kGlmBuffer, s.kClutBuffer, &palettePages);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -2660,7 +2800,8 @@ bool Gpu::MaterializeTarget(ImageId id, std::uint32_t psm, std::uint32_t tbp, st
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch("glm write (target)", {image}, {}, s.kGlmBuffer, s.kGlmBuffer);
+  const GlmPages targetPages = s.glm_pages_of_rect(tbp, tbw, psm, x0, y0, x1, y1);  // IN-464
+  s.touch("glm write (target)", {image}, {}, s.kGlmBuffer, s.kGlmBuffer, &targetPages, &targetPages);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[4] = {{s.glm, 0, 4u << 20},
@@ -2744,7 +2885,8 @@ bool Gpu::PatchFromGlm(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uint
   }
   if (!s.begin_recording(error)) return false;
   s.outside_pass();
-  s.touch("dirty patch", {image}, {image}, s.kGlmBuffer, 0);
+  const GlmPages patchPages = s.glm_pages_of_rect(bp, bw, psm, x0, y0, x1, y1);  // IN-464
+  s.touch("dirty patch", {image}, {image}, s.kGlmBuffer, 0, &patchPages);
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.decodeSetLayout, set, error)) return false;
   VkDescriptorBufferInfo buffers[3] = {{s.glm, 0, 4u << 20}, {s.glmTables.buffer, 0, s.glmTableBytes},
