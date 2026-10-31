@@ -396,11 +396,13 @@ struct Gpu::Impl {
   std::vector<SpecKey> specKnown;  // specMutex: every variant compiled or read from the file
   bool specKnownChanged = false;   // specMutex
   std::size_t specKnownFromFile = 0;
-  // G1 (CORE2-GPU-PLAN): GT4_CORE2_CLEAR_WHOLE=1 clears a whole target with one call; =2 also takes the top byte of a Z24
-  // word as zero (experiment: the renderer keeps that byte, as the GS does).
-  const int clearWholeSetting = std::getenv("GT4_CORE2_CLEAR_WHOLE") ? std::atoi(std::getenv("GT4_CORE2_CLEAR_WHOLE")) : 0;
+  // IN-494: GT4_CORE2_CLEAR_WHOLE=0 draws GT4's whole-target clears, =1 clears only what keeps every byte, =2 also a Z24
+  // depth word with its top byte zero. The GS keeps that byte and nothing in GT4 shows it (frames identical, and the EE
+  // never reads depth), but it is not the exact memory: unset, =2 at a scale above 1x and on integrated GPUs, else =1.
+  const char *clearWholeText = std::getenv("GT4_CORE2_CLEAR_WHOLE");
+  const int clearWholeSetting = clearWholeText ? std::atoi(clearWholeText) : -1;
   const bool clearWhole = clearWholeSetting != 0;
-  const bool clearTopZero = clearWholeSetting == 2;
+  bool clearTopZero = clearWholeSetting == 2;
   std::chrono::steady_clock::time_point specLastSave{};
 
   VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
@@ -893,7 +895,8 @@ struct Gpu::Impl {
     const std::uint32_t format = f[g::Format];
     if (format > 1u || f[g::DateOn] != 0) return 0;  // CT32, CT24
     std::uint32_t blendIndex = 0;
-    if (f[g::BlendOn] != 0) {
+    // IN-494: with every lane kept the blend has no effect (GT4 writes depth through such a textured pass).
+    if (f[g::BlendOn] != 0 && (f[g::Fbmsk] & (format == 0u ? 0xFFFFFFFFu : 0x00FFFFFFu)) != (format == 0u ? 0xFFFFFFFFu : 0x00FFFFFFu)) {
       // No PABE, no wrapping past 255, a factor the shader can give (not Ad, which the GPU would read over 255).
       if (!allowBlend || f[g::Pabe] != 0 || f[g::Colclamp] == 0 || f[g::BlendC] == 1u) return 0;
       if (f[g::BlendC] == 2u && f[g::Fix] > 128u) return 0;  // a gain over 1: the GPU clamps its factor
@@ -2109,6 +2112,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.limits = properties.limits;
   s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
   {
+    if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
     const char *sampled = std::getenv("GT4_CORE2_SAMPLED_TEXELS");
     s.sampledTexels = sampled ? std::strcmp(sampled, "0") != 0 : false;
   }
@@ -2815,39 +2819,52 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       if (!eligible) break;
       if (!repeated) rects.push_back(r);
     }
-    // G1: a fill of the whole target with one constant word per image is a clear of the image.
+    // IN-494: a fill of the whole target with one constant word per image is a clear of the image. GT4 clears its depth
+    // and colour this way several times per VBlank, in strips, some masked to the alpha lane (the rest of such a fill
+    // goes on below without its depth) or only through the alpha test's fail path into the depth.
     if (eligible && s.clearWhole) {
       namespace g = gpu::gpufield;
       const auto &f = state.fields;
       std::uint64_t covered = 0;
       for (const Rect &r : rects) covered += static_cast<std::uint64_t>(r.x1 - r.x0) * static_cast<std::uint64_t>(r.y1 - r.y0);
       const bool whole = covered == static_cast<std::uint64_t>(frame->width) * frame->height;
-      const bool writesFrame = f[g::Fbmsk] != 0xFFFFFFFFu;
-      const bool writesDepth = f[g::Ztest] != 0 && f[g::Ztst] == 1u && f[g::Zmsk] == 0 && depth != frame;
-      const bool plain = f[g::Dither] == 0 && f[g::Fba] == 0 && (f[g::Ate] == 0 || f[g::Atst] == 1u) && f[g::Format] == 0u &&
-                         (f[g::Fbmsk] == 0 || !writesFrame) && (f[g::Ztest] == 0 || f[g::Ztst] == 1u) &&
-                         (!writesDepth || f[g::Zformat] == 0u || (f[g::Zformat] == 1u && s.clearTopZero)) &&
-                         (!writesDepth || (depth->width == frame->width && depth->height == frame->height));
-      if (whole && plain && (writesFrame || writesDepth)) {
+      const bool onlyDepth = f[g::Ate] != 0 && f[g::Atst] == 0u && f[g::Afail] == 2u;  // NEVER, ZB_ONLY
+      const bool testPasses = f[g::Ate] == 0 || f[g::Atst] == 1u || onlyDepth;
+      const bool writesFrame = f[g::Fbmsk] != 0xFFFFFFFFu && !onlyDepth;
+      const bool writesDepth = f[g::Ztest] != 0 && f[g::Ztst] == 1u && f[g::Zmsk] == 0 && depth != frame &&
+                               depth->width == frame->width && depth->height == frame->height;
+      const bool depthClearable = writesDepth && (f[g::Zformat] == 0u || (f[g::Zformat] == 1u && s.clearTopZero));
+      const bool plain = f[g::Dither] == 0 && f[g::Fba] == 0 && testPasses && f[g::Format] == 0u &&
+                         (f[g::Ztest] == 0 || f[g::Ztst] == 1u) && (!writesDepth || depthClearable);
+      const bool wholeWords = f[g::Fbmsk] == 0 && writesFrame;
+      if (whole && plain && (wholeWords || depthClearable)) {
         if (!s.recording && !s.begin_recording(error)) return false;
         s.outside_pass();
         s.touch("clear", {frame, depth}, {frame, depth}, 0, 0);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        if (writesFrame) {
+        if (wholeWords) {
           VkClearColorValue value{};
           value.uint32[0] = static_cast<std::uint32_t>(v0.rgba[0]) | static_cast<std::uint32_t>(v0.rgba[1]) << 8 |
                             static_cast<std::uint32_t>(v0.rgba[2]) << 16 | static_cast<std::uint32_t>(v0.rgba[3]) << 24;
           gt4_hwd_vkCmdClearColorImage(s.cmd, frame->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
         }
-        if (writesDepth) {
+        if (depthClearable) {
           VkClearColorValue value{};
           value.uint32[0] = std::min(v0.z, batch.zMax);
           gt4_hwd_vkCmdClearColorImage(s.cmd, depth->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
         }
         s.after_op();
         s.stats.wholeClears++;
-        s.stats.batches++;
-        return true;
+        if (wholeWords || !writesFrame) {
+          s.stats.batches++;
+          return true;
+        }
+        // Only some lanes of the frame are left, with no depth: the path below, as a batch that never had any.
+        state.fields[g::Ztest] = 0;
+        std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
+        ropWord = ropPipeline ? Impl::rop_word(state.fields, s.ropBlend && s.dualSourceBlend) : 0u;
+        ropPipeline = ropWord != 0 ? s.rop_pipeline(state.fields, pushTexScale, ropWord) : VK_NULL_HANDLE;
+        if (!s.recording && !s.begin_recording(error)) return false;
       }
     }
     if (eligible && !(ropPipeline && s.ropFills)) {
@@ -2965,7 +2982,15 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     for (const gpu::GpuDraw &draw : *batch.draws) {
       scissorArea += static_cast<double>(std::max(draw.x1 - draw.x0 + 1, 0)) * std::max(draw.y1 - draw.y0 + 1, 0) * sc * sc;
     }
-    std::snprintf(label, sizeof label, "draw %ux%u area=%.1fM rop=%u const=%u topo=%u tex=%s blend=%s z=%s%s ate=%u fbmsk=%s prims=%s",
+    // GT4_CORE2_GPU_PROFILE_ORDER: each batch's masks and tests too (a line of its own per different batch).
+    static const bool detailed = std::getenv("GT4_CORE2_GPU_PROFILE_ORDER") != nullptr;
+    char detail[120] = "";
+    if (detailed) {
+      std::snprintf(detail, sizeof detail, " fbmsk=%08x fmt=%u zf=%u ztst=%u atst=%u afail=%u aref=%u fix=%u same=%u prims=%zu verts0=%u",
+                    f[g::Fbmsk], f[g::Format], f[g::Zformat], f[g::Ztst], f[g::Atst], f[g::Afail], f[g::Aref], f[g::Fix],
+                    depth == frame ? 1u : 0u, batch.draws->size(), batch.draws->front().count);
+    }
+    std::snprintf(label, sizeof label, "draw %ux%u area=%.1fM rop=%u const=%u topo=%u tex=%s blend=%s z=%s%s ate=%u fbmsk=%s prims=%s%s",
                   frame->width, frame->height, scissorArea / 1.0e6, ropPipeline ? 1u : 0u, batch.constantFill ? 1u : 0u,
                   static_cast<unsigned>(batch.draws->front().topology),
                   batch.texture != kNoImage ? "target" : batch.memoryTexture != kNoImage ? (paletted ? "indexed" : "memory") : "-",
@@ -2974,7 +2999,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
                                 : "off",
                   f[g::Ztest] && f[g::Ztst] != 1u ? "test" : "-", f[g::Zmsk] == 0 ? "+write" : "", f[g::Ate],
                   f[g::Fbmsk] == 0 ? "0" : "set",
-                  batch.draws->size() <= 4 ? "1-4" : batch.draws->size() <= 64 ? "5-64" : batch.draws->size() <= 1024 ? "65-1k" : "1k+");
+                  batch.draws->size() <= 4 ? "1-4" : batch.draws->size() <= 64 ? "5-64" : batch.draws->size() <= 1024 ? "65-1k" : "1k+", detail);
     record.profileLabel = label;
   }
   const std::int32_t limitX = static_cast<std::int32_t>(std::min(frame->width, s.framebufferWidth));

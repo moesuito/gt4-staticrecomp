@@ -4285,6 +4285,7 @@ int TestCore2ComputeFills(const gpu::VulkanHandles& handles) {
         };
     };
     const char* kSwitch = "GT4_CORE2_COMPUTE_FILLS";
+    _putenv_s("GT4_CORE2_CLEAR_WHOLE", "0");  // IN-494 would answer the whole-target fills before the compute path
     for (uint32_t scale : {1u, 2u, 3u}) {
         const std::string tag = " at " + std::to_string(scale) + "x";
         failures += CheckCore2Ab(handles, ("palette sprites" + tag).c_str(), Core2PaletteSpritesCapture(4), 4, kSwitch,
@@ -4294,6 +4295,7 @@ int TestCore2ComputeFills(const gpu::VulkanHandles& handles) {
         failures += CheckCore2Ab(handles, ("GPU palettes" + tag).c_str(), Core2GpuPaletteCapture(4), 4, kSwitch,
                                  scale == 1, ran("GPU palettes"), false, scale);
     }
+    _putenv_s("GT4_CORE2_CLEAR_WHOLE", "");
     std::printf("hw_core2_compute_fills: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
@@ -4502,6 +4504,22 @@ cpuref::CaptureWriter Core2UploadMemoCapture(uint32_t frames) {
         capture.FrameEnd(0);
     }
     return capture;
+}
+
+// hw_core2_whole_clears (IN-494): whole-target fills as clears against drawing them: images and memory unchanged, exact at
+// 1x (the default there keeps the top byte of a Z24 word on this GPU).
+int TestCore2WholeClears(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    auto none = [](const Core2AbRun&, const Core2AbRun&) { return 0; };
+    for (uint32_t scale : {1u, 3u}) {
+        const std::string tag = " at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(handles, ("cache stream" + tag).c_str(), CacheFixtureCapture(), kCacheFixtureFrames,
+                                 "GT4_CORE2_CLEAR_WHOLE", false, none, false, scale);
+        failures += CheckCore2Ab(handles, ("GPU palettes" + tag).c_str(), Core2GpuPaletteCapture(4), 4, "GT4_CORE2_CLEAR_WHOLE",
+                                 scale == 1, none, false, scale);
+    }
+    std::printf("hw_core2_whole_clears: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
 }
 
 // hw_core2_upload_memo (IN-486): uploads recognised and copied instead of swizzled: identical images and GS memory, equal
@@ -5473,6 +5491,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);
+    if (name == "hw_core2_whole_clears") return TestCore2WholeClears(handles);
     if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);

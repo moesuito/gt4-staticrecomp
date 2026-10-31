@@ -7,7 +7,7 @@ OUT=$GT4_BENCH_OUT/explore-$name
 rm -rf "$OUT"; mkdir -p "$OUT/frames"
 cp "$GT4_ARCADE_CARD" "$OUT/card.ps2"
 args=(); for p in $presses; do args+=(--press "$p"); done
-env GT4_RENDERER=hw GT4_HW_CORE=2 GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_HW_SCALE=1 GT4_HW_DUMP_SOURCE=upscaled \
+env GT4_RENDERER=hw GT4_HW_CORE=2 GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_HW_SCALE=${EXPLORE_SCALE:-1} GT4_HW_DUMP_SOURCE=upscaled \
   GT4_HW_DUMP_DIR="$(cygpath -w "$OUT/frames")" GT4_HW_DUMP_EVERY=$every GT4_HW_DUMP_FROM=$every "${EXPLORE_EXE:-build/core2-build/gt4vulkan.exe}" \
   "$(cygpath -w "$GT4_ASSETS/private/reconstructed/SCUS_973.28.elf")" --ntsc --disc "$(cygpath -w "$GT4_ASSETS/Gran Turismo 4 (USA) (v2.00).iso")" \
   --frames "$frames" --memcard "$(cygpath -w "$OUT/card.ps2")" "${args[@]}" > "$OUT/log.txt" 2>&1
