@@ -321,6 +321,30 @@ std::uint64_t HashBlock(const std::uint8_t *block) {
     return h;
 }
 
+// IN-486: a 64-bit hash of an EE upload's bytes, the lanes of HashBlock over any length.
+std::uint64_t HashUploadBytes(const std::uint8_t *data, std::size_t byteCount, std::uint64_t seed) {
+    constexpr std::uint64_t P0 = 0x9E3779B185EBCA87ull, P1 = 0xC2B2AE3D27D4EB4Full;
+    std::uint64_t lane[4] = {0x243F6A8885A308D3ull ^ seed, 0x13198A2E03707344ull, 0xA4093822299F31D0ull ^ byteCount,
+                             0x082EFA98EC4E6C89ull};
+    std::size_t at = 0;
+    for (; at + 32u <= byteCount; at += 32u) {
+        std::uint64_t w[4];
+        std::memcpy(w, data + at, 32);
+        for (std::uint32_t l = 0; l < 4; ++l) lane[l] = (lane[l] ^ w[l]) * P0;
+    }
+    std::uint64_t rest[4] = {};
+    if (at < byteCount) std::memcpy(rest, data + at, byteCount - at);
+    for (std::uint32_t l = 0; l < 4; ++l) lane[l] = (lane[l] ^ rest[l]) * P0;
+    std::uint64_t h = lane[0] ^ ((lane[1] << 17) | (lane[1] >> 47)) ^ ((lane[2] << 31) | (lane[2] >> 33)) ^
+                      ((lane[3] << 47) | (lane[3] >> 17));
+    h ^= h >> 33;
+    h *= P1;
+    h ^= h >> 29;
+    h *= P0;
+    h ^= h >> 32;
+    return h;
+}
+
 // IN-453: mixes one word into a 64-bit key.
 std::uint64_t MixWords(std::uint64_t h, std::uint64_t w) {
     h ^= w + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
@@ -740,6 +764,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     Impl() : frontEnd_(Core2FrontEndOptions(), *this, *this, *this) {
         frontEnd_.SetLocalMemory(memory_.Local().bytes().data());
+        // IN-485: remembered palettes (A/B).
+        const char *clutMemo = std::getenv("GT4_CORE2_CLUT_MEMO");
+        frontEnd_.MutableClut().SetDataMemo(clutMemo == nullptr || std::strcmp(clutMemo, "0") != 0);
         // A CLUT load reads GS memory. GT4 draws some of its palettes (the race colour filter's ramp), so a load over
         // a drawn target reduces that target into memory first, like any host read of drawn pixels (4.2).
         frontEnd_.SetBeforeLocalRead([this](const BlockRange &range) {
@@ -1856,9 +1883,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (!rows.Empty()) PushDirty(t, Dirty{rows, t.view.psm});
     }
 
-    void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember, WriteKind kind = kWriteUpload) {
+    void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember, WriteKind kind = kWriteUpload,
+                         const BlockSpan *knownSpan = nullptr) {
         ScopedUs writtenTimer(clock_, &PhaseTimes::written);
-        const BlockSpan span = WriteSpan(view, rect);
+        const BlockSpan span = knownSpan ? *knownSpan : WriteSpan(view, rect);
         MarkWritten(span, kind);
         for (Target &t : targets_) {
             if (!t.alive) continue;
@@ -2087,12 +2115,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     const bool storeSkipWhole_ = std::getenv("GT4_CORE2_STORE_SKIP_WHOLE") == nullptr ||
                                  std::strcmp(std::getenv("GT4_CORE2_STORE_SKIP_WHOLE"), "0") != 0;
     std::uint64_t storesSkipped_ = 0;  // since the last [core2] line
-    bool StoreDrawnBeforeWrite(const BufferView &view, const PixelRect &rect) {
+    bool StoreDrawnBeforeWrite(const BufferView &view, const PixelRect &rect, const BlockSpan *knownSpan = nullptr) {
         static const bool enabled = std::getenv("GT4_CORE2_STORE_BEFORE_WRITE") == nullptr ||
                                     std::strcmp(std::getenv("GT4_CORE2_STORE_BEFORE_WRITE"), "0") != 0;
         if (!enabled) return true;
         const bool outOfRange = rect.x1 >= 2048 || rect.y1 >= 2048;
-        const BlockSpan span = outOfRange ? BlockSpan{0, kAllBlocks} : WriteSpan(view, rect);
+        const BlockSpan span = outOfRange ? BlockSpan{0, kAllBlocks} : knownSpan ? *knownSpan : WriteSpan(view, rect);
         const FormatClass cls = ClassOf(view.psm);
         const BlockSpan wholePages = storeSkipWhole_ && !outOfRange ? WholePagesWritten(view, rect) : BlockSpan{};
         for (Target &t : targets_) {
@@ -2136,28 +2164,144 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                              ? UploadSwizzle::PerPixel
                                              : UploadSwizzle::PageRuns;
 
+    // IN-486: GT4 sends about 100 textures every VBlank (2.7 MiB in a race), the same bytes to the same places, but over
+    // each other (A, then B over part of A, then A again), so memory changes every time and nothing short of doing the
+    // write can be skipped. An upload seen twice keeps the blocks it leaves in memory: the next time, the bytes are
+    // recognised by their hash and the blocks are compared and copied instead of swizzled pixel by pixel. Only uploads
+    // of whole blocks whose every byte belongs to the format, at a page-aligned base. A collision would write a wrong
+    // texture; at 64 bits that is far below every other risk in the renderer (IN-453).
+    // GT4_CORE2_UPLOAD_MEMO=0 swizzles every upload (A/B).
+    struct UploadMemo {
+        std::vector<std::uint16_t> blocks;
+        std::vector<std::uint64_t> ids;  // the hash of each block's 256 bytes
+        std::vector<std::uint8_t> bytes;
+        std::uint64_t lastVblank = 0;
+    };
+    const bool uploadMemoOn_ = std::getenv("GT4_CORE2_UPLOAD_MEMO") == nullptr ||
+                               std::strcmp(std::getenv("GT4_CORE2_UPLOAD_MEMO"), "0") != 0;
+    static constexpr std::size_t kUploadMemoBudgetBytes = std::size_t{64} << 20;
+    std::unordered_map<std::uint64_t, UploadMemo> uploadMemo_;
+    std::size_t uploadMemoBytes_ = 0;
+    std::array<std::uint64_t, 4096> uploadsSeenOnce_{};
+
+    static bool UploadWritesWholeBlocks(const UploadCommit &c, const memory::PsmInfo &info, memory::Psm psm) {
+        using memory::Psm;
+        const bool everyByteBelongs = psm == Psm::Ct32 || psm == Psm::Ct16 || psm == Psm::Ct16S || psm == Psm::T8 ||
+                                      psm == Psm::T4 || psm == Psm::Z32 || psm == Psm::Z16 || psm == Psm::Z16S;
+        return everyByteBelongs && c.dbp % memory::kBlocksPerPage == 0 && c.dsax % info.blockWidth == 0 &&
+               c.dsay % info.blockHeight == 0 && c.rrw % info.blockWidth == 0 && c.rrh % info.blockHeight == 0 &&
+               c.dsax + c.rrw <= 2048u && c.dsay + c.rrh <= 2048u;
+    }
+
+    // The same result as swizzling the bytes again: `changed` and the identities of the changed blocks included.
+    void ReplayUpload(const UploadMemo &memo, bool *changed) {
+        std::uint8_t *memory = memory_.Local().bytes().data();
+        bool any = false;
+        for (std::size_t i = 0; i < memo.blocks.size(); ++i) {
+            const std::uint32_t block = memo.blocks[i];
+            std::uint8_t *out = memory + static_cast<std::size_t>(block) * memory::kBlockBytes;
+            const std::uint8_t *in = memo.bytes.data() + i * memory::kBlockBytes;
+            if (std::memcmp(out, in, memory::kBlockBytes) != 0) {
+                std::memcpy(out, in, memory::kBlockBytes);
+                blockIds_[block] = memo.ids[i];
+                any = true;
+            }
+        }
+        *changed = any;
+    }
+
+    void RememberUploadBytes(std::uint64_t key, const BufferView &view, const PixelRect &rect) {
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        const std::uint8_t *memory = memory_.Local().bytes().data();
+        UploadMemo memo;
+        memo.lastVblank = vblanks_;
+        const std::size_t cells = static_cast<std::size_t>((rect.x1 - rect.x0 + 1) / info.blockWidth) *
+                                  static_cast<std::size_t>((rect.y1 - rect.y0 + 1) / info.blockHeight);
+        memo.blocks.reserve(cells);
+        memo.ids.reserve(cells);
+        memo.bytes.resize(cells * memory::kBlockBytes);
+        std::size_t i = 0;
+        for (std::int32_t y = rect.y0; y <= rect.y1; y += info.blockHeight) {
+            for (std::int32_t x = rect.x0; x <= rect.x1; x += info.blockWidth, ++i) {
+                const std::uint32_t block = BlockOfPixel(view, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y));
+                const std::uint8_t *from = memory + static_cast<std::size_t>(block) * memory::kBlockBytes;
+                memo.blocks.push_back(static_cast<std::uint16_t>(block));
+                memo.ids.push_back(HashBlock(from));
+                std::memcpy(memo.bytes.data() + i * memory::kBlockBytes, from, memory::kBlockBytes);
+            }
+        }
+        if (uploadMemoBytes_ + memo.bytes.size() > kUploadMemoBudgetBytes) {
+            // Over the budget (a new track, say): what was not used in the last seconds goes, or everything.
+            for (auto it = uploadMemo_.begin(); it != uploadMemo_.end();) {
+                if (vblanks_ - it->second.lastVblank > 300u) {
+                    uploadMemoBytes_ -= it->second.bytes.size();
+                    it = uploadMemo_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (uploadMemoBytes_ + memo.bytes.size() > kUploadMemoBudgetBytes) {
+                uploadMemo_.clear();
+                uploadMemoBytes_ = 0;
+            }
+        }
+        uploadMemoBytes_ += memo.bytes.size();
+        uploadMemo_.emplace(key, std::move(memo));
+    }
+
     void CommitUpload(const UploadCommit &c, const std::uint8_t *bytes, std::size_t byteCount) override {
         ScopedUs uploadTimer(clock_, &PhaseTimes::upload);
         times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
+        BlockSpan writtenSpan{};  // IN-487: one walk over the block cells per upload
+        const bool spanKnown = psm && c.rrw != 0 && c.rrh != 0 && c.dsax + c.rrw <= 2048u && c.dsay + c.rrh <= 2048u;
         if (psm && c.rrw != 0 && c.rrh != 0) {
             const PixelRect written{static_cast<std::int32_t>(c.dsax), static_cast<std::int32_t>(c.dsay),
                                     static_cast<std::int32_t>(c.dsax + c.rrw - 1u),
                                     static_cast<std::int32_t>(c.dsay + c.rrh - 1u)};
-            if (!StoreDrawnBeforeWrite(BufferView{c.dbp, c.dbw, *psm}, written)) return;
+            if (spanKnown) writtenSpan = WriteSpan(BufferView{c.dbp, c.dbw, *psm}, written);
+            if (!StoreDrawnBeforeWrite(BufferView{c.dbp, c.dbw, *psm}, written, spanKnown ? &writtenSpan : nullptr)) return;
         }
         static const bool fast = std::getenv("GT4_CORE2_FAST_UPLOAD") == nullptr ||
                                  std::strcmp(std::getenv("GT4_CORE2_FAST_UPLOAD"), "0") != 0;  // A/B
         bool swizzled = false;
         bool changed = true;
+        bool replayed = false;
+        std::uint64_t memoKey = 0;
+        bool rememberThis = false;
         {
             ScopedUs swizzleTimer(clock_, &PhaseTimes::swizzle);
             times_.swizzleBytes += static_cast<double>(byteCount);
-            swizzled = fast && psm &&
-                       FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay,
-                                       c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_, &changed,
-                                       contentCacheOn_ ? changedBlocks_.data() : nullptr);
-            if (!swizzled) memory_.CommitUpload(c, bytes, byteCount);
+            if (uploadMemoOn_ && fast && psm && contentCacheOn_ && uploadSwizzle_ == UploadSwizzle::PageRuns &&
+                c.rrw != 0 && c.rrh != 0 && UploadWritesWholeBlocks(c, memory::psmInfo(*psm), *psm)) {
+                const std::uint64_t needed = (static_cast<std::uint64_t>(c.rrw) * c.rrh * memory::psmInfo(*psm).transferBpp + 7u) / 8u;
+                if (needed <= byteCount) {
+                    std::uint64_t seed = c.dbp | (std::uint64_t{c.dbw} << 14) | (std::uint64_t{c.dpsm} << 20);
+                    seed = MixWords(seed, c.dsax | (std::uint64_t{c.dsay} << 16) | (std::uint64_t{c.rrw} << 32) |
+                                              (std::uint64_t{c.rrh} << 48));
+                    memoKey = HashUploadBytes(bytes, static_cast<std::size_t>(needed), seed);
+                    const auto found = uploadMemo_.find(memoKey);
+                    if (found != uploadMemo_.end()) {
+                        ReplayUpload(found->second, &changed);
+                        found->second.lastVblank = vblanks_;
+                        swizzled = true;
+                        replayed = true;
+                        stats.uploadsReplayed++;
+                        stats.uploadBytesReplayed += needed;
+                    } else {
+                        std::uint64_t &seen = uploadsSeenOnce_[memoKey & (uploadsSeenOnce_.size() - 1u)];
+                        rememberThis = seen == memoKey;
+                        seen = memoKey;
+                    }
+                }
+            }
+            if (!replayed) {
+                swizzled = fast && psm &&
+                           FastHostToLocal(memory_.Local().bytes().data(), BufferView{c.dbp, c.dbw, *psm}, c.dsax, c.dsay,
+                                           c.rrw, c.rrh, bytes, byteCount, uploadSwizzle_, &changed,
+                                           contentCacheOn_ ? changedBlocks_.data() : nullptr);
+                if (!swizzled) memory_.CommitUpload(c, bytes, byteCount);
+            }
         }
         if (swizzled) {
             // Diagnostics: GT4_CORE2_UPLOAD_CHECK=1 reads the rectangle back through the generic addressing
@@ -2214,7 +2358,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             // target lies over the written blocks (a target's pixels are newer than memory, so it must take the write),
             // the page versions stay as they were: the cached decodes, palette rows and GLM pages that read these
             // pages still hold exactly this memory. The upload is still remembered for targets created later (2.4b).
-            const BlockSpan span = WriteSpan(view, rect);
+            const BlockSpan span = spanKnown ? writtenSpan : WriteSpan(view, rect);
             bool overTarget = false;
             for (const Target &t : targets_) {
                 if (!t.alive) continue;
@@ -2231,8 +2375,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 return;
             }
         }
-        OnMemoryWritten(view, rect, true);
-        if (contentCacheOn_) SetUploadIds(view, rect, swizzled);  // IN-453 (block identities are unused when off)
+        OnMemoryWritten(view, rect, true, kWriteUpload, spanKnown ? &writtenSpan : nullptr);
+        if (contentCacheOn_ && !replayed) SetUploadIds(view, rect, swizzled);  // IN-453 (block identities are unused when off)
+        if (rememberThis && swizzled) RememberUploadBytes(memoKey, view, rect);  // IN-486
     }
 
     // IN-450: GT4_CORE2_KEEP_UNCHANGED=0 bumps the page versions for every upload (A/B).
@@ -3555,7 +3700,7 @@ namespace {
 
 // The [core2] session line (replay summary, game log every 600 VBlanks).
 void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64_t vblanks,
-                     const std::string &barrierReport) {
+                     const std::string &barrierReport, const clut::ClutUnit &clut) {
     std::fprintf(stderr,
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
@@ -3601,7 +3746,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
-                 "block_hits=%llu\n",
+                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB)\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
@@ -3609,14 +3754,16 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.hiddenFlareTables, (unsigned long long)g.computeFills,
                  static_cast<double>(g.fillPixels) / 1.0e6, (unsigned long long)c.unchangedUploads,
                  (unsigned long long)c.staleBy[0], (unsigned long long)c.staleBy[1], (unsigned long long)c.staleBy[2],
-                 (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits);
+                 (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits,
+                 (unsigned long long)clut.DataMemoHits(), (unsigned long long)clut.DataMemoReads(),
+                 (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0);
 }
 
 }  // namespace
 
 Renderer::Renderer() : impl_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() {
-    PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_, impl_->gpu_.BarrierReport());
+    PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_, impl_->gpu_.BarrierReport(), impl_->frontEnd_.Clut());
 }
 
 void Renderer::SetScale(std::uint32_t scale, float shift) {
@@ -3797,7 +3944,7 @@ void Renderer::Flush() {
         s.stats.liveTargets = 0;
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
         s.stats.targetSlots = s.targets_.size();
-        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_, s.gpu_.BarrierReport());
+        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_, s.gpu_.BarrierReport(), s.frontEnd_.Clut());
         if (s.d1Stats_) s.PrintD1Classes();
         const PhaseTimes &p = s.times_;
         const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank

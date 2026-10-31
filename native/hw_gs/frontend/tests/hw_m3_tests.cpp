@@ -1423,6 +1423,49 @@ void TestClutCopyFree() {
     }
     CHECK(staleSeen > 0);
     CHECK(countersA.Get(Counter::ClutLoadsSkipped) > 0);
+    // IN-485: remembered palettes against a read on every load, with memory really changing under the writes: the same
+    // buffer after every load, for every source format, CSA and layout, and many of the loads answered from memory.
+    {
+        CounterSet countersM, countersN;
+        clut::ClutUnit remembering(countersM), reading(countersN);
+        reading.SetDataMemo(false);
+        const auto changeBlocks = [&](uint32_t begin, uint32_t count) {
+            for (uint32_t i = 0; i < count; ++i) {
+                uint8_t *block = memory.data() + static_cast<size_t>((begin + i) % 16384u) * 256u;
+                for (uint32_t b = 0; b < 256u; ++b) block[b] = static_cast<uint8_t>(next());
+            }
+        };
+        for (int step = 0; step < 6000; ++step) {
+            const uint32_t action = next() % 16u;
+            if (action <= 1u) {
+                const uint32_t begin = bases[next() % 6u] + next() % 64u, count = 1u + next() % 40u;
+                changeBlocks(begin, count);
+                remembering.NoteBlocksWritten(begin, count);
+                reading.NoteBlocksWritten(begin, count);
+                continue;
+            }
+            if (action == 2u) {  // GPU pixels stored into memory: no GS write, nobody is told
+                changeBlocks(bases[next() % 6u] + next() % 64u, 1u + next() % 8u);
+                continue;
+            }
+            clut::Tex0Write w;
+            w.psm = (next() & 1u) ? 0x13u : 0x14u;
+            w.cpsm = (next() & 1u) ? 0x00u : ((next() & 1u) ? 0x02u : 0x0Au);
+            w.cbp = bases[next() % 6u];
+            w.csm = next() % 8u == 0u ? 1u : 0u;
+            w.csa = next() & 31u;
+            w.cld = 1u;
+            w.texclutCbw = 1u + next() % 4u;
+            w.texclutCou = next() % 4u;
+            w.texclutCov = next() % 8u;
+            const bool loadM = remembering.ProcessWrite(w, memory.data(), {});
+            const bool loadN = reading.ProcessWrite(w, memory.data(), {});
+            CHECK_EQ(loadM, loadN);
+            for (uint32_t i = 0; i < 512; ++i) CHECK_EQ(remembering.Halfwords()[i], reading.Halfwords()[i]);
+        }
+        CHECK(remembering.DataMemoHits() > 500u);
+        CHECK(remembering.DataMemoReads() > 100u);
+    }
     std::printf("hw_clut_copy_free: %d loads performed, %llu skipped as redundant\n", loadsPerformed,
                 static_cast<unsigned long long>(countersA.Get(Counter::ClutLoadsSkipped)));
 }

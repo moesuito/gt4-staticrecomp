@@ -142,6 +142,56 @@ if ($Set -eq 8) {
         @{ name='3-sem-janela'; text='1x sem janela'; scale=1; frames=11000; window=$false; env=@{ GT4_CPU_SAMPLER=$samplerB; GT4_CPU_SAMPLER_FROM='9300'; GT4_CPU_SAMPLER_TO='10800' } }
     )
 }
+if ($Set -eq 9) {
+    # Remembered palettes on and off, no window, twice each so that the order of the runs shows.
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    $tests = @(
+        @{ name='1-aquecimento'; text='aquecendo'; scale=1; frames=9600; window=$false; env=@{} },
+        @{ name='2-sem'; text='sem memo'; scale=1; frames=11000; window=$false; env=@{ GT4_CORE2_CLUT_MEMO='0' } },
+        @{ name='3-com'; text='com memo'; scale=1; frames=11000; window=$false; env=@{} },
+        @{ name='4-sem'; text='sem memo'; scale=1; frames=11000; window=$false; env=@{ GT4_CORE2_CLUT_MEMO='0' } },
+        @{ name='5-com'; text='com memo'; scale=1; frames=11000; window=$false; env=@{} }
+    )
+}
+if ($Set -eq 10 -or $Set -eq 11) {
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+}
+if ($Set -eq 10) {
+    # Upload memo on and off and where the three busy threads run, no window. CPUs 0,1 are one core and 2,3 the other.
+    $tests = @(
+        @{ name='1-aquecimento'; text='aquecendo'; scale=1; frames=9600; window=$false; env=@{} },
+        @{ name='2-base'; text='base'; scale=1; frames=11000; window=$false; env=@{} },
+        @{ name='3-sem-upload-memo'; text='sem memo de upload'; scale=1; frames=11000; window=$false; env=@{ GT4_CORE2_UPLOAD_MEMO='0' } },
+        @{ name='4-gs-sozinho'; text='GS em um nucleo'; scale=1; frames=11000; window=$false; env=@{ GT4_THREAD_CPUS='gs=3,vu1=c,ee=c' } },
+        @{ name='5-ee-sozinho'; text='EE em um nucleo'; scale=1; frames=11000; window=$false; env=@{ GT4_THREAD_CPUS='ee=3,gs=c,vu1=c' } },
+        @{ name='6-vu1-sozinho'; text='VU1 em um nucleo'; scale=1; frames=11000; window=$false; env=@{ GT4_THREAD_CPUS='vu1=3,gs=c,ee=c' } },
+        @{ name='7-base'; text='base de novo'; scale=1; frames=11000; window=$false; env=@{} }
+    )
+}
+if ($Set -eq 11) {
+    # Why the same code runs slower with a window: no profile running, the pacing wait on and off.
+    $tests = @(
+        @{ name='1-aquecimento'; text='aquecendo'; scale=1; frames=9600; window=$true; env=@{} },
+        @{ name='2-janela'; text='janela normal'; scale=1; frames=11000; window=$true; env=@{} },
+        @{ name='3-janela-sem-espera'; text='janela sem espera'; scale=1; frames=11000; window=$true; env=@{ GT4_PACING_NO_WAIT='1' } },
+        @{ name='4-sem-janela'; text='sem janela'; scale=1; frames=11000; window=$false; env=@{} },
+        @{ name='5-janela-vsync'; text='janela com v-sync, como no jogo'; scale=1; frames=11000; window=$true; env=@{ GT4_PRESENT_MODE='fifo' } },
+        @{ name='6-janela'; text='janela normal de novo'; scale=1; frames=11000; window=$true; env=@{} }
+    )
+}
+if ($Set -eq 12) {
+    # Upload memo off and on with the shaders ready, no window, twice each so that the order of the runs shows.
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    $tests = @(
+        @{ name='1-sem'; text='sem memo'; scale=1; frames=11000; window=$false; env=@{ GT4_CORE2_UPLOAD_MEMO='0' } },
+        @{ name='2-com'; text='com memo'; scale=1; frames=11000; window=$false; env=@{} },
+        @{ name='3-sem'; text='sem memo'; scale=1; frames=11000; window=$false; env=@{ GT4_CORE2_UPLOAD_MEMO='0' } },
+        @{ name='4-com'; text='com memo'; scale=1; frames=11000; window=$false; env=@{} }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0
@@ -156,7 +206,8 @@ foreach ($test in $tests) {
     foreach ($key in $test.env.Keys) { Set-Item "env:$key" $test.env[$key] }
     $arguments = @($Elf, '--ntsc', '--disc', $Disc, '--frames', "$($test.frames)", '--memcard', "$dir\card.ps2") + $pressArgs
     if ($test.window) {
-        $env:GT4_PRESENT_MODE = 'immediate'; $env:GT4_FULLSCREEN = '1'
+        if (!$test.env.ContainsKey('GT4_PRESENT_MODE')) { $env:GT4_PRESENT_MODE = 'immediate' }
+        $env:GT4_FULLSCREEN = '1'
         $arguments += '--window'
     }
     $started = Get-Date

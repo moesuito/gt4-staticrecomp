@@ -468,7 +468,8 @@ Resolved resolve(const Inputs &inputs, const Access &access) {
   if (inputs.config) {
     // CoreGS 2.0's keys first: hw_present_mode wins over present_mode.
     if (coregs20) {
-      const Environment from_choice = coregs20_environment(*inputs.config);
+      Environment from_choice = coregs20_environment(*inputs.config);
+      from_choice.emplace_back("GT4_HW_SHADER_CACHE", (layout.user_root / "shader-cache").string());  // IN-489
       layers.insert(layers.end(), from_choice.begin(), from_choice.end());
     }
     const Environment from_config = config_environment(*inputs.config);

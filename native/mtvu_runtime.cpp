@@ -1,4 +1,5 @@
 // TASK-011 step 2: VU1 worker thread runtime (see mtvu_runtime.hpp and docs/MTVU-PLAN.md section 11).
+#include "thread_placement.hpp"
 #include "mtvu_runtime.hpp"
 
 #include "mtvu_journal.hpp"
@@ -239,6 +240,7 @@ void publish_worker_totals(Runtime &r) {
 }
 
 void worker_main() {
+  thread_placement::apply("vu1");
   t_on_worker = true;
   Runtime &r = rt();
   gt4::perf::bind_worker(&r.worker_accounting, wall_us);

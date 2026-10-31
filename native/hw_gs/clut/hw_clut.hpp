@@ -9,7 +9,6 @@
 #pragma once
 
 #include <array>
-#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -102,6 +101,10 @@ public:
     void SetCopiesData(bool copies) { copiesData_ = copies; }
     bool CopiesData() const { return copiesData_; }
     void SetHalfwords(const uint16_t* halfwords);
+    // IN-485: A/B: GT4_CORE2_CLUT_MEMO=0 reads the entries from memory on every load.
+    void SetDataMemo(bool on) { dataMemoOn_ = on; }
+    uint64_t DataMemoHits() const { return dataMemoHits_; }
+    uint64_t DataMemoReads() const { return dataMemoReads_; }
 
     // Decodes the palette a draw sees (chapter 07.5). psm is the draw's format.
     Palette Decode(uint32_t psm, uint32_t cpsm, uint32_t csa, uint64_t texa) const;
@@ -132,25 +135,33 @@ private:
     bool haveLast_ = false;
     bool stale_ = true;
     Tex0Write last_{};
-    std::bitset<kBlocksTotal> sourceBlocks_;
-    uint32_t sourceFirst_ = kBlocksTotal;  // lowest and highest block set in sourceBlocks_ (IN-353 early-out)
+    uint32_t sourceFirst_ = kBlocksTotal;  // lowest and highest block in sourceBlocks_ (IN-353 early-out)
     uint32_t sourceLast_ = 0;
     bool copiesData_ = true;
-    // IN-360: source blocks of recent copy-free loads, keyed by everything that places the entries (GT4 reloads
-    // the same few palettes about a thousand times per frame).
+    // IN-360: the source blocks of recent loads, keyed by everything that places the entries. IN-485: with the bytes of
+    // those blocks and the entries read from them. GT4 makes about 1400 loads of 256 entries per VBlank, from about 90
+    // places on a day track and over 2000 on a night one, with uploads all around them: comparing the blocks (1 KiB)
+    // answers for 256 reads, the largest GS function on the i5-7200U, and is exact whatever wrote to memory.
+    static constexpr uint32_t kMemoBlocks = 4;  // a load over more blocks (a CSM2 row across a page) is not remembered
+    static constexpr uint32_t kMemoBuckets = 1024, kMemoProbes = 8;
     struct SourceMemo {
         uint64_t key = ~0ull;
-        std::vector<uint32_t> blocks;
-        uint32_t first = 0, last = 0;
         uint64_t lastUse = 0;
+        uint32_t first = 0, last = 0;
+        uint32_t blockCount = 0;
+        bool dataValid = false;
+        uint16_t blocks[kMemoBlocks] = {};
+        uint8_t bytes[kMemoBlocks * 256] = {};
+        uint16_t low[256] = {};   // entry e as read: CT32 low half, or the CT16 word
+        uint16_t high[256] = {};  // CT32 high half
     };
-    std::array<SourceMemo, 16> sourceMemo_{};
-    // IN-484: GT4 makes 1500 CLUT loads per VBlank from a few places. Clearing the 2 KiB of sourceBlocks_ each time was the
-    // largest part of them on a small cache: only the blocks set are cleared, and a load from the same place changes nothing.
-    std::vector<uint32_t> setBlocks_;
-    const SourceMemo* activeMemo_ = nullptr;
-    void ClearSourceBlocks();
+    std::vector<SourceMemo> sourceMemo_;
+    // IN-484: the blocks of the active load, a short list instead of a 2 KiB bitset that had to be cleared on each load.
+    std::vector<uint32_t> sourceBlocks_;
+    void PlaceEntries(const SourceMemo& memo, const Tex0Write& write, uint32_t entryCount);
     uint64_t memoUses_ = 0;
+    bool dataMemoOn_ = true;
+    uint64_t dataMemoHits_ = 0, dataMemoReads_ = 0;
 };
 
 }  // namespace clut

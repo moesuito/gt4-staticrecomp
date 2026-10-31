@@ -221,6 +221,10 @@ pub fn coregs20_environment(
     if !card.is_empty() && card != crate::gpu::AUTOMATIC {
         variables.insert("GT4_HW_ADAPTER", card.to_string());
     }
+    // The renderer's compiled shaders, beside the Textures folder (the game finds its own place when it starts alone).
+    if let Some(user) = textures.parent() {
+        variables.insert("GT4_HW_SHADER_CACHE", user.join("shader-cache").display().to_string());
+    }
     add_common(&mut variables, settings);
     // "Fast" vsync is not offered under CoreGS 2.0 (owner, 2026-10-30): a stored one, kept for GSdx, draws as On here.
     if settings.get("vsync") == "fast" {

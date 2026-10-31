@@ -10,6 +10,7 @@
 
 #include "gs_stream/gs_stream_sink.hpp"
 
+#include "thread_placement.hpp"
 #include "hw_cpu_sampler.hpp"
 #include "hw_gs_backend.hpp"
 #include "hw_gs_options.hpp"
@@ -141,6 +142,7 @@ bool start_backend(std::string &error) {
   }
   read_dump_options();
   sampler::name_current_thread("ee");
+  thread_placement::apply("ee");
   if (sampler::start_from_env()) std::fprintf(stderr, "[cpu-sampler] sampling the process (GT4_CPU_SAMPLER)\n");
   if (const char *every = std::getenv("GT4_HW_PROFILE_EVERY")) {
     const long value = std::strtol(every, nullptr, 10);
@@ -521,6 +523,7 @@ private:
 
   void run() {
     sampler::name_current_thread("gs-worker");
+    thread_placement::apply("gs");
     for (;;) {
       mtvu::RecordHeader header;
       const std::uint8_t *payload = nullptr;

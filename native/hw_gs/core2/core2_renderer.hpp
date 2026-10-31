@@ -58,6 +58,8 @@ struct Core2Counters {
     std::uint64_t replacementHits = 0;         // batches drawn with a replacement
     std::uint64_t replacementBytes = 0;        // replacement images on the GPU now
     std::uint64_t replacementDumps = 0;        // textures dumped
+    std::uint64_t uploadsReplayed = 0;         // IN-486: uploads recognised and copied instead of swizzled
+    std::uint64_t uploadBytesReplayed = 0;
     std::uint64_t unchangedUploads = 0;        // IN-450: uploads that changed no byte and kept the page versions
     std::uint64_t contentHits = 0;             // IN-453: stale by page version, but the texture's blocks unchanged
     std::uint64_t staleBy[5] = {};             // IN-450: stale decodes by the newest page writer (upload, readback, delayed download, move, whole memory)

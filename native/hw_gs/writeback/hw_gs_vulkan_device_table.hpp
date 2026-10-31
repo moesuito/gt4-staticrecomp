@@ -25,6 +25,9 @@
 #define vkCmdCopyBufferToImage gt4_hwd_vkCmdCopyBufferToImage
 #define vkCmdCopyImage gt4_hwd_vkCmdCopyImage
 #define vkCreateComputePipelines gt4_hwd_vkCreateComputePipelines
+#define vkCreatePipelineCache gt4_hwd_vkCreatePipelineCache
+#define vkDestroyPipelineCache gt4_hwd_vkDestroyPipelineCache
+#define vkGetPipelineCacheData gt4_hwd_vkGetPipelineCacheData
 #define vkCmdDispatch gt4_hwd_vkCmdDispatch
 #define vkCmdCopyBuffer gt4_hwd_vkCmdCopyBuffer
 #define vkCmdCopyImageToBuffer gt4_hwd_vkCmdCopyImageToBuffer
@@ -82,6 +85,9 @@ inline PFN_vkCmdClearColorImage gt4_hwd_vkCmdClearColorImage = nullptr;
 inline PFN_vkCmdCopyBufferToImage gt4_hwd_vkCmdCopyBufferToImage = nullptr;
 inline PFN_vkCmdCopyImage gt4_hwd_vkCmdCopyImage = nullptr;
 inline PFN_vkCreateComputePipelines gt4_hwd_vkCreateComputePipelines = nullptr;
+inline PFN_vkCreatePipelineCache gt4_hwd_vkCreatePipelineCache = nullptr;
+inline PFN_vkDestroyPipelineCache gt4_hwd_vkDestroyPipelineCache = nullptr;
+inline PFN_vkGetPipelineCacheData gt4_hwd_vkGetPipelineCacheData = nullptr;
 inline PFN_vkCmdDispatch gt4_hwd_vkCmdDispatch = nullptr;
 inline PFN_vkCmdCopyBuffer gt4_hwd_vkCmdCopyBuffer = nullptr;
 inline PFN_vkCmdCopyImageToBuffer gt4_hwd_vkCmdCopyImageToBuffer = nullptr;

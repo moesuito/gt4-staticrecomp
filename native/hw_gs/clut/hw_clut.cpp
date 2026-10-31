@@ -3,6 +3,8 @@
 #include "hw_clut.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 
 namespace hwgs {
 namespace clut {
@@ -177,9 +179,7 @@ void ClutUnit::Reset() {
     cbp1_ = 0;
     haveLast_ = false;
     stale_ = true;
-    sourceBlocks_.reset();
-    setBlocks_.clear();
-    activeMemo_ = nullptr;
+    sourceBlocks_.clear();
     ++generation_;
 }
 
@@ -294,12 +294,38 @@ const CsmOffsets& CsmOffsetsFor(uint32_t cpsm, bool eightBit) {
 
 }  // namespace
 
-void ClutUnit::ClearSourceBlocks() {
-    for (const uint32_t block : setBlocks_) sourceBlocks_.reset(block);
-    setBlocks_.clear();
-    sourceFirst_ = kBlocksTotal;
-    sourceLast_ = 0;
-    activeMemo_ = nullptr;
+namespace {
+
+// A written range [begin, begin + count) (wrapping at kBlocksTotal) that misses the blocks [first, last] entirely.
+bool RangeMisses(uint32_t blockBegin, uint32_t blockCount, uint32_t first, uint32_t last) {
+    if (blockCount >= kBlocksTotal) return false;
+    const uint32_t begin = blockBegin % kBlocksTotal;
+    const uint32_t end = begin + blockCount;  // exclusive; may pass kBlocksTotal (wraps)
+    return end <= kBlocksTotal ? (end <= first || begin > last) : (begin > last && end - kBlocksTotal <= first);
+}
+
+}  // namespace
+
+// Writes the entries of a load into the CLUT buffer from where they were read in memory.
+void ClutUnit::PlaceEntries(const SourceMemo& memo, const Tex0Write& write, uint32_t entryCount) {
+    const uint32_t csaGroup = write.csa & 15u;
+    if (write.cpsm == psm::kCt32) {
+        if (csaGroup == 0u && entryCount == 256u) {
+            std::memcpy(halfwords_, memo.low, sizeof memo.low);
+            std::memcpy(halfwords_ + 256, memo.high, sizeof memo.high);
+            return;
+        }
+        for (uint32_t e = 0; e < entryCount; ++e) {
+            // Palette group g lives at buffer group g + CSA (clamped rows are not loaded).
+            const uint32_t group = (e >> 4) + csaGroup;
+            if (group > 15u) continue;
+            const uint32_t index = 16u * group + (e & 15u);
+            halfwords_[index] = memo.low[e];
+            halfwords_[index + 256u] = memo.high[e];
+        }
+    } else {
+        for (uint32_t e = 0; e < entryCount; ++e) halfwords_[(16u * write.csa + e) & 511u] = memo.low[e];
+    }
 }
 
 void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
@@ -311,39 +337,44 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
     const bool eightBit = (write.psm & 7u) == 3u;
     const uint32_t entryCount = eightBit ? 256u : 16u;
     const bool is32 = write.cpsm == psm::kCt32;
-    const uint32_t csaGroup = write.csa & 15u;
     if (write.csm == 1u && write.cpsm != psm::kCt16) {
         counters_.Add(Counter::Csm2NonSixteen);
     }
 
-    // IN-360: without data copies only the source blocks matter; they depend on the placement fields alone.
+    const uint64_t key = uint64_t{write.cbp} | (uint64_t{write.cpsm & 63u} << 14) | (uint64_t{write.csm & 1u} << 20) |
+                         (uint64_t{eightBit ? 1u : 0u} << 21) |
+                         (write.csm == 1u ? (uint64_t{write.texclutCbw & 63u} << 22) |
+                                                (uint64_t{write.texclutCou & 63u} << 28) |
+                                                (uint64_t{write.texclutCov & 1023u} << 34)
+                                          : 0ull);
+    if (sourceMemo_.empty()) sourceMemo_.resize(kMemoBuckets);
+    const uint32_t home = static_cast<uint32_t>((key * 0x9E3779B97F4A7C15ull) >> 54);  // 10 bits: kMemoBuckets
     SourceMemo* memo = nullptr;
-    if (!copiesData_) {
-        const uint64_t key = uint64_t{write.cbp} | (uint64_t{write.cpsm & 63u} << 14) | (uint64_t{write.csm & 1u} << 20) |
-                             (uint64_t{eightBit ? 1u : 0u} << 21) |
-                             (write.csm == 1u ? (uint64_t{write.texclutCbw & 63u} << 22) |
-                                                    (uint64_t{write.texclutCou & 63u} << 28) |
-                                                    (uint64_t{write.texclutCov & 1023u} << 34)
-                                              : 0ull);
-        SourceMemo* oldest = &sourceMemo_[0];
-        for (SourceMemo& entry : sourceMemo_) {
-            if (entry.key == key) {
-                memo = &entry;
-                break;
-            }
-            if (entry.lastUse < oldest->lastUse) oldest = &entry;
+    SourceMemo* oldest = &sourceMemo_[home];
+    for (uint32_t probe = 0; probe < kMemoProbes; ++probe) {
+        SourceMemo& entry = sourceMemo_[(home + probe) % kMemoBuckets];
+        if (entry.key == key) {
+            memo = &entry;
+            break;
         }
-        if (memo) {
-            if (memo != activeMemo_) {
-                ClearSourceBlocks();
-                for (const uint32_t block : memo->blocks) {
-                    sourceBlocks_.set(block);
-                    setBlocks_.push_back(block);
-                }
-                sourceFirst_ = memo->first;
-                sourceLast_ = memo->last;
-                activeMemo_ = memo;
+        if (entry.lastUse < oldest->lastUse) oldest = &entry;
+    }
+    if (memo) {
+        bool answered = !copiesData_;  // IN-360: without data copies only the source blocks matter
+        if (copiesData_ && memo->dataValid && dataMemoOn_) {
+            answered = true;
+            for (uint32_t i = 0; i < memo->blockCount && answered; ++i) {
+                answered = std::memcmp(memo->bytes + i * 256u, localMemory + size_t{memo->blocks[i]} * 256u, 256u) == 0;
             }
+            if (answered) {
+                PlaceEntries(*memo, write, entryCount);
+                ++dataMemoHits_;
+            }
+        }
+        if (answered) {
+            sourceBlocks_.assign(memo->blocks, memo->blocks + memo->blockCount);
+            sourceFirst_ = memo->first;
+            sourceLast_ = memo->last;
             memo->lastUse = ++memoUses_;
             ++generation_;
             haveLast_ = true;
@@ -351,14 +382,22 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
             last_ = write;
             return;
         }
+    } else {
         memo = oldest;
-        memo->key = key;
-        memo->blocks.clear();
-        memo->lastUse = ++memoUses_;
     }
-    ClearSourceBlocks();
+    memo->key = ~0ull;  // valid again only when every block fits below
+    memo->blockCount = 0;
+    memo->dataValid = false;
+    memo->lastUse = ++memoUses_;
+    if (copiesData_) ++dataMemoReads_;
+
+    sourceBlocks_.clear();
+    sourceFirst_ = kBlocksTotal;
+    sourceLast_ = 0;
     const CsmOffsets* offsets = write.csm == 0u ? &CsmOffsetsFor(write.cpsm, eightBit) : nullptr;
     if (offsets && !offsets->valid) offsets = nullptr;
+    bool everyEntryRead = true;
+    uint32_t lastBlock = kBlocksTotal;
     for (uint32_t e = 0; e < entryCount; ++e) {
         PixelLocation location;
         if (offsets) {  // IN-457
@@ -377,38 +416,47 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
                 width = write.texclutCbw;
             }
             if (!LocatePixel(write.cpsm, base, width, x, y, location)) {
+                // An entry with no position leaves its place in the buffer as it was; such a load is not remembered.
+                everyEntryRead = false;
+                const uint32_t group = (e >> 4) + (write.csa & 15u);
+                if (is32 && group <= 15u) {
+                    memo->low[e] = halfwords_[16u * group + (e & 15u)];
+                    memo->high[e] = halfwords_[16u * group + (e & 15u) + 256u];
+                } else if (!is32) {
+                    memo->low[e] = halfwords_[(16u * write.csa + e) & 511u];
+                }
                 continue;
             }
         }
-        if (!sourceBlocks_.test(location.block)) {
-            if (memo) memo->blocks.push_back(location.block);
-            setBlocks_.push_back(location.block);
-            sourceBlocks_.set(location.block);
+        if (location.block != lastBlock) {
+            lastBlock = location.block;
+            if (std::find(sourceBlocks_.begin(), sourceBlocks_.end(), location.block) == sourceBlocks_.end()) {
+                sourceBlocks_.push_back(location.block);
+            }
+            sourceFirst_ = std::min(sourceFirst_, location.block);
+            sourceLast_ = std::max(sourceLast_, location.block);
         }
-        sourceFirst_ = std::min(sourceFirst_, location.block);
-        sourceLast_ = std::max(sourceLast_, location.block);
         if (!copiesData_) continue;
         const uint8_t* source = localMemory + location.PhysicalByte();
-
         if (is32) {
             const uint32_t raw = ReadLittle(source, 4);
-            // Palette group g lives at buffer group g + CSA (clamped rows are not loaded).
-            const uint32_t group = (e >> 4) + csaGroup;
-            if (group > 15u) {
-                continue;
-            }
-            const uint32_t index = 16u * group + (e & 15u);
-            halfwords_[index] = static_cast<uint16_t>(raw & 0xFFFFu);
-            halfwords_[index + 256u] = static_cast<uint16_t>(raw >> 16);
+            memo->low[e] = static_cast<uint16_t>(raw & 0xFFFFu);
+            memo->high[e] = static_cast<uint16_t>(raw >> 16);
         } else {
-            const uint16_t raw = static_cast<uint16_t>(ReadLittle(source, 2));
-            halfwords_[(16u * write.csa + e) & 511u] = raw;
+            memo->low[e] = static_cast<uint16_t>(ReadLittle(source, 2));
         }
     }
-    if (memo) {
+    if (copiesData_) PlaceEntries(*memo, write, entryCount);
+    if (sourceBlocks_.size() <= kMemoBlocks) {
+        memo->key = key;
         memo->first = sourceFirst_;
         memo->last = sourceLast_;
-        activeMemo_ = memo;
+        memo->blockCount = static_cast<uint32_t>(sourceBlocks_.size());
+        for (uint32_t i = 0; i < memo->blockCount; ++i) {
+            memo->blocks[i] = static_cast<uint16_t>(sourceBlocks_[i]);
+            if (copiesData_) std::memcpy(memo->bytes + i * 256u, localMemory + size_t{sourceBlocks_[i]} * 256u, 256u);
+        }
+        memo->dataValid = copiesData_ && everyEntryRead;
     }
 
     ++generation_;
@@ -426,18 +474,11 @@ void ClutUnit::NoteBlocksWritten(uint32_t blockBegin, uint32_t blockCount) {
     if (!haveLast_ || stale_ || sourceFirst_ > sourceLast_) {
         return;
     }
-    // Early-out: the written range [blockBegin, blockBegin + blockCount) (wrapping at kBlocksTotal) misses
-    // [sourceFirst_, sourceLast_] entirely.
-    if (blockCount < kBlocksTotal) {
-        const uint32_t begin = blockBegin % kBlocksTotal;
-        const uint32_t end = begin + blockCount;  // exclusive; may pass kBlocksTotal (wraps)
-        const bool missesLow = end <= kBlocksTotal ? (end <= sourceFirst_ || begin > sourceLast_)
-                                                   : (begin > sourceLast_ && end - kBlocksTotal <= sourceFirst_);
-        if (missesLow) return;
-    }
-    for (uint32_t i = 0; i < blockCount; ++i) {
-        const uint32_t block = (blockBegin + i) % kBlocksTotal;
-        if (sourceBlocks_.test(block)) {
+    // Early-out: the written range misses [sourceFirst_, sourceLast_] entirely.
+    if (RangeMisses(blockBegin, blockCount, sourceFirst_, sourceLast_)) return;
+    const uint32_t begin = blockBegin % kBlocksTotal;
+    for (const uint32_t block : sourceBlocks_) {
+        if (blockCount >= kBlocksTotal || (block + kBlocksTotal - begin) % kBlocksTotal < blockCount) {
             stale_ = true;
             return;
         }

@@ -7,6 +7,7 @@
 #include <emmintrin.h>
 
 #include <algorithm>
+#include <bit>
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -246,17 +247,30 @@ std::uint32_t HostToLocalPageAligned(std::uint8_t *memoryBytes, const BufferView
 }  // namespace
 
 std::uint32_t BlockOfPixel(const BufferView &view, std::uint32_t x, std::uint32_t y) {
+    // IN-487: called for every block cell of every upload, several times: page sizes are powers of two, so shifts and
+    // masks read once from a table replace the divisions (the largest upload function on the i5-7200U).
+    struct Shape {
+        std::uint32_t tableOffset = 0, widthBits = 0, heightBits = 0;
+        bool zXor = false;
+    };
     static const memory::GpuAddressTables tables = memory::gpuAddressTables();
-    const std::uint32_t code = static_cast<std::uint32_t>(view.psm) & 63u;
-    const std::uint32_t tableOffset = tables.directory[code * 4u];
-    const std::uint32_t pageWidth = tables.directory[code * 4u + 1u];
-    const std::uint32_t pageHeight = tables.directory[code * 4u + 2u];
-    const bool zXor = tables.directory[code * 4u + 3u] != 0;
-    const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / pageWidth);
-    const std::uint32_t entry = tables.entries[tableOffset + (y % pageHeight) * pageWidth + (x % pageWidth)];
-    std::uint32_t block = view.basePointer + memory::kBlocksPerPage * ((y / pageHeight) * perRow + x / pageWidth) +
-                          (entry & 31u);
-    if (zXor) block ^= 24u;
+    static const std::array<Shape, 64> shapes = [] {
+        std::array<Shape, 64> built{};
+        for (std::uint32_t code = 0; code < 64u; ++code) {
+            const std::uint32_t width = tables.directory[code * 4u + 1u], height = tables.directory[code * 4u + 2u];
+            built[code] = Shape{tables.directory[code * 4u], width != 0 ? static_cast<std::uint32_t>(std::countr_zero(width)) : 0u,
+                                height != 0 ? static_cast<std::uint32_t>(std::countr_zero(height)) : 0u,
+                                tables.directory[code * 4u + 3u] != 0};
+        }
+        return built;
+    }();
+    const Shape &shape = shapes[static_cast<std::uint32_t>(view.psm) & 63u];
+    const std::uint32_t perRow = std::max<std::uint32_t>(1u, (view.bufferWidth * 64u) >> shape.widthBits);
+    const std::uint32_t inPage = ((y & ((1u << shape.heightBits) - 1u)) << shape.widthBits) + (x & ((1u << shape.widthBits) - 1u));
+    const std::uint32_t entry = tables.entries[shape.tableOffset + inPage];
+    std::uint32_t block = view.basePointer +
+                          memory::kBlocksPerPage * ((y >> shape.heightBits) * perRow + (x >> shape.widthBits)) + (entry & 31u);
+    if (shape.zXor) block ^= 24u;
     return block & (memory::kBlocksTotal - 1u);
 }
 

@@ -4456,6 +4456,121 @@ int TestCore2Specialised(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// What GT4 does every VBlank: textures A and C (CT32, whole blocks), B over part of A, then A again, a T8 texture with whole
+// blocks and one that ends inside a block (never remembered); sprites show them and memory is compared.
+cpuref::CaptureWriter Core2UploadMemoCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kTexA = 16, kTexC = 17, kTexT8 = 18, kClut = 19;  // pages
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto upload = [&](uint64_t page, uint64_t psm, uint32_t width, uint32_t height, uint32_t seed) {
+        ad({(page * 32) << 32 | (uint64_t{1} << 48) | (psm << 56), 0x50, 0, 0x51,
+            uint64_t{width} | (uint64_t{height} << 32), 0x52, 0, 0x53});
+        const uint32_t bytesPerPixel = psm == 0 ? 4u : 1u;
+        const uint32_t qwords = (width * height * bytesPerPixel + 15u) / 16u;
+        std::vector<uint64_t> data(qwords * 2);
+        uint64_t state = seed;
+        for (uint64_t& word : data) word = state = state * 6364136223846793005ull + 1442695040888963407ull;
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        upload(kTexA, 0x00, 64, 32, 1);
+        upload(kTexC, 0x00, 32, 16, 2);
+        upload(kTexA, 0x00, 32, 16, 3);  // B over part of A
+        upload(kTexA, 0x00, 64, 32, 1);  // and A again
+        upload(kClut, 0x00, 16, 16, 4);
+        upload(kTexT8, 0x13, 32, 32, 5);
+        upload(kTexT8, 0x13, 20, 13, 6 + (frame & 1u));  // not whole blocks; one of two contents
+        const uint64_t tex0A = uint64_t{kTexA * 32} | (uint64_t{1} << 14) | (uint64_t{6} << 26) | (uint64_t{5} << 30) |
+                               (uint64_t{1} << 34) | (uint64_t{1} << 35);
+        const uint64_t tex0T8 = uint64_t{kTexT8 * 32} | (uint64_t{1} << 14) | (uint64_t{0x13} << 20) | (uint64_t{5} << 26) |
+                                (uint64_t{5} << 30) | (uint64_t{1} << 34) | (uint64_t{1} << 35) |
+                                (uint64_t{kClut * 32} << 37) | (uint64_t{1} << 61);
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            kA | (uint64_t{1} << 16), 0x4C, tex0A, 0x06, kSprite | kTme | kFst, 0x00, uv(0, 0), 0x03, xyz(0, 0), 0x05,
+            uv(32, 16), 0x03, xyz(32, 16), 0x05, tex0T8, 0x06, kSprite | kTme | kFst, 0x00, uv(0, 0), 0x03, xyz(32, 0), 0x05,
+            uv(32, 32), 0x03, xyz(64, 32), 0x05});
+        capture.FrameEnd(0);
+    }
+    return capture;
+}
+
+// hw_core2_upload_memo (IN-486): uploads recognised and copied instead of swizzled: identical images and GS memory, equal
+// to the CPU reference where the stream is exact, and the uploads really replayed.
+int TestCore2UploadMemo(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    uint64_t replayed = 0;
+    auto ran = [&replayed](const Core2AbRun& off, const Core2AbRun& on) {
+        replayed += on.stats.uploadsReplayed;
+        return off.stats.uploadsReplayed != 0 ? 1 : 0;
+    };
+    const char* kSwitch = "GT4_CORE2_UPLOAD_MEMO";
+    failures += CheckCore2Ab(handles, "uploads over each other", Core2UploadMemoCapture(6), 6, kSwitch, true, ran);
+    std::printf("  uploads replayed: %llu\n", static_cast<unsigned long long>(replayed));
+    if (replayed == 0) ++failures;
+    std::printf("hw_core2_upload_memo: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// hw_core2_shader_cache (IN-489): GT4_HW_SHADER_CACHE keeps the variants between sessions: a second session finds them,
+// the pictures do not change, and damaged files only cost the time to compile again.
+int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
+    namespace fs = std::filesystem;
+    const fs::path folder = fs::temp_directory_path() / ("gt4_shader_cache_test_" + std::to_string(_getpid()));
+    std::error_code ignored;
+    fs::remove_all(folder, ignored);
+    _putenv_s("GT4_HW_SHADER_CACHE", folder.string().c_str());
+    int failures = 0;
+    const auto capture = CacheFixtureCapture();
+    auto session = [&](const char* what, Core2AbRun& run) {
+        std::string error;
+        if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_NO_SUCH_SWITCH", true, run, error, 0, 2, {}, "")) {
+            std::printf("  %s: replay failed: %s\n", what, error.c_str());
+            ++failures;
+        }
+    };
+    Core2AbRun first, second, damaged;
+    session("first session", first);
+    const auto variantsSize = fs::file_size(folder / "variants.bin", ignored);
+    const auto compiledSize = fs::file_size(folder / "pipelines.bin", ignored);
+    std::printf("  after the first session: variants.bin %llu bytes, pipelines.bin %llu bytes\n",
+                static_cast<unsigned long long>(variantsSize), static_cast<unsigned long long>(compiledSize));
+    if (handles.pixelInterlock && (variantsSize <= 24u || compiledSize == 0u)) ++failures;
+    session("second session", second);
+    if (second.images != first.images) {
+        std::printf("  the second session's pictures differ\n");
+        ++failures;
+    }
+    if (fs::file_size(folder / "variants.bin", ignored) < variantsSize) {
+        std::printf("  the second session lost variants\n");
+        ++failures;
+    }
+    // A cut list and a cache of nonsense: refused without any harm.
+    fs::resize_file(folder / "variants.bin", 30u, ignored);
+    {
+        std::ofstream garbage(folder / "pipelines.bin", std::ios::binary | std::ios::trunc);
+        garbage << "this is no pipeline cache of any driver";
+    }
+    session("damaged files", damaged);
+    if (damaged.images != first.images) {
+        std::printf("  the pictures differ after damaged files\n");
+        ++failures;
+    }
+    _putenv_s("GT4_HW_SHADER_CACHE", "");
+    fs::remove_all(folder, ignored);
+    std::printf("hw_core2_shader_cache: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_mipmaps (IN-428): the five sprites above at 1x and 3x, every pixel the expected level colour; with
 // GT4_CORE2_MIPMAP=0 every sprite shows level 0.
 int TestCore2Mipmaps(const gpu::VulkanHandles& handles) {
@@ -5357,6 +5472,8 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
+    if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);
+    if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);

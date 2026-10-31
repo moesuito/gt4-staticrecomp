@@ -28,8 +28,11 @@
 #include <thread>
 #include <unordered_set>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <unordered_map>
 
 namespace hwgs::core2 {
@@ -376,6 +379,17 @@ struct Gpu::Impl {
   std::atomic<std::uint32_t> specDoneCount{0};
   std::uint32_t specDoneSeen = 0;  // GS thread: specDoneCount when specDone was last emptied
   std::thread specThread;
+  // IN-489: GT4_HW_SHADER_CACHE=<folder> keeps the driver's compiled pipelines and the list of variants the game asked
+  // for. The next session starts compiling that list at once, and a known one takes milliseconds instead of seconds: a
+  // new install or update on the HD 620 drew with the uber pipeline for its first sessions, 13.7 ms of GPU per VBlank
+  // instead of 8, while 90 variants took a minute of a core in every session.
+  std::filesystem::path shaderCacheFolder;
+  VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+  std::uint64_t shaderSetHash = 0;
+  std::vector<SpecKey> specKnown;  // specMutex: every variant compiled or read from the file
+  bool specKnownChanged = false;   // specMutex
+  std::size_t specKnownFromFile = 0;
+  std::chrono::steady_clock::time_point specLastSave{};
 
   VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout computeLayout = VK_NULL_HANDLE;
@@ -827,7 +841,7 @@ struct Gpu::Impl {
     info.layout = drawLayout;
     info.renderPass = rop == 0 ? renderPass : rop_depth_mask(rop) != 0 ? ropPassBoth : ropPassFrame;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    check(gt4_hwd_vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
+    check(gt4_hwd_vkCreateGraphicsPipelines(device, pipelineCache, 1, &info, nullptr, &pipeline),
           "vkCreateGraphicsPipelines", error);
     return pipeline;
   }
@@ -972,6 +986,124 @@ struct Gpu::Impl {
                          error, &info, rop);  // the driver caches
   }
 
+  // IN-489: every shader of a variant, so that a list written by another build is not used by this one.
+  static std::uint64_t hash_shader_words(std::uint64_t h, const std::uint32_t *words, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i) h = (h ^ words[i]) * 1099511628211ull;
+    return h;
+  }
+
+  static std::vector<std::uint8_t> read_whole_file(const std::filesystem::path &path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) return {};
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(file.tellg()));
+    file.seekg(0);
+    file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!file) bytes.clear();
+    return bytes;
+  }
+
+  // Written under another name and renamed: a session closed halfway leaves the previous file.
+  static void write_whole_file(const std::filesystem::path &path, const void *first, std::size_t firstSize, const void *second,
+                               std::size_t secondSize) {
+    std::filesystem::path temporary = path;
+    temporary += ".tmp";
+    {
+      std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+      file.write(static_cast<const char *>(first), static_cast<std::streamsize>(firstSize));
+      if (secondSize != 0) file.write(static_cast<const char *>(second), static_cast<std::streamsize>(secondSize));
+      if (!file) return;
+    }
+    std::error_code ignored;
+    std::filesystem::rename(temporary, path, ignored);
+  }
+
+  struct VariantFileHeader {
+    char magic[8] = {'G', 'T', '4', 'V', 'A', 'R', 'S', '1'};
+    std::uint64_t shaderSet = 0;
+    std::uint32_t keyWords = kSpecFieldCount + 3;
+    std::uint32_t count = 0;
+  };
+
+  void open_shader_cache() {
+    const char *folder = std::getenv("GT4_HW_SHADER_CACHE");
+    if (!folder || !*folder) return;
+    std::error_code ignored;
+    shaderCacheFolder = std::filesystem::u8path(folder);
+    std::filesystem::create_directories(shaderCacheFolder, ignored);
+    namespace sh = hwgs::shaders;
+    std::uint64_t h = 1469598103934665603ull;
+    h = hash_shader_words(h, sh::hw_vertex_smooth_words, sh::hw_vertex_smooth_word_count);
+    h = hash_shader_words(h, sh::hw_pixel_uber_core2_words, sh::hw_pixel_uber_core2_word_count);
+    h = hash_shader_words(h, sh::hw_pixel_uber_core2_interlock_words, sh::hw_pixel_uber_core2_interlock_word_count);
+    h = hash_shader_words(h, sh::hw_pixel_uber_core2_rop_words, sh::hw_pixel_uber_core2_rop_word_count);
+    h = hash_shader_words(h, sh::hw_pixel_uber_core2_rop_blend_words, sh::hw_pixel_uber_core2_rop_blend_word_count);
+    shaderSetHash = h;
+    // A cache from another driver or card is refused by the driver through its own header: it then starts empty.
+    const std::vector<std::uint8_t> compiled = read_whole_file(shaderCacheFolder / "pipelines.bin");
+    VkPipelineCacheCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    info.initialDataSize = compiled.size();
+    info.pInitialData = compiled.empty() ? nullptr : compiled.data();
+    if (gt4_hwd_vkCreatePipelineCache(device, &info, nullptr, &pipelineCache) != VK_SUCCESS) {
+      info.initialDataSize = 0;
+      info.pInitialData = nullptr;
+      if (gt4_hwd_vkCreatePipelineCache(device, &info, nullptr, &pipelineCache) != VK_SUCCESS) pipelineCache = VK_NULL_HANDLE;
+    }
+    std::fprintf(stderr, "[core2] shader cache: %zu KiB of compiled pipelines\n", compiled.size() / 1024u);
+  }
+
+  // After every pipeline the game may need exists: the variants of the last sessions go to the worker before any draw.
+  void queue_known_variants() {
+    if (shaderCacheFolder.empty() || specMode != SpecMode::async) return;
+    const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
+    VariantFileHeader header;
+    const VariantFileHeader wanted;
+    if (bytes.size() < sizeof header) return;
+    std::memcpy(&header, bytes.data(), sizeof header);
+    if (std::memcmp(header.magic, wanted.magic, sizeof header.magic) != 0 || header.shaderSet != shaderSetHash ||
+        header.keyWords != wanted.keyWords || bytes.size() != sizeof header + std::size_t{header.count} * sizeof(SpecKey)) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(specMutex);
+    for (std::uint32_t i = 0; i < header.count && specSeen.size() < kMaxSpecPipelines; ++i) {
+      SpecKey key;
+      std::memcpy(key.data(), bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof(SpecKey));
+      const std::uint32_t rop = key[kSpecFieldCount + 2];
+      if (rop != 0 && (!ropOn || (rop_blend_mode(rop) && ropBlendModule == VK_NULL_HANDLE))) continue;
+      if (!specSeen.insert(key).second) continue;
+      specQueue.push_back(key);
+      specKnown.push_back(key);
+    }
+    specKnownFromFile = specKnown.size();
+    std::fprintf(stderr, "[core2] shader cache: %zu variants of the last sessions to prepare\n", specKnownFromFile);
+    if (!specQueue.empty()) specThread = std::thread([this] { spec_worker(); });
+  }
+
+  // Worker thread, or the GS thread once the worker has stopped.
+  void save_shader_cache() {
+    if (shaderCacheFolder.empty()) return;
+    std::vector<SpecKey> keys;
+    {
+      std::lock_guard<std::mutex> lock(specMutex);
+      if (!specKnownChanged) return;
+      specKnownChanged = false;
+      keys = specKnown;
+    }
+    VariantFileHeader header;
+    header.shaderSet = shaderSetHash;
+    header.count = static_cast<std::uint32_t>(keys.size());
+    write_whole_file(shaderCacheFolder / "variants.bin", &header, sizeof header, keys.data(), keys.size() * sizeof(SpecKey));
+    if (pipelineCache) {
+      std::size_t size = 0;
+      if (gt4_hwd_vkGetPipelineCacheData(device, pipelineCache, &size, nullptr) == VK_SUCCESS && size != 0) {
+        std::vector<std::uint8_t> data(size);
+        if (gt4_hwd_vkGetPipelineCacheData(device, pipelineCache, &size, data.data()) == VK_SUCCESS) {
+          write_whole_file(shaderCacheFolder / "pipelines.bin", data.data(), size, nullptr, 0);
+        }
+      }
+    }
+  }
+
   // Records a compile time (specMutex held).
   void note_compile(std::uint64_t ns) {
     specCompileNs += ns;
@@ -986,10 +1118,21 @@ struct Gpu::Impl {
 #endif
     for (;;) {
       SpecKey key;
+      bool saveFirst = false;
       {
         std::unique_lock<std::mutex> lock(specMutex);
-        specWake.wait(lock, [&] { return specStop || !specQueue.empty(); });
+        // IN-489: at most every 10 s (a session may end without closing the renderer).
+        saveFirst = specKnownChanged && !specStop && std::chrono::steady_clock::now() - specLastSave > std::chrono::seconds(10);
+      }
+      if (saveFirst) {
+        save_shader_cache();
+        specLastSave = std::chrono::steady_clock::now();
+      }
+      {
+        std::unique_lock<std::mutex> lock(specMutex);
+        specWake.wait_for(lock, std::chrono::seconds(5), [&] { return specStop || !specQueue.empty(); });
         if (specStop) return;
+        if (specQueue.empty()) continue;
         key = specQueue.front();
         specQueue.pop_front();
       }
@@ -1003,6 +1146,11 @@ struct Gpu::Impl {
         if (pipeline) {
           specDone.push_back({key, pipeline});
           specAll.push_back(pipeline);
+          if (std::find(specKnown.begin(), specKnown.begin() + static_cast<std::ptrdiff_t>(specKnownFromFile), key) ==
+              specKnown.begin() + static_cast<std::ptrdiff_t>(specKnownFromFile)) {
+            specKnown.push_back(key);
+          }
+          specKnownChanged = true;
         } else if (specFailures++ == 0) {
           std::fprintf(stderr, "[core2] a specialised pipeline failed (%s); its draws keep the uber pipeline\n",
                        error.c_str());
@@ -1095,7 +1243,7 @@ struct Gpu::Impl {
     info.stage.pName = "main";
     info.layout = layout ? layout : computeLayout;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    check(gt4_hwd_vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
+    check(gt4_hwd_vkCreateComputePipelines(device, pipelineCache, 1, &info, nullptr, &pipeline),
           "vkCreateComputePipelines", error);
     return pipeline;
   }
@@ -1854,6 +2002,8 @@ Gpu::~Gpu() {
     s.specThread.join();
   }
   if (!s.device) return;
+  s.save_shader_cache();  // IN-489
+  if (s.pipelineCache) gt4_hwd_vkDestroyPipelineCache(s.device, s.pipelineCache, nullptr);
   std::string ignored;
   s.submit(true, ignored);
   for (VkPipeline pipeline : s.specAll) gt4_hwd_vkDestroyPipeline(s.device, pipeline, nullptr);
@@ -2084,6 +2234,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
       return false;
     }
   }
+  s.open_shader_cache();  // IN-489
   s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_smooth_words, hwgs::shaders::hw_vertex_smooth_word_count, error);
   s.fragmentModule =
       s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
@@ -2228,26 +2379,26 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     pipeline.stage.module = s.decodeModule;
     pipeline.stage.pName = "main";
     pipeline.layout = s.decodeLayout;
-    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.decodePipeline),
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, s.pipelineCache, 1, &pipeline, nullptr, &s.decodePipeline),
                "vkCreateComputePipelines", error)) return false;
     s.patchGlmModule =
         s.make_module(hwgs::shaders::core2_patch_glm_words, hwgs::shaders::core2_patch_glm_word_count, error);
     if (!s.patchGlmModule) return false;
     pipeline.stage.module = s.patchGlmModule;
-    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.patchGlmPipeline),
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, s.pipelineCache, 1, &pipeline, nullptr, &s.patchGlmPipeline),
                "vkCreateComputePipelines", error)) return false;
     // IN-408: the target CLUT kernel shares the decode set (0 GLM, 1 tables, 2 inverse table, 3 target, 5 CLUT).
     s.clutTargetModule =
         s.make_module(hwgs::shaders::core2_clut_target_words, hwgs::shaders::core2_clut_target_word_count, error);
     if (!s.clutTargetModule) return false;
     pipeline.stage.module = s.clutTargetModule;
-    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.clutTargetPipeline),
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, s.pipelineCache, 1, &pipeline, nullptr, &s.clutTargetPipeline),
                "vkCreateComputePipelines", error)) return false;
     s.materializeModule =
         s.make_module(hwgs::shaders::core2_materialize_words, hwgs::shaders::core2_materialize_word_count, error);
     if (!s.materializeModule) return false;
     pipeline.stage.module = s.materializeModule;
-    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &s.materializePipeline),
+    if (!check(gt4_hwd_vkCreateComputePipelines(s.device, s.pipelineCache, 1, &pipeline, nullptr, &s.materializePipeline),
                "vkCreateComputePipelines", error)) return false;
   }
   // IN-408: the GPU CLUT and the inverse of the CT32 in-page layout (word of a page -> pixel x | y << 8).
@@ -2287,6 +2438,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
 
   if (!s.make_image(s.atlas, kAtlasSide, kAtlasSide, 1, error)) return false;
   if (!s.make_image(s.display, 640u * s.scale, 448u * s.scale, 1, error)) return false;
+  s.queue_known_variants();  // IN-489
   s.ready = true;
   std::fprintf(stderr, "[core2] ready: scale %u, shift %.3f, pixel interlock %s, max native side %u\n", s.scale,
                static_cast<double>(s.shift), s.interlock ? "yes" : "no", MaxNativeSide());
