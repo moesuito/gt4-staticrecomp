@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 367: GPU work for weak graphics cards (2026-10-31)
+
+Candidate 367 (pin `docs/inputs/slice367-pcsx2.json`), the current game of 1.3.0-rc8, is on the owner's laptop only, **not uploaded until the owner says so**. Against candidate 362 on the HD 620 at 2x, no window, shaders warm, GPU busy per VBlank: day 25.84 to 18.85 ms in normal mode (-27%), 25.74 to 16.75 in Performance Mode (-35%); night 32.9 to 25.4 (-23%), 33.0 to 22.7 (-31%). RX 9060 XT, 12x night: 20.7 to 19.1 ms (-8%). No owner test of this build yet.
+
+- **What it is:** IN-485 to IN-503: palette and upload memos, shader cache between sessions, video decoder rewrite, whole clears, depth and alpha fail before the interlock, no interlock for large disjoint batches. Results and dropped steps: `docs/hw-renderer-spec/CORE2-GPU-PLAN.md`.
+- **Performance Mode now also cuts:** the road's sheen and the alpha fills that serve it (IN-501, IN-502), and small effect targets stay at 1x (IN-497). The road is darker.
+- **Checks:** frames 10/10 at 3x, 14/14 Arcade, 31/31 at 12x, 28/28 video, and 10/10 and 14/14 on the integrated GPU path on the desktop; 146 renderer tests (one skipped); launcher `cargo test --workspace` 598 passed. Language keys and placeholders match in both locales. The launcher focus pages were not run: only help text and notes changed. The window and the game on the laptop are not tested by this: the owner's test decides.
+- **Open:** fractional scales (G3), a launcher screen that prepares shaders with a shipped first list, frame skipping, D1 (real depth for opaque draws, the largest cost left: 7.7 of 19 ms at 2x by day).
+
 ## TASK-027 CoreGS 2.0 in the launcher as a beta, 1.3.0-rc8 (2026-10-30, evening)
 
 Candidate 362 (pin `docs/inputs/slice362-pcsx2.json`), the current game of 1.3.0-rc8, on the owner's laptop only; the owner measured 59.3 VBlanks/s at 1x on a day track there: **not uploaded until the owner says so** (their word, 2026-10-30). The GitHub **draft** v1.3.0-rc8 still holds candidate 354, which fails to start on GPUs without mailbox when vsync is Fast (IN-475). Renderer choice CoreGS 2.0 (beta), GT4 only, GSdx stays the default; the renderer defines the graphics options (IN-474). Texture replacement (IN-470), GPUs without pixel interlock (IN-471: GPU 49.05 -> 6.85 ms at 3x), PGO in the release game (IN-473: GS worker -13%). Hardware raster path measured and left out, pending the laptop test (IN-472). Frames identical to the references (10/10, 14/14, 31/31). CTest 269/270 (the known GS settings contract failure from the rc7 merge), `cargo test --workspace` clean. Waiting for: the owner's test on the laptop; the PR into the game-code branch comes after their approval.

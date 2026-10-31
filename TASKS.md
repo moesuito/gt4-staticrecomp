@@ -1688,10 +1688,12 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
-**State 2026-10-30:** in the launcher as a beta in 1.3.0-rc8 (candidate 354, GT4 only, GSdx stays the default): texture
-replacement (IN-470), GPUs without interlock (IN-471), PGO in the release game (IN-473), options by renderer (IN-474).
-Hardware raster path measured and left out pending the laptop test (IN-472). Open: owner's laptop test of rc8, then
-the PR into `task/134-game-code-optimization-study` on their approval.
+**State 2026-10-31:** 🧪 candidate 367 (not uploaded) waits for the owner's test on the laptop: on the HD 620 at 2x GPU
+busy 27% less by day and 23% at night against candidate 362 in normal mode, 35% and 31% in Performance Mode (IN-485 to
+IN-504, `docs/hw-renderer-spec/CORE2-GPU-PLAN.md`). In the launcher as a beta in 1.3.0-rc8 (GT4 only, GSdx stays the
+default): texture replacement (IN-470), GPUs without interlock (IN-471), PGO in the release game (IN-473), options by
+renderer (IN-474). Open: the owner's test, then the upload of rc8 and the PR into
+`task/134-game-code-optimization-study` on their word; fractional scales, a screen that prepares shaders, frame skipping.
 
 **Resumed on 2026-10-21 (owner decision)** on branch `task/027-coregs2` (worktree
 `C:\Antigravity\gt4-wt-027-coregs2`): `main` at release 1.0.0 (slice214) merged with

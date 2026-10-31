@@ -168,7 +168,7 @@
   "choice.coregs_sharpening.mild": "Mild",
   "choice.coregs_sharpening.medium": "Medium",
   "choice.coregs_sharpening.strong": "Strong",
-  "setting.performance_mode.help_coregs20": "Faster on weaker PCs. Off draws with full graphics precision. On turns off the night lights and the sun glare and stops waiting for some images from the graphics card. Applies the next time you play.",
+  "setting.performance_mode.help_coregs20": "Faster on weaker PCs. Off draws with full graphics precision. On turns off the night lights, the sun glare and the sheen on the road, draws small effects at lower resolution and stops waiting for some images from the graphics card. Applies the next time you play.",
   "setting.texture_load.label": "Load custom textures",
   "setting.texture_load.help": "Loads the texture pack from the Textures folder: put the pack's files straight in it. An empty folder changes nothing.",
   "setting.graphics_api.label": "API",

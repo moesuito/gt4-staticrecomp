@@ -108,6 +108,18 @@ wall time of the whole emulator.
 | IN-473 | PGO and ThinLTO of the GS libraries in the release build | 3x, 3+3 interleaved, plain -> PGO, medians: GS worker 5.93 -> 5.14, process CPU 16.48 -> 15.72, wall 8.74 -> 8.33, frame p50 8.72 -> 7.84, p95 11.21 -> 10.67, GPU 3.90 -> 3.86. 10/10, 14/14, 31/31 frames identical | GS worker -13% | 354 |
 | IN-477, IN-478 | Performance mode on the HD 620 laptop: the EE does not wait for the GS at the flare table; plain blit instead of FSR on integrated GPUs | Arcade race at 1x, headless: EE drain wait 11.4 -> 0 ms, wall 22.3 -> 19.5 ms (51 FPS), now bound by the GS worker (19.3 ms). With a window: GPU 18.07 -> 13.64 ms, wall 29.1 -> 22.95 ms. Desktop: 7.7 -> 6.6 ms, 14/14 frames identical | - | 358 |
 | IN-481..484 | Light path on the HD 620 | Headless Arcade race at 1x: wall 22.3 ms (first bench) -> 18.3 ms. GSdx reference with a window, first 35 s of the race (approximate; samples counted twice in that run and halved): GSdx 1x about 54 FPS, 2x about 44; CoreGS 1x about 45, 2x about 28, contaminated by 96 s of shader compiling. GSdx itself holds no 60 FPS in this scene | - | 362 |
+| IN-485..487 | Palette memo, upload memo, block lookup | GS thread on the HD 620 at 1x by day 13.70 -> 11.91 ms for the palettes, -0.45 for the uploads. Frames 10/10, 14/14 | yes | 366 |
+| IN-488 | Fixing threads to cores | No gain | no | - |
+| IN-489 | Shader cache between sessions | HD 620 GPU 13.7 -> 8 ms in the first sessions of a new executable | yes | 366 |
+| IN-490, IN-491 | Video decoder with the same results | i5-7200U, track selection video: 265-280 of about 297 intervals at 16-17 ms, was 123-134 at 20-25 ms in part | yes | 366 |
+| IN-492, IN-498 | Depth and alpha fail before the interlock | HD 620 2x by day 25.65 -> 23.9 ms for the depth test; -7% and more with both | yes | 366 |
+| IN-494, IN-495 | Whole clears, no self copy when no lane changes | HD 620 2x by day 23.7 -> 22.35 ms | yes | 366 |
+| IN-496 | No interlock for large disjoint batches, integrated GPUs | HD 620 2x by day 20.8 -> 20.28 ms; RX 9060 XT +4% at 12x, so off there | yes | 366 |
+| IN-497 | Small effect targets at 1x, Performance Mode | HD 620 2x night 27.5 -> 25.3 ms; picture changes a little | yes, Performance Mode | 366 |
+| IN-499 | CT16 frames through attachments | HD 620 2x by day 17.99 -> 17.85 ms | yes | 367 |
+| IN-501, IN-502 | No road sheen and no alpha fills, Performance Mode | HD 620 2x by day 18.81 -> 17.93 and 17.88 -> 16.94 ms; the road is darker | yes, Performance Mode | 367 |
+| IN-503 | The sheen leaves early without destination alpha | HD 620 2x by day 18.59 -> 17.99 ms; frames 22/22 | yes | 367 |
+| dropped | Sampled texels, real depth probe, unordered interlock, depth store skip, ROP on a discrete GPU, tone palette in push constants, input attachments | Bench gains that the game did not show: -1%, -3.6%, none, none, +13%, none, none | no | - |
 | owner | Test of 362 on the HD 620 laptop through the launcher (performance mode, 1x, day track) | F8, 48 s: 59.3 VBlanks/s, frame median 16.8 ms, p95 19.5, p99 21.1, max 25.3 (first test of the day: 41.5 VBlanks/s, median 24 ms) | 1x reached | 362 |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 

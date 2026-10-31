@@ -168,7 +168,7 @@
   "choice.coregs_sharpening.mild": "Suave",
   "choice.coregs_sharpening.medium": "Média",
   "choice.coregs_sharpening.strong": "Forte",
-  "setting.performance_mode.help_coregs20": "Mais rápido em PCs mais fracos. Desligado desenha com precisão gráfica total. Ligado desliga os brilhos das luzes à noite e o clarão do sol e deixa de esperar algumas imagens da placa de vídeo. Vale na próxima vez que você jogar.",
+  "setting.performance_mode.help_coregs20": "Mais rápido em PCs mais fracos. Desligado desenha com precisão gráfica total. Ligado desliga os brilhos das luzes à noite, o clarão do sol e o brilho do asfalto, desenha efeitos pequenos em resolução menor e deixa de esperar algumas imagens da placa de vídeo. Vale na próxima vez que você jogar.",
   "setting.texture_load.label": "Carregar texturas personalizadas",
   "setting.texture_load.help": "Carrega o pacote de texturas da pasta Textures: coloque os arquivos do pacote direto nela. Uma pasta vazia não muda nada.",
   "setting.graphics_api.label": "API",

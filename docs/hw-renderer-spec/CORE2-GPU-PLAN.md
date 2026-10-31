@@ -77,5 +77,22 @@ Laptop numbers without a window, candidate build against the start of the night.
 | New | Texels through the sampler: -34% in the bench, -1% in the game | dropped |
 | New | Colour through attachments with depth in the shader: -4% in the bench | not built |
 | P1 | IN-497 small effect targets at 1x: -8% at 2x at night | in, Performance Mode |
+| New | IN-499 CT16 frames through attachments: -0.8% | in, normal |
+| New | IN-501, IN-502 the road's sheen and the alpha fills that serve it: -4.7% and -5.3% by day | in, Performance Mode |
+| New | IN-503 the sheen leaves early where destination alpha is zero: -3.2% by day | in, normal, integrated only |
+| New | IN-504 the tone palette in push constants: -43% for that pass in the bench, nothing in the game; input attachments: no gain | dropped |
+
+**Candidate 367 against 362, RX 9060 XT 12x night:** GPU busy 20.7 to 19.1 ms (-8%, 2+2 runs).
+
+**Candidate 367 against 362, HD 620 at 2x, no window, shaders warm, GPU busy / wall ms per VBlank:**
+
+| Scene and mode | 362 | 367 | GPU |
+|---|---|---|---|
+| Day, normal | 25.84 / 28.2 | 18.85 / 20.7 | -27% |
+| Day, Performance Mode | 25.74 / 26.5 | 16.75 / 17.5 | -35% |
+| Night, normal | 32.9 / 39.5 | 25.4 / 32.5 | -23% |
+| Night, Performance Mode | 33.0 / 35.8 | 22.7 / 25.5 | -31% |
+
+These replace the earlier overnight figures: the bench's set 19 turns Performance Mode on, so its "normal" before this table was Performance Mode without the switch being compared. Only `AB_NAME=GT4_CORE2_PERFORMANCE` compares the two modes, and its first warm-up run is still Performance Mode.
 
 What the fill bench says about the HD 620, for later: one store 0.52 ms per pass, two stores (frame and depth) 1.19, a load and a store of one image 0.53, the same under the interlock 1.10, a colour attachment 0.21 to 0.31.
