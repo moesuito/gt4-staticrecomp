@@ -98,6 +98,22 @@ if ($Set -eq 4) {
         @{ name='5-mapa-2x'; text='mapa da GPU em 2x'; scale=2; frames=10900; window=$false; env=@{ GT4_CORE2_GPU_PROFILE_AT='10800' } }
     )
 }
+if ($Set -eq 6) {
+    # Reference: GSdx on this machine, Direct3D 11 as the launcher's Performance Mode sets it, on the same scene.
+    $gsExe = Join-Path $Root 'data\gs\1.2.1\gt4-gs.exe'
+    $gsSha = (Get-FileHash -LiteralPath $gsExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    $gsTests = @()
+    foreach ($scale in 1, 2) {
+        $ini = Join-Path $logs "gsdx-$($scale)x.ini"
+        @('[EmuCore/GS]', 'Renderer = 3', "upscale_multiplier = $scale", 'accurate_blending_unit = 0', 'deinterlace_mode = 0', 'AspectRatio = 16:9',
+          'VsyncEnable = false', 'DisableMailboxPresentation = true', 'HWDownloadMode = 2', 'LoadTextureReplacements = false', '',
+          '[Folders]', ('Cache = ' + (Join-Path $Root 'data\gs\cache')), ('Textures = ' + (Join-Path $Root 'data\Textures')), '',
+          '[GT4GS]', ('DataRoot = ' + (Join-Path $Root 'data\gs\data')), 'ProhibitDynamicCode = false') | Set-Content -LiteralPath $ini -Encoding ascii
+        $gsTests += @{ name="gsdx-$($scale)x"; text="GSdx em $($scale)x"; scale=1; frames=$Frames; window=$false;
+                       env=@{ GT4_RENDERER='pcsx2'; PS2_GS='gpu'; GT4_GS_PROCESS=$gsExe; GT4_GS_PROCESS_SHA256=$gsSha; GT4_GS_CONFIG=$ini; GT4_FLARE_LIMITS='1'; GT4_PERF='1' } }
+    }
+    $tests = $gsTests
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0
