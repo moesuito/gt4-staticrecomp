@@ -354,7 +354,7 @@ void gif_reset_now() { backend().reset_gif_paths(); }
 // record that would cross the end). Waking is conditional: the EE rings the work bell after a push, which wakes the
 // worker only when it sleeps; the worker rings the progress bell only when what the EE waits for has happened (free
 // space, a VBlank done, the ring empty).
-enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37 };
+enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37, SkippedRead = 38 };
 
 class StreamRing {
 public:
@@ -478,6 +478,9 @@ public:
     push(SinkRecord::MtvuJob, 0, job, nullptr, 0);
   }
 
+  // IN-477: a read the EE does not wait for, at its place in the stream.
+  void post_skipped_read(std::uint32_t qwords) { push(SinkRecord::SkippedRead, 0, qwords, nullptr, 0); }
+
   // Waits until every queued record has executed; the caller then runs with the backend lock held.
   std::unique_lock<std::mutex> drain() {
     const std::uint64_t start = __rdtsc();
@@ -489,6 +492,8 @@ public:
   }
 
 private:
+  std::vector<std::uint8_t> skippedRead_;  // IN-477: worker only
+
   // Producer side: sleeps on the progress bell until `ready()` holds. `want` tells the worker when to ring: the free
   // bytes needed, kWantEmpty, or kWantNothing (a VBlank done always rings). The want/snapshot/re-check/wait order
   // pairs with the worker's release/check/ring order (all sequentially consistent), so no wakeup is lost.
@@ -557,6 +562,12 @@ private:
           case SinkRecord::GsReset: gs_reset_now(); break;
           case SinkRecord::GifReset: gif_reset_now(); break;
           case SinkRecord::MtvuJob: break;  // executed above, outside the lock
+          case SinkRecord::SkippedRead: {  // IN-477: the EE already has its answer; the read still leaves the GS FIFO
+            std::vector<std::uint8_t> &scratch = skippedRead_;
+            scratch.resize(static_cast<std::size_t>(header.job) * 16u);
+            read_fifo_now(scratch.data(), static_cast<std::uint32_t>(header.job));
+            break;
+          }
         }
       }
       const int slot = kind == SinkRecord::Gif ? 0 : kind == SinkRecord::Privileged ? 1 : kind == SinkRecord::Vsync ? 2 : 3;
@@ -672,9 +683,31 @@ void privileged(std::uint32_t address, std::uint64_t value) {
   add(g_transport.privileged_commands, 1);
 }
 
+// IN-477 (performance mode): GT4 reads its light flare visibility table once per frame, 128 qwords, and the renderer
+// answers it with zeros (IN-441). Waiting for the GS worker to reach that read only served to take the zeros: the EE was
+// blocked for most of the GS work of every frame (10-16 ms per VBlank on the i5-7200U). The same rule as the GSdx path's
+// (`local_readback`, gs_stream_client.cpp). GT4_HW_FLARE_NO_WAIT=0 waits as before (A/B).
+constexpr std::uint32_t kFlareTableQwords = 128;
+bool flare_table_answered_at_once() {
+  static const bool on = [] {
+    const char *hide = std::getenv("GT4_GS_HIDE_FLARES");
+    const char *performance = std::getenv("GT4_CORE2_PERFORMANCE");
+    const bool hidden = hide != nullptr ? std::strcmp(hide, "0") != 0 : performance != nullptr && std::strcmp(performance, "0") != 0;
+    const char *noWait = std::getenv("GT4_HW_FLARE_NO_WAIT");
+    return hidden && (noWait == nullptr || std::strcmp(noWait, "0") != 0);
+  }();
+  return on;
+}
+
 void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
   if (!g_worker) {
     read_fifo_now(data, qwords);
+    return;
+  }
+  if (qwords == kFlareTableQwords && flare_table_answered_at_once()) {
+    std::memset(data, 0, static_cast<std::size_t>(qwords) * 16u);
+    g_worker->post_skipped_read(qwords);
+    add(g_transport.read_fifos, 1);
     return;
   }
   const std::uint64_t start = __rdtsc();

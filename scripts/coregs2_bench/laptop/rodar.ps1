@@ -8,7 +8,8 @@ param(
     [string]$Elf = '',
     [string]$Disc = '',
     [int]$Frames = 11500,
-    [string[]]$Only = @()
+    [string[]]$Only = @(),
+    [int]$Set = 1
 )
 $ErrorActionPreference = 'Stop'
 $Only = @($Only | ForEach-Object { $_ -split ',' })
@@ -50,6 +51,27 @@ $tests = @(
     @{ name='5-1x-janela-fsr'; text='1x com janela, FSR na tela'; scale=1; frames=10500; window=$true; env=@{} },
     @{ name='6-1x-janela-bilinear'; text='1x com janela, filtro simples'; scale=1; frames=10500; window=$true; env=@{ GT4_CORE2_PRESENT_FILTER='bilinear' } }
 )
+if ($Set -eq 2) {
+    # Second round: the fill-rate benchmark of each way of writing a pixel, then the new build.
+    $fill = Join-Path $PSScriptRoot 'fill'
+    Write-Host 'Medindo o custo de cada jeito de desenhar ...' -ForegroundColor Cyan
+    Push-Location $fill
+    foreach ($size in @(@(640, 448), @(1280, 896))) {
+        foreach ($shared in @($false, $true)) {
+            $name = 'fill-{0}x{1}{2}.txt' -f $size[0], $size[1], $(if ($shared) { '-shared' } else { '' })
+            if ($shared) { $env:FB_SHARED = '1' } else { Remove-Item env:FB_SHARED -ErrorAction SilentlyContinue }
+            & (Join-Path $fill 'fillbench.exe') $size[0] $size[1] 20 2>&1 | Out-File (Join-Path $logs $name) -Encoding UTF8
+        }
+    }
+    Remove-Item env:FB_SHARED -ErrorAction SilentlyContinue
+    Pop-Location
+    $tests = @(
+        @{ name='1-1x'; text='1x, EE sem esperar o GS'; scale=1; frames=$Frames; window=$false; env=@{} },
+        @{ name='2-1x-sem-interlock'; text='1x sem interlock'; scale=1; frames=$Frames; window=$false; env=@{ GT4_HW_INTERLOCK='0' } },
+        @{ name='3-2x'; text='2x'; scale=2; frames=$Frames; window=$false; env=@{} },
+        @{ name='4-1x-janela'; text='1x com janela, filtro simples'; scale=1; frames=10500; window=$true; env=@{} }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0

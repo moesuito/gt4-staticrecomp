@@ -3486,7 +3486,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 presentHeight = h;
             }
         }
-        const bool presentScaled = composed && presentResample_ && presentWidth != 0 && presentHeight != 0 &&
+        // IN-478: FSR and Lanczos cost 4.7 ms of GPU per frame on the HD 620 (0.5 ms on the RX 9060 XT): the plain blit in
+        // performance mode on an integrated GPU.
+        const bool presentScaled = composed && presentResample_ && !(performance_ && gpu_.Integrated()) && presentWidth != 0 && presentHeight != 0 &&
                                    (presentWidth != outWidth || presentHeight != outHeight || rcasSharpness_ > 0.0f);
         if (presentScaled) {
             composed = gpu_.PresentScale(fxaa, outWidth, outHeight, presentWidth, presentHeight, rcasSharpness_, error);
