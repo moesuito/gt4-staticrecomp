@@ -2862,9 +2862,15 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (s.profiling) {
     namespace g = gpu::gpufield;
     const auto &f = batch.state.fields;
-    char label[200];
-    std::snprintf(label, sizeof label, "draw %ux%u tex=%s blend=%s z=%s%s ate=%u fbmsk=%s prims=%s",
-                  frame->width, frame->height,
+    char label[240];
+    // The area the batch's scissors cover, in output pixels, in the label's rounding: a large batch stands on its own line.
+    double scissorArea = 0;
+    for (const gpu::GpuDraw &draw : *batch.draws) {
+      scissorArea += static_cast<double>(std::max(draw.x1 - draw.x0 + 1, 0)) * std::max(draw.y1 - draw.y0 + 1, 0) * sc * sc;
+    }
+    std::snprintf(label, sizeof label, "draw %ux%u area=%.1fM rop=%u const=%u topo=%u tex=%s blend=%s z=%s%s ate=%u fbmsk=%s prims=%s",
+                  frame->width, frame->height, scissorArea / 1.0e6, ropPipeline ? 1u : 0u, batch.constantFill ? 1u : 0u,
+                  static_cast<unsigned>(batch.draws->front().topology),
                   batch.texture != kNoImage ? "target" : batch.memoryTexture != kNoImage ? (paletted ? "indexed" : "memory") : "-",
                   f[g::BlendOn] ? (std::to_string(f[g::BlendA]) + std::to_string(f[g::BlendB]) + std::to_string(f[g::BlendC]) +
                                    std::to_string(f[g::BlendD])).c_str()
