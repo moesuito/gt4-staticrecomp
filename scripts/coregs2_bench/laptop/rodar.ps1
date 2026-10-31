@@ -88,6 +88,16 @@ if ($Set -eq 3) {
         @{ name='2-mapa-2x'; text='mapa da GPU em 2x'; scale=2; frames=10900; window=$false; env=@{ GT4_CORE2_GPU_PROFILE_AT='10800'; GT4_CORE2_GPU_STATISTICS='1' } }
     )
 }
+if ($Set -eq 4) {
+    # Fourth round: draws that read nothing back through colour attachments (IN-481), on and off.
+    $tests = @(
+        @{ name='1-aquecimento'; text='aquecendo (compila os shaders novos)'; scale=1; frames=$Frames; window=$false; env=@{} },
+        @{ name='2-1x-novo'; text='1x, caminho novo'; scale=1; frames=$Frames; window=$false; env=@{} },
+        @{ name='3-1x-antigo'; text='1x, caminho antigo'; scale=1; frames=$Frames; window=$false; env=@{ GT4_CORE2_ROP='0' } },
+        @{ name='4-2x-novo'; text='2x, caminho novo'; scale=2; frames=$Frames; window=$false; env=@{} },
+        @{ name='5-mapa-2x'; text='mapa da GPU em 2x'; scale=2; frames=10900; window=$false; env=@{ GT4_CORE2_GPU_PROFILE_AT='10800' } }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0

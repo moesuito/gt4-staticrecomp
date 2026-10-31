@@ -53,6 +53,7 @@ struct Headless {
     uint32_t family = 0;
     bool wantInterlock = true;
     bool interlock = false;
+    bool independentBlend = false;
 
     bool Create(std::string& error) {
         if (!gt4::hw::vulkan_loader::load_loader(error)) return false;
@@ -111,6 +112,12 @@ struct Headless {
         VkDeviceCreateInfo dev{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dev.queueCreateInfoCount = 1;
         dev.pQueueCreateInfos = &queue;
+        VkPhysicalDeviceFeatures2 supportedFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        VkPhysicalDeviceFeatures enabledFeatures{};
+        gt4_hw_vkGetPhysicalDeviceFeatures2(physical, &supportedFeatures);
+        enabledFeatures.independentBlend = supportedFeatures.features.independentBlend;
+        independentBlend = supportedFeatures.features.independentBlend == VK_TRUE;
+        dev.pEnabledFeatures = &enabledFeatures;
         if (interlock) {
             dev.pNext = &interlockFeatures;
             dev.enabledExtensionCount = 1;
@@ -5304,6 +5311,7 @@ int main(int argc, char** argv) {
     handles.queue = headless.queue;
     handles.queueFamily = headless.family;
     handles.pixelInterlock = headless.interlock;
+    handles.independentBlend = headless.independentBlend;
     gpu::GpuDrawer drawer;
     if (!drawer.Init(handles, error)) {
         std::printf("%s: GPU drawer init failed: %s\n", name.c_str(), error.c_str());

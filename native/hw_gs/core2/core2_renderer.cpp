@@ -3580,13 +3580,13 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
-                 "compile_max_ms=%.1f failures=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
+                 "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
                  "block_hits=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
-                 (unsigned long long)g.specFailures, (unsigned long long)c.delayedDownloads,
+                 (unsigned long long)g.specFailures, (unsigned long long)g.ropBatches, (unsigned long long)c.delayedDownloads,
                  (unsigned long long)c.hiddenFlareTables, (unsigned long long)g.computeFills,
                  static_cast<double>(g.fillPixels) / 1.0e6, (unsigned long long)c.unchangedUploads,
                  (unsigned long long)c.staleBy[0], (unsigned long long)c.staleBy[1], (unsigned long long)c.staleBy[2],

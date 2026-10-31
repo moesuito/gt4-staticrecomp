@@ -25,6 +25,8 @@ struct VulkanHandles {
     std::uint32_t queueFamily = 0;
     // The device was created with VK_EXT_fragment_shader_interlock and fragmentShaderPixelInterlock (IN-345).
     bool pixelInterlock = false;
+    // The device was created with independentBlend (IN-481: per-attachment write masks of the ROP path).
+    bool independentBlend = false;
 };
 
 // Vertex record of chapter 03.3 (32 bytes). X and Y are 12.4 two's complement values.

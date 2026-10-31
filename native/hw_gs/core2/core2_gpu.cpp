@@ -70,6 +70,7 @@ struct Image {
   VkImage image = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
   VkImageView view = VK_NULL_HANDLE;
+  VkImageView ropView = VK_NULL_HANDLE;  // IN-481: the same words as RGBA8 bytes, for colour attachments
   std::uint32_t nativeWidth = 0, nativeHeight = 0;
   std::uint32_t width = 0, height = 0;  // in output pixels
   std::uint32_t scale = 1;
@@ -317,6 +318,14 @@ struct Gpu::Impl {
   VkFramebuffer framebuffer = VK_NULL_HANDLE;
   std::uint32_t framebufferWidth = 0, framebufferHeight = 0;
   VkShaderModule vertexModule = VK_NULL_HANDLE, fragmentModule = VK_NULL_HANDLE, interlockModule = VK_NULL_HANDLE;
+  // IN-481: draws that read nothing back go through colour attachments: cheaper on GPUs whose storage writes are slow
+  // (HD 620: about 2x, 3x with a texture). The pixels are the same. GT4_CORE2_ROP=0 / 1 forces it off / on (default: on an
+  // integrated GPU); GT4_CORE2_ROP_FILLS=0 keeps the constant fills in compute (A/B).
+  bool ropOn = false;
+  const bool ropFills = std::getenv("GT4_CORE2_ROP_FILLS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_ROP_FILLS"), "0") != 0;
+  VkShaderModule ropModule = VK_NULL_HANDLE;
+  VkRenderPass ropPassFrame = VK_NULL_HANDLE, ropPassBoth = VK_NULL_HANDLE;
+  std::map<std::pair<VkImageView, VkImageView>, VkFramebuffer> ropFramebuffers;
   VkPipeline pipelines[3] = {};  // points, lines, triangles
   VkPipeline interlockTriangles = VK_NULL_HANDLE;
 
@@ -342,7 +351,8 @@ struct Gpu::Impl {
   }();
   static constexpr std::size_t kMaxSpecPipelines = 2048;  // beyond this many draw states the uber pipeline draws
   // The specialised fields, then the push word, then the anisotropy (tex_origin_x bits 21-23) of a mipmapped draw.
-  using SpecKey = std::array<std::uint32_t, kSpecFieldCount + 2>;
+  // Slot kSpecFieldCount + 2: the ROP word of a draw through colour attachments (rop_word), 0 for storage writes.
+  using SpecKey = std::array<std::uint32_t, kSpecFieldCount + 3>;
   struct SpecKeyHash {
     std::size_t operator()(const SpecKey &key) const {
       std::uint64_t h = 1469598103934665603ull;
@@ -551,6 +561,7 @@ struct Gpu::Impl {
       out.image = recycled[i].image;
       out.memory = recycled[i].memory;
       out.view = recycled[i].view;
+      out.ropView = recycled[i].ropView;
       out.bytes = recycled[i].bytes;
       out.block = recycled[i].block;
       out.offset = recycled[i].offset;
@@ -571,6 +582,15 @@ struct Gpu::Impl {
     info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    const VkFormat ropFormats[2] = {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8B8A8_UNORM};
+    VkImageFormatListCreateInfo formatList{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+    formatList.viewFormatCount = 2;
+    formatList.pViewFormats = ropFormats;
+    if (ropOn) {
+      info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+      info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      info.pNext = &formatList;
+    }
     if (!check(gt4_hwd_vkCreateImage(device, &info, nullptr, &out.image), "vkCreateImage", error)) return false;
     VkMemoryRequirements requirements{};
     gt4_hwd_vkGetImageMemoryRequirements(device, out.image, &requirements);
@@ -595,6 +615,10 @@ struct Gpu::Impl {
     view.format = VK_FORMAT_R32_UINT;
     view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (!check(gt4_hwd_vkCreateImageView(device, &view, nullptr, &out.view), "vkCreateImageView", error)) return false;
+    if (ropOn) {
+      view.format = VK_FORMAT_R8G8B8A8_UNORM;
+      if (!check(gt4_hwd_vkCreateImageView(device, &view, nullptr, &out.ropView), "vkCreateImageView", error)) return false;
+    }
     out.bytes = requirements.size;
     out.alive = true;
     stats.imageBytes += out.bytes;
@@ -642,6 +666,17 @@ struct Gpu::Impl {
 
   void release(Image &image) {
     if (!image.alive) return;
+    if (image.ropView) {
+      for (auto it = ropFramebuffers.begin(); it != ropFramebuffers.end();) {
+        if (it->first.first == image.ropView || it->first.second == image.ropView) {
+          gt4_hwd_vkDestroyFramebuffer(device, it->second, nullptr);
+          it = ropFramebuffers.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      gt4_hwd_vkDestroyImageView(device, image.ropView, nullptr);
+    }
     if (image.view) gt4_hwd_vkDestroyImageView(device, image.view, nullptr);
     if (image.image) gt4_hwd_vkDestroyImage(device, image.image, nullptr);
     if (image.block >= 0) {
@@ -699,7 +734,7 @@ struct Gpu::Impl {
   }
 
   VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error,
-                           const VkSpecializationInfo *specialization = nullptr) {
+                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -755,6 +790,13 @@ struct Gpu::Impl {
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = 0;  // the fragment stage writes storage images
+    VkPipelineColorBlendAttachmentState ropAttachments[2]{};
+    if (rop != 0) {
+      ropAttachments[0].colorWriteMask = rop_frame_mask(rop);
+      ropAttachments[1].colorWriteMask = rop_depth_mask(rop);
+      blend.attachmentCount = rop_depth_mask(rop) != 0 ? 2 : 1;
+      blend.pAttachments = ropAttachments;
+    }
     VkDynamicState dynamicStates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dynamic.dynamicStateCount = 2;
@@ -770,11 +812,56 @@ struct Gpu::Impl {
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic;
     info.layout = drawLayout;
-    info.renderPass = renderPass;
+    info.renderPass = rop == 0 ? renderPass : rop_depth_mask(rop) != 0 ? ropPassBoth : ropPassFrame;
     VkPipeline pipeline = VK_NULL_HANDLE;
     check(gt4_hwd_vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
           "vkCreateGraphicsPipelines", error);
     return pipeline;
+  }
+
+  // IN-481: the ROP word: bit 0 set, bits 1-4 the frame's RGBA lanes, bits 5-8 the depth word's lanes.
+  static std::uint32_t rop_frame_mask(std::uint32_t word) { return (word >> 1) & 15u; }
+  static std::uint32_t rop_depth_mask(std::uint32_t word) { return (word >> 5) & 15u; }
+  // The ROP word of a draw state that reads neither word back, or 0: no blend, no DATE, no depth test but ALWAYS, FBMSK in
+  // whole bytes, and what the alpha test decides per fragment is all or nothing. The lanes the shader would keep from the
+  // old word are masked, so the result is the word it would store.
+  static std::uint32_t rop_word(const std::uint32_t *f) {
+    namespace g = gpu::gpufield;
+    const std::uint32_t format = f[g::Format];
+    if (format > 1u || f[g::BlendOn] != 0 || f[g::DateOn] != 0) return 0;  // CT32, CT24
+    if (f[g::Ztest] != 0 && f[g::Ztst] != 1u) return 0;                    // HW_DEPTH_ALWAYS
+    bool writeDepth = f[g::Ztest] != 0 && f[g::Zmsk] == 0;
+    std::uint32_t frameMask = 15u;
+    const std::uint32_t fbmsk = f[g::Fbmsk];
+    for (std::uint32_t lane = 0; lane < (format == 0u ? 4u : 3u); ++lane) {
+      const std::uint32_t kept = (fbmsk >> (8u * lane)) & 0xFFu;
+      if (kept == 0xFFu) {
+        frameMask &= ~(1u << lane);
+      } else if (kept != 0u) {
+        return 0;
+      }
+    }
+    if (format == 1u && f[g::KeepTopByte] != 0) frameMask &= 7u;
+    if (f[g::Ate] != 0 && f[g::Atst] != 1u) {  // not ALWAYS
+      const std::uint32_t afail = f[g::Afail];
+      if (f[g::Atst] == 0u) {  // NEVER: every fragment takes the fail path
+        if (afail == 0u) return 0;
+        if (afail == 2u) {  // ZB_ONLY
+          frameMask = 0;
+        } else {  // FB_ONLY; RGB_ONLY keeps the alpha lane of CT32 and acts as FB_ONLY otherwise
+          writeDepth = false;
+          if (afail == 3u && format == 0u) frameMask &= 7u;
+        }
+      } else if (afail == 1u && !writeDepth) {
+        // A failing fragment still writes the whole frame word: the test decides nothing here.
+      } else if (afail != 0u) {
+        return 0;  // the fail path writes other lanes than the pass path
+      }
+    }
+    std::uint32_t depthMask = 0;
+    if (writeDepth) depthMask = f[g::Zformat] == 0u ? 15u : f[g::Zformat] == 1u ? 7u : 3u;
+    if (frameMask == 0 && depthMask == 0) return 0;
+    return 1u | frameMask << 1 | depthMask << 5;
   }
 
   // IN-437: the state block fields that hw_pixel_uber.frag reads as specialization constants (constant id = 1 + the
@@ -833,7 +920,9 @@ struct Gpu::Impl {
       ++count;
     }
     VkSpecializationInfo info{count, entries, 4 * count, values};
-    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, interlock ? interlockModule : fragmentModule, error, &info);  // the driver caches
+    const std::uint32_t rop = key[kSpecFieldCount + 2];
+    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, rop != 0 ? ropModule : interlock ? interlockModule : fragmentModule,
+                         error, &info, rop);  // the driver caches
   }
 
   // Records a compile time (specMutex held).
@@ -892,7 +981,23 @@ struct Gpu::Impl {
     // IN-471: without the interlock the triangle pipeline is the plain one, specialised the same way.
     const VkPipeline uber = interlock ? interlockTriangles : pipelines[2];
     if (specMode == SpecMode::off) return uber;
-    const SpecKey key = spec_key(fields, pushWord);
+    const VkPipeline pipeline = specialised_pipeline(spec_key(fields, pushWord));
+    if (pipeline) return pipeline;
+    stats.uberBatches++;
+    return uber;
+  }
+
+  // IN-481: the variant of a draw through colour attachments, or null: not eligible or not compiled yet (it then draws
+  // with storage writes, the same pixels).
+  VkPipeline rop_pipeline(const std::uint32_t *fields, std::uint32_t pushWord, std::uint32_t word) {
+    if (!ropOn || word == 0 || specMode == SpecMode::off) return VK_NULL_HANDLE;
+    SpecKey key = spec_key(fields, pushWord);
+    key[kSpecFieldCount + 2] = word;
+    return specialised_pipeline(key);
+  }
+
+  // The ready variant of `key`, or null after asking for it (GS thread).
+  VkPipeline specialised_pipeline(const SpecKey &key) {
     auto found = specLocal.find(key);
     if (found == specLocal.end() && specDoneCount.load(std::memory_order_acquire) != specDoneSeen) {
       std::lock_guard<std::mutex> lock(specMutex);
@@ -932,8 +1037,7 @@ struct Gpu::Impl {
         specWake.notify_one();
       }
     }
-    stats.uberBatches++;
-    return uber;
+    return VK_NULL_HANDLE;
   }
 
   VkPipeline make_compute(VkShaderModule module, std::string &error, VkPipelineLayout layout = VK_NULL_HANDLE) {
@@ -1272,6 +1376,10 @@ struct Gpu::Impl {
     VkViewport viewport{};
     std::uint32_t push[8] = {};
     bool textureFromTarget = false;
+    bool rop = false;  // IN-481: through colour attachments
+    VkRenderPass ropPass = VK_NULL_HANDLE;
+    VkFramebuffer ropFramebuffer = VK_NULL_HANDLE;
+    std::uint32_t ropWidth = 0, ropHeight = 0;
     std::uint32_t firstCommand = 0, commandCount = 0;
     std::string profileLabel;  // S3: only while profiling
   };
@@ -1321,9 +1429,53 @@ struct Gpu::Impl {
   }
 
   // One batch's commands, inside the open render pass; `first` is the pass's first batch (no barrier before it).
+  // IN-481: the framebuffer of a frame and optional depth attachment. Colour attachments need the same size.
+  bool rop_framebuffer(const Image &frame, const Image *depth, VkFramebuffer &out, std::string &error) {
+    const std::pair<VkImageView, VkImageView> key{frame.ropView, depth ? depth->ropView : VK_NULL_HANDLE};
+    auto found = ropFramebuffers.find(key);
+    if (found != ropFramebuffers.end()) {
+      out = found->second;
+      return true;
+    }
+    const VkImageView views[2] = {key.first, key.second};
+    VkFramebufferCreateInfo info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    info.renderPass = depth ? ropPassBoth : ropPassFrame;
+    info.attachmentCount = depth ? 2 : 1;
+    info.pAttachments = views;
+    info.width = frame.width;
+    info.height = frame.height;
+    info.layers = 1;
+    if (!check(gt4_hwd_vkCreateFramebuffer(device, &info, nullptr, &out), "vkCreateFramebuffer", error)) return false;
+    ropFramebuffers[key] = out;
+    return true;
+  }
+
+  void begin_rop_pass(const DeferredDraw &draw) {
+    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    begin.renderPass = draw.ropPass;
+    begin.framebuffer = draw.ropFramebuffer;
+    begin.renderArea = {{0, 0}, {draw.ropWidth, draw.ropHeight}};
+    gt4_hwd_vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    stats.renderPasses++;
+    renderPassOpen = true;
+    passState = PassState{};
+  }
+
+  // Between a pass of storage writes and one of attachment writes (either order), or two of attachments.
+  void rop_barrier() {
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    const VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    gt4_hw_vkCmdPipelineBarrier(cmd, stages, stages, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    stats.fragmentBarriers++;
+    drewSinceBarrier = false;
+  }
+
   void record_draw(const DeferredDraw &draw, bool first) {
     prof_begin(draw.profileLabel);
-    if (!first && drewSinceBarrier && ((!interlock && !groupDisjoint) || draw.textureFromTarget)) {
+    if (!draw.rop && !first && drewSinceBarrier && ((!interlock && !groupDisjoint) || draw.textureFromTarget)) {
       // A texture taken from a target reads pixels other than its own (no interlock order). Without pixel interlock a
       // batch waits for the one before through its first command (IN-471), or always with GT4_CORE2_GROUP_DISJOINT=0.
       fragment_barrier();
@@ -1362,7 +1514,7 @@ struct Gpu::Impl {
     }
     for (std::uint32_t i = 0; i < draw.commandCount; ++i) {
       const DeferredCommand &command = deferredCommands[draw.firstCommand + i];
-      if (command.barrierFirst && drewSinceBarrier) fragment_barrier();
+      if (!draw.rop && command.barrierFirst && drewSinceBarrier) fragment_barrier();
       if (!skipRedundant || !bound.scissorSet ||
           std::memcmp(&command.scissor, &bound.scissor, sizeof command.scissor) != 0) {
         gt4_hwd_vkCmdSetScissor(cmd, 0, 1, &command.scissor);
@@ -1410,8 +1562,28 @@ struct Gpu::Impl {
     const bool timed = timestamps && passTimestampsOn && pair < kPassTimestampPairs;
     const std::uint32_t query = slot * kTimestampsPerSlot + 2u + 2u * pair;
     if (timed) gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, query);
-    begin_draw_pass();
-    for (std::size_t i = 0; i < deferred.size(); ++i) record_draw(deferred[i], i == 0);
+    // IN-481: a new pass when the way of writing or the attachments change; a texture taken from a target must see what
+    // the attachments of the current pass wrote.
+    const DeferredDraw *open = nullptr;
+    for (std::size_t i = 0; i < deferred.size(); ++i) {
+      const DeferredDraw &draw = deferred[i];
+      const bool newPass = open == nullptr || draw.rop != open->rop ||
+                           (draw.rop && (draw.ropFramebuffer != open->ropFramebuffer || draw.ropPass != open->ropPass ||
+                                         (draw.textureFromTarget && drewSinceBarrier)));
+      if (newPass) {
+        if (open != nullptr) {
+          end_render_pass();
+          rop_barrier();
+        }
+        if (draw.rop) {
+          begin_rop_pass(draw);
+        } else {
+          begin_draw_pass();
+        }
+        open = &draw;
+      }
+      record_draw(draw, newPass);
+    }
     end_render_pass();
     if (timed) {
       gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, query + 1u);
@@ -1873,6 +2045,43 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.pipelines[1] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, s.fragmentModule, error);
   s.pipelines[2] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.fragmentModule, error);
   if (!s.pipelines[0] || !s.pipelines[1] || !s.pipelines[2]) return false;
+  // IN-481
+  {
+    const char *ropSwitch = std::getenv("GT4_CORE2_ROP");
+    const bool wanted = ropSwitch ? std::strcmp(ropSwitch, "0") != 0 : s.integrated;
+    if (wanted && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
+      VkAttachmentDescription attachment{};
+      attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
+      attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+      attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      attachment.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      attachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+      const VkAttachmentDescription attachments[2] = {attachment, attachment};
+      const VkAttachmentReference references[2] = {{0, VK_IMAGE_LAYOUT_GENERAL}, {1, VK_IMAGE_LAYOUT_GENERAL}};
+      for (std::uint32_t count = 1; count <= 2; ++count) {
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = count;
+        subpass.pColorAttachments = references;
+        VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        info.attachmentCount = count;
+        info.pAttachments = attachments;
+        info.subpassCount = 1;
+        info.pSubpasses = &subpass;
+        if (!check(gt4_hwd_vkCreateRenderPass(s.device, &info, nullptr, count == 1 ? &s.ropPassFrame : &s.ropPassBoth),
+                   "vkCreateRenderPass", error)) {
+          return false;
+        }
+      }
+      s.ropModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_words, hwgs::shaders::hw_pixel_uber_core2_rop_word_count, error);
+      if (!s.ropModule) return false;
+      s.ropOn = true;
+    }
+    std::fprintf(stderr, "[core2] colour attachment path (IN-481) %s" "\n", s.ropOn ? "on" : "off");
+  }
   if (handles.pixelInterlock) {
     s.interlockModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_interlock_words,
                                       hwgs::shaders::hw_pixel_uber_core2_interlock_word_count, error);
@@ -2275,7 +2484,24 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // snap in this core), and a pixel is covered when its centre lies on or right of the left edge and left of the right
   // one. The 1/320 bias keeps every edge at least 0.003 pixel from a pixel centre, more than the float rounding of the
   // edge, so this double-precision count matches the GPU's.
-  if (batch.constantFill && s.computeFills && s.fillPipeline) {
+  // IN-481: the state and images this batch would draw through colour attachments with, if any.
+  const std::uint32_t pushTexScale = (batch.texture != kNoImage ? (s.scale | 0x01000000u) : 1u) |
+                                     (s.scale > 1 ? (0x40000000u | 0x10000000u) : 0u) |
+                                     (batch.mipInfo != 0 ? 0x00800000u : 0u) |  // IN-428: tex_origin_x holds the mip parameters
+                                     (batch.replacedWidth != 0 ? 0x00400000u : 0u) |  // IN-470: a replacement image
+                                     (batch.forceLinear ? 0x80000000u : 0u);          // IN-433: forced bilinear
+  VkPipeline ropPipeline = VK_NULL_HANDLE;
+  std::uint32_t ropWord = 0;
+  if (s.ropOn && texture != frame && texture != depth && frame != depth && frame->width <= s.framebufferWidth &&
+      frame->height <= s.framebufferHeight) {
+    bool triangles = true;
+    for (const gpu::GpuDraw &draw : *batch.draws) triangles = triangles && draw.topology == gpu::GpuTopology::Triangles;
+    ropWord = triangles ? Impl::rop_word(state.fields) : 0u;
+    if (ropWord != 0 && Impl::rop_depth_mask(ropWord) != 0 && (depth->width != frame->width || depth->height != frame->height)) ropWord = 0;
+    ropPipeline = s.rop_pipeline(state.fields, pushTexScale, ropWord);
+  }
+
+  if (batch.constantFill && s.computeFills && s.fillPipeline && !(ropPipeline && s.ropFills)) {
     const std::vector<gpu::GpuVertex> &verts = *batch.vertices;
     const gpu::GpuVertex &v0 = verts[batch.draws->front().first];
     const std::uint32_t sc = s.scale;
@@ -2427,10 +2653,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // tex_scale: s for a texture sampled from a target (binding 4) with bit 24 set (IN-427: at 1x the scale alone could
   // not tell it from the atlas), 1 for the atlas; at scale the fine dither (8.6) and the floored rasteriser depth (1.6)
   // are on.
-  record.push[7] = (batch.texture != kNoImage ? (sc | 0x01000000u) : 1u) | (sc > 1 ? (0x40000000u | 0x10000000u) : 0u) |
-                   (batch.mipInfo != 0 ? 0x00800000u : 0u) |  // IN-428: tex_origin_x holds the mip parameters
-                   (batch.replacedWidth != 0 ? 0x00400000u : 0u) |  // IN-470: a replacement image
-                   (batch.forceLinear ? 0x80000000u : 0u);    // IN-433: forced bilinear
+  record.push[7] = pushTexScale;
   record.textureFromTarget = batch.texture != kNoImage;
   if (s.profiling) {
     namespace g = gpu::gpufield;
@@ -2468,7 +2691,16 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   };
   record.firstCommand = static_cast<std::uint32_t>(s.deferredCommands.size());
   const std::uint32_t vertexCount = static_cast<std::uint32_t>(batch.vertices->size());
-  bool allTriangles = s.interlock;
+  if (ropPipeline) {
+    const bool withDepth = Impl::rop_depth_mask(ropWord) != 0;
+    if (!s.rop_framebuffer(*frame, withDepth ? depth : nullptr, record.ropFramebuffer, error)) return false;
+    record.rop = true;
+    record.ropPass = withDepth ? s.ropPassBoth : s.ropPassFrame;
+    record.ropWidth = frame->width;
+    record.ropHeight = frame->height;
+    s.stats.ropBatches++;
+  }
+  bool allTriangles = s.interlock || record.rop;
   for (const gpu::GpuDraw &draw : *batch.draws) allTriangles = allTriangles && draw.topology == gpu::GpuTopology::Triangles;
   if (allTriangles) {
     std::int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
@@ -2486,7 +2718,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
     Impl::DeferredCommand command;
     if (end > first && scissorOf(x0, y0, x1, y1, command.scissor)) {
-      command.pipeline = s.triangle_pipeline(state.fields, record.push[7]);  // IN-437
+      command.pipeline = record.rop ? ropPipeline : s.triangle_pipeline(state.fields, record.push[7]);  // IN-437
       command.first = first;
       command.count = end - first;
       s.deferredCommands.push_back(command);
@@ -2499,7 +2731,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     // only) and after a texture taken from a target, each batch starts over with a wait. GT4_CORE2_GROUP_DISJOINT=0 waits
     // before every primitive (A/B).
     std::vector<PrimitiveShape> &group = s.disjointGroup;
-    if (s.interlock || record.textureFromTarget || s.deferred.empty() || s.disjointFrame != frame->serial ||
+    if (s.interlock || record.textureFromTarget || s.deferred.empty() || s.deferred.back().rop || s.disjointFrame != frame->serial ||
         s.disjointDepth != depth->serial) {
       group.clear();
     }

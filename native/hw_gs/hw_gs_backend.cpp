@@ -104,6 +104,7 @@ struct Backend::Impl {
   std::uint64_t submissions = 0;
 
   gt4::pacing::PresentMode present_mode = gt4::pacing::PresentMode::fifo;
+  bool independent_blend = false;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
@@ -414,10 +415,13 @@ struct Backend::Impl {
     features2.pNext = &v12;
     features2.features.dualSrcBlend = VK_TRUE;
     features2.features.fragmentStoresAndAtomics = VK_TRUE;
+    independent_blend = false;
     // CORE2 B4: pipeline statistics (fragment and primitive counts in the timing lines) where the device has them.
     VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     vkGetPhysicalDeviceFeatures2(physical, &supported);
     features2.features.pipelineStatisticsQuery = supported.features.pipelineStatisticsQuery;
+    features2.features.independentBlend = supported.features.independentBlend;  // IN-481
+    independent_blend = supported.features.independentBlend == VK_TRUE;
 
     // IN-345: pixel interlock lets the GPU path draw a batch of triangles in one draw (no barriers).
     // GT4_HW_INTERLOCK=0 leaves it off on a device that has it: the path of GPUs without it (most mobile GPUs), for
@@ -833,6 +837,7 @@ bool Backend::init(const Options &options, std::string &error) {
   s.renderer = std::make_unique<hwgs::writeback::Renderer>();
   hwgs::gpu::VulkanHandles handles{s.instance, s.physical, s.device, s.queue, s.queue_family};
   handles.pixelInterlock = s.pixel_interlock;
+  handles.independentBlend = s.independent_blend;
   {
     // M12 (06.1, IN-371): GT4_HW_SCALE clamped to the device ceiling s_max = max(1, floor(maxImageDimension2D /
     // 1280)); the 06.3 half-pixel mode sets the vertex shift factor (native: s, normal: m, off: 1).

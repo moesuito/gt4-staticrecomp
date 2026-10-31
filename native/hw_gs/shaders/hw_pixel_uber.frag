@@ -162,6 +162,16 @@ layout(constant_id = 101) const uint SPEC_MIP_ANISO = kDynamic;  // tex_origin_x
 #define PUSH_WORD (SPEC_PUSH_WORD != kDynamic ? SPEC_PUSH_WORD : pc.tex_scale)
 #define ST_MIP_ANISO (SPEC_MIP_ANISO != kDynamic ? SPEC_MIP_ANISO : (state.tex_origin_x >> 21) & 7u)
 
+#ifndef HWR_ROP
+#define HWR_ROP 0
+#endif
+#if HWR_ROP
+// IN-481: a draw that reads nothing back writes through colour attachments (byte views of the same words), with the
+// lanes it keeps masked by the pipeline: the GPU's own output path instead of storage writes. The word is exact: a byte
+// divided by 255 comes back as that byte.
+layout(location = 0) out vec4 hw_out_frame;
+layout(location = 1) out vec4 hw_out_depth;
+#endif
 #if HWR_INTERLOCK
 // Inside the interlock the next fragment of the same pixel must see this one's stores: coherent images.
 layout(set = 0, binding = 1, r32ui) coherent uniform uimage2D hw_frame;
@@ -626,8 +636,12 @@ void main() {
 #if HWR_INTERLOCK
     beginInvocationInterlockARB();
 #endif
+#if HWR_ROP
+    const uint frame_old = 0u, depth_old = 0u;
+#else
     uint frame_old = frame_read ? imageLoad(hw_frame, pixel).x : 0u;
     uint depth_old = depth_read ? imageLoad(hw_depth, pixel).x : 0u;
+#endif
     // IN-451: the speculation said "fails"; with the current word the fragment may pass after all (then it needs its
     // texel now). If it fails, hw_process_pixel discards it at the depth test before the colour matters.
     if (texel_deferred && hw_depth_passes(s.ztst, hw_clamp_z(f.z, s.zformat), depth_old, s.zformat)) {
@@ -635,6 +649,11 @@ void main() {
         if (ST_FOG_ON != 0u) f.colour = fogged(f.colour);
     }
     HwOutcome o = hw_process_pixel(s, f, frame_old, depth_old);
+#if HWR_ROP
+    if (!o.frame_written && !o.depth_written) discard;
+    hw_out_frame = unpackUnorm4x8(o.frame_stored);
+    hw_out_depth = unpackUnorm4x8(o.depth_stored);
+#else
     if (o.frame_written) {
         if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24) {
             o.frame_stored = (o.frame_stored & 0x00FFFFFFu) | (frame_old & 0xFF000000u);
@@ -644,6 +663,7 @@ void main() {
     if (o.depth_written) {
         imageStore(hw_depth, pixel, uvec4(o.depth_stored));
     }
+#endif
 #if HWR_INTERLOCK
     endInvocationInterlockARB();
 #endif
