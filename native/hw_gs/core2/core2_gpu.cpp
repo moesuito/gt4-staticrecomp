@@ -2749,10 +2749,12 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
                                      (batch.forceLinear ? 0x80000000u : 0u);          // IN-433: forced bilinear
   VkPipeline ropPipeline = VK_NULL_HANDLE;
   std::uint32_t ropWord = 0;
-  if (s.ropOn && texture != frame && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
+  if (s.ropOn && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
     bool triangles = true;
     for (const gpu::GpuDraw &draw : *batch.draws) triangles = triangles && draw.topology == gpu::GpuTopology::Triangles;
     ropWord = triangles ? Impl::rop_word(state.fields, s.ropBlend && s.dualSourceBlend) : 0u;
+    // IN-495: sampling the frame is safe through its attachment only when no lane of it is written.
+    if (texture == frame && (ropWord >> 1 & 15u) != 0) ropWord = 0;
     // A depth write needs its own attachment; a batch with no depth image names the frame there, and writes no depth.
     if (ropWord != 0 && Impl::rop_depth_mask(ropWord) != 0 &&
         (depth == frame || texture == depth || depth->width != frame->width || depth->height != frame->height)) {

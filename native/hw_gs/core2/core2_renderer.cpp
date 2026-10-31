@@ -3239,7 +3239,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             // a copy of the sampled rectangle taken before it (the auto-flush of 2.6 already splits a batch where a
             // later primitive must see an earlier one's pixels). Sampling the target itself raced with the batch's own
             // writes, so 12x frames differed from run to run. GT4_CORE2_SELF_COPY=0 samples the target itself (A/B).
-            if (selfCopy_ && (draw.texture == draw.frame || draw.texture == draw.depth) &&
+            // IN-495: a batch that keeps every lane of its frame and samples that frame reads pixels nothing changes.
+            namespace gf = gpu::gpufield;
+            const bool frameUntouched = draw.texture == draw.frame && draw.texture != draw.depth &&
+                                        t.state.fields[gf::Fbmsk] == 0xFFFFFFFFu;
+            if (selfCopy_ && !frameUntouched && (draw.texture == draw.frame || draw.texture == draw.depth) &&
                 !Intersect(textureFootprint_, t.rect).Empty()) {
                 const PixelRect copy = Intersect(textureFootprint_,
                                                  PixelRect{0, 0, static_cast<std::int32_t>(textureTarget->width) - 1,
