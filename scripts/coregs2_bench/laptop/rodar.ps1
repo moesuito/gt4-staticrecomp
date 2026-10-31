@@ -130,6 +130,18 @@ if ($Set -eq 7) {
         @{ name='3-dia-2x'; text='dia, 2x'; scale=2; frames=11000; window=$false; env=@{} }
     )
 }
+if ($Set -eq 8) {
+    # What presenting costs: the day scene with and without a window, with the CPU profile. Shaders ready: the first test warms them.
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    $samplerA = Join-Path $logs 'sampler-janela.bin'
+    $samplerB = Join-Path $logs 'sampler-sem-janela.bin'
+    $tests = @(
+        @{ name='1-aquecimento'; text='aquecendo'; scale=1; frames=9600; window=$true; env=@{} },
+        @{ name='2-janela'; text='1x com janela'; scale=1; frames=11000; window=$true; env=@{ GT4_CPU_SAMPLER=$samplerA; GT4_CPU_SAMPLER_FROM='9300'; GT4_CPU_SAMPLER_TO='10800' } },
+        @{ name='3-sem-janela'; text='1x sem janela'; scale=1; frames=11000; window=$false; env=@{ GT4_CPU_SAMPLER=$samplerB; GT4_CPU_SAMPLER_FROM='9300'; GT4_CPU_SAMPLER_TO='10800' } }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0
