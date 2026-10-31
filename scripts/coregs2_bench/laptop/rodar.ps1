@@ -72,6 +72,22 @@ if ($Set -eq 2) {
         @{ name='4-1x-janela'; text='1x com janela, filtro simples'; scale=1; frames=10500; window=$true; env=@{} }
     )
 }
+if ($Set -eq 3) {
+    # Third round: textures through the shader against the hardware sampler, and where the GPU's time goes in the game.
+    $fill = Join-Path $PSScriptRoot 'fill'
+    Write-Host 'Medindo textura e desenho ...' -ForegroundColor Cyan
+    Push-Location $fill
+    $env:FB_ROUND3 = '1'; $env:FB_SHARED = '1'
+    foreach ($size in @(@(640, 448), @(1280, 896))) {
+        & (Join-Path $fill 'fillbench.exe') $size[0] $size[1] 20 2>&1 | Out-File (Join-Path $logs ('fill3-{0}x{1}.txt' -f $size[0], $size[1])) -Encoding UTF8
+    }
+    Remove-Item env:FB_ROUND3, env:FB_SHARED -ErrorAction SilentlyContinue
+    Pop-Location
+    $tests = @(
+        @{ name='1-mapa-1x'; text='mapa da GPU em 1x'; scale=1; frames=10900; window=$false; env=@{ GT4_CORE2_GPU_PROFILE_AT='10800'; GT4_CORE2_GPU_STATISTICS='1' } },
+        @{ name='2-mapa-2x'; text='mapa da GPU em 2x'; scale=2; frames=10900; window=$false; env=@{ GT4_CORE2_GPU_PROFILE_AT='10800'; GT4_CORE2_GPU_STATISTICS='1' } }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0
