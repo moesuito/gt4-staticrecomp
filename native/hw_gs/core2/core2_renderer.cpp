@@ -3746,7 +3746,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
-                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB)\n",
+                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
@@ -3756,7 +3756,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.staleBy[0], (unsigned long long)c.staleBy[1], (unsigned long long)c.staleBy[2],
                  (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits,
                  (unsigned long long)clut.DataMemoHits(), (unsigned long long)clut.DataMemoReads(),
-                 (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0);
+                 (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0,
+                 (unsigned long long)g.wholeClears);
 }
 
 }  // namespace

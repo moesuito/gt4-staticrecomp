@@ -233,6 +233,38 @@ if ($Set -eq 15 -or $Set -eq 16) {
         @{ name='6-mapa-2x-b'; text='mapa em 2x'; scale=2; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$shaderCache; GT4_CORE2_GPU_PROFILE_AT='10800' } }
     )
 }
+if ($Set -eq 17 -or $Set -eq 18) {
+    # One GPU map at 2x with the command order, shaders kept. 17: Time Trial by day. 18: the Arcade night race.
+    if ($Set -eq 17) {
+        $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+        $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    }
+    $shaderCache = Join-Path $PSScriptRoot 'shader-cache-map'
+    $tests = @(
+        @{ name='1-aquece-2x'; text='aquecendo'; scale=2; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$shaderCache } },
+        @{ name='2-mapa-2x'; text='mapa com ordem'; scale=2; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$shaderCache; GT4_CORE2_GPU_PROFILE_AT='10800'; GT4_CORE2_GPU_PROFILE_ORDER='1' } }
+    )
+}
+if ($Set -eq 19) {
+    # A/B of one switch at 2x by day, no window, shaders kept, both orders, then a map: $env:AB_NAME and $env:AB_VALUE.
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    # Each side keeps its own shaders: a switch that changes the shaders would make the other side's list useless.
+    $scale = if ($env:AB_SCALE) { [int]$env:AB_SCALE } else { 2 }
+    $cacheOff = Join-Path $PSScriptRoot 'shader-cache-off'; $cacheOn = Join-Path $PSScriptRoot 'shader-cache-on'
+    $on = @{ GT4_HW_SHADER_CACHE=$cacheOn }; $on[$env:AB_NAME] = $env:AB_VALUE
+    $map = @{ GT4_HW_SHADER_CACHE=$cacheOn; GT4_CORE2_GPU_PROFILE_AT='10800'; GT4_CORE2_GPU_PROFILE_ORDER='1' }; $map[$env:AB_NAME] = $env:AB_VALUE
+    $off = @{ GT4_HW_SHADER_CACHE=$cacheOff }
+    $tests = @(
+        @{ name='0-aquece-sem'; text='aquecendo sem'; scale=$scale; frames=10900; window=$false; env=$off },
+        @{ name='1-aquece-com'; text='aquecendo com'; scale=$scale; frames=10900; window=$false; env=$on },
+        @{ name='2-sem'; text='sem'; scale=$scale; frames=10900; window=$false; env=$off },
+        @{ name='3-com'; text='com'; scale=$scale; frames=10900; window=$false; env=$on },
+        @{ name='4-com'; text='com'; scale=$scale; frames=10900; window=$false; env=$on },
+        @{ name='5-sem'; text='sem'; scale=$scale; frames=10900; window=$false; env=$off },
+        @{ name='6-mapa'; text='mapa'; scale=$scale; frames=10900; window=$false; env=$map }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0

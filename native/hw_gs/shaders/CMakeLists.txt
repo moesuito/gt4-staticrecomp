@@ -81,6 +81,12 @@ hw_add_shader(hw_pixel_uber_core2_interlock "${HW_SHADER_DIR}/hw_pixel_uber.frag
 # IN-481: core 2's variant for draws that read nothing back: colour attachments instead of storage writes.
 hw_add_shader(hw_pixel_uber_core2_rop "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=1)
 hw_add_shader(hw_pixel_uber_core2_rop_blend "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=2)
+# IN-493: the core 2 variants with the texels through the sampler (integrated GPUs).
+hw_add_shader(hw_pixel_uber_core2_sampled "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_EARLY_Z=1 HWR_SAMPLED_TEXELS=1)
+hw_add_shader(hw_pixel_uber_core2_interlock_sampled "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag
+              DEFINES HWR_FLAT_COLOUR=0 HWR_INTERLOCK=1 HWR_EARLY_Z=1 HWR_SAMPLED_TEXELS=1)
+hw_add_shader(hw_pixel_uber_core2_rop_sampled "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=1 HWR_SAMPLED_TEXELS=1)
+hw_add_shader(hw_pixel_uber_core2_rop_blend_sampled "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=2 HWR_SAMPLED_TEXELS=1)
 # M10 GLM kernels (IN-347): texture decode from the GLM and target swizzle into the GLM.
 hw_add_shader(hw_glm_decode "${HW_SHADER_DIR}/hw_glm_decode.comp" comp)
 hw_add_shader(hw_glm_swizzle "${HW_SHADER_DIR}/hw_glm_swizzle.comp" comp)

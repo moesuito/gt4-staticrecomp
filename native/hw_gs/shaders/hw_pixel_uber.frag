@@ -187,7 +187,18 @@ layout(set = 0, binding = 2, r32ui) coherent uniform uimage2D hw_depth;
 layout(set = 0, binding = 1, r32ui) uniform uimage2D hw_frame;
 layout(set = 0, binding = 2, r32ui) uniform uimage2D hw_depth;
 #endif
+#ifndef HWR_SAMPLED_TEXELS
+#define HWR_SAMPLED_TEXELS 0
+#endif
+// IN-493: the same words through the sampler instead of image loads: a third less per full-screen pass of a paletted
+// texture on the HD 620 (its texture cache), half as fast again on the RX 9060 XT, so integrated GPUs only.
+#if HWR_SAMPLED_TEXELS
+layout(set = 0, binding = 3) uniform usampler2D hw_texels;
+#define HW_LOAD_TEXEL(image, coord) texelFetch(image, coord, 0)
+#else
 layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D hw_texels;
+#define HW_LOAD_TEXEL(image, coord) imageLoad(image, coord)
+#endif
 
 // IN-384 follow-up: set from the top bit of the tex_scale push word (the GPU drawer's GT4_HW_SCALED_FILTER=linear).
 bool g_force_linear = false;
@@ -226,7 +237,11 @@ layout(push_constant) uniform VertexPush {
 } pc;
 
 // IN-374 (06.8): a texture copied from a resident target's scaled image, s x s texels per native texel.
+#if HWR_SAMPLED_TEXELS
+layout(set = 0, binding = 4) uniform usampler2D hw_texels_scaled;
+#else
 layout(set = 0, binding = 4, r32ui) uniform readonly uimage2D hw_texels_scaled;
+#endif
 
 #ifndef HWR_EARLY_Z
 #define HWR_EARLY_Z 0
@@ -269,11 +284,11 @@ int wrap_texel(int texel, uint log2_size, uint mode, uint minimum, uint maximum)
 // changes then never needs the texture decoded again, and bilinear filtering blends looked-up colours, as the GS does.
 ivec4 fetch_texel(int x, int y) {
     if (ST_TEXEL_KIND == HW_TEXEL_INDEXED) {
-        uint index = imageLoad(hw_texels, ivec2(x, y)).x & 255u;
-        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
+        uint index = HW_LOAD_TEXEL(hw_texels, ivec2(x, y)).x & 255u;
+        uint entry = HW_LOAD_TEXEL(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
         return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, ST_AEM != 0u);
     }
-    uint raw = imageLoad(hw_texels, ivec2(x + int(state.tex_origin_x), y + int(state.tex_origin_y))).x;
+    uint raw = HW_LOAD_TEXEL(hw_texels, ivec2(x + int(state.tex_origin_x), y + int(state.tex_origin_y))).x;
     return hw_texel_colour(ST_TEXEL_KIND, raw, state.ta0, state.ta1, ST_AEM != 0u);
 }
 
@@ -293,7 +308,7 @@ ivec4 fetch_texel_scaled(int x, int y, int s) {
     // IN-384 follow-up: the scaled texel image holds exactly this texture at (0, 0) (the copy in Execute places it
     // there, sized to the sampled footprint), so the 1x atlas origin must NOT be added here: adding it made every
     // texture after the first in a run sample the wrong region (the leaking cuts on the car at 6x).
-    uint raw = imageLoad(hw_texels_scaled, ivec2(x, y)).x;
+    uint raw = HW_LOAD_TEXEL(hw_texels_scaled, ivec2(x, y)).x;
     return hw_texel_colour(ST_TEXEL_KIND, raw, state.ta0, state.ta1, ST_AEM != 0u);
 }
 
@@ -307,11 +322,11 @@ ivec4 fetch_level(int level, int x, int y) {
         oy = h - (h >> (level - 1));
     }
     if (ST_TEXEL_KIND == HW_TEXEL_INDEXED) {
-        uint index = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x & 255u;
-        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
+        uint index = HW_LOAD_TEXEL(hw_texels, ivec2(x + ox, y + oy)).x & 255u;
+        uint entry = HW_LOAD_TEXEL(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
         return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, ST_AEM != 0u);
     }
-    uint raw = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x;
+    uint raw = HW_LOAD_TEXEL(hw_texels, ivec2(x + ox, y + oy)).x;
     return hw_texel_colour(ST_TEXEL_KIND, raw, state.ta0, state.ta1, ST_AEM != 0u);
 }
 
@@ -473,7 +488,7 @@ float wrap_replaced(float u, uint log2_size, uint mode, uint minimum, uint maxim
 }
 
 ivec4 fetch_replaced(int x, int y) {
-    return hw_texel_colour(HW_TEXEL_RGBA8, imageLoad(hw_texels, ivec2(x, y)).x, 0u, 0u, false);
+    return hw_texel_colour(HW_TEXEL_RGBA8, HW_LOAD_TEXEL(hw_texels, ivec2(x, y)).x, 0u, 0u, false);
 }
 
 ivec4 sample_replaced() {
@@ -615,10 +630,20 @@ void main() {
         if (SPEC_EARLY_Z != 0u && s.ztest != 0u && s.ztst >= HW_DEPTH_GEQUAL) {
             const uint z = hw_clamp_z(frag_z, s.zformat);
             texel_deferred = !hw_depth_passes(s.ztst, z, imageLoad(hw_depth_peek, pixel).x, s.zformat);
+            // IN-492: with GEQUAL or GREATER a stored depth only ever rises while nothing lowers it (Gpu::Draw puts a
+            // barrier before such a batch when something may have), so a fragment that fails against an older word
+            // also fails against the current one: it writes nothing, and need not wait for the interlock.
+            if (texel_deferred && SPEC_EARLY_Z == 2u) discard;
         }
 #endif
         if (!texel_deferred) colour = textured_colour(uvs, uvt, frag);
     }
+#if HWR_EARLY_Z
+    else if (SPEC_EARLY_Z == 2u && s.ztest != 0u && s.ztst >= HW_DEPTH_GEQUAL &&
+             !hw_depth_passes(s.ztst, hw_clamp_z(frag_z, s.zformat), imageLoad(hw_depth_peek, pixel).x, s.zformat)) {
+        discard;  // IN-492
+    }
+#endif
     if (ST_FOG_ON != 0u && !texel_deferred) colour = fogged(colour);
 
     HwFragment f;

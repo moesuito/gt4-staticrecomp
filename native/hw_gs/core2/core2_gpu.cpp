@@ -266,6 +266,13 @@ struct Gpu::Impl {
   // IN-451: speculative depth rejection before texturing in the pixel shader (exact); GT4_CORE2_EARLY_Z=0 turns it
   // off (A/B, the shader's constant 103).
   bool earlyZ = std::getenv("GT4_CORE2_EARLY_Z") == nullptr || std::strcmp(std::getenv("GT4_CORE2_EARLY_Z"), "0") != 0;
+  // IN-492: such a fragment is discarded before the interlock (the shader's constant 103 = 2). GT4_CORE2_EARLY_OUT=0: A/B.
+  bool earlyOut = earlyZ && (std::getenv("GT4_CORE2_EARLY_OUT") == nullptr || std::strcmp(std::getenv("GT4_CORE2_EARLY_OUT"), "0") != 0);
+  // The images a fragment may have lowered or overwritten since the last wait (record_draw).
+  std::vector<std::uint64_t> mayLowerDepth;
+  // IN-493: the draw set's texels (bindings 3 and 4) through the sampler. GT4_CORE2_SAMPLED_TEXELS=0 or 1 overrides the default.
+  bool sampledTexels = false;
+  VkSampler texelSampler = VK_NULL_HANDLE;
   // Draw descriptor sets of this recording by their four images (a batch with the same targets reuses its set).
   std::unordered_map<DrawSetKey, VkDescriptorSet, DrawSetKeyHash> drawSets;
   // B4: images whose last use finished, kept for reuse by size instead of freed: every new image was a device memory
@@ -389,6 +396,11 @@ struct Gpu::Impl {
   std::vector<SpecKey> specKnown;  // specMutex: every variant compiled or read from the file
   bool specKnownChanged = false;   // specMutex
   std::size_t specKnownFromFile = 0;
+  // G1 (CORE2-GPU-PLAN): GT4_CORE2_CLEAR_WHOLE=1 clears a whole target with one call; =2 also takes the top byte of a Z24
+  // word as zero (experiment: the renderer keeps that byte, as the GS does).
+  const int clearWholeSetting = std::getenv("GT4_CORE2_CLEAR_WHOLE") ? std::atoi(std::getenv("GT4_CORE2_CLEAR_WHOLE")) : 0;
+  const bool clearWhole = clearWholeSetting != 0;
+  const bool clearTopZero = clearWholeSetting == 2;
   std::chrono::steady_clock::time_point specLastSave{};
 
   VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
@@ -598,6 +610,7 @@ struct Gpu::Impl {
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (sampledTexels) info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     const VkFormat ropFormats[2] = {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8B8A8_UNORM};
@@ -774,7 +787,7 @@ struct Gpu::Impl {
       std::memcpy(entries, specialization->pMapEntries, count * sizeof(VkSpecializationMapEntry));
       std::memcpy(data, specialization->pData, bytes);
     }
-    const std::uint32_t earlyZValue = earlyZ ? 1u : 0u;
+    const std::uint32_t earlyZValue = earlyOut ? 2u : earlyZ ? 1u : 0u;
     entries[count++] = {103u, static_cast<std::uint32_t>(bytes), 4};
     std::memcpy(data + bytes, &earlyZValue, 4);
     bytes += 4;
@@ -1037,6 +1050,7 @@ struct Gpu::Impl {
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_interlock_words, sh::hw_pixel_uber_core2_interlock_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_rop_words, sh::hw_pixel_uber_core2_rop_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_rop_blend_words, sh::hw_pixel_uber_core2_rop_blend_word_count);
+    h = (h ^ (sampledTexels ? 1u : 0u)) * 1099511628211ull;  // IN-493: other modules, the same keys
     shaderSetHash = h;
     // A cache from another driver or card is refused by the driver through its own header: it then starts empty.
     const std::vector<std::uint8_t> compiled = read_whole_file(shaderCacheFolder / "pipelines.bin");
@@ -1309,6 +1323,7 @@ struct Gpu::Impl {
     }
     if (!counted) barrierReasons.push_back({barrierLabel, barrierKind, 1});
     drewSinceBarrier = false;
+    mayLowerDepth.clear();
     pendingBufferReads = pendingBufferWrites = 0;  // everything before is ordered against everything after
     pendingGlmReads.clear();
     pendingGlmWrites.clear();
@@ -1571,6 +1586,9 @@ struct Gpu::Impl {
     VkViewport viewport{};
     std::uint32_t push[8] = {};
     bool textureFromTarget = false;
+    // IN-492, image serials (0: none): the depth image this batch reads before the interlock, the one it writes other than
+    // upwards, and the frame it writes (a frame's words may be read as depth by another batch).
+    std::uint64_t peeksDepth = 0, lowersDepth = 0, frameSerial = 0;
     bool rop = false;  // IN-481: through colour attachments
     VkRenderPass ropPass = VK_NULL_HANDLE;
     VkFramebuffer ropFramebuffer = VK_NULL_HANDLE;
@@ -1666,10 +1684,23 @@ struct Gpu::Impl {
     gt4_hw_vkCmdPipelineBarrier(cmd, stages, stages, 0, 1, &barrier, 0, nullptr, 0, nullptr);
     stats.fragmentBarriers++;
     drewSinceBarrier = false;
+    mayLowerDepth.clear();
   }
 
   void record_draw(const DeferredDraw &draw, bool first) {
     prof_begin(draw.profileLabel);
+    if (earlyOut) {  // IN-492
+      if (draw.peeksDepth != 0 && !draw.rop &&
+          std::find(mayLowerDepth.begin(), mayLowerDepth.end(), draw.peeksDepth) != mayLowerDepth.end()) {
+        fragment_barrier();
+      }
+      if (draw.frameSerial != 0 && std::find(mayLowerDepth.begin(), mayLowerDepth.end(), draw.frameSerial) == mayLowerDepth.end()) {
+        mayLowerDepth.push_back(draw.frameSerial);
+      }
+      if (draw.lowersDepth != 0 && std::find(mayLowerDepth.begin(), mayLowerDepth.end(), draw.lowersDepth) == mayLowerDepth.end()) {
+        mayLowerDepth.push_back(draw.lowersDepth);
+      }
+    }
     if (!draw.rop && !first && drewSinceBarrier && ((!interlock && !groupDisjoint) || draw.textureFromTarget)) {
       // A texture taken from a target reads pixels other than its own (no interlock order). Without pixel interlock a
       // batch waits for the one before through its first command (IN-471), or always with GT4_CORE2_GROUP_DISJOINT=0.
@@ -1802,6 +1833,7 @@ struct Gpu::Impl {
     gt4_hw_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
                                 1, &barrier, 0, nullptr, 0, nullptr);
     drewSinceBarrier = false;
+    mayLowerDepth.clear();
   }
 
   void end_render_pass() {
@@ -2004,6 +2036,7 @@ Gpu::~Gpu() {
   if (!s.device) return;
   s.save_shader_cache();  // IN-489
   if (s.pipelineCache) gt4_hwd_vkDestroyPipelineCache(s.device, s.pipelineCache, nullptr);
+  if (s.texelSampler) gt4_hwd_vkDestroySampler(s.device, s.texelSampler, nullptr);
   std::string ignored;
   s.submit(true, ignored);
   for (VkPipeline pipeline : s.specAll) gt4_hwd_vkDestroyPipeline(s.device, pipeline, nullptr);
@@ -2075,6 +2108,10 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   gt4_hw_vkGetPhysicalDeviceProperties(s.physical, &properties);
   s.limits = properties.limits;
   s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  {
+    const char *sampled = std::getenv("GT4_CORE2_SAMPLED_TEXELS");
+    s.sampledTexels = sampled ? std::strcmp(sampled, "0") != 0 : false;
+  }
 
   VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -2154,6 +2191,17 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     for (std::uint32_t i = 1; i < 6; ++i) {
       bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     }
+    if (s.sampledTexels) {  // IN-493
+      VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+      sampler.magFilter = sampler.minFilter = VK_FILTER_NEAREST;
+      sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+      sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      if (!check(gt4_hwd_vkCreateSampler(s.device, &sampler, nullptr, &s.texelSampler), "vkCreateSampler", error)) return false;
+      bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      bindings[3].pImmutableSamplers = &s.texelSampler;
+      bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      bindings[4].pImmutableSamplers = &s.texelSampler;
+    }
     VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     info.bindingCount = 6;
     info.pBindings = bindings;
@@ -2190,12 +2238,13 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
                error)) return false;
   }
   {
-    VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, kTransientSets},
+    VkDescriptorPoolSize sizes[4] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, kTransientSets},
                                      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5 * kTransientSets + 64},
-                                     {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kTransientSets}};
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kTransientSets},
+                                     {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * kTransientSets}};
     VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     info.maxSets = kTransientSets;
-    info.poolSizeCount = 3;
+    info.poolSizeCount = 4;
     info.pPoolSizes = sizes;
     for (Impl::Slot &slot : s.slots) {
       if (!check(gt4_hwd_vkCreateDescriptorPool(s.device, &info, nullptr, &slot.pool), "vkCreateDescriptorPool", error)) {
@@ -2237,7 +2286,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.open_shader_cache();  // IN-489
   s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_smooth_words, hwgs::shaders::hw_vertex_smooth_word_count, error);
   s.fragmentModule =
-      s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
+      s.sampledTexels ? s.make_module(hwgs::shaders::hw_pixel_uber_core2_sampled_words, hwgs::shaders::hw_pixel_uber_core2_sampled_word_count, error)
+                      : s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
   if (!s.vertexModule || !s.fragmentModule) return false;
   s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error);
   s.pipelines[1] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, s.fragmentModule, error);
@@ -2275,16 +2325,18 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
           return false;
         }
       }
-      s.ropModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_words, hwgs::shaders::hw_pixel_uber_core2_rop_word_count, error);
-      s.ropBlendModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_blend_words, hwgs::shaders::hw_pixel_uber_core2_rop_blend_word_count, error);
+      s.ropModule = s.sampledTexels ? s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_sampled_words, hwgs::shaders::hw_pixel_uber_core2_rop_sampled_word_count, error)
+                                    : s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_words, hwgs::shaders::hw_pixel_uber_core2_rop_word_count, error);
+      s.ropBlendModule = s.sampledTexels ? s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_blend_sampled_words, hwgs::shaders::hw_pixel_uber_core2_rop_blend_sampled_word_count, error)
+                                         : s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_blend_words, hwgs::shaders::hw_pixel_uber_core2_rop_blend_word_count, error);
       if (!s.ropModule || !s.ropBlendModule) return false;
       s.ropOn = true;
     }
     std::fprintf(stderr, "[core2] colour attachment path (IN-481) %s" "\n", s.ropOn ? "on" : "off");
   }
   if (handles.pixelInterlock) {
-    s.interlockModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_interlock_words,
-                                      hwgs::shaders::hw_pixel_uber_core2_interlock_word_count, error);
+    s.interlockModule = s.sampledTexels ? s.make_module(hwgs::shaders::hw_pixel_uber_core2_interlock_sampled_words, hwgs::shaders::hw_pixel_uber_core2_interlock_sampled_word_count, error)
+                                        : s.make_module(hwgs::shaders::hw_pixel_uber_core2_interlock_words, hwgs::shaders::hw_pixel_uber_core2_interlock_word_count, error);
     if (!s.interlockModule) return false;
     s.interlockTriangles = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.interlockModule, error);
     if (!s.interlockTriangles) return false;
@@ -2705,7 +2757,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     ropPipeline = s.rop_pipeline(state.fields, pushTexScale, ropWord);
   }
 
-  if (batch.constantFill && s.computeFills && s.fillPipeline && !(ropPipeline && s.ropFills)) {
+  if (batch.constantFill && s.computeFills && s.fillPipeline && (!(ropPipeline && s.ropFills) || s.clearWhole)) {
     const std::vector<gpu::GpuVertex> &verts = *batch.vertices;
     const gpu::GpuVertex &v0 = verts[batch.draws->front().first];
     const std::uint32_t sc = s.scale;
@@ -2763,7 +2815,42 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       if (!eligible) break;
       if (!repeated) rects.push_back(r);
     }
-    if (eligible) {
+    // G1: a fill of the whole target with one constant word per image is a clear of the image.
+    if (eligible && s.clearWhole) {
+      namespace g = gpu::gpufield;
+      const auto &f = state.fields;
+      std::uint64_t covered = 0;
+      for (const Rect &r : rects) covered += static_cast<std::uint64_t>(r.x1 - r.x0) * static_cast<std::uint64_t>(r.y1 - r.y0);
+      const bool whole = covered == static_cast<std::uint64_t>(frame->width) * frame->height;
+      const bool writesFrame = f[g::Fbmsk] != 0xFFFFFFFFu;
+      const bool writesDepth = f[g::Ztest] != 0 && f[g::Ztst] == 1u && f[g::Zmsk] == 0 && depth != frame;
+      const bool plain = f[g::Dither] == 0 && f[g::Fba] == 0 && (f[g::Ate] == 0 || f[g::Atst] == 1u) && f[g::Format] == 0u &&
+                         (f[g::Fbmsk] == 0 || !writesFrame) && (f[g::Ztest] == 0 || f[g::Ztst] == 1u) &&
+                         (!writesDepth || f[g::Zformat] == 0u || (f[g::Zformat] == 1u && s.clearTopZero)) &&
+                         (!writesDepth || (depth->width == frame->width && depth->height == frame->height));
+      if (whole && plain && (writesFrame || writesDepth)) {
+        if (!s.recording && !s.begin_recording(error)) return false;
+        s.outside_pass();
+        s.touch("clear", {frame, depth}, {frame, depth}, 0, 0);
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (writesFrame) {
+          VkClearColorValue value{};
+          value.uint32[0] = static_cast<std::uint32_t>(v0.rgba[0]) | static_cast<std::uint32_t>(v0.rgba[1]) << 8 |
+                            static_cast<std::uint32_t>(v0.rgba[2]) << 16 | static_cast<std::uint32_t>(v0.rgba[3]) << 24;
+          gt4_hwd_vkCmdClearColorImage(s.cmd, frame->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+        }
+        if (writesDepth) {
+          VkClearColorValue value{};
+          value.uint32[0] = std::min(v0.z, batch.zMax);
+          gt4_hwd_vkCmdClearColorImage(s.cmd, depth->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+        }
+        s.after_op();
+        s.stats.wholeClears++;
+        s.stats.batches++;
+        return true;
+      }
+    }
+    if (eligible && !(ropPipeline && s.ropFills)) {
       VkDeviceSize stateOffset = 0;
       const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
       if (!s.ring(s.staging, sizeof state.fields, align, stateOffset, error)) return false;
@@ -2834,7 +2921,8 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         writes[i].pBufferInfo = &uniformInfo;
       } else {
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].descriptorType = s.sampledTexels && (i == 3 || i == 4) ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER  // IN-493
+                                                                         : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[i].pImageInfo = &imageInfo[i - 1];
       }
     }
@@ -2859,6 +2947,15 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // are on.
   record.push[7] = pushTexScale;
   record.textureFromTarget = batch.texture != kNoImage;
+  {  // IN-492
+    namespace g = gpu::gpufield;
+    const auto &f = state.fields;
+    const bool writesDepth = f[g::Ztest] != 0 && f[g::Zmsk] == 0;
+    const bool rising = f[g::Ztst] == 2u || f[g::Ztst] == 3u;  // HW_DEPTH_GEQUAL, HW_DEPTH_GREATER
+    record.peeksDepth = f[g::Ztest] != 0 && rising && depth != frame ? depth->serial : 0;
+    record.lowersDepth = writesDepth && !rising ? depth->serial : 0;
+    record.frameSerial = frame->serial;
+  }
   if (s.profiling) {
     namespace g = gpu::gpufield;
     const auto &f = batch.state.fields;
@@ -3197,6 +3294,9 @@ bool Gpu::ProfileReport(std::string &error) {
     kind.longest = std::max(kind.longest, ms);
     kind.count++;
     total += ms;
+    // GT4_CORE2_GPU_PROFILE_ORDER=1: every command in the order it ran, to see what follows what on a target.
+    static const bool inOrder = std::getenv("GT4_CORE2_GPU_PROFILE_ORDER") != nullptr;
+    if (inOrder) std::fprintf(stderr, "[core2] gpu order %4zu %7.3f ms %s\n", i, ms, s.profileLabels[i].c_str());
   }
   std::vector<std::pair<double, std::string>> rows;
   for (const auto &[label, kind] : kinds) rows.push_back({kind.total, label});
