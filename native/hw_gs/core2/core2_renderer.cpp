@@ -554,6 +554,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::uint32_t ticket = 0;
     };
     std::map<std::array<std::uint32_t, 7>, DelayedDownload> delayed_;
+    // IN-497: GT4_CORE2_EFFECTS_1X=0 or 1 overrides the default, on in Performance Mode (see CreateTarget).
+    const bool effectTargets1x_ = std::getenv("GT4_CORE2_EFFECTS_1X") != nullptr
+                                      ? std::strcmp(std::getenv("GT4_CORE2_EFFECTS_1X"), "0") != 0
+                                      : std::getenv("GT4_CORE2_PERFORMANCE") != nullptr && std::strcmp(std::getenv("GT4_CORE2_PERFORMANCE"), "0") != 0;
     const bool performance_ = std::getenv("GT4_CORE2_PERFORMANCE") != nullptr &&
                               std::strcmp(std::getenv("GT4_CORE2_PERFORMANCE"), "0") != 0;
     const bool delayedDownloads_ = std::getenv("GT4_CORE2_DELAYED_DOWNLOADS") != nullptr
@@ -1657,7 +1661,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const std::uint32_t height = std::min(
             maxSide, (static_cast<std::uint32_t>(std::max(rect.y1, 0)) + pageRows) / pageRows * pageRows);
         std::string error;
-        const ImageId image = gpu_.CreateImage(width, height, true, error);
+        // IN-497: Performance Mode: the small effect targets stay at 1x in a scaled picture, like a lower shadow or
+        // reflection resolution in a modern game (reflections, glow reductions; the picture's own target is wider).
+        const ImageId image = gpu_.CreateImage(width, height, !(effectTargets1x_ && width <= 256u), error);
         if (image == kNoImage) {
             Fail(error);
             return nullptr;
@@ -3750,7 +3756,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
-                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu\n",
+                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu plain_batches=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
@@ -3761,7 +3767,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits,
                  (unsigned long long)clut.DataMemoHits(), (unsigned long long)clut.DataMemoReads(),
                  (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0,
-                 (unsigned long long)g.wholeClears);
+                 (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches);
 }
 
 }  // namespace

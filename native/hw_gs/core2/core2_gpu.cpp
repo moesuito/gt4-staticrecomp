@@ -857,6 +857,14 @@ struct Gpu::Impl {
     return pipeline;
   }
 
+  // IN-496: the key's ROP slot for a batch of an interlock GPU drawn with the plain module: its primitives share no pixel,
+  // so they need no order among them, and a read-modify-write of one image costs half on the HD 620 without the interlock
+  // (GT4's full-screen colour passes). A wait before and after keeps it in order with the other batches.
+  static constexpr std::uint32_t kPlainWord = 0x80000000u;
+  // Integrated GPUs only: on the RX 9060 XT at 12x the waits cost more than the interlock (GPU busy 23.7 to 24.7 ms).
+  // GT4_CORE2_PLAIN_DISJOINT=0 or 1 overrides that (A/B).
+  bool plainDisjoint = false;
+
   // IN-481: the ROP word: bit 0 set, bits 1-4 the frame's RGBA lanes, bits 5-8 the depth word's lanes.
   static std::uint32_t rop_frame_mask(std::uint32_t word) { return (word >> 1) & 15u; }
   static std::uint32_t rop_depth_mask(std::uint32_t word) { return (word >> 5) & 15u; }
@@ -993,8 +1001,9 @@ struct Gpu::Impl {
       ++count;
     }
     VkSpecializationInfo info{count, entries, 4 * count, values};
-    const std::uint32_t rop = key[kSpecFieldCount + 2];
-    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, rop != 0 ? (rop_blend_mode(rop) ? ropBlendModule : ropModule) : interlock ? interlockModule : fragmentModule,
+    const std::uint32_t word = key[kSpecFieldCount + 2];
+    const std::uint32_t rop = word == kPlainWord ? 0u : word;
+    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, word == kPlainWord ? fragmentModule : rop != 0 ? (rop_blend_mode(rop) ? ropBlendModule : ropModule) : interlock ? interlockModule : fragmentModule,
                          error, &info, rop);  // the driver caches
   }
 
@@ -1081,7 +1090,7 @@ struct Gpu::Impl {
       SpecKey key;
       std::memcpy(key.data(), bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof(SpecKey));
       const std::uint32_t rop = key[kSpecFieldCount + 2];
-      if (rop != 0 && (!ropOn || (rop_blend_mode(rop) && ropBlendModule == VK_NULL_HANDLE))) continue;
+      if (rop != 0 && rop != kPlainWord && (!ropOn || (rop_blend_mode(rop) && ropBlendModule == VK_NULL_HANDLE))) continue;
       if (!specSeen.insert(key).second) continue;
       specQueue.push_back(key);
       specKnown.push_back(key);
@@ -1192,6 +1201,14 @@ struct Gpu::Impl {
     if (pipeline) return pipeline;
     stats.uberBatches++;
     return uber;
+  }
+
+  // IN-496: the plain variant, or null while it compiles (the batch then draws with the interlock).
+  VkPipeline plain_pipeline(const std::uint32_t *fields, std::uint32_t pushWord) {
+    if (specMode == SpecMode::off) return VK_NULL_HANDLE;
+    SpecKey key = spec_key(fields, pushWord);
+    key[kSpecFieldCount + 2] = kPlainWord;
+    return specialised_pipeline(key);
   }
 
   // IN-481: the variant of a draw through colour attachments, or null: not eligible or not compiled yet (it then draws
@@ -1587,6 +1604,7 @@ struct Gpu::Impl {
     // IN-492, image serials (0: none): the depth image this batch reads before the interlock, the one it writes other than
     // upwards, and the frame it writes (a frame's words may be read as depth by another batch).
     std::uint64_t peeksDepth = 0, lowersDepth = 0, frameSerial = 0;
+    bool plain = false;  // IN-496
     bool rop = false;  // IN-481: through colour attachments
     VkRenderPass ropPass = VK_NULL_HANDLE;
     VkFramebuffer ropFramebuffer = VK_NULL_HANDLE;
@@ -1687,6 +1705,7 @@ struct Gpu::Impl {
 
   void record_draw(const DeferredDraw &draw, bool first) {
     prof_begin(draw.profileLabel);
+    if (draw.plain && drewSinceBarrier) fragment_barrier();  // IN-496
     if (earlyOut) {  // IN-492
       if (draw.peeksDepth != 0 && !draw.rop &&
           std::find(mayLowerDepth.begin(), mayLowerDepth.end(), draw.peeksDepth) != mayLowerDepth.end()) {
@@ -1753,6 +1772,7 @@ struct Gpu::Impl {
       stats.draws++;
       drewSinceBarrier = true;
     }
+    if (draw.plain) fragment_barrier();  // IN-496
     prof_end();
   }
 
@@ -2107,6 +2127,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
   {
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
+    const char *plainSwitch = std::getenv("GT4_CORE2_PLAIN_DISJOINT");  // IN-496
+    s.plainDisjoint = plainSwitch ? std::strcmp(plainSwitch, "0") != 0 : s.integrated;
   }
 
   VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2718,8 +2740,9 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // one. The 1/320 bias keeps every edge at least 0.003 pixel from a pixel centre, more than the float rounding of the
   // edge, so this double-precision count matches the GPU's.
   // IN-481: the state and images this batch would draw through colour attachments with, if any.
-  const std::uint32_t pushTexScale = (batch.texture != kNoImage ? (s.scale | 0x01000000u) : 1u) |
-                                     (s.scale > 1 ? (0x40000000u | 0x10000000u) : 0u) |
+  // IN-497: the frame's and the texture's own scale (a small effect target may be 1x in a scaled session).
+  const std::uint32_t pushTexScale = (batch.texture != kNoImage ? (texture->scale | 0x01000000u) : 1u) |
+                                     (frame->scale > 1 ? (0x40000000u | 0x10000000u) : 0u) |
                                      (batch.mipInfo != 0 ? 0x00800000u : 0u) |  // IN-428: tex_origin_x holds the mip parameters
                                      (batch.replacedWidth != 0 ? 0x00400000u : 0u) |  // IN-470: a replacement image
                                      (batch.forceLinear ? 0x80000000u : 0u);          // IN-433: forced bilinear
@@ -2742,7 +2765,8 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (batch.constantFill && s.computeFills && s.fillPipeline && (!(ropPipeline && s.ropFills) || s.clearWhole)) {
     const std::vector<gpu::GpuVertex> &verts = *batch.vertices;
     const gpu::GpuVertex &v0 = verts[batch.draws->front().first];
-    const std::uint32_t sc = s.scale;
+    const std::uint32_t sc = frame->scale;
+    const float shift = frame->scale == s.scale ? s.shift : 1.0f;
     const std::int32_t limitX = static_cast<std::int32_t>(std::min(frame->width, s.framebufferWidth));
     const std::int32_t limitY = static_cast<std::int32_t>(std::min(frame->height, s.framebufferHeight));
     using Rect = Impl::FillRect;
@@ -2771,7 +2795,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       if (!eligible) break;
       // Covered output pixels [px0, px1) x [py0, py1): centres k + 0.5 in [edge0, edge1).
       auto edge = [&](std::int32_t coordinate) {
-        return static_cast<double>(sc) * (coordinate / 16.0) + 0.5 * static_cast<double>(s.shift) - 1.0 / 320.0;
+        return static_cast<double>(sc) * (coordinate / 16.0) + 0.5 * static_cast<double>(shift) - 1.0 / 320.0;
       };
       const std::int32_t px0 = static_cast<std::int32_t>(std::ceil(edge(nx0) - 0.5));
       const std::int32_t px1 = static_cast<std::int32_t>(std::ceil(edge(nx1) - 0.5));
@@ -2923,7 +2947,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     gt4_hwd_vkUpdateDescriptorSets(s.device, 6, writes, 0, nullptr);
   }
 
-  const std::uint32_t sc = s.scale;
+  const std::uint32_t sc = frame->scale;
   Impl::DeferredDraw record;
   record.set = set;
   record.uniformOffset = static_cast<std::uint32_t>(uniformOffset);
@@ -2932,7 +2956,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   record.push[0] = FloatBits(static_cast<float>(frame->width));
   record.push[1] = FloatBits(static_cast<float>(frame->height));
   record.push[2] = FloatBits(static_cast<float>(sc));
-  record.push[3] = FloatBits(s.shift);
+  record.push[3] = FloatBits(frame->scale == s.scale ? s.shift : 1.0f);
   record.push[4] = 0;  // the batch vertices already carry XYOFFSET
   record.push[5] = 0;
   record.push[6] = batch.zMax;
@@ -3027,7 +3051,45 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
     Impl::DeferredCommand command;
     if (end > first && scissorOf(x0, y0, x1, y1, command.scissor)) {
-      command.pipeline = record.rop ? ropPipeline : s.triangle_pipeline(state.fields, record.push[7]);  // IN-437
+      command.pipeline = record.rop ? ropPipeline : VK_NULL_HANDLE;
+      // IN-496: a batch over at least 40% of the target, on an interlock GPU, whose triangles share no pixel. Each costs two
+      // waits, so a smaller one gains nothing.
+      if (!record.rop && s.interlock && s.plainDisjoint && batch.draws->size() <= 64u &&
+          static_cast<std::int64_t>(x1 - x0 + 1) * (y1 - y0 + 1) * sc * sc * 5 >= static_cast<std::int64_t>(frame->width) * frame->height * 2) {
+        std::vector<PrimitiveShape> &shapes = s.disjointGroup;
+        shapes.clear();
+        for (const gpu::GpuDraw &draw : *batch.draws) {
+          if (draw.count == 0 || draw.first + draw.count > vertexCount) continue;
+          for (std::uint32_t v = draw.first; v + 3u <= draw.first + draw.count; v += 3u) {
+            PrimitiveShape shape;
+            shape.triangle = true;
+            shape.minX = shape.minY = INT32_MAX;
+            shape.maxX = shape.maxY = INT32_MIN;
+            for (std::uint32_t corner = 0; corner < 3u; ++corner) {
+              shape.x[corner] = static_cast<std::int16_t>((*batch.vertices)[v + corner].x);
+              shape.y[corner] = static_cast<std::int16_t>((*batch.vertices)[v + corner].y);
+              shape.minX = std::min(shape.minX, shape.x[corner]);
+              shape.minY = std::min(shape.minY, shape.y[corner]);
+              shape.maxX = std::max(shape.maxX, shape.x[corner]);
+              shape.maxY = std::max(shape.maxY, shape.y[corner]);
+            }
+            shapes.push_back(shape);
+          }
+        }
+        bool disjoint = shapes.size() <= 128u;
+        for (std::size_t a = 0; a < shapes.size() && disjoint; ++a) {
+          for (std::size_t b = a + 1; b < shapes.size() && disjoint; ++b) disjoint = !ShapesMayShareAPixel(shapes[a], shapes[b]);
+        }
+        shapes.clear();
+        if (disjoint) {
+          command.pipeline = s.plain_pipeline(state.fields, record.push[7]);
+          if (command.pipeline) {
+            record.plain = true;
+            s.stats.plainBatches++;
+          }
+        }
+      }
+      if (!command.pipeline) command.pipeline = s.triangle_pipeline(state.fields, record.push[7]);  // IN-437
       command.first = first;
       command.count = end - first;
       s.deferredCommands.push_back(command);

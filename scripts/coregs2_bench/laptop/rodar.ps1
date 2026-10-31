@@ -247,8 +247,11 @@ if ($Set -eq 17 -or $Set -eq 18) {
 }
 if ($Set -eq 19) {
     # A/B of one switch at 2x by day, no window, shaders kept, both orders, then a map: $env:AB_NAME and $env:AB_VALUE.
-    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
-    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    # $env:AB_NIGHT=1: the Arcade night race instead. $env:AB_SCALE: another scale.
+    if (!$env:AB_NIGHT) {
+        $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+        $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    }
     # Each side keeps its own shaders: a switch that changes the shaders would make the other side's list useless.
     $scale = if ($env:AB_SCALE) { [int]$env:AB_SCALE } else { 2 }
     $cacheOff = Join-Path $PSScriptRoot 'shader-cache-off'; $cacheOn = Join-Path $PSScriptRoot 'shader-cache-on'
