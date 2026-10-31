@@ -69,8 +69,11 @@ class AudioOutput {
 public:
   // `mode` selects the blocking WinMM path (audio) or the non-blocking paced
   // ring with rate control (paced); see pacing.hpp.
+  // `allow_device`: when false, or when GT4_AUDIO=none/silent/off, or when no
+  // Windows audio device is present, runs silently without closing or crashing (TASK-129).
   explicit AudioOutput(std::function<bool()> pump_messages = {},
-                       gt4::pacing::Mode mode = gt4::pacing::Mode::audio);
+                       gt4::pacing::Mode mode = gt4::pacing::Mode::audio,
+                       bool allow_device = true);
   ~AudioOutput();
   AudioOutput(const AudioOutput &) = delete;
   AudioOutput &operator=(const AudioOutput &) = delete;
@@ -84,6 +87,7 @@ public:
   // Frames queued on the device plus the ring (paced) or pending (audio).
   std::uint64_t queued_frames();
   gt4::pacing::Mode mode() const { return mode_; }
+  bool has_device() const { return has_device_; }
   double resampler_ratio() const { return resampler_.ratio(); }
   std::uint64_t underruns() const { return underruns_; }
   std::uint64_t overflow_frames() const { return overflow_frames_; }
@@ -117,6 +121,8 @@ private:
   std::vector<std::int16_t> converted_;
   HWAVEOUT device_ = nullptr;
   HANDLE event_ = nullptr;
+  bool has_device_ = false;
+  bool closed_ = false;
   std::function<bool()> pump_messages_;
   std::uint64_t received_ = 0, submitted_ = 0, completed_ = 0, canceled_ = 0;
   std::uint64_t empty_queue_ = 0, waits_ = 0;
