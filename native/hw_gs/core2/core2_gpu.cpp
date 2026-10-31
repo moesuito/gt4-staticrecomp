@@ -322,8 +322,17 @@ struct Gpu::Impl {
   // (HD 620: about 2x, 3x with a texture). The pixels are the same. GT4_CORE2_ROP=0 / 1 forces it off / on (default: on an
   // integrated GPU); GT4_CORE2_ROP_FILLS=0 keeps the constant fills in compute (A/B).
   bool ropOn = false;
+  bool dualSourceBlend = false;
   const bool ropFills = std::getenv("GT4_CORE2_ROP_FILLS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_ROP_FILLS"), "0") != 0;
-  VkShaderModule ropModule = VK_NULL_HANDLE;
+  VkShaderModule ropModule = VK_NULL_HANDLE, ropBlendModule = VK_NULL_HANDLE;
+  // IN-482: blends without depth writes through the GPU's blending. It rounds where the GS truncates and clamps a factor
+  // over 1, so it is not exact: performance mode only (GT4_CORE2_ROP_BLEND=0 / 1 forces it off / on).
+  const bool ropBlend = [] {
+    const char *value = std::getenv("GT4_CORE2_ROP_BLEND");
+    if (value) return std::strcmp(value, "0") != 0;
+    const char *performance = std::getenv("GT4_CORE2_PERFORMANCE");
+    return performance != nullptr && std::strcmp(performance, "0") != 0;
+  }();
   VkRenderPass ropPassFrame = VK_NULL_HANDLE, ropPassBoth = VK_NULL_HANDLE;
   std::map<std::pair<VkImageView, VkImageView>, VkFramebuffer> ropFramebuffers;
   VkPipeline pipelines[3] = {};  // points, lines, triangles
@@ -796,6 +805,15 @@ struct Gpu::Impl {
       ropAttachments[1].colorWriteMask = rop_depth_mask(rop);
       blend.attachmentCount = rop_depth_mask(rop) != 0 ? 2 : 1;
       blend.pAttachments = ropAttachments;
+      if (const RopBlend *mode = rop_blend_mode(rop)) {
+        ropAttachments[0].blendEnable = VK_TRUE;
+        ropAttachments[0].srcColorBlendFactor = mode->source;
+        ropAttachments[0].dstColorBlendFactor = mode->destination;
+        ropAttachments[0].colorBlendOp = mode->op;
+        ropAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;  // the GS does not blend alpha
+        ropAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        ropAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+      }
     }
     VkDynamicState dynamicStates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -822,13 +840,46 @@ struct Gpu::Impl {
   // IN-481: the ROP word: bit 0 set, bits 1-4 the frame's RGBA lanes, bits 5-8 the depth word's lanes.
   static std::uint32_t rop_frame_mask(std::uint32_t word) { return (word >> 1) & 15u; }
   static std::uint32_t rop_depth_mask(std::uint32_t word) { return (word >> 5) & 15u; }
+  // IN-482: bits 9-12 of the word: 0 no blend, else 1 + an entry of kRopBlends. ((A - B) * F) + D of the GS with A, B, D
+  // in {Cs 0, Cd 1, zero 2} and F the shader's second output (As or FIX over 128). The forms the GPU's equation can hold.
+  struct RopBlend {
+    std::uint8_t a, b, d;
+    VkBlendFactor source, destination;
+    VkBlendOp op;
+  };
+  static constexpr RopBlend kRopBlends[] = {
+      {0, 1, 1, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_OP_ADD},       // (Cs - Cd) F + Cd
+      {1, 0, 0, VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_OP_ADD},       // (Cd - Cs) F + Cs
+      {0, 2, 2, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD},                       // Cs F
+      {0, 2, 1, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD},                        // Cs F + Cd
+      {1, 2, 2, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_OP_ADD},                       // Cd F
+      {1, 2, 0, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_OP_ADD},                        // Cd F + Cs
+      {0, 1, 2, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_OP_SUBTRACT},            // (Cs - Cd) F
+      {1, 0, 2, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_OP_REVERSE_SUBTRACT},    // (Cd - Cs) F
+      {2, 0, 1, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_REVERSE_SUBTRACT},           // Cd - Cs F
+      {2, 1, 0, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_OP_SUBTRACT},                   // Cs - Cd F
+  };
+  static const RopBlend *rop_blend_mode(std::uint32_t word) {
+    const std::uint32_t index = (word >> 9) & 15u;
+    return index == 0 ? nullptr : &kRopBlends[index - 1];
+  }
   // The ROP word of a draw state that reads neither word back, or 0: no blend, no DATE, no depth test but ALWAYS, FBMSK in
   // whole bytes, and what the alpha test decides per fragment is all or nothing. The lanes the shader would keep from the
   // old word are masked, so the result is the word it would store.
-  static std::uint32_t rop_word(const std::uint32_t *f) {
+  static std::uint32_t rop_word(const std::uint32_t *f, bool allowBlend) {
     namespace g = gpu::gpufield;
     const std::uint32_t format = f[g::Format];
-    if (format > 1u || f[g::BlendOn] != 0 || f[g::DateOn] != 0) return 0;  // CT32, CT24
+    if (format > 1u || f[g::DateOn] != 0) return 0;  // CT32, CT24
+    std::uint32_t blendIndex = 0;
+    if (f[g::BlendOn] != 0) {
+      // No PABE, no wrapping past 255, a factor the shader can give (not Ad, which the GPU would read over 255).
+      if (!allowBlend || f[g::Pabe] != 0 || f[g::Colclamp] == 0 || f[g::BlendC] == 1u) return 0;
+      if (f[g::BlendC] == 2u && f[g::Fix] > 128u) return 0;  // a gain over 1: the GPU clamps its factor
+      for (std::uint32_t i = 0; i < sizeof kRopBlends / sizeof kRopBlends[0]; ++i) {
+        if (kRopBlends[i].a == f[g::BlendA] && kRopBlends[i].b == f[g::BlendB] && kRopBlends[i].d == f[g::BlendD]) blendIndex = i + 1;
+      }
+      if (blendIndex == 0) return 0;
+    }
     if (f[g::Ztest] != 0 && f[g::Ztst] != 1u) return 0;                    // HW_DEPTH_ALWAYS
     bool writeDepth = f[g::Ztest] != 0 && f[g::Zmsk] == 0;
     std::uint32_t frameMask = 15u;
@@ -861,7 +912,8 @@ struct Gpu::Impl {
     std::uint32_t depthMask = 0;
     if (writeDepth) depthMask = f[g::Zformat] == 0u ? 15u : f[g::Zformat] == 1u ? 7u : 3u;
     if (frameMask == 0 && depthMask == 0) return 0;
-    return 1u | frameMask << 1 | depthMask << 5;
+    if (blendIndex != 0 && (depthMask != 0 || frameMask == 0)) return 0;  // two outputs for one attachment: the frame alone
+    return 1u | frameMask << 1 | depthMask << 5 | blendIndex << 9;
   }
 
   // IN-437: the state block fields that hw_pixel_uber.frag reads as specialization constants (constant id = 1 + the
@@ -921,7 +973,7 @@ struct Gpu::Impl {
     }
     VkSpecializationInfo info{count, entries, 4 * count, values};
     const std::uint32_t rop = key[kSpecFieldCount + 2];
-    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, rop != 0 ? ropModule : interlock ? interlockModule : fragmentModule,
+    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, rop != 0 ? (rop_blend_mode(rop) ? ropBlendModule : ropModule) : interlock ? interlockModule : fragmentModule,
                          error, &info, rop);  // the driver caches
   }
 
@@ -2049,6 +2101,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   {
     const char *ropSwitch = std::getenv("GT4_CORE2_ROP");
     const bool wanted = ropSwitch ? std::strcmp(ropSwitch, "0") != 0 : s.integrated;
+    s.dualSourceBlend = handles.dualSourceBlend;
     if (wanted && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
       VkAttachmentDescription attachment{};
       attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -2077,7 +2130,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
         }
       }
       s.ropModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_words, hwgs::shaders::hw_pixel_uber_core2_rop_word_count, error);
-      if (!s.ropModule) return false;
+      s.ropBlendModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_rop_blend_words, hwgs::shaders::hw_pixel_uber_core2_rop_blend_word_count, error);
+      if (!s.ropModule || !s.ropBlendModule) return false;
       s.ropOn = true;
     }
     std::fprintf(stderr, "[core2] colour attachment path (IN-481) %s" "\n", s.ropOn ? "on" : "off");
@@ -2492,12 +2546,15 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
                                      (batch.forceLinear ? 0x80000000u : 0u);          // IN-433: forced bilinear
   VkPipeline ropPipeline = VK_NULL_HANDLE;
   std::uint32_t ropWord = 0;
-  if (s.ropOn && texture != frame && texture != depth && frame != depth && frame->width <= s.framebufferWidth &&
-      frame->height <= s.framebufferHeight) {
+  if (s.ropOn && texture != frame && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
     bool triangles = true;
     for (const gpu::GpuDraw &draw : *batch.draws) triangles = triangles && draw.topology == gpu::GpuTopology::Triangles;
-    ropWord = triangles ? Impl::rop_word(state.fields) : 0u;
-    if (ropWord != 0 && Impl::rop_depth_mask(ropWord) != 0 && (depth->width != frame->width || depth->height != frame->height)) ropWord = 0;
+    ropWord = triangles ? Impl::rop_word(state.fields, s.ropBlend && s.dualSourceBlend) : 0u;
+    // A depth write needs its own attachment; a batch with no depth image names the frame there, and writes no depth.
+    if (ropWord != 0 && Impl::rop_depth_mask(ropWord) != 0 &&
+        (depth == frame || texture == depth || depth->width != frame->width || depth->height != frame->height)) {
+      ropWord = 0;
+    }
     ropPipeline = s.rop_pipeline(state.fields, pushTexScale, ropWord);
   }
 

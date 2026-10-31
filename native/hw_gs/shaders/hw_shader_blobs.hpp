@@ -72,6 +72,8 @@ extern const std::uint32_t core2_fill_words[];
 extern const std::size_t core2_fill_word_count;
 extern const std::uint32_t hw_pixel_uber_core2_words[];
 extern const std::size_t hw_pixel_uber_core2_word_count;
+extern const std::uint32_t hw_pixel_uber_core2_rop_blend_words[];
+extern const std::size_t hw_pixel_uber_core2_rop_blend_word_count;
 extern const std::uint32_t hw_pixel_uber_core2_rop_words[];
 extern const std::size_t hw_pixel_uber_core2_rop_word_count;
 extern const std::uint32_t hw_pixel_uber_core2_interlock_words[];

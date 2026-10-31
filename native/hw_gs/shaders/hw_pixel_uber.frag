@@ -169,8 +169,15 @@ layout(constant_id = 101) const uint SPEC_MIP_ANISO = kDynamic;  // tex_origin_x
 // IN-481: a draw that reads nothing back writes through colour attachments (byte views of the same words), with the
 // lanes it keeps masked by the pipeline: the GPU's own output path instead of storage writes. The word is exact: a byte
 // divided by 255 comes back as that byte.
+// IN-482: HWR_ROP=2, a blend without reads: the second output of the first attachment carries the blend factor, and the
+// GPU's own blending does the rest (performance mode: it rounds where the GS truncates).
+#if HWR_ROP == 2
+layout(location = 0, index = 0) out vec4 hw_out_frame;
+layout(location = 0, index = 1) out vec4 hw_out_factor;
+#else
 layout(location = 0) out vec4 hw_out_frame;
 layout(location = 1) out vec4 hw_out_depth;
+#endif
 #endif
 #if HWR_INTERLOCK
 // Inside the interlock the next fragment of the same pixel must see this one's stores: coherent images.
@@ -648,11 +655,17 @@ void main() {
         f.colour = textured_colour(uvs, uvt, frag);
         if (ST_FOG_ON != 0u) f.colour = fogged(f.colour);
     }
+#if HWR_ROP == 2
+    s.blend_on = 0u;
+    hw_out_factor = vec4(float(min(s.blend_c == HW_BLEND_FACTOR_AS ? f.colour.a : int(s.fix), 128)) / 128.0);
+#endif
     HwOutcome o = hw_process_pixel(s, f, frame_old, depth_old);
 #if HWR_ROP
     if (!o.frame_written && !o.depth_written) discard;
     hw_out_frame = unpackUnorm4x8(o.frame_stored);
+#if HWR_ROP == 1
     hw_out_depth = unpackUnorm4x8(o.depth_stored);
+#endif
 #else
     if (o.frame_written) {
         if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24) {

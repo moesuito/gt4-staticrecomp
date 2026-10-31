@@ -46,6 +46,7 @@ struct HeadlessDevice {
     bool wantInterlock = true;
     bool interlock = false;
     bool independentBlend = false;
+    bool dualSourceBlend = false;
 
     bool Create(std::string& error) {
         if (!gt4::hw::vulkan_loader::load_loader(error)) return false;
@@ -108,6 +109,8 @@ struct HeadlessDevice {
         VkPhysicalDeviceFeatures enabledFeatures{};
         gt4_hw_vkGetPhysicalDeviceFeatures2(physical, &supportedFeatures);
         enabledFeatures.independentBlend = supportedFeatures.features.independentBlend;
+        enabledFeatures.dualSrcBlend = supportedFeatures.features.dualSrcBlend;
+        dualSourceBlend = supportedFeatures.features.dualSrcBlend == VK_TRUE;
         independentBlend = supportedFeatures.features.independentBlend == VK_TRUE;
         deviceInfo.pEnabledFeatures = &enabledFeatures;
         if (interlock) {
@@ -311,6 +314,7 @@ int main(int argc, char** argv) {
     handles.queueFamily = headless.family;
     handles.pixelInterlock = headless.interlock;
     handles.independentBlend = headless.independentBlend;
+    handles.dualSourceBlend = headless.dualSourceBlend;
     std::printf("pixel_interlock=%d scale=%u\n", headless.interlock ? 1 : 0, scale);
     renderer.SetScale(scale, halfPixelShift > 0.0f ? halfPixelShift : static_cast<float>(scale));  // 06.3 half-pixel
     if (!renderer.Init(handles, error)) {

@@ -838,6 +838,7 @@ bool Backend::init(const Options &options, std::string &error) {
   hwgs::gpu::VulkanHandles handles{s.instance, s.physical, s.device, s.queue, s.queue_family};
   handles.pixelInterlock = s.pixel_interlock;
   handles.independentBlend = s.independent_blend;
+  handles.dualSourceBlend = true;  // a required feature of this backend
   {
     // M12 (06.1, IN-371): GT4_HW_SCALE clamped to the device ceiling s_max = max(1, floor(maxImageDimension2D /
     // 1280)); the 06.3 half-pixel mode sets the vertex shift factor (native: s, normal: m, off: 1).
