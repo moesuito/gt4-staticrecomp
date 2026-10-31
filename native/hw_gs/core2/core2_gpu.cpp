@@ -326,13 +326,8 @@ struct Gpu::Impl {
   const bool ropFills = std::getenv("GT4_CORE2_ROP_FILLS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_ROP_FILLS"), "0") != 0;
   VkShaderModule ropModule = VK_NULL_HANDLE, ropBlendModule = VK_NULL_HANDLE;
   // IN-482: blends without depth writes through the GPU's blending. It rounds where the GS truncates and clamps a factor
-  // over 1, so it is not exact: performance mode only (GT4_CORE2_ROP_BLEND=0 / 1 forces it off / on).
-  const bool ropBlend = [] {
-    const char *value = std::getenv("GT4_CORE2_ROP_BLEND");
-    if (value) return std::strcmp(value, "0") != 0;
-    const char *performance = std::getenv("GT4_CORE2_PERFORMANCE");
-    return performance != nullptr && std::strcmp(performance, "0") != 0;
-  }();
+  // over 1, so it is not exact. Off unless GT4_CORE2_ROP_BLEND=1: on the HD 620 it gave only 3-4% of GPU time.
+  const bool ropBlend = std::getenv("GT4_CORE2_ROP_BLEND") != nullptr && std::strcmp(std::getenv("GT4_CORE2_ROP_BLEND"), "0") != 0;
   VkRenderPass ropPassFrame = VK_NULL_HANDLE, ropPassBoth = VK_NULL_HANDLE;
   std::map<std::pair<VkImageView, VkImageView>, VkFramebuffer> ropFramebuffers;
   VkPipeline pipelines[3] = {};  // points, lines, triangles

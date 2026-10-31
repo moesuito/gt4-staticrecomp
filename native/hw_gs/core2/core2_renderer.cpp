@@ -269,6 +269,11 @@ struct Target {
     PixelRect valid;                      // content that is defined
     PixelRect drawn;                      // drawn since the last readback
     std::vector<Dirty> dirty;             // newer in GS memory than in the image
+    // IN-484: the blocks of the last rectangle asked for: CLUT loads ask for each target's blocks thousands of times per VBlank.
+    mutable PixelRect spanRect;
+    mutable BufferView spanView{0, 0, Psm::Ct32};
+    mutable BlockSpan spanValue{};
+    mutable bool spanKnown = false;
     bool fullWordWritten = false;         // a 32-bit (or Z32) draw happened: the top byte is the target's
     bool readOnGpu = false;               // IN-408: drawn pixels were read on the GPU (CLUT, GLM) without a readback
     std::uint64_t lastDraw = 0;
@@ -778,8 +783,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // drawn targets back on the CPU (A/B).
     const bool multiTarget_ = std::getenv("GT4_CORE2_GPU_MULTI_TARGET") == nullptr ||
                               std::strcmp(std::getenv("GT4_CORE2_GPU_MULTI_TARGET"), "0") != 0;
+    // IN-483: GT4 loads palettes over 64 x 64 CT16 targets in its races: 16-bit targets too, or each load makes the CPU wait
+    // for the GPU (2 ms per VBlank on the HD 620). GT4_CORE2_GPU_CT16=0 reads them back (A/B).
+    const bool gpuColour16_ = std::getenv("GT4_CORE2_GPU_CT16") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GPU_CT16"), "0") != 0;
     bool MaterializableClass(FormatClass cls) const {
-        return cls == FormatClass::Colour32 || (multiTarget_ && cls == FormatClass::Depth32);
+        return cls == FormatClass::Colour32 || (multiTarget_ && cls == FormatClass::Depth32) ||
+               (multiTarget_ && gpuColour16_ && cls == FormatClass::Colour16);
     }
 
     // IN-417: whether a CLUT load over `span` can be read on the GPU from the GLM after the drawn targets under it are
@@ -1170,7 +1179,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             Target &t = *target;
             if (!ApplyDirty(t)) return false;
             // The target's page rows inside the span, within its drawn area.
-            const memory::PsmInfo &info = memory::psmInfo(Psm::Ct32);
+            const memory::PsmInfo &info = memory::psmInfo(t.cls == FormatClass::Colour16 ? t.view.psm : Psm::Ct32);
             const std::uint32_t perRow = std::max<std::uint32_t>(t.view.bufferWidth, 1u);
             PixelRect rows;
             for (std::uint32_t row = 0; row * info.pageHeight < t.height; ++row) {
@@ -1184,8 +1193,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const PixelRect area = Intersect(rows, t.drawn);
             if (area.Empty()) continue;
             std::string error;
-            const std::uint32_t layout = t.cls == FormatClass::Depth32 ? static_cast<std::uint32_t>(Psm::Z32)
-                                                                        : static_cast<std::uint32_t>(Psm::Ct32);
+            const std::uint32_t layout = t.cls == FormatClass::Depth32    ? static_cast<std::uint32_t>(Psm::Z32)
+                                         : t.cls == FormatClass::Colour16 ? static_cast<std::uint32_t>(t.view.psm)
+                                                                          : static_cast<std::uint32_t>(Psm::Ct32);
             if (!gpu_.MaterializeTarget(t.image, layout, t.view.basePointer, t.view.bufferWidth, area.x0, area.y0,
                                         area.x1, area.y1, t.fullWordWritten, error)) {
                 Fail(error);
@@ -1523,7 +1533,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // ---- Targets ---------------------------------------------------------------------------------------------
-    BlockSpan TargetSpan(const Target &t, const PixelRect &r) const { return SpanOfRect(t.view, r); }
+    BlockSpan TargetSpan(const Target &t, const PixelRect &r) const {
+        if (!t.spanKnown || r.x0 != t.spanRect.x0 || r.y0 != t.spanRect.y0 || r.x1 != t.spanRect.x1 || r.y1 != t.spanRect.y1 ||
+            t.view.basePointer != t.spanView.basePointer || t.view.bufferWidth != t.spanView.bufferWidth || t.view.psm != t.spanView.psm) {
+            t.spanValue = SpanOfRect(t.view, r);
+            t.spanRect = r;
+            t.spanView = t.view;
+            t.spanKnown = true;
+        }
+        return t.spanValue;
+    }
 
     // IN-408: a target whose drawn pixels a GPU CLUT load or texture read without a readback goes to memory before it
     // is dropped (a width change, 6.2 ageing): before IN-408 that first read had already stored it there, and later

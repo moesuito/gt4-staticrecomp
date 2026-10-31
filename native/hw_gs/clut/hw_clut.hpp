@@ -141,9 +141,15 @@ private:
     struct SourceMemo {
         uint64_t key = ~0ull;
         std::vector<uint32_t> blocks;
+        uint32_t first = 0, last = 0;
         uint64_t lastUse = 0;
     };
     std::array<SourceMemo, 16> sourceMemo_{};
+    // IN-484: GT4 makes 1500 CLUT loads per VBlank from a few places. Clearing the 2 KiB of sourceBlocks_ each time was the
+    // largest part of them on a small cache: only the blocks set are cleared, and a load from the same place changes nothing.
+    std::vector<uint32_t> setBlocks_;
+    const SourceMemo* activeMemo_ = nullptr;
+    void ClearSourceBlocks();
     uint64_t memoUses_ = 0;
 };
 

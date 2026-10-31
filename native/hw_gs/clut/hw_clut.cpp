@@ -178,6 +178,8 @@ void ClutUnit::Reset() {
     haveLast_ = false;
     stale_ = true;
     sourceBlocks_.reset();
+    setBlocks_.clear();
+    activeMemo_ = nullptr;
     ++generation_;
 }
 
@@ -292,6 +294,14 @@ const CsmOffsets& CsmOffsetsFor(uint32_t cpsm, bool eightBit) {
 
 }  // namespace
 
+void ClutUnit::ClearSourceBlocks() {
+    for (const uint32_t block : setBlocks_) sourceBlocks_.reset(block);
+    setBlocks_.clear();
+    sourceFirst_ = kBlocksTotal;
+    sourceLast_ = 0;
+    activeMemo_ = nullptr;
+}
+
 void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
     if (!IsCpsmValid(write.cpsm)) {
         counters_.Add(Counter::ClutBadCpsm);
@@ -306,9 +316,6 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
         counters_.Add(Counter::Csm2NonSixteen);
     }
 
-    sourceBlocks_.reset();
-    sourceFirst_ = kBlocksTotal;
-    sourceLast_ = 0;
     // IN-360: without data copies only the source blocks matter; they depend on the placement fields alone.
     SourceMemo* memo = nullptr;
     if (!copiesData_) {
@@ -327,10 +334,15 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
             if (entry.lastUse < oldest->lastUse) oldest = &entry;
         }
         if (memo) {
-            for (const uint32_t block : memo->blocks) {
-                sourceBlocks_.set(block);
-                sourceFirst_ = std::min(sourceFirst_, block);
-                sourceLast_ = std::max(sourceLast_, block);
+            if (memo != activeMemo_) {
+                ClearSourceBlocks();
+                for (const uint32_t block : memo->blocks) {
+                    sourceBlocks_.set(block);
+                    setBlocks_.push_back(block);
+                }
+                sourceFirst_ = memo->first;
+                sourceLast_ = memo->last;
+                activeMemo_ = memo;
             }
             memo->lastUse = ++memoUses_;
             ++generation_;
@@ -344,6 +356,7 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
         memo->blocks.clear();
         memo->lastUse = ++memoUses_;
     }
+    ClearSourceBlocks();
     const CsmOffsets* offsets = write.csm == 0u ? &CsmOffsetsFor(write.cpsm, eightBit) : nullptr;
     if (offsets && !offsets->valid) offsets = nullptr;
     for (uint32_t e = 0; e < entryCount; ++e) {
@@ -367,8 +380,11 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
                 continue;
             }
         }
-        if (memo && !sourceBlocks_.test(location.block)) memo->blocks.push_back(location.block);
-        sourceBlocks_.set(location.block);
+        if (!sourceBlocks_.test(location.block)) {
+            if (memo) memo->blocks.push_back(location.block);
+            setBlocks_.push_back(location.block);
+            sourceBlocks_.set(location.block);
+        }
         sourceFirst_ = std::min(sourceFirst_, location.block);
         sourceLast_ = std::max(sourceLast_, location.block);
         if (!copiesData_) continue;
@@ -388,6 +404,11 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
             const uint16_t raw = static_cast<uint16_t>(ReadLittle(source, 2));
             halfwords_[(16u * write.csa + e) & 511u] = raw;
         }
+    }
+    if (memo) {
+        memo->first = sourceFirst_;
+        memo->last = sourceLast_;
+        activeMemo_ = memo;
     }
 
     ++generation_;

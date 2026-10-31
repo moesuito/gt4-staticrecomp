@@ -109,10 +109,15 @@ if ($Set -eq 6) {
           'VsyncEnable = false', 'DisableMailboxPresentation = true', 'HWDownloadMode = 2', 'LoadTextureReplacements = false', '',
           '[Folders]', ('Cache = ' + (Join-Path $Root 'data\gs\cache')), ('Textures = ' + (Join-Path $Root 'data\Textures')), '',
           '[GT4GS]', ('DataRoot = ' + (Join-Path $Root 'data\gs\data')), 'ProhibitDynamicCode = false') | Set-Content -LiteralPath $ini -Encoding ascii
-        $gsTests += @{ name="gsdx-$($scale)x"; text="GSdx em $($scale)x"; scale=1; frames=$Frames; window=$false;
+        $gsTests += @{ name="gsdx-$($scale)x"; text="GSdx em $($scale)x"; scale=1; frames=$Frames; window=$true;
                        env=@{ GT4_RENDERER='pcsx2'; PS2_GS='gpu'; GT4_GS_PROCESS=$gsExe; GT4_GS_PROCESS_SHA256=$gsSha; GT4_GS_CONFIG=$ini; GT4_FLARE_LIMITS='1'; GT4_PERF='1' } }
     }
-    $tests = $gsTests
+    # GSdx cannot start without the logged-in desktop, so this set runs from RODAR5.bat, with the window. The first test
+    # shows what presenting costs CoreGS 2.0 (the CPU profile with a window).
+    $tests = @(
+        @{ name='coregs-1x-janela'; text='CoreGS 2.0 em 1x com janela'; scale=1; frames=10500; window=$true; env=@{ GT4_CPU_SAMPLER=$sampler; GT4_CPU_SAMPLER_FROM='9400'; GT4_CPU_SAMPLER_TO='10400'; GT4_PERF='1' } },
+        @{ name='coregs-2x-janela'; text='CoreGS 2.0 em 2x com janela'; scale=2; frames=10500; window=$true; env=@{ GT4_PERF='1' } }
+    ) + $gsTests
 }
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
