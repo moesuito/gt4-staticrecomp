@@ -22,7 +22,8 @@ namespace hwgs::core2 {
 // The session counters of CORE2 (replay summary and the [hw] core2 line of the F8 report).
 struct Core2Counters {
     std::uint64_t ropBatches = 0;         // IN-481, from the GPU's counters
-    std::uint64_t roadSheensSkipped = 0;  // IN-500, from the GPU's counters
+    std::uint64_t roadSheensSkipped = 0;  // IN-501, from the GPU's counters
+    std::uint64_t sheensEarly = 0;        // IN-503, from the GPU's counters
     std::uint64_t targetsCreated = 0;
     std::uint64_t targetsAged = 0;        // deleted after 60 frames unused (6.2)
     std::uint64_t targetsReplaced = 0;    // replaced on a width change (2.1) or full dirty coverage (4.1)

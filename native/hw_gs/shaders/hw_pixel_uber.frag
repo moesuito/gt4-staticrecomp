@@ -590,6 +590,10 @@ void main() {
     bool texel_deferred = false;
     int uvs = 0;
     int uvt = 0;
+#if HWR_EARLY_Z
+    // IN-503: the road's sheen (Cs Ad + Cd) in the plain variant: without destination alpha the colour stays.
+    if (SPEC_EARLY_Z == 3u && (imageLoad(hw_frame, pixel).x >> 24) == 0u) discard;
+#endif
     if (ST_TEX_ON != 0u) {
         if (ST_TEX_FST != 0u) {
             uvs = to_texel_104(in_uv.x);

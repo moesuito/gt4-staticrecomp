@@ -763,7 +763,7 @@ struct Gpu::Impl {
   }
 
   VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error,
-                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0) {
+                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -785,7 +785,7 @@ struct Gpu::Impl {
       std::memcpy(entries, specialization->pMapEntries, count * sizeof(VkSpecializationMapEntry));
       std::memcpy(data, specialization->pData, bytes);
     }
-    const std::uint32_t earlyZValue = earlyOut ? 2u : earlyZ ? 1u : 0u;
+    const std::uint32_t earlyZValue = sheenEarlyOut ? 3u : earlyOut ? 2u : earlyZ ? 1u : 0u;
     entries[count++] = {103u, static_cast<std::uint32_t>(bytes), 4};
     std::memcpy(data + bytes, &earlyZValue, 4);
     bytes += 4;
@@ -864,7 +864,12 @@ struct Gpu::Impl {
   // Integrated GPUs only: on the RX 9060 XT at 12x the waits cost more than the interlock (GPU busy 23.7 to 24.7 ms).
   // GT4_CORE2_PLAIN_DISJOINT=0 or 1 overrides that (A/B).
   bool plainDisjoint = false;
-  bool skipRoadSheen = false;  // IN-500
+  bool skipRoadSheen = false;  // IN-501
+  // IN-503: the plain variant of the road's sheen: a pixel with no destination alpha gets no colour, so it leaves before it
+  // samples or stores. Its alpha lane stays as it was instead of taking the texel's, which the next pass overwrites.
+  // GT4_CORE2_SHEEN_EARLY=0 turns it off (A/B).
+  static constexpr std::uint32_t kPlainSheenWord = 0xC0000000u;
+  const bool sheenEarly = std::getenv("GT4_CORE2_SHEEN_EARLY") == nullptr || std::strcmp(std::getenv("GT4_CORE2_SHEEN_EARLY"), "0") != 0;
 
   // IN-481: the ROP word: bit 0 set, bits 1-4 the frame's RGBA lanes, bits 5-8 the depth word's lanes.
   static std::uint32_t rop_frame_mask(std::uint32_t word) { return (word >> 1) & 15u; }
@@ -1007,9 +1012,10 @@ struct Gpu::Impl {
     }
     VkSpecializationInfo info{count, entries, 4 * count, values};
     const std::uint32_t word = key[kSpecFieldCount + 2];
-    const std::uint32_t rop = word == kPlainWord ? 0u : word;
-    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, word == kPlainWord ? fragmentModule : rop != 0 ? (rop_blend_mode(rop) ? ropBlendModule : ropModule) : interlock ? interlockModule : fragmentModule,
-                         error, &info, rop);  // the driver caches
+    const bool sheen = word == kPlainSheenWord;
+    const std::uint32_t rop = word == kPlainWord || sheen ? 0u : word;
+    return make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, word == kPlainWord || sheen ? fragmentModule : rop != 0 ? (rop_blend_mode(rop) ? ropBlendModule : ropModule) : interlock ? interlockModule : fragmentModule,
+                         error, &info, rop, sheen);  // the driver caches
   }
 
   // IN-489: every shader of a variant, so that a list written by another build is not used by this one.
@@ -1095,7 +1101,7 @@ struct Gpu::Impl {
       SpecKey key;
       std::memcpy(key.data(), bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof(SpecKey));
       const std::uint32_t rop = key[kSpecFieldCount + 2];
-      if (rop != 0 && rop != kPlainWord && (!ropOn || (rop_blend_mode(rop) && ropBlendModule == VK_NULL_HANDLE))) continue;
+      if (rop != 0 && rop != kPlainWord && rop != kPlainSheenWord && (!ropOn || (rop_blend_mode(rop) && ropBlendModule == VK_NULL_HANDLE))) continue;
       if (!specSeen.insert(key).second) continue;
       specQueue.push_back(key);
       specKnown.push_back(key);
@@ -1209,10 +1215,10 @@ struct Gpu::Impl {
   }
 
   // IN-496: the plain variant, or null while it compiles (the batch then draws with the interlock).
-  VkPipeline plain_pipeline(const std::uint32_t *fields, std::uint32_t pushWord) {
+  VkPipeline plain_pipeline(const std::uint32_t *fields, std::uint32_t pushWord, bool sheen) {
     if (specMode == SpecMode::off) return VK_NULL_HANDLE;
     SpecKey key = spec_key(fields, pushWord);
-    key[kSpecFieldCount + 2] = kPlainWord;
+    key[kSpecFieldCount + 2] = sheen ? kPlainSheenWord : kPlainWord;
     return specialised_pipeline(key);
   }
 
@@ -2134,7 +2140,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
     const char *plainSwitch = std::getenv("GT4_CORE2_PLAIN_DISJOINT");  // IN-496
     s.plainDisjoint = plainSwitch ? std::strcmp(plainSwitch, "0") != 0 : s.integrated;
-    const char *sheenSwitch = std::getenv("GT4_CORE2_ROAD_SHEEN");  // IN-500
+    const char *sheenSwitch = std::getenv("GT4_CORE2_ROAD_SHEEN");  // IN-501
     const char *performanceSwitch = std::getenv("GT4_CORE2_PERFORMANCE");
     s.skipRoadSheen = sheenSwitch ? std::strcmp(sheenSwitch, "0") == 0 : performanceSwitch && std::strcmp(performanceSwitch, "0") != 0;
   }
@@ -2676,20 +2682,22 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     return false;
   }
   if (batch.draws->empty() || batch.vertices->empty()) return true;
-  // IN-500 (Performance Mode): GT4's sheen on the road, a pass over the screen that adds a small target's picture weighted
-  // by destination alpha (Cs Ad + Cd), the costliest pass of a frame with nothing else to give up. The road gets darker.
-  if (s.skipRoadSheen && batch.texture != kNoImage) {
+  // IN-501: GT4's sheen on the road, a pass over the screen that adds a small target's picture weighted by destination
+  // alpha (Cs Ad + Cd). Performance Mode leaves it out, the road gets darker.
+  bool roadSheen = false;
+  if (batch.texture != kNoImage) {
     namespace g = gpu::gpufield;
     const auto &f = batch.state.fields;
     if (f[g::BlendOn] != 0 && f[g::BlendA] == 0u && f[g::BlendB] == 2u && f[g::BlendC] == 1u && f[g::BlendD] == 1u &&
         (f[g::Ztest] == 0 || f[g::Ztst] == 1u) && frame->nativeWidth >= 640u) {
       std::int64_t area = 0;
       for (const gpu::GpuDraw &draw : *batch.draws) area += static_cast<std::int64_t>(std::max(draw.x1 - draw.x0 + 1, 0)) * std::max(draw.y1 - draw.y0 + 1, 0);
-      if (area * 5 >= static_cast<std::int64_t>(frame->nativeWidth) * frame->nativeHeight * 2) {
-        s.stats.roadSheensSkipped++;
-        return true;
-      }
+      roadSheen = area * 5 >= static_cast<std::int64_t>(frame->nativeWidth) * frame->nativeHeight * 2;
     }
+  }
+  if (roadSheen && s.skipRoadSheen) {
+    s.stats.roadSheensSkipped++;
+    return true;
   }
   const Image *depth = batch.depth == kNoImage ? frame : s.image_of(batch.depth);
   const Image *texture = batch.texture == kNoImage ? &s.atlas : s.image_of(batch.texture);
@@ -2862,9 +2870,10 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       const bool plain = f[g::Dither] == 0 && f[g::Fba] == 0 && testPasses && f[g::Format] == 0u &&
                          (f[g::Ztest] == 0 || f[g::Ztst] == 1u) && (!writesDepth || depthClearable);
       const bool wholeWords = f[g::Fbmsk] == 0 && writesFrame;
-      // Experiment: without the road's sheen the alpha lane's fills have no reader left.
-      static const bool skipAlphaFill = std::getenv("GT4_CORE2_SKIP_ALPHA_FILL") != nullptr;
-      const bool alphaGone = skipAlphaFill && s.skipRoadSheen && f[g::Fbmsk] == 0x00FFFFFFu && frame->nativeWidth >= 640u;
+      // IN-502: the sheen was the main reader of GT4's fills of the alpha lane, so Performance Mode leaves them out with it
+      // (their depth stays). GT4_CORE2_ALPHA_FILLS=1 keeps them (A/B).
+      static const bool keepAlphaFills = std::getenv("GT4_CORE2_ALPHA_FILLS") != nullptr && std::strcmp(std::getenv("GT4_CORE2_ALPHA_FILLS"), "0") != 0;
+      const bool alphaGone = !keepAlphaFills && s.skipRoadSheen && f[g::Fbmsk] == 0x00FFFFFFu && frame->nativeWidth >= 640u;
       if (whole && plain && alphaGone && !depthClearable) {
         s.stats.batches++;
         return true;
@@ -3115,10 +3124,13 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
         }
         shapes.clear();
         if (disjoint) {
-          command.pipeline = s.plain_pipeline(state.fields, record.push[7]);
+          namespace g = gpu::gpufield;
+          const bool sheen = roadSheen && s.sheenEarly && state.fields[g::Format] == 0u && state.fields[g::Fbmsk] == 0;
+          command.pipeline = s.plain_pipeline(state.fields, record.push[7], sheen);
           if (command.pipeline) {
             record.plain = true;
             s.stats.plainBatches++;
+            if (sheen) s.stats.sheensEarly++;
           }
         }
       }

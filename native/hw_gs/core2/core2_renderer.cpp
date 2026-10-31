@@ -3758,7 +3758,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
-                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu plain_batches=%llu road_sheens_skipped=%llu\n",
+                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu plain_batches=%llu road_sheens_skipped=%llu sheens_early=%llu\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
@@ -3769,7 +3769,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits,
                  (unsigned long long)clut.DataMemoHits(), (unsigned long long)clut.DataMemoReads(),
                  (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0,
-                 (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches, (unsigned long long)g.roadSheensSkipped);
+                 (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches, (unsigned long long)g.roadSheensSkipped, (unsigned long long)g.sheensEarly);
 }
 
 }  // namespace
@@ -4106,6 +4106,7 @@ const writeback::Counters &Renderer::GetCounters() const { return impl_->counter
 const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.ropBatches = impl_->gpu_.Stats().ropBatches;
     impl_->stats.roadSheensSkipped = impl_->gpu_.Stats().roadSheensSkipped;
+    impl_->stats.sheensEarly = impl_->gpu_.Stats().sheensEarly;
     return impl_->stats;
 }
 bool Renderer::Failed() const { return impl_->failed_; }

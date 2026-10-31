@@ -4574,6 +4574,7 @@ cpuref::CaptureWriter Core2RoadSheenCapture() {
         // the small target and the frame, half alpha
         kSmall | (uint64_t{2} << 16), 0x4C, kSprite, 0x00, rgbaq(0x80604020u), 0x01, xyz(0, 0), 0x05, xyz(128, 128), 0x05,
         kA | (uint64_t{10} << 16), 0x4C, kSprite, 0x00, rgbaq(0x40102030u), 0x01, xyz(0, 0), 0x05, xyz(640, 448), 0x05,
+        rgbaq(0x00203040u), 0x01, xyz(0, 200), 0x05, xyz(640, 300), 0x05,
         // the sheen: A = Cs, B = 0, C = Ad, D = Cd
         (uint64_t{2} << 2) | (uint64_t{1} << 4) | (uint64_t{1} << 6), 0x42,
         uint64_t{kSmall * 32} | (uint64_t{2} << 14) | (uint64_t{7} << 26) | (uint64_t{7} << 30) | (uint64_t{1} << 34) | (uint64_t{1} << 35), 0x06,
@@ -4604,6 +4605,24 @@ int TestCore2RoadSheen(const gpu::VulkanHandles& handles) {
     }
     if (byDefault.images != drawn.images) {
         std::printf("  the default is not the full picture\n");
+        ++failures;
+    }
+    // IN-503: the plain variant that leaves pixels without destination alpha: the same picture.
+    _putenv_s("GT4_CORE2_PLAIN_DISJOINT", "1");
+    _putenv_s("GT4_CORE2_SPECIALIZE", "sync");
+    Core2AbRun early, late;
+    if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_SHEEN_EARLY", true, early, error, 0, 2) ||
+        !ReplayCore2Ab(handles, capture, "GT4_CORE2_SHEEN_EARLY", false, late, error, 0, 2)) {
+        std::printf("  replay failed: %s\n", error.c_str());
+        ++failures;
+    }
+    _putenv_s("GT4_CORE2_PLAIN_DISJOINT", "");
+    _putenv_s("GT4_CORE2_SPECIALIZE", "");
+    std::printf("  plain sheens leaving early: on %llu, off %llu\n", static_cast<unsigned long long>(early.stats.sheensEarly),
+                static_cast<unsigned long long>(late.stats.sheensEarly));
+    if (handles.pixelInterlock && early.stats.sheensEarly == 0) ++failures;
+    if (late.stats.sheensEarly != 0 || early.images != late.images || early.images != drawn.images) {
+        std::printf("  the early variant changed the picture\n");
         ++failures;
     }
     std::printf("hw_core2_road_sheen: %d failures\n", failures);

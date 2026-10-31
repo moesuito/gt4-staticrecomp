@@ -60,7 +60,8 @@ struct Core2GpuStats {
     std::uint64_t batches = 0;
     std::uint64_t wholeClears = 0;      // IN-494: fills that became a clear of the whole image
     std::uint64_t plainBatches = 0;     // IN-496: batches of an interlock GPU drawn without the interlock
-    std::uint64_t roadSheensSkipped = 0;  // IN-500
+    std::uint64_t roadSheensSkipped = 0;  // IN-501
+    std::uint64_t sheensEarly = 0;        // IN-503
     std::uint64_t imagesCreated = 0;    // S1: new images (not taken over from finished ones)
     std::uint64_t imagesAllocated = 0;  // S1: images that needed a device allocation of their own
     std::uint64_t imageBlocks = 0;      // S2: 64 MiB image memory blocks allocated
