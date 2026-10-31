@@ -630,6 +630,14 @@ void main() {
     }
 #endif
     if (ST_FOG_ON != 0u && !texel_deferred) colour = fogged(colour);
+#if HWR_EARLY_Z
+    // IN-498: a fragment the alpha test stops from writing anything (AFAIL KEEP: fences, leaves, cut-out edges) need not
+    // wait for the interlock either. Fog does not change alpha, so this is the test hw_process_pixel would make.
+    if (SPEC_EARLY_Z == 2u && !texel_deferred) {
+        const HwWrite alpha_write = hw_alpha_test_write(s.ate, s.atst, s.afail, int(s.aref), colour.a, s.format);
+        if (!(alpha_write.rgb || alpha_write.alpha || alpha_write.depth)) discard;
+    }
+#endif
 
     HwFragment f;
     // Dither index. IN-384 follow-up: the reference's default at scale is the raw fragment coordinate (4x4 output
