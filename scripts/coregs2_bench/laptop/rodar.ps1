@@ -204,6 +204,19 @@ if ($Set -eq 13) {
         @{ name='3-video-perfil'; text='video com perfil'; scale=1; frames=4000; window=$true; env=@{ GT4_MTVU_REPORT_EVERY='300'; GT4_CPU_SAMPLER=$samplerV; GT4_CPU_SAMPLER_FROM='2800'; GT4_CPU_SAMPLER_TO='3800' } }
     )
 }
+if ($Set -eq 14) {
+    # The video behind the track selection with a window, with the shader cache on: the first run compiles, the next ones should not.
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    $shaderCache = Join-Path $PSScriptRoot 'shader-cache-t5'
+    $samplerV = Join-Path $logs 'sampler-video.bin'
+    $tests = @(
+        @{ name='1-primeira-vez'; text='video, primeira vez'; scale=1; frames=4000; window=$true; env=@{ GT4_HW_SHADER_CACHE=$shaderCache } },
+        @{ name='2-video'; text='video'; scale=1; frames=4000; window=$true; env=@{ GT4_MTVU_REPORT_EVERY='300'; GT4_HW_SHADER_CACHE=$shaderCache } },
+        @{ name='3-video'; text='video de novo'; scale=1; frames=4000; window=$true; env=@{ GT4_MTVU_REPORT_EVERY='300'; GT4_HW_SHADER_CACHE=$shaderCache } },
+        @{ name='4-video-perfil'; text='video com perfil'; scale=1; frames=4000; window=$true; env=@{ GT4_MTVU_REPORT_EVERY='300'; GT4_HW_SHADER_CACHE=$shaderCache; GT4_CPU_SAMPLER=$samplerV; GT4_CPU_SAMPLER_FROM='2800'; GT4_CPU_SAMPLER_TO='3800' } }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0

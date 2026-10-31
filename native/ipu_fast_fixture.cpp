@@ -104,10 +104,14 @@ int compare() {
     reference_idct(in, reference);
     if (std::memcmp(fast, reference, sizeof fast) != 0 && ++failures <= 5) std::printf("idct differs at round %d\n", round);
   }
+  // Every value of a block with only its first coefficient, zero included.
   std::memset(in, 0, sizeof in);
-  gt4::ipu_fast::idct(g_by_x, g_by_u, in, fast);
-  reference_idct(in, reference);
-  if (std::memcmp(fast, reference, sizeof fast) != 0) ++failures;
+  for (int value = -2048; value < 2048; ++value) {
+    in[0] = value;
+    gt4::ipu_fast::idct(g_by_x, g_by_u, in, fast);
+    reference_idct(in, reference);
+    if (std::memcmp(fast, reference, sizeof fast) != 0 && ++failures <= 5) std::printf("idct differs for first coefficient %d\n", value);
+  }
 
   std::vector<std::uint8_t> stream(4099);
   for (std::uint8_t &byte : stream) byte = static_cast<std::uint8_t>(next_random());

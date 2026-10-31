@@ -29,6 +29,16 @@ inline std::uint32_t read_bits(const std::uint8_t *data, std::size_t size, std::
 // The donor's 8 x 8 inverse DCT in doubles: most coefficients of a video block are zero, and a zero adds nothing to a sum.
 // Every output is the same sum in the same order, so the same double. `by_x` is cosines[x][u], `by_u` its transpose.
 inline void idct(const double (&by_x)[8][8], const double (&by_u)[8][8], const int *in, std::int16_t *out) {
+  // Only the first coefficient: cosines[x][0] is one value for every x, so all 64 outputs are the same sum.
+  bool only_first = true;
+  for (int i = 1; i < 64 && only_first; ++i) only_first = in[i] == 0;
+  if (only_first) {
+    const double row = 0.0 + by_u[0][0] * in[0];
+    const double sum = 0.0 + by_x[0][0] * row;
+    const std::int16_t value = static_cast<std::int16_t>(std::clamp(static_cast<int>(std::floor(sum + 0.5)), -256, 255));
+    for (int i = 0; i < 64; ++i) out[i] = value;
+    return;
+  }
   alignas(16) double rows[8][8];
   bool row_used[8];
   for (int v = 0; v < 8; ++v) {

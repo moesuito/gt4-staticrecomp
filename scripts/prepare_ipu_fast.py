@@ -2,7 +2,7 @@
 
 GT4 plays video behind its menus; the donor's decoder took about half of the EE thread there. This derives
 runtime/src/ipu/ipu.cpp with the bit reader, the inverse DCT and the colour conversion of native/ipu_fast.hpp and without a
-function-local static on the way to every table. The results are exactly the donor's (native/ipu_fast_fixture.cpp, and the
+function-local static on the way to every table, and one read of the stream per coefficient. The results are exactly the donor's (native/ipu_fast_fixture.cpp, and the
 frames of the video scenes).
 
 Overlay sections are anchored on unique donor text. Removing them must restore the normalized input, as
@@ -35,6 +35,65 @@ SECTIONS = [
      'std::uint32_t bits_at(std::size_t bit, unsigned n) { return gt4::ipu_fast::read_bits(g_in.data(), g_in.size(), bit, n); }\n\n'),
     ('idct', 'void idct(const int *in, std::int16_t *out) {\n', 'void decode_block(std::int16_t *out',
      'void idct(const int *in, std::int16_t *out) { gt4::ipu_fast::idct(tables().cosines, tables().cosines_by_u, in, out); }\n\n'),
+    ('coefficient_list', '    int coef[64] = {};\n', '    int index = 0;\n',
+     '    // IN-491: only the coded positions are read below, in the same rising order the loop over 64 visited them.\n'
+     '    int coef[64];\n    std::uint8_t coded[64];\n    int coded_count = 0;\n'),
+    ('dc_intra', '        coef[0] = g_dc[channel];\n', '        index = 1;\n    } else if (peek(1)) {\n',
+     '        coef[0] = g_dc[channel];\n        coded[coded_count++] = 0;\n'),
+    ('dc_nonintra', '        coef[0] = get(2) & 1u ? -1 : 1;\n', '        index = 1;\n    }\n    for (;;) {\n',
+     '        coef[0] = get(2) & 1u ? -1 : 1;\n        coded[coded_count++] = 0;\n'),
+    ('coefficients', '    for (;;) {\n        if (index) {\n            if (table_one ? peek(4) == 6u : peek(2) == 2u) {\n',
+     '    const std::uint8_t *scan = alternate_scan() ? kAlternate : kZigzag;\n',
+     '''    for (;;) {
+        int run = 0, level = 0;
+        // IN-491: with 32 bits at hand one read answers the end of block, the code and its sign: three reads per coefficient
+        // were the largest part of the decoder. Fewer bits, or an escape code, take the donor's way.
+        if (available() >= 32) {
+            const std::uint32_t window = bits_at(g_bit, 32);
+            if (index && (table_one ? (window >> 28) == 6u : (window >> 30) == 2u)) {
+                g_bit += table_one ? 4 : 2;
+                break;
+            }
+            const DctEntry &e = table.entries[window >> (32 - table.bits)];
+            if (!e.length) throw BadCode{};
+            if (e.run != kEscape) {
+                g_bit += e.length + 1u;
+                run = e.run;
+                level = (window >> (31 - e.length)) & 1u ? -e.level : e.level;
+                index += run;
+                if (index >= 64) throw BadCode{};
+                coded[coded_count++] = static_cast<std::uint8_t>(index);
+                coef[index++] = level;
+                continue;
+            }
+        }
+        if (index) {
+            if (table_one ? peek(4) == 6u : peek(2) == 2u) {
+                skip(table_one ? 4 : 2);
+                break;
+            }
+        }
+        read_coefficient(table, run, level);
+        index += run;
+        if (index >= 64) throw BadCode{};
+        coded[coded_count++] = static_cast<std::uint8_t>(index);
+        coef[index++] = level;
+    }
+'''),
+    ('dequantise', '    for (int k = 0; k < 64; ++k) {\n        const int v = coef[k];\n', '        const int r = scan[k];\n',
+     '    for (int i = 0; i < coded_count; ++i) {\n        const int k = coded[i];\n        const int v = coef[k];\n'),
+    ('csc_read', '                for (std::uint8_t &v : raw) v = static_cast<std::uint8_t>(get(8));\n',
+     '                convert(raw, (cmd >> 27) & 1u);\n',
+     '''                // IN-491: GT4 reassembles its pictures on the EE and sends them through CSC: 384 reads of 8 bits per
+                // macroblock were half of the decoder. Bytes are bytes when the stream sits on a byte boundary.
+                if ((g_bit & 7u) == 0) {
+                    if (!have(384 * 8)) throw NeedData{};
+                    std::memcpy(raw, g_in.data() + (g_bit >> 3), 384);
+                    g_bit += 384 * 8;
+                } else {
+                    for (std::uint8_t &v : raw) v = static_cast<std::uint8_t>(get(8));
+                }
+'''),
     ('convert', 'void convert(const std::uint8_t *raw, bool rgb16) {\n', 'void emit_raw16(const std::int16_t *raw) {\n',
      'void convert(const std::uint8_t *raw, bool rgb16) {\n    std::uint8_t pixels[1024];\n'
      '    const std::size_t size = gt4::ipu_fast::convert(raw, rgb16, g_th0, g_th1, pixels);\n'
