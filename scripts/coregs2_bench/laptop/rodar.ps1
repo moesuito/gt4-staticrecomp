@@ -192,6 +192,18 @@ if ($Set -eq 12) {
         @{ name='4-com'; text='com memo'; scale=1; frames=11000; window=$false; env=@{} }
     )
 }
+if ($Set -eq 13) {
+    # The video behind the track selection, with a window: pass gt4-old.exe as -Exe for the donor's decoder. Two runs each, the
+    # first warms the shaders, with the frame intervals every 300 VBlanks and a CPU profile on the last.
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    $samplerV = Join-Path $logs 'sampler-video.bin'
+    $tests = @(
+        @{ name='1-aquecimento'; text='video, aquecendo'; scale=1; frames=4000; window=$true; env=@{} },
+        @{ name='2-video'; text='video'; scale=1; frames=4000; window=$true; env=@{ GT4_MTVU_REPORT_EVERY='300' } },
+        @{ name='3-video-perfil'; text='video com perfil'; scale=1; frames=4000; window=$true; env=@{ GT4_MTVU_REPORT_EVERY='300'; GT4_CPU_SAMPLER=$samplerV; GT4_CPU_SAMPLER_FROM='2800'; GT4_CPU_SAMPLER_TO='3800' } }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0
