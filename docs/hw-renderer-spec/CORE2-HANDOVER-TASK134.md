@@ -8,6 +8,13 @@ in `docs/GAME-CODE-OPTIMIZATION-STUDY.md`. Read this first, then that study. Det
 Agent status: this work is clean room (decision 0070). `native/hw_gs/` and `task/027-*` must stay free of PCSX2-tainted
 agents; the TASK-134 agent is not tainted as long as it keeps away from PCSX2 sources and the fork.
 
+## Video (2026-10-31, already done here, do not redo)
+
+The IPU decoder runs on the EE thread. IN-490 and IN-491 (`scripts/prepare_ipu_fast.py`, `native/ipu_fast.hpp`, capsule
+`GT4_IPU_RUNTIME_SOURCE`) cut it by 55% with the donor's exact results: desktop, track selection, EE 6.03 to 4.11 ms. What is
+left during video is yours: on that desktop profile the game's own code leads, `gen::unit_011A` at 18% of the EE thread (guest
+window 0x468000-0x46BFFF, what it does not identified yet). `docs/journal/2026-10-31.md` has the laptop numbers.
+
 ## Where things are
 
 - **Branch:** `task/027-coregs2`. It already contains `task/134-game-code-optimization-study` (merged on 2026-10-30,
