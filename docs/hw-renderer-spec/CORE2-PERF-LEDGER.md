@@ -108,6 +108,7 @@ wall time of the whole emulator.
 | IN-473 | PGO and ThinLTO of the GS libraries in the release build | 3x, 3+3 interleaved, plain -> PGO, medians: GS worker 5.93 -> 5.14, process CPU 16.48 -> 15.72, wall 8.74 -> 8.33, frame p50 8.72 -> 7.84, p95 11.21 -> 10.67, GPU 3.90 -> 3.86. 10/10, 14/14, 31/31 frames identical | GS worker -13% | 354 |
 | IN-477, IN-478 | Performance mode on the HD 620 laptop: the EE does not wait for the GS at the flare table; plain blit instead of FSR on integrated GPUs | Arcade race at 1x, headless: EE drain wait 11.4 -> 0 ms, wall 22.3 -> 19.5 ms (51 FPS), now bound by the GS worker (19.3 ms). With a window: GPU 18.07 -> 13.64 ms, wall 29.1 -> 22.95 ms. Desktop: 7.7 -> 6.6 ms, 14/14 frames identical | - | 358 |
 | IN-481..484 | Light path on the HD 620 | Headless Arcade race at 1x: wall 22.3 ms (first bench) -> 18.3 ms. GSdx reference with a window, first 35 s of the race (approximate; samples counted twice in that run and halved): GSdx 1x about 54 FPS, 2x about 44; CoreGS 1x about 45, 2x about 28, contaminated by 96 s of shader compiling. GSdx itself holds no 60 FPS in this scene | - | 362 |
+| owner | Test of 362 on the HD 620 laptop through the launcher (performance mode, 1x, day track) | F8, 48 s: 59.3 VBlanks/s, frame median 16.8 ms, p95 19.5, p99 21.1, max 25.3 (first test of the day: 41.5 VBlanks/s, median 24 ms) | 1x reached | 362 |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
 ## What we learned
