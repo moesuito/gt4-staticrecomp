@@ -864,6 +864,7 @@ struct Gpu::Impl {
   // Integrated GPUs only: on the RX 9060 XT at 12x the waits cost more than the interlock (GPU busy 23.7 to 24.7 ms).
   // GT4_CORE2_PLAIN_DISJOINT=0 or 1 overrides that (A/B).
   bool plainDisjoint = false;
+  bool skipRoadSheen = false;  // IN-500
 
   // IN-481: the ROP word: bit 0 set, bits 1-4 the frame's RGBA lanes, bits 5-8 the depth word's lanes.
   static std::uint32_t rop_frame_mask(std::uint32_t word) { return (word >> 1) & 15u; }
@@ -897,7 +898,11 @@ struct Gpu::Impl {
   static std::uint32_t rop_word(const std::uint32_t *f, bool allowBlend) {
     namespace g = gpu::gpufield;
     const std::uint32_t format = f[g::Format];
-    if (format > 1u || f[g::DateOn] != 0) return 0;  // CT32, CT24
+    if (format > 2u || f[g::DateOn] != 0) return 0;  // CT32, CT24, CT16
+    // IN-499: a CT16 word replaces all it stores, so its lanes are not the FBMSK's: it qualifies only with nothing to keep.
+    static const bool ct16Allowed = std::getenv("GT4_CORE2_ROP_CT16") == nullptr || std::strcmp(std::getenv("GT4_CORE2_ROP_CT16"), "0") != 0;
+    const bool whole16 = format == 2u;
+    if (whole16 && (!ct16Allowed || f[g::BlendOn] != 0 || (f[g::Fbmsk] & 0x80F8F8F8u) != 0)) return 0;
     std::uint32_t blendIndex = 0;
     // IN-494: with every lane kept the blend has no effect (GT4 writes depth through such a textured pass).
     if (f[g::BlendOn] != 0 && (f[g::Fbmsk] & (format == 0u ? 0xFFFFFFFFu : 0x00FFFFFFu)) != (format == 0u ? 0xFFFFFFFFu : 0x00FFFFFFu)) {
@@ -913,7 +918,7 @@ struct Gpu::Impl {
     bool writeDepth = f[g::Ztest] != 0 && f[g::Zmsk] == 0;
     std::uint32_t frameMask = 15u;
     const std::uint32_t fbmsk = f[g::Fbmsk];
-    for (std::uint32_t lane = 0; lane < (format == 0u ? 4u : 3u); ++lane) {
+    for (std::uint32_t lane = 0; !whole16 && lane < (format == 0u ? 4u : 3u); ++lane) {
       const std::uint32_t kept = (fbmsk >> (8u * lane)) & 0xFFu;
       if (kept == 0xFFu) {
         frameMask &= ~(1u << lane);
@@ -2129,6 +2134,9 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
     const char *plainSwitch = std::getenv("GT4_CORE2_PLAIN_DISJOINT");  // IN-496
     s.plainDisjoint = plainSwitch ? std::strcmp(plainSwitch, "0") != 0 : s.integrated;
+    const char *sheenSwitch = std::getenv("GT4_CORE2_ROAD_SHEEN");  // IN-500
+    const char *performanceSwitch = std::getenv("GT4_CORE2_PERFORMANCE");
+    s.skipRoadSheen = sheenSwitch ? std::strcmp(sheenSwitch, "0") == 0 : performanceSwitch && std::strcmp(performanceSwitch, "0") != 0;
   }
 
   VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2668,6 +2676,21 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     return false;
   }
   if (batch.draws->empty() || batch.vertices->empty()) return true;
+  // IN-500 (Performance Mode): GT4's sheen on the road, a pass over the screen that adds a small target's picture weighted
+  // by destination alpha (Cs Ad + Cd), the costliest pass of a frame with nothing else to give up. The road gets darker.
+  if (s.skipRoadSheen && batch.texture != kNoImage) {
+    namespace g = gpu::gpufield;
+    const auto &f = batch.state.fields;
+    if (f[g::BlendOn] != 0 && f[g::BlendA] == 0u && f[g::BlendB] == 2u && f[g::BlendC] == 1u && f[g::BlendD] == 1u &&
+        (f[g::Ztest] == 0 || f[g::Ztst] == 1u) && frame->nativeWidth >= 640u) {
+      std::int64_t area = 0;
+      for (const gpu::GpuDraw &draw : *batch.draws) area += static_cast<std::int64_t>(std::max(draw.x1 - draw.x0 + 1, 0)) * std::max(draw.y1 - draw.y0 + 1, 0);
+      if (area * 5 >= static_cast<std::int64_t>(frame->nativeWidth) * frame->nativeHeight * 2) {
+        s.stats.roadSheensSkipped++;
+        return true;
+      }
+    }
+  }
   const Image *depth = batch.depth == kNoImage ? frame : s.image_of(batch.depth);
   const Image *texture = batch.texture == kNoImage ? &s.atlas : s.image_of(batch.texture);
   const Image *texels = batch.memoryTexture == kNoImage ? &s.atlas : s.image_of(batch.memoryTexture);
@@ -2839,6 +2862,13 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       const bool plain = f[g::Dither] == 0 && f[g::Fba] == 0 && testPasses && f[g::Format] == 0u &&
                          (f[g::Ztest] == 0 || f[g::Ztst] == 1u) && (!writesDepth || depthClearable);
       const bool wholeWords = f[g::Fbmsk] == 0 && writesFrame;
+      // Experiment: without the road's sheen the alpha lane's fills have no reader left.
+      static const bool skipAlphaFill = std::getenv("GT4_CORE2_SKIP_ALPHA_FILL") != nullptr;
+      const bool alphaGone = skipAlphaFill && s.skipRoadSheen && f[g::Fbmsk] == 0x00FFFFFFu && frame->nativeWidth >= 640u;
+      if (whole && plain && alphaGone && !depthClearable) {
+        s.stats.batches++;
+        return true;
+      }
       if (whole && plain && (wholeWords || depthClearable)) {
         if (!s.recording && !s.begin_recording(error)) return false;
         s.outside_pass();
@@ -2857,7 +2887,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
         }
         s.after_op();
         s.stats.wholeClears++;
-        if (wholeWords || !writesFrame) {
+        if (wholeWords || !writesFrame || alphaGone) {
           s.stats.batches++;
           return true;
         }
@@ -2985,11 +3015,14 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
     // GT4_CORE2_GPU_PROFILE_ORDER: each batch's masks and tests too (a line of its own per different batch).
     static const bool detailed = std::getenv("GT4_CORE2_GPU_PROFILE_ORDER") != nullptr;
-    char detail[120] = "";
+    char detail[160] = "";
     if (detailed) {
-      std::snprintf(detail, sizeof detail, " fbmsk=%08x fmt=%u zf=%u ztst=%u atst=%u afail=%u aref=%u fix=%u same=%u prims=%zu verts0=%u",
+      const gpu::GpuVertex &v0 = (*batch.vertices)[batch.draws->front().first];
+      const gpu::GpuVertex &v1 = (*batch.vertices)[batch.draws->front().first + 1u];
+      std::snprintf(detail, sizeof detail, " fbmsk=%08x fmt=%u zf=%u ztst=%u atst=%u afail=%u aref=%u fix=%u same=%u prims=%zu verts0=%u lin=%u texsc=%u xyuv=%u,%u,%u,%u,%u,%u,%u,%u",
                     f[g::Fbmsk], f[g::Format], f[g::Zformat], f[g::Ztst], f[g::Atst], f[g::Afail], f[g::Aref], f[g::Fix],
-                    depth == frame ? 1u : 0u, batch.draws->size(), batch.draws->front().count);
+                    depth == frame ? 1u : 0u, batch.draws->size(), batch.draws->front().count, f[g::TexLinear], pushTexScale & 0xFFu,
+                    v0.x, v0.y, v0.u, v0.v, v1.x, v1.y, v1.u, v1.v);
     }
     std::snprintf(label, sizeof label, "draw %ux%u area=%.1fM rop=%u const=%u topo=%u tex=%s blend=%s z=%s%s ate=%u fbmsk=%s prims=%s%s",
                   frame->width, frame->height, scissorArea / 1.0e6, ropPipeline ? 1u : 0u, batch.constantFill ? 1u : 0u,

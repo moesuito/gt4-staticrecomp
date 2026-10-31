@@ -3327,9 +3327,10 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
     _putenv_s("GT4_HW_CORE", "2");
     writeback::Renderer renderer;
     _putenv_s("GT4_HW_CORE", "");
-    _putenv_s(abSwitch, "");
     renderer.SetScale(scale, static_cast<float>(scale));
-    if (!renderer.Init(handles, error)) return false;
+    const bool ready = renderer.Init(handles, error);  // some switches are read here
+    _putenv_s(abSwitch, "");
+    if (!ready) return false;
     if (configure) configure(renderer);
     if (!renderer.Core2()) {
         error = "GT4_HW_CORE=2 did not select core 2";
@@ -4506,6 +4507,109 @@ cpuref::CaptureWriter Core2UploadMemoCapture(uint32_t frames) {
     return capture;
 }
 
+// A scene target copied to a CT32 frame and to a CT16 frame by textured sprites: draws that read nothing back.
+cpuref::CaptureWriter Core2CopiesCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kB = 8, kScene = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8, kFbw2 = uint64_t{2} << 16, kCt16 = uint64_t{2} << 24;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{2} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{127} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    const uint64_t tex0 = uint64_t{kScene * 32} | (uint64_t{2} << 14) | (uint64_t{7} << 26) | (uint64_t{6} << 30) |
+                          (uint64_t{1} << 34) | (uint64_t{1} << 35);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{127} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            kScene | kFbw2, 0x4C, kSprite, 0x00, rgbaq(0x80204060u + frame * 0x00030201u), 0x01, xyz(0, 0), 0x05,
+            xyz(128, 64), 0x05, rgbaq(0x80C08040u), 0x01, xyz(8, 4), 0x05, xyz(100, 28), 0x05,
+            kA | kFbw2, 0x4C, tex0, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0),
+            0x05, uv(128, 64), 0x03, xyz(128, 64), 0x05,
+            kB | kFbw2 | kCt16, 0x4C, tex0, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03,
+            xyz(0, 0), 0x05, uv(128, 64), 0x03, xyz(128, 64), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
+// hw_core2_rop (IN-481, IN-499): draws through colour attachments against storage writes, CT32 and CT16: the same images
+// and GS memory, equal to the CPU reference at 1x.
+int TestCore2Rop(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    uint64_t ropBatches = 0;
+    auto ran = [&ropBatches](const Core2AbRun& off, const Core2AbRun& on) {
+        ropBatches += on.stats.ropBatches;
+        return off.stats.ropBatches != 0 ? 1 : 0;
+    };
+    for (uint32_t scale : {1u, 2u}) {
+        const std::string tag = "copies at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(handles, tag.c_str(), Core2CopiesCapture(3), 3, "GT4_CORE2_ROP", scale == 1, ran, false, scale, "1");
+    }
+    std::printf("  batches through colour attachments: %llu\n", static_cast<unsigned long long>(ropBatches));
+    if (ropBatches == 0) ++failures;
+    std::printf("hw_core2_rop: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// A 640 x 448 frame filled with half alpha, then GT4's sheen: a small target added over the screen as Cs Ad + Cd.
+cpuref::CaptureWriter Core2RoadSheenCapture() {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSmall = 200;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kAbe = 1u << 6, kFst = 1u << 8;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{10} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{639} << 32) | (uint64_t{447} << 44));
+    const std::vector<uint64_t> words = {
+        (uint64_t{639} << 16) | (uint64_t{447} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        // the small target and the frame, half alpha
+        kSmall | (uint64_t{2} << 16), 0x4C, kSprite, 0x00, rgbaq(0x80604020u), 0x01, xyz(0, 0), 0x05, xyz(128, 128), 0x05,
+        kA | (uint64_t{10} << 16), 0x4C, kSprite, 0x00, rgbaq(0x40102030u), 0x01, xyz(0, 0), 0x05, xyz(640, 448), 0x05,
+        // the sheen: A = Cs, B = 0, C = Ad, D = Cd
+        (uint64_t{2} << 2) | (uint64_t{1} << 4) | (uint64_t{1} << 6), 0x42,
+        uint64_t{kSmall * 32} | (uint64_t{2} << 14) | (uint64_t{7} << 26) | (uint64_t{7} << 30) | (uint64_t{1} << 34) | (uint64_t{1} << 35), 0x06,
+        kSprite | kTme | kAbe | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(128, 128), 0x03, xyz(640, 448), 0x05};
+    capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE}, words));
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_road_sheen (IN-500): the switch skips that pass and changes the picture; it is drawn unless told otherwise.
+int TestCore2RoadSheen(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    const auto capture = Core2RoadSheenCapture();
+    Core2AbRun skipped, drawn, byDefault;
+    std::string error;
+    if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_ROAD_SHEEN", false, skipped, error, 0, 2) ||
+        !ReplayCore2Ab(handles, capture, "GT4_CORE2_ROAD_SHEEN", true, drawn, error, 0, 2, {}, "1") ||
+        !ReplayCore2Ab(handles, capture, "GT4_CORE2_ROAD_SHEEN", true, byDefault, error, 0, 2)) {
+        std::printf("  replay failed: %s\n", error.c_str());
+        return 1;
+    }
+    std::printf("  passes skipped: switch 0 %llu, switch 1 %llu, default %llu\n", static_cast<unsigned long long>(skipped.stats.roadSheensSkipped),
+                static_cast<unsigned long long>(drawn.stats.roadSheensSkipped), static_cast<unsigned long long>(byDefault.stats.roadSheensSkipped));
+    if (skipped.stats.roadSheensSkipped == 0 || drawn.stats.roadSheensSkipped != 0 || byDefault.stats.roadSheensSkipped != 0) ++failures;
+    if (skipped.images == drawn.images) {
+        std::printf("  the pass made no difference\n");
+        ++failures;
+    }
+    if (byDefault.images != drawn.images) {
+        std::printf("  the default is not the full picture\n");
+        ++failures;
+    }
+    std::printf("hw_core2_road_sheen: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_whole_clears (IN-494): whole-target fills as clears against drawing them: images and memory unchanged, exact at
 // 1x (the default there keeps the top byte of a Z24 word on this GPU).
 int TestCore2WholeClears(const gpu::VulkanHandles& handles) {
@@ -5492,6 +5596,8 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);
     if (name == "hw_core2_whole_clears") return TestCore2WholeClears(handles);
+    if (name == "hw_core2_rop") return TestCore2Rop(handles);
+    if (name == "hw_core2_road_sheen") return TestCore2RoadSheen(handles);
     if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
