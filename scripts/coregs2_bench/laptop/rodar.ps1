@@ -119,6 +119,17 @@ if ($Set -eq 6) {
         @{ name='coregs-2x-janela'; text='CoreGS 2.0 em 2x com janela'; scale=2; frames=10500; window=$true; env=@{ GT4_PERF='1' } }
     ) + $gsTests
 }
+if ($Set -eq 7) {
+    # A light scene: Time Trial on the Nordschleife by day, alone on the track (the car stays against the rail on the first
+    # bend, so the second half is a still view of the track).
+    $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+    $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    $tests = @(
+        @{ name='1-dia-aquecimento'; text='dia, aquecendo'; scale=1; frames=11000; window=$false; env=@{} },
+        @{ name='2-dia-1x'; text='dia, 1x'; scale=1; frames=11000; window=$false; env=@{} },
+        @{ name='3-dia-2x'; text='dia, 2x'; scale=2; frames=11000; window=$false; env=@{} }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0
