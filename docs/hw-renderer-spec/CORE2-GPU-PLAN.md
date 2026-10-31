@@ -80,6 +80,7 @@ Laptop numbers without a window, candidate build against the start of the night.
 | New | IN-499 CT16 frames through attachments: -0.8% | in, normal |
 | New | IN-501, IN-502 the road's sheen and the alpha fills that serve it: -4.7% and -5.3% by day | in, Performance Mode |
 | New | IN-503 the sheen leaves early where destination alpha is zero: -3.2% by day | in, normal, integrated only |
+| Option | IN-505 Performance Mode without the colour filter: -4.4% by day, changes the race's colours | measured, owner's decision |
 | New | IN-504 the tone palette in push constants: -43% for that pass in the bench, nothing in the game; input attachments: no gain | dropped |
 
 **Candidate 367 against 362, RX 9060 XT 12x night:** GPU busy 20.7 to 19.1 ms (-8%, 2+2 runs).
