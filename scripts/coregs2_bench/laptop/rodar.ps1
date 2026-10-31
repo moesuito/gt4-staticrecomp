@@ -268,6 +268,21 @@ if ($Set -eq 19) {
         @{ name='6-mapa'; text='mapa'; scale=$scale; frames=10900; window=$false; env=$map }
     )
 }
+if ($Set -eq 20) {
+    # The GS thread's CPU profile at 1x by day and at night (AB_NIGHT=1), no window, shaders kept, and a GPU map.
+    if (!$env:AB_NIGHT) {
+        $press = '600:start:30 900:cross:30 1300:right:10 1500:cross:30 2450:cross:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000'
+        $pressArgs = @(); foreach ($p in $press.Split(' ')) { $pressArgs += '--press'; $pressArgs += $p }
+    }
+    $cache = Join-Path $PSScriptRoot 'shader-cache-off'
+    $sampler1 = Join-Path $logs 'sampler-1x.bin'
+    $tests = @(
+        @{ name='0-aquece'; text='aquecendo'; scale=1; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$cache } },
+        @{ name='1-1x'; text='1x'; scale=1; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$cache } },
+        @{ name='2-perfil'; text='perfil'; scale=1; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$cache; GT4_CPU_SAMPLER=$sampler1; GT4_CPU_SAMPLER_FROM='9300'; GT4_CPU_SAMPLER_TO='10800' } },
+        @{ name='3-mapa'; text='mapa'; scale=1; frames=10900; window=$false; env=@{ GT4_HW_SHADER_CACHE=$cache; GT4_CORE2_GPU_PROFILE_AT='10800'; GT4_CORE2_GPU_PROFILE_ORDER='1' } }
+    )
+}
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'
 $env:GT4_CORE2_PERFORMANCE = '1'; $env:GT4_MTVU_REPORT_EVERY = '600'; $env:GT4_HW_PROFILE_EVERY = '600'
 $number = 0

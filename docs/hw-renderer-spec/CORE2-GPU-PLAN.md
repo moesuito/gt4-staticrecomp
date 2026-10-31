@@ -60,3 +60,22 @@ recorded in the ledger. G5 is dropped if it gains under 15%.
 
 1x: GPU busy at most about 5 ms by day (now about 8). 2x at 720p: at most about 14 ms by day (now 25-27), about 18 at night (now
 30-31), with frame skipping covering the rest at night. These are goals, not promises.
+
+## Results (2026-10-31, overnight, headless)
+
+Laptop numbers without a window, candidate build against the start of the night. The bench's isolated map overstated most steps.
+
+| Step | Result | State |
+|---|---|---|
+| G0 | Attachment-only image helps only constant colour; with varying colour no difference | G6 dropped |
+| G1 | IN-494, IN-495: -6% each on the HD 620 at 2x by day | in, normal |
+| G2 | Not done: alpha tests that always pass cost little now that a failed one leaves early (IN-498) | open, small |
+| G3 | Not done: 48 places assume an integer scale, among them the reductions and patches; too large to run unattended | open, next |
+| G4 | IN-496 instead: no interlock for large disjoint batches, -2.5 to -3.4% | in, integrated only |
+| G5 | Probe with a real depth buffer for opaque batches: -3.6% real (isolated: 4.3 to 2.7 ms) | dropped under the 15% rule |
+| New | IN-492 depth fail and IN-498 alpha fail before the interlock: -7% and more | in, normal |
+| New | Texels through the sampler: -34% in the bench, -1% in the game | dropped |
+| New | Colour through attachments with depth in the shader: -4% in the bench | not built |
+| P1 | IN-497 small effect targets at 1x: -8% at 2x at night | in, Performance Mode |
+
+What the fill bench says about the HD 620, for later: one store 0.52 ms per pass, two stores (frame and depth) 1.19, a load and a store of one image 0.53, the same under the interlock 1.10, a colour attachment 0.21 to 0.31.
