@@ -1,5 +1,30 @@
 # Current Status
 
+## TASK-054: Launcher Mods Page and Mod Manager UI (2026-11-01)
+
+Completed the frontend Mods page and Tauri 2 command integration for texture packs and mod management.
+Specification documented in `docs/TASK-054-LAUNCHER-MODS-PAGE.md`.
+- Authored interactive 7-state UI mockup in `launcher/crates/gt4l-tauri/ui/dev/mockup-mods.html` covering Empty, List, Details Drawer, Import Progress, Conflict Resolution, Remove Confirmation, and Wrong Renderer warning states.
+- Authored live Mods page controller in `launcher/crates/gt4l-tauri/ui/js/pages/mods.js` with controller and keyboard navigation hooks (D-pad/Up/Down navigate, Cross/A toggle, Triangle/Y details, L1/R1 priority, Square/X remove, Start import, Circle/B back).
+- Enhanced `gt4l_core::mods::ModManager` with `list_mods`, `get_mod_details`, `set_enabled`, `set_priority`, `remove_mod`, and `import_archive_file`.
+- Implemented and registered Tauri commands in `launcher/crates/gt4l-tauri/src/commands.rs` and `main.rs`: `mods_list`, `mods_import`, `mods_set_enabled`, `mods_move`, `mods_remove`, `mods_details`, `open_mods_folder`, `open_inbox_folder`.
+- Added unit test `mod_manager_list_details_reorder_remove_roundtrip` (110 passed in `gt4l-core`).
+
+
+## TASK-052: Texture pack importer, mod store, and active view manager (2026-11-01)
+
+Completed texture pack importer, mod store, and active view manager in `launcher/crates/gt4l-core/src/mods.rs`,
+documented in `docs/TASK-052-MOD-IMPORTER-ACTIVE-VIEW.md`:
+- Implemented safe extraction from `.zip` archives and loose folders with comprehensive defenses against
+  Zip-Slip (parent traversal, ADS colons, drive letters, Windows device names `CON`, `NUL`, etc.) and Zip-Bombs
+  (entry cap 200,000, max 256 MiB per file, max 20 GiB total, 200:1 ratio limit).
+- Automatic PCSX2 folder hierarchy normalization (`SCUS-97328/replacements`, `textures/SCUS-97328`, `replacements`).
+- Generates `gt4mod.toml` (schema 1) and SHA-256 verification hash table (`files.lock.json`).
+- Staging and atomic commit into `mods/store/<id>/` with registry management (`mods.toml`).
+- Active view generation (`mods/active/textures/SCUS-97328/`) using zero-copy NTFS hardlinks with copy fallback.
+- Priority-based conflict resolution and collision reporting across multiple active mods.
+All 109 unit tests in `gt4l-core` and 16 launch contract tests passed.
+
 ## TASK-133: rc7 scope reset to RetroAchievements and controller upgrades (2026-10-26)
 
 Owner requested mapping only: published rc6 is the fixed program baseline, with RetroAchievements

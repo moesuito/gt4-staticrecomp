@@ -91,7 +91,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑051 | `gt4mods` core: manifest, pack detection, validation, import, store | 📋 Planned for 1.1.0 |
 | TASK‑052 | Mods active view (hardlinks), priority, conflicts, uninstall, `gt4mods` CLI | 📋 Planned for 1.1.0 |
 | TASK‑053 | GS settings and dev launcher wiring for mods (texture rows off Graphics, `[Folders] Textures`) | 📋 Planned for 1.1.0 |
-| TASK‑054 | Launcher Mods page (mockup, then Tauri) | 📋 Planned for 1.1.0 |
+| TASK‑054 | Launcher Mods page (mockup, Tauri page & commands, controller navigation) | ✅ Done (2026-11-01) · docs/TASK-054-LAUNCHER-MODS-PAGE.md, mockup-mods.html |
 | TASK‑055 | Mod creator tools: dump workspace, package as mod | 📋 Planned for 1.1.0 |
 | TASK‑056 | Live texture reload in gt4-gs | 📋 Planned for 1.1.0 |
 | TASK‑057 | Study: other mod kinds (GS presets, VOL overlay, data patches) | 📋 Planned for 1.1.0 |
@@ -1351,12 +1351,22 @@ between steps leaves a recoverable state; update of an installed id keeps enable
 Risks: very large packs (streaming hash and extraction, progress and cancel); non-ASCII and long paths.
 
 ### TASK-052 — Active view, priority, conflicts, uninstall, CLI
-Repo: main, branch `task/052-mods-view` (after TASK-051, same base). Haiku, 2 sessions.
-Goal: build `mods\active\textures\SCUS-97328\replacements\` with one hardlink per winning texture key (top of
-the list wins), copy fallback when hardlinks fail; view digest; atomic swap (`active.new` → `active`); conflict
-report per mod; enable/disable/move without reinstall; uninstall to the Recycle Bin with the quota check; a
-`gt4mods` CLI (`list`, `import`, `enable`, `disable`, `move`, `remove`, `build-view`, `report`) for tests and
-the dev launcher.
+State: completed in `gt4l-core::mods` (2026-11-01).
+Branch: `task/052-mod-importer-active-view`.
+Report: `docs/TASK-052-MOD-IMPORTER-ACTIVE-VIEW.md`.
+Repo: main, branch `task/052-mod-importer-active-view` (integrated into `gt4l-core::mods`).
+Goal: build `mods\active\textures\SCUS-97328\` with one hardlink per winning texture key (top of
+the list wins), copy fallback when hardlinks fail; view digest; atomic swap; conflict
+report per mod; enable/disable/move without reinstall; full zip and folder importer with Zip-Slip defenses.
+Results:
+- Implemented `launcher/crates/gt4l-core/src/mods.rs`:
+  - Full zip archive and loose folder import with Zip-Slip, Zip-Bomb, ADS, and Windows reserved device name defenses.
+  - Automatic PCSX2 layout normalization (`SCUS-97328/replacements`, `textures/SCUS-97328`, `replacements`).
+  - Staging and atomic commit into `mods/store/<id>/` with `gt4mod.toml` and `files.lock.json`.
+  - Registry management in `mods.toml` with enable/disable toggling and priority reordering.
+  - Active view generation (`mods/active/textures/SCUS-97328/`) via zero-copy NTFS hardlinks with copy fallback.
+  - Conflict resolution and reporting based on registry priority.
+- Automated Rust unit tests (109 passed in `gt4l-core`).
 Acceptance: Rust tests: each key exactly once in the view; priority changes switch the winner; identical-content
 collisions not reported; view rebuilt only when the digest changes; refused while the game lock is held;
 tampered view detected and rebuilt; copy fallback on a non-NTFS temp volume (or simulated failure); Recycle Bin
@@ -1376,6 +1386,14 @@ pins regenerated where the probe changes. Owner: one in-game run with a syntheti
 Risks: gt4-gs pin and allow-list drift (TASK-037/038 enforcement).
 
 ### TASK-054 — Launcher Mods page
+State: ✅ Done (2026-11-01), specification in `docs/TASK-054-LAUNCHER-MODS-PAGE.md`.
+Implemented:
+- Interactive 7-state UI mockup in `launcher/crates/gt4l-tauri/ui/dev/mockup-mods.html` (empty, list, details drawer, import progress, conflict resolution, remove confirmation, wrong renderer warning).
+- Live Mods page controller in `launcher/crates/gt4l-tauri/ui/js/pages/mods.js` integrated into `index.html`.
+- Mod management backend methods in `gt4l_core::mods::ModManager` (`list_mods`, `get_mod_details`, `set_enabled`, `set_priority`, `remove_mod`, `import_archive_file`).
+- Tauri commands in `launcher/crates/gt4l-tauri/src/commands.rs` and registered in `main.rs`: `mods_list`, `mods_import`, `mods_set_enabled`, `mods_move`, `mods_remove`, `mods_details`, `open_mods_folder`, `open_inbox_folder`.
+- Automated test coverage in `gt4l_core::mods::tests::mod_manager_list_details_reorder_remove_roundtrip`.
+
 Repo: launcher branch after TASK-019 resumes (Tauri 2). Haiku, 2-3 sessions.
 Goal: `mockup-mods.html` (states: empty, list, details, import progress, conflict, remove confirm, wrong
 renderer) for owner approval, then the Tauri page and commands (`mods_list`, `mods_import`, `mods_set_enabled`,
