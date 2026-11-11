@@ -148,6 +148,8 @@ pub fn app_state_of(state: &AppState) -> Value {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let run = &state.setup_run;
+    // TASK-106: a `.chd` is decompressed during the "Copying" row, and the page says so.
+    let compressed = state.disc_path().is_some_and(gt4l_disc::chd::is_chd);
     let (screen, problem, disc_name) = if visual_ready() {
         ("done", String::new(), setup::game_disc_name(&GT4, "2.00", ""))
     } else if state.setup_busy {
@@ -193,6 +195,7 @@ pub fn app_state_of(state: &AppState) -> Value {
             "progress": run.fraction,
             "bytes_done": run.bytes_done,
             "bytes_total": run.bytes_total,
+            "compressed": compressed,
             "renderer_step": run.renderer_step,
             "renderer_choice": run.renderer_choice,
             "disc_name": disc_name,

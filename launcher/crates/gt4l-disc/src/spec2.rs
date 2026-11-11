@@ -7,7 +7,8 @@
 //! program, including the unmodified GT4 Online Public Beta, is refused: it would need its own patch map.
 //!
 //! Setup checks the image where it is (decision 0075; see `setup`) and writes the derived ELF (`spec2_elf::derive`) to
-//! `games\spec2\prepared`. There is no CORE step: Spec II is one plain ELF.
+//! `games\spec2\prepared`. There is no CORE step: Spec II is one plain ELF. A `.chd` is decompressed into
+//! `games\spec2\disc\SCUS-97436.iso` first, as in `setup` (TASK-106).
 
 use std::fs;
 use std::path::Path;
@@ -15,11 +16,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cnf;
 use crate::elf;
-use crate::iso::{Iso, IsoError};
+use crate::iso::Iso;
 use crate::pins::Identity;
 use crate::setup::{
-    self, DiscReceipt, DiscSummary, ImageReceipt, Receipt, ReceiptIdentity, SetupError, Stage, Unsupported, MAX_SYSTEM_CNF_BYTES,
-    RECEIPT_FILE, RECEIPT_SCHEMA,
+    self, read_error, DiscReceipt, DiscSummary, GameImage, Receipt, ReceiptIdentity, SetupError, Stage, Unsupported,
+    MAX_SYSTEM_CNF_BYTES, RECEIPT_FILE, RECEIPT_SCHEMA,
 };
 use crate::spec2_elf;
 use crate::spec2_pins::Spec2Pins;
@@ -35,20 +36,11 @@ const MAX_EXECUTABLE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Opens the image and reads `SYSTEM.CNF`, with the same refusals as the Gran Turismo 4 check (file, ISO, PS2 disc).
 pub(crate) fn open_and_read_system(disc: &Path) -> Result<(Iso, cnf::SystemConfig), SetupError> {
-    let extension = disc.extension().and_then(|value| value.to_str()).map(str::to_string);
-    match extension.as_deref() {
-        Some(value) if value.eq_ignore_ascii_case("iso") => {}
-        other => return Err(SetupError::NotPlainIso { extension: other.map(str::to_string) }),
-    }
-    if !disc.is_file() || fs::File::open(disc).is_err() {
-        return Err(SetupError::NotFound);
-    }
-    let mut iso = Iso::open(disc).map_err(|error| match error {
-        IsoError::Io(error) => SetupError::Io(error.to_string()),
-        other => SetupError::NotIso(other.to_string()),
-    })?;
-    let system_entry = iso.find("SYSTEM.CNF;1").map_err(|_| SetupError::NotPlayStation2)?;
-    let system_bytes = iso.read(&system_entry, MAX_SYSTEM_CNF_BYTES).map_err(|_| SetupError::IncompleteOrModified)?;
+    setup::check_file(disc)?;
+    let mut iso = setup::open_image(disc)?;
+    let system_entry = iso.find("SYSTEM.CNF;1").map_err(|error| read_error(error, SetupError::NotPlayStation2))?;
+    let system_bytes =
+        iso.read(&system_entry, MAX_SYSTEM_CNF_BYTES).map_err(|error| read_error(error, SetupError::IncompleteOrModified))?;
     let config = cnf::parse(&system_bytes).map_err(SetupError::NotIso)?;
     Ok((iso, config))
 }
@@ -69,7 +61,11 @@ pub(crate) fn precheck_opened(mut iso: Iso, config: cnf::SystemConfig, pins: &Sp
         return Err(SetupError::IncompleteOrModified);
     }
     let program = if config.boot_path == pins.boot_path {
-        iso.find(BOOT_FILE).ok().and_then(|entry| iso.read(&entry, MAX_EXECUTABLE_BYTES).ok())
+        match iso.find(BOOT_FILE).and_then(|entry| iso.read(&entry, MAX_EXECUTABLE_BYTES)) {
+            Ok(program) => Some(program),
+            Err(error) if error.is_damaged_chd() => return Err(SetupError::DamagedChd(error.to_string())),
+            Err(_) => None,
+        }
     } else {
         None
     };
@@ -82,11 +78,14 @@ pub(crate) fn precheck_opened(mut iso: Iso, config: cnf::SystemConfig, pins: &Sp
     }
     // TASK-173: the IOP modules are code too; an image is Spec II 1.10 only with 1.10's modules (any data may differ).
     for module in &pins.iop_modules {
-        let found = iso
+        let found = match iso
             .find_path(&module.path)
-            .ok()
-            .filter(|entry| entry.size_bytes == module.identity.size_bytes)
-            .and_then(|entry| iso.read(&entry, module.identity.size_bytes).ok());
+            .and_then(|entry| if entry.size_bytes == module.identity.size_bytes { iso.read(&entry, module.identity.size_bytes).map(Some) } else { Ok(None) })
+        {
+            Ok(found) => found,
+            Err(error) if error.is_damaged_chd() => return Err(SetupError::DamagedChd(error.to_string())),
+            Err(_) => None,
+        };
         if found.is_none_or(|bytes| elf::sha256_hex(&bytes) != module.identity.sha256) {
             return Err(SetupError::Unsupported(Unsupported::Spec2Executable { beta: false }));
         }
@@ -104,6 +103,8 @@ pub(crate) fn precheck_opened(mut iso: Iso, config: cnf::SystemConfig, pins: &Sp
 /// Inputs of one Spec II setup run (the folders are the `games\spec2` ones).
 pub struct Spec2Request<'a> {
     pub disc: &'a Path,
+    /// Where the plain image of a `.chd` is written (`games\spec2\disc`); unused for a `.iso`.
+    pub disc_folder: &'a Path,
     pub prepared: &'a Path,
     pub staging: &'a Path,
     pub install_dir: &'a Path,
@@ -122,8 +123,13 @@ pub fn image_name(pins: &Spec2Pins, identity: &Identity) -> String {
 pub fn run(request: &Spec2Request<'_>, progress: &mut dyn FnMut(Stage, f32)) -> Result<Receipt, SetupError> {
     let summary = precheck(request.disc, request.pins)?;
     progress(Stage::Copying, 0.0);
-    let result = setup::hash_image_as(request.disc, Stage::Copying, request.cancel, progress)
-        .and_then(|identity| finish(request, &summary, &identity, progress));
+    let result = GameImage::prepare(request.disc, request.disc_folder, &summary.serial, request.cancel, progress).and_then(|mut image| {
+        let result = finish(request, &summary, &mut image, progress);
+        if result.is_err() {
+            image.discard();
+        }
+        result
+    });
     if result.is_err() {
         let _ = fs::remove_dir_all(request.staging);
     }
@@ -133,10 +139,12 @@ pub fn run(request: &Spec2Request<'_>, progress: &mut dyn FnMut(Stage, f32)) -> 
 fn finish(
     request: &Spec2Request<'_>,
     summary: &DiscSummary,
-    identity: &Identity,
+    image: &mut GameImage,
     progress: &mut dyn FnMut(Stage, f32),
 ) -> Result<Receipt, SetupError> {
     let pins = request.pins;
+    let identity = image.identity.clone();
+    let identity = &identity;
     progress(Stage::Checking, 0.0);
     if identity.size_bytes != summary.size_bytes {
         return Err(SetupError::IncompleteOrModified);
@@ -148,15 +156,19 @@ fn finish(
     }
 
     progress(Stage::Preparing, 0.0);
-    let (original, derived) = extract_and_derive(request.disc, pins)?;
+    let (original, derived) = extract_and_derive(&image.path, pins)?;
     progress(Stage::Preparing, 0.5);
     if request.staging.exists() {
         fs::remove_dir_all(request.staging)?;
     }
     fs::create_dir_all(request.staging)?;
     setup::write_synced(&request.staging.join(ELF_FILE), &derived)?;
+    // The last point where a cancel leaves everything as it was: the commit below may replace an earlier decompressed image.
+    if request.cancel.load(Ordering::Relaxed) {
+        return Err(SetupError::Cancelled);
+    }
 
-    let metadata = fs::metadata(request.disc)?;
+    let image_receipt = image.commit(request.disc, request.install_dir)?;
     let receipt = Receipt {
         schema_version: RECEIPT_SCHEMA,
         launcher_version: request.launcher_version.to_string(),
@@ -170,13 +182,7 @@ fn finish(
             version: summary.version.clone(),
             volume_identifier: summary.volume_identifier.clone(),
         },
-        image: Some(ImageReceipt {
-            file: setup::image_file_name(request.disc),
-            linked_path: Some(setup::linked_path(request.disc, request.install_dir)?),
-            size_bytes: metadata.len(),
-            modified_unix_nanos: setup::modified_nanos(&metadata),
-            sha256: identity.sha256.clone(),
-        }),
+        image: Some(image_receipt),
         qualified_dump: pins.known_image(identity).is_some(),
         image_name: name,
         core: ReceiptIdentity::default(),
@@ -186,9 +192,6 @@ fn finish(
     };
     let receipt_bytes = serde_json::to_vec_pretty(&receipt).map_err(|error| SetupError::Internal(error.to_string()))?;
     setup::write_synced(&request.staging.join(RECEIPT_FILE), &receipt_bytes)?;
-    if request.cancel.load(Ordering::Relaxed) {
-        return Err(SetupError::Cancelled);
-    }
     setup::swap_into_place(request.staging, request.prepared)?;
     progress(Stage::Preparing, 1.0);
     Ok(receipt)

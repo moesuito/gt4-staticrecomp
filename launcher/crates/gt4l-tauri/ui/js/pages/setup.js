@@ -8,6 +8,7 @@
  *   step: "copying" | "checking" | "preparing" | "renderer",   (while checking)
  *   progress: 0..1,                     (of the current step)
  *   bytes_done, bytes_total,            (copying, the renderer download, the shaders compiled)
+ *   compressed,                         (the picked image is a .chd: the copying row says "Decompressing the image")
  *   renderer_step: "checking" | "compiling" | "listing" | "downloading" | "installing" | "done" | "failed",
  *   renderer_choice: "coregs20" | "gsdx_fallback" | "",  (what setup decided for this PC)
  *   disc_name, problem, note            (note: GSdx could not be downloaded; the game cannot start yet)
@@ -92,7 +93,7 @@
 
   // Signature decides whether the page has to be rebuilt.
   function signature(setup) {
-    return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "", setup.renderer_choice || "",
+    return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "", setup.renderer_choice || "", setup.compressed ? "chd" : "",
       Math.round((setup.bytes_done || 0) / 1e6), setup.problem || "", setup.note || "", setup.disc_name || ""].join("|");
   }
 
@@ -157,6 +158,12 @@
         var pct = null;
         var bytesText = null;
         var detail = step.detail ? GT4.t(step.detail) : null;
+        // TASK-106: a .chd is decompressed into a plain image during this row.
+        var label = step.label;
+        if (step.id === "copying" && setup.compressed) {
+          label = "setup.step_decompressing";
+          detail = GT4.t("setup.step_decompressing_detail");
+        }
         if (done || (running && index < order)) {
           status = "ok";
           if (step.id === "copying" && running && setup.step !== "renderer" && setup.bytes_total) {
@@ -194,7 +201,7 @@
             detail = GT4.t("setup.renderer_ready_gsdx");
           }
         }
-        steps.push(row("0" + (index + 2), GT4.t(step.label), detail, status, pct, bytesText));
+        steps.push(row("0" + (index + 2), GT4.t(label), detail, status, pct, bytesText));
       });
     }
 

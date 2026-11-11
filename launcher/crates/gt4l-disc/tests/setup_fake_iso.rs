@@ -72,8 +72,10 @@ fn run_setup(fixture: &Fixture, disc: &Path, pins: &Pins, cancel: &AtomicBool) -
     let prepared = fixture.path("prepared");
     let staging = fixture.path("prepared.tmp");
     let install_dir = fixture.path("launcher");
+    let disc_folder = fixture.disc_folder();
     let request = SetupRequest {
         disc,
+        disc_folder: &disc_folder,
         prepared: &prepared,
         staging: &staging,
         install_dir: &install_dir,
@@ -170,7 +172,8 @@ fn an_image_inside_the_launcher_folder_is_saved_relative_and_moves_with_the_fold
     let staging = install.join("data").join("prepared.tmp");
     fs::create_dir_all(install.join("data")).unwrap();
     let cancel = AtomicBool::new(false);
-    let request = SetupRequest { disc: &disc, prepared: &prepared, staging: &staging, install_dir: &install, pins: &pins, launcher_version: "test", cancel: &cancel };
+    let disc_folder = install.join("data").join("disc");
+    let request = SetupRequest { disc: &disc, disc_folder: &disc_folder, prepared: &prepared, staging: &staging, install_dir: &install, pins: &pins, launcher_version: "test", cancel: &cancel };
     let receipt = setup::run(&request, &mut |_, _| {}).expect("setup succeeds");
     assert_eq!(receipt.image.unwrap().linked_path.as_deref(), Some(Path::new("ISOs").join("game.iso").to_str().unwrap()), "relative to the folder");
 
@@ -388,13 +391,14 @@ fn wrong_file_types_are_refused_before_hashing() {
     let error = run_setup(&fixture, &bin, &pins, &cancel).unwrap_err();
     assert_eq!(
         error.user_message(),
-        "Please use a plain .iso file. A .bin file is not supported. Convert it to a plain .iso first."
+        "Please use a .iso or .chd disc image. A .bin file is not supported. Convert it to a plain .iso first."
     );
 
+    // A .chd is read (TASK-106, tests/chd_images.rs); a plain image only named .chd is not one.
     let chd = fixture.path("game.chd");
     fs::write(&chd, &image).unwrap();
     let error = run_setup(&fixture, &chd, &pins, &cancel).unwrap_err();
-    assert_eq!(error.user_message(), "This image is compressed (.chd). Please convert it to a plain .iso.");
+    assert!(matches!(error, SetupError::UnsupportedChd(_)), "{error:?}");
 
     let zeros = fixture.path("zeros.iso");
     fs::write(&zeros, vec![0u8; 20 * 2048]).unwrap();

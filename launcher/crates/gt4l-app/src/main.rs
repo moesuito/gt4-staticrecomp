@@ -750,11 +750,13 @@ fn start_setup(ui: &AppWindow, app: &Shared) {
     std::thread::spawn(move || {
         let prepared = dirs.prepared();
         let staging = dirs.prepared_staging();
+        let disc_folder = dirs.setup_disc_folder();
         let mut last_percent = -1;
         let progress_weak = weak.clone();
         let result = disc_setup::run(
             &SetupRequest {
                 disc: &disc,
+                disc_folder: &disc_folder,
                 prepared: &prepared,
                 staging: &staging,
                 pins: &pins,

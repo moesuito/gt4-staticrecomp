@@ -22,6 +22,15 @@ component's own license text in this repository and need a check before the rele
 Windows system DLLs (`winmm.dll`, `xinput`, `user32.dll`, `gdi32.dll`, `gdiplus.dll`, `winhttp.dll`, the Vulkan loader `vulkan-1.dll`) are used at run time from
 the operating system. They are not shipped.
 
+## 1b. Launcher crates (Rust, linked into `GT4Recomp.exe`)
+
+The launcher links crates from crates.io, all permissive; their versions are pinned in `launcher/Cargo.lock` and their
+licence texts are generated with `cargo about` into `licenses\launcher-crates.html` at release time.
+
+| Crate | Licence | Notes |
+|---|---|---|
+| `chd` 0.4.0 (`SnowflakePowered/chd-rs`, TASK-106) | BSD-3-Clause, Copyright (c) 2022 Ronny Chan | Reads and decompresses the player's `.chd` images in the launcher. Notice: "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: (1) source redistributions keep this notice, the list of conditions and the disclaimer; (2) binary redistributions reproduce them in the documentation; (3) the name of the copyright holder may not be used to endorse derived products without permission." Its dependencies (`claxon`, `lzma-rust2`, `zrip`, `flate2`, `sha1`, `zerocopy`, ...) are MIT or Apache-2.0. |
+
 ## 2. Separate renderer program (GPL-3.0-or-later)
 
 | Component | Revision or source | License | Where it is | Notes |

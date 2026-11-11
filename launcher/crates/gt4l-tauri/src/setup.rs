@@ -157,7 +157,7 @@ pub fn game_disc_name(game: &Game, version: &str, image_name: &str) -> String {
     }
 }
 
-/// Opens the file picker for a plain `.iso` and checks it. `None` means the picker was cancelled.
+/// Opens the file picker for a `.iso` or `.chd` and checks it. `None` means the picker was cancelled.
 /// A disc that is not accepted gives its plain-language reason as the error (and `app_state` says `wrong_disc`).
 #[tauri::command]
 pub async fn setup_choose_disc(app: AppHandle, game: Option<String>, shared: State<'_, Shared>) -> Result<Option<DiscInfo>, String> {
@@ -174,7 +174,7 @@ pub async fn setup_choose_disc(app: AppHandle, game: Option<String>, shared: Sta
                 Some(requested) => messages::render("setup.picker_title_game", state::current_language(), &[("game", requested.display_name)]),
                 None => messages::text("setup.picker_title_any", state::current_language()).to_string(),
             })
-            .add_filter(messages::text("setup.picker_filter", state::current_language()), &["iso"])
+            .add_filter(messages::text("setup.picker_filter", state::current_language()), &["iso", "chd"])
             .blocking_pick_file();
         let Some(picked) = picked else {
             return Ok(None);
@@ -212,8 +212,9 @@ pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str
             };
             let summary = found.summary;
             let mut state = lock(shared);
-            // The image stays here, and the game must be able to open it here (decision 0075).
-            if gt4l_platform::disk::game_readable_path(path).is_none() {
+            // The image stays here, and the game must be able to open it here (decision 0075). A `.chd` is decompressed into
+            // the launcher's own folder instead (TASK-106), which is always readable, and the game reads that copy.
+            if !gt4l_disc::chd::is_chd(path) && gt4l_platform::disk::game_readable_path(path).is_none() {
                 let message: String = messages::text("setup.path_not_readable", state::current_language()).into();
                 state::log_warn(&state.dirs, &format!("disc refused, the game cannot open its path: {}", path.display()));
                 state.setup_outcome = SetupOutcome::Refused(message.clone());
@@ -372,10 +373,28 @@ pub fn start_with(
                 );
             }
         };
+        // TASK-106: a `.chd` becomes a plain image in the disc folder, so the room it needs is checked before anything is
+        // written (the image is about the size of the disc, 3.7 GB for Spec II).
+        let discs = dirs.setup_disc_folder();
+        if gt4l_disc::chd::is_chd(&disc) {
+            let free = gt4l_platform::disk::free_space(&discs);
+            if let Some(problem) = disc_setup::check_chd_space(&disc, &discs, free) {
+                let message = problem.user_message_in(state::current_language());
+                state::log_error(&dirs, &format!("setup stopped: {problem}"));
+                let mut state = lock(&shared);
+                state.setup_busy = false;
+                state.setup_run = SetupRun::default();
+                state.setup_outcome = SetupOutcome::Failed(message.clone());
+                drop(state);
+                notify("setup-finished", json!({ "ok": false, "message": message }));
+                return;
+            }
+        }
         let result: Result<disc_setup::Receipt, SetupError> = match DiscGame::from_id(game.id) {
             Some(DiscGame::Spec2) => disc_spec2::run(
                 &Spec2Request {
                     disc: &disc,
+                    disc_folder: &discs,
                     prepared: &prepared,
                     staging: &staging,
                     install_dir: &install_dir,
