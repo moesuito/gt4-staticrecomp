@@ -14,8 +14,8 @@ use gt4saves::{folder, Card, Node, SaveNames};
 
 fn names_of(game: &str) -> Option<SaveNames> {
     match game {
-        "gt4" => Some(SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328")),
-        "spec2" => Some(SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436")),
+        "gt4" => Some(SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4")),
+        "spec2" => Some(SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II")),
         _ => None,
     }
 }

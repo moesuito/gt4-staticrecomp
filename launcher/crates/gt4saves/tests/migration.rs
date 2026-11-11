@@ -3,9 +3,9 @@
 
 use gt4saves::SaveNames;
 #[allow(dead_code)]
-const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
 #[allow(dead_code)]
-const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II");
 #[allow(dead_code)]
 const GT4_GAME_SAVE: &str = "BASCUS-97328GAMEDATA";
 use gt4saves::card::{DirEntry, Node, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};

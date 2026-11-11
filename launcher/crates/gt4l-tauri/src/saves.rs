@@ -23,9 +23,9 @@ use gt4saves::{CardError, SaveNames};
 use gt4l_platform::recycle;
 use serde::Serialize;
 
-/// The item names of a game (its game save folder and its replay prefix), from the game table.
+/// The item names of a game (its game save folder, its replay prefix and its display name), from the game table.
 pub fn names_of(game: &Game) -> SaveNames {
-    SaveNames::new(game.save_folder, game.replay_prefix)
+    SaveNames::new(game.save_folder, game.replay_prefix, game.display_name)
 }
 
 /// The opened library and what the launcher log and the Saves page should say about it.
@@ -199,8 +199,8 @@ pub fn import_path(libraries: &[(&'static Game, &Library)], path: &Path, languag
         outcome.per_game.push((game, report));
     }
     if outcome.per_game.is_empty() {
-        let found = items.iter().map(Node::name).collect();
-        return Err(import_error_text(&LibraryError::NoGtSave { found }, language));
+        let found: Vec<String> = items.iter().map(Node::name).collect();
+        return Err(no_save_text(&found, language));
     }
     outcome.unknown = items
         .iter()
@@ -227,7 +227,7 @@ fn read_items(path: &Path, language: Language) -> Result<Vec<Node>, String> {
 }
 
 /// What the page says about a failed import: the card is not a PS2 card, its size is not supported, it is damaged (with
-/// the reason), or it holds no Gran Turismo 4 save (with what it does hold).
+/// the reason), or it holds no save of the library's game (with what it does hold).
 pub fn import_error_text(error: &LibraryError, language: Language) -> String {
     match error {
         LibraryError::Card(CardError::BadSize(_)) | LibraryError::Card(CardError::NotACard) => {
@@ -237,11 +237,14 @@ pub fn import_error_text(error: &LibraryError, language: Language) -> String {
         LibraryError::Card(CardError::Corrupt(reason)) => {
             messages::render("saves.card_damaged", language, &[("reason", reason)])
         }
-        LibraryError::NoGtSave { found } => {
-            messages::render("saves.no_gt4_save", language, &[("found", &describe_found(found, language))])
-        }
+        LibraryError::NoGtSave { found, .. } => no_save_text(found, language),
         other => other.to_string(),
     }
+}
+
+/// The page's text for a file that holds none of the launcher's saves: what it does hold, counted by kind.
+fn no_save_text(found: &[String], language: Language) -> String {
+    messages::render("saves.no_gt4_save", language, &[("found", &describe_found(found, language))])
 }
 
 /// "2 saves of other games, 1 other item": the names a card holds, counted by kind. A game save is a folder whose name

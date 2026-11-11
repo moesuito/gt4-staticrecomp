@@ -3,9 +3,9 @@
 
 use gt4saves::SaveNames;
 #[allow(dead_code)]
-const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
 #[allow(dead_code)]
-const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II");
 #[allow(dead_code)]
 const GT4_GAME_SAVE: &str = "BASCUS-97328GAMEDATA";
 use gt4saves::card::{Node, DirEntry, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
@@ -303,4 +303,18 @@ fn library_refuses_unknown_names() {
     let lib = Library::open(&scratch("unknown"), GT4).unwrap();
     assert!(matches!(lib.export_psu("Save 09"), Err(gt4saves::LibraryError::NotFound(_))));
     assert!(matches!(lib.activate_slot("Save 09"), Err(gt4saves::LibraryError::NotFound(_))));
+}
+
+// The slot id only grows, so the Saves page reaches `Save 100` after `Save 99`: the folder names then sort wrong as
+// text ("Save 100" before "Save 11"). The library lists them by slot number instead.
+#[test]
+fn slots_are_listed_in_slot_number_order_past_a_hundred() {
+    assert_eq!(slot_name(100), "Save 100");
+    let lib = Library::open(&scratch("slot-order"), GT4).unwrap();
+    let expected: Vec<String> = (1..=101).map(slot_name).collect();
+    // Created newest first, so the folder listing order is not the answer.
+    for slot in expected.iter().rev() {
+        fs::create_dir_all(lib.slot_dir(slot).join(GT4_GAME_SAVE)).unwrap();
+    }
+    assert_eq!(lib.slots().unwrap(), expected);
 }

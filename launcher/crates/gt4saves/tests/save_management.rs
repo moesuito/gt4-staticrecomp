@@ -4,9 +4,9 @@ mod common;
 
 use gt4saves::SaveNames;
 #[allow(dead_code)]
-const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
 #[allow(dead_code)]
-const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II");
 #[allow(dead_code)]
 const GT4_GAME_SAVE: &str = "BASCUS-97328GAMEDATA";
 use common::*;
@@ -88,11 +88,11 @@ fn an_import_of_a_card_with_no_gt4_item_names_what_it_found() {
     let library = Library::open(&scratch("no-gt4"), GT4).unwrap();
     let other = dir("SLUS-20000GAMEDATA", vec![file("icon.sys", pattern(964, 9))]);
     match library.import_card_image(&card_of(&[other])) {
-        Err(LibraryError::NoGtSave { found }) => assert_eq!(found, ["SLUS-20000GAMEDATA"]),
+        Err(LibraryError::NoGtSave { found, .. }) => assert_eq!(found, ["SLUS-20000GAMEDATA"]),
         other => panic!("expected NoGtSave, got {other:?}"),
     }
     match library.import_card_image(&card_of(&[])) {
-        Err(LibraryError::NoGtSave { found }) => assert!(found.is_empty()),
+        Err(LibraryError::NoGtSave { found, .. }) => assert!(found.is_empty()),
         other => panic!("expected NoGtSave for an empty card, got {other:?}"),
     }
 }

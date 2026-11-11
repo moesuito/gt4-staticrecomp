@@ -2,9 +2,9 @@
 
 use gt4saves::SaveNames;
 #[allow(dead_code)]
-const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
 #[allow(dead_code)]
-const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II");
 #[allow(dead_code)]
 const GT4_GAME_SAVE: &str = "BASCUS-97328GAMEDATA";
 use gt4saves::card::{DirEntry, Node, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
@@ -130,8 +130,43 @@ fn a_mixed_card_is_split_by_game_and_nothing_is_dropped_silently() {
 
 #[test]
 fn the_card_names_of_the_two_games_do_not_overlap() {
-    let gt4_names = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
-    let spec2_names = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+    let gt4_names = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
+    let spec2_names = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II");
     assert!(!gt4_names.owns("BASCUS-97436GAMEDATA"));
     assert!(!spec2_names.owns("BASCUS-97328R0001"));
+}
+
+// The library knows which game it belongs to (TASK-101), so its errors name that game: a Spec II library must not say
+// "no Gran Turismo 4 save on this card".
+#[test]
+fn a_missing_save_error_names_the_librarys_own_game() {
+    let root = scratch("per-game-error-text");
+    let gt4 = Library::open_paths(&LibraryPaths::for_game(&root, "gt4"), GT4).unwrap();
+    let spec2 = Library::open_paths(&LibraryPaths::for_game(&root, "spec2"), SPEC2).unwrap();
+    let foreign = Card::build(&[foreign_save()]).unwrap().to_image();
+
+    let text = gt4.import_card_image(&foreign).unwrap_err().to_string();
+    assert!(text.contains("Gran Turismo 4 save"), "{text}");
+    assert!(!text.contains("Spec II"), "{text}");
+
+    let text = spec2.import_card_image(&foreign).unwrap_err().to_string();
+    assert!(text.contains("Gran Turismo 4 Spec II save"), "the Spec II library names its own game: {text}");
+
+    // The library does not return NotGtSave today; its text carries the game it was built for all the same.
+    let text = gt4saves::LibraryError::NotGtSave {
+        name: "SLUS-20000GAMEDATA".to_string(),
+        game: SPEC2.game_name,
+    }
+    .to_string();
+    assert_eq!(text, "not a Gran Turismo 4 Spec II save: SLUS-20000GAMEDATA");
+}
+
+/// A game save of neither game (an unrelated PS2 game).
+fn foreign_save() -> Node {
+    let file = |name: &str, len: usize| {
+        let entry = DirEntry::new(name, MODE_FILE_DEFAULT, STAMP, STAMP).unwrap();
+        Node::file(entry, (0..len).map(|i| i as u8).collect())
+    };
+    let entry = DirEntry::new("SLUS-20000GAMEDATA", MODE_DIR_DEFAULT, STAMP, STAMP).unwrap();
+    Node::dir(entry, vec![file("icon.sys", 964)])
 }

@@ -34,10 +34,12 @@ pub enum LibraryError {
     Folder(FolderError),
     /// The named item does not exist in the library.
     NotFound(String),
-    /// The item is not something this library stores (for example another game's save).
-    NotGtSave(String),
-    /// A card with no Gran Turismo 4 save or replay on it; `found` lists the names it holds.
-    NoGtSave { found: Vec<String> },
+    /// The item is not something this library stores (for example another game's save). `game` is the display name of
+    /// the game the library belongs to.
+    NotGtSave { name: String, game: &'static str },
+    /// A card with no save or replay of the library's game on it; `found` lists the names it holds and `game` is the
+    /// display name of the game the library belongs to.
+    NoGtSave { found: Vec<String>, game: &'static str },
     /// A display name that cannot be used (empty after cleaning).
     Name(String),
 }
@@ -67,9 +69,9 @@ impl fmt::Display for LibraryError {
             LibraryError::Card(error) => write!(f, "{error}"),
             LibraryError::Folder(error) => write!(f, "{error}"),
             LibraryError::NotFound(name) => write!(f, "not in the library: {name}"),
-            LibraryError::NotGtSave(name) => write!(f, "not a Gran Turismo 4 save: {name}"),
-            LibraryError::NoGtSave { found } => {
-                write!(f, "no Gran Turismo 4 save on this card (found: {})", found.join(", "))
+            LibraryError::NotGtSave { name, game } => write!(f, "not a {game} save: {name}"),
+            LibraryError::NoGtSave { found, game } => {
+                write!(f, "no {game} save on this card (found: {})", found.join(", "))
             }
             LibraryError::Name(reason) => write!(f, "{reason}"),
         }
@@ -94,6 +96,11 @@ pub struct Report {
 /// `Save 01`, `Save 02`, ...
 pub fn slot_name(number: u32) -> String {
     format!("Save {number:02}")
+}
+
+/// The slot number of a folder name (`Save 02` is 2), when it carries one (`Save old` is not a slot id).
+fn slot_number(name: &str) -> Option<u32> {
+    name.strip_prefix(SLOT_PREFIX)?.parse().ok()
 }
 
 /// Folder of the active game save inside the saves folder.
@@ -237,7 +244,14 @@ impl Library {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with(SLOT_PREFIX))
             .collect();
-        slots.sort();
+        // Slots are numbered, not text: a library of 100 slots or more would otherwise list `Save 100` before `Save 11`.
+        // A folder that is not a slot id sorts after the numbered ones, by name.
+        slots.sort_by(|left, right| match (slot_number(left), slot_number(right)) {
+            (Some(left_number), Some(right_number)) => left_number.cmp(&right_number).then_with(|| left.cmp(right)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.cmp(right),
+        });
         Ok(slots)
     }
 
@@ -285,7 +299,7 @@ impl Library {
         let mut highest = 0;
         for entry in fs::read_dir(self.saves_dir())? {
             let name = entry?.file_name().to_string_lossy().into_owned();
-            if let Some(number) = name.strip_prefix(SLOT_PREFIX).and_then(|n| n.parse::<u32>().ok()) {
+            if let Some(number) = slot_number(&name) {
                 highest = highest.max(number);
             }
         }
@@ -332,7 +346,10 @@ impl Library {
     /// the import fails with [`LibraryError::NoGtSave`].
     pub fn import_items(&self, items: &[Node]) -> Result<Report, LibraryError> {
         if !items.iter().any(|item| self.names.owns(&item.name())) {
-            return Err(LibraryError::NoGtSave { found: items.iter().map(Node::name).collect() });
+            return Err(LibraryError::NoGtSave {
+                found: items.iter().map(Node::name).collect(),
+                game: self.names.game_name,
+            });
         }
         let mut report = Report::default();
         for item in items {

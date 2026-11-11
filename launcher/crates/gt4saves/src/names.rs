@@ -4,7 +4,8 @@
 //! replays start with that game's serial. The names come from the game table of the launcher (`gt4l_core::games`), so
 //! no library rule depends on one global name.
 
-/// The names a game's items carry on a card.
+/// One game's items and its name: what its saves and replays are called on a card, and the game's display name for
+/// messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SaveNames {
     /// The game data folder, fixed by the game (`BASCUS-97328GAMEDATA`).
@@ -13,14 +14,17 @@ pub struct SaveNames {
     /// lap) and the game's own tag: four digits on Gran Turismo 4 (`BASCUS-97328R0001`), seven letters and digits on
     /// Spec II (`BASCUS-97436R5MWiYYY`, seen on a PCSX2 card on 2026-11-03; issue #185).
     pub replay_prefix: &'static str,
+    /// The game's display name, for messages: "Gran Turismo 4" or "Gran Turismo 4 Spec II" (the names of
+    /// `gt4l_core::games`).
+    pub game_name: &'static str,
 }
 
 /// The shortest and longest tag after the replay letter (four digits on GT4, seven characters on Spec II).
 const REPLAY_TAG_LENGTHS: std::ops::RangeInclusive<usize> = 4..=7;
 
 impl SaveNames {
-    pub const fn new(game_save: &'static str, replay_prefix: &'static str) -> SaveNames {
-        SaveNames { game_save, replay_prefix }
+    pub const fn new(game_save: &'static str, replay_prefix: &'static str, game_name: &'static str) -> SaveNames {
+        SaveNames { game_save, replay_prefix, game_name }
     }
 
     /// True for this game's game data folder.
@@ -56,8 +60,8 @@ impl SaveNames {
 mod tests {
     use super::*;
 
-    const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
-    const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+    const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
+    const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436", "Gran Turismo 4 Spec II");
 
     #[test]
     fn each_game_owns_only_its_own_names() {
