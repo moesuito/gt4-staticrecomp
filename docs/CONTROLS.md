@@ -45,7 +45,8 @@ Rules:
 4. Inputs you list replace their defaults. Inputs you do not list keep their defaults. Use `[]`
    to unbind an input.
 5. A value is a one-line array of quoted sources, or a single quoted source (`cross = "key:Z"`).
-6. Duplicate sources on one input are refused.
+6. Duplicate sources on one input are refused. Key names are compared in lower case, because the game
+   resolves them that way: `["key:Z", "key:z"]` is one key bound twice.
 
 Errors name the file and line: `C:\...\controls.toml:7: unknown XInput source 'Q'`. The game does
 not start with an invalid file: the window stage stops with `[controls] invalid controls file,
@@ -87,8 +88,10 @@ Key names (case-insensitive): `A`..`Z`, `0`..`9`, `F1`..`F12`, `Num0`..`Num9`, `
 `Backspace`, `Tab`, `Space`, `Shift`, `Ctrl`, `Alt`, `Esc`, `Up`, `Down`, `Left`, `Right`,
 `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`.
 
-Reserved (refused in a file): `F7`, `F8`, `F9`, `F11`. The host uses them for the performance probe
-and fullscreen. Alt+Enter toggles fullscreen; while Alt is held, Enter is not Start.
+Reserved (refused by the game and by the launcher's validator, whatever the spelling: `key:F7`, `key:f7`
+and `key:F07` are all F7): `F7`, `F8`, `F9`, `F11`. The host uses them for the performance probe
+and fullscreen, so a binding on one would never reach the game. Alt+Enter toggles fullscreen; while Alt
+is held, Enter is not Start.
 
 ## Options
 

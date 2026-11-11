@@ -26,7 +26,9 @@ const XINPUT_BUTTONS: &[&str] = &[
 ];
 const XINPUT_TRIGGERS: &[&str] = &["LT", "RT"];
 const XINPUT_AXES: &[&str] = &["LX", "LY", "RX", "RY"];
-const RESERVED_KEYS: &[&str] = &["F7", "F8", "F9", "F11"];
+/// Function keys the host reads for its own shortcuts (`native/window.cpp`): F7, F8 and F9 run the performance
+/// probe, F11 toggles fullscreen. Reserved whatever the spelling of the name (`docs/CONTROLS.md`).
+const RESERVED_FUNCTION_KEYS: &[u32] = &[7, 8, 9, 11];
 
 /// Built-in mapping: each input and its default sources (the game's built-in map).
 pub fn default_bindings() -> BTreeMap<String, Vec<String>> {
@@ -502,15 +504,28 @@ fn input_kind(input: &str) -> Option<InputKind> {
 }
 
 fn check_list(line: usize, input: &str, kind: InputKind, sources: &[String]) -> Result<(), ControlsError> {
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     for source in sources {
         validate_source(line, kind, source)?;
-        if seen.contains(&source.as_str()) {
+        // The game resolves every key name to a virtual key before it looks for a second source on the same input
+        // (`native/controls.cpp`), so `key:Z` and `key:z` are one source and a file with both never starts.
+        let identity = source_identity(source);
+        if seen.contains(&identity) {
             return Err(error(line, format!("duplicate source '{source}' on {input}")));
         }
-        seen.push(source);
+        seen.push(identity);
     }
     Ok(())
+}
+
+/// What a source means, for the duplicate check: a key source in lower case (`key:Z` is `key:z`); anything else as
+/// written, because this crate matches XInput names exactly and their options change the meaning.
+fn source_identity(source: &str) -> String {
+    let (base, _) = split_options(source);
+    match base.split_once(':') {
+        Some(("key", name)) => format!("key:{}", name.to_ascii_lowercase()),
+        _ => source.to_string(),
+    }
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -582,7 +597,11 @@ fn validate_source(line: usize, kind: InputKind, source: &str) -> Result<(), Con
             if kind == InputKind::Stick {
                 return Err(error(line, "keyboard keys cannot drive a stick"));
             }
-            if RESERVED_KEYS.contains(&name) {
+            let lower = name.to_ascii_lowercase();
+            // Key names are case-insensitive (`docs/CONTROLS.md`): the game lowercases the whole source name before
+            // resolving it to a virtual key, and its reserved check runs on that key (`native/controls.cpp`,
+            // `resolve_key` and `is_reserved_key`). `key:f7` and `key:F07` are therefore as reserved as `key:F7`.
+            if function_key_number(&lower).is_some_and(|number| RESERVED_FUNCTION_KEYS.contains(&number)) {
                 return Err(error(line, format!("key '{name}' is reserved by the launcher")));
             }
             if !is_key_name(name) {
@@ -655,15 +674,24 @@ fn validate_option(line: usize, kind: InputKind, analog: bool, option: &str) -> 
     Ok(())
 }
 
+/// The number of a function key name (`f` and one or two digits), resolved the way the game resolves it
+/// (`native/controls.cpp`, `resolve_key`: `atoi` of the rest, so `f07` is F7 and `f001` is not a key name).
+/// `None` for every other name.
+fn function_key_number(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix('f')?;
+    if digits.is_empty() || digits.len() > 2 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 fn is_key_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     if lower.len() == 1 && lower.as_bytes()[0].is_ascii_alphanumeric() {
         return true;
     }
-    if let Some(number) = lower.strip_prefix('f') {
-        if let Ok(value) = number.parse::<u32>() {
-            return (1..=12).contains(&value);
-        }
+    if let Some(number) = function_key_number(&lower) {
+        return (1..=12).contains(&number);
     }
     if let Some(number) = lower.strip_prefix("num") {
         return number.len() == 1 && number.as_bytes()[0].is_ascii_digit();
@@ -839,6 +867,57 @@ mod tests {
         assert!(controls.assign("lstick_x", "xinput:A", true).is_err());
         assert!(controls.assign("nope", "xinput:A", true).is_err());
         assert_eq!(controls, Controls::default());
+    }
+
+    #[test]
+    fn reserved_keys_are_refused_in_any_case() {
+        // F7, F8 and F9 run the performance probe and F11 toggles fullscreen (native/window.cpp), so a key bound to
+        // one of them never reaches the game. Key names are case-insensitive (docs/CONTROLS.md) and the game
+        // lowercases the whole source name before resolving the virtual key (native/controls.cpp, resolve_key),
+        // which is why every spelling of a reserved key must be refused by the launcher too.
+        for name in ["F7", "f7", "F8", "f8", "F9", "f9", "F11", "f11"] {
+            let text = format!("schema = 1\n[bindings]\ncross = [\"key:{name}\"]\n");
+            let result = Controls::parse(&text);
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("key:{name} must be refused as reserved"),
+            };
+            assert_eq!(error.line, 3, "key:{name}");
+            assert!(error.message.contains("reserved"), "key:{name}: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn ordinary_key_names_are_accepted_in_any_case() {
+        // The game resolves a key name in lower case, so the case of an ordinary key changes nothing.
+        for name in ["Z", "z", "Enter", "enter", "PageUp", "pageup", "Num5", "num5", "F1", "f1"] {
+            let text = format!("schema = 1\n[bindings]\ncross = [\"key:{name}\"]\n");
+            assert!(Controls::parse(&text).is_ok(), "key:{name} must be accepted");
+        }
+    }
+
+    #[test]
+    fn a_reserved_key_is_refused_after_the_name_is_resolved_like_the_game() {
+        // The game reads the digits of an F-key name with atoi, so `f07` is F7 (native/controls.cpp, resolve_key).
+        for name in ["F07", "f07"] {
+            let text = format!("schema = 1\n[bindings]\ncross = [\"key:{name}\"]\n");
+            assert!(Controls::parse(&text).is_err(), "key:{name} is F7 and must be refused");
+        }
+        // Three digits is not an F-key name to the game (it reads two at most), so it is refused as unknown.
+        assert!(Controls::parse("schema = 1\n[bindings]\ncross = [\"key:f001\"]\n").is_err());
+        // The mutation paths check the same rule before anything is written.
+        let mut controls = Controls::default();
+        assert!(controls.assign("cross", "key:f7", true).is_err());
+        assert!(controls.set_sources("cross", vec!["key:F8".into()]).is_err());
+        assert_eq!(controls, Controls::default());
+    }
+
+    #[test]
+    fn a_key_name_spelled_in_another_case_is_the_same_source() {
+        // The game resolves both sources to the same virtual key and refuses the second one (native/controls.cpp),
+        // so a file the launcher accepts must not fail in the game afterwards.
+        assert!(Controls::parse("schema = 1\n[bindings]\ncross = [\"key:Z\", \"key:z\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\ncross = [\"key:Enter\", \"xinput:A\"]\n").is_ok());
     }
 
     #[test]
