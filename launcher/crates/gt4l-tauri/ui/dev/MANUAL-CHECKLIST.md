@@ -94,9 +94,9 @@ Do not launch the game for these checks. Tick each item in the Tauri build befor
 - [ ] A rebinds: the overlay says "Press a button for (symbol) (Cross)..." and counts down 5 s; the selected button pulses. A pad button or a key binds; B or Esc cancels; after 5 s it ends with "No button was pressed". The A press that opened it does not bind A.
 - [ ] Binding a control another button already has opens "... is already on ...": Swap exchanges them, Cancel keeps both as they were. The chips of both buttons update and flash.
 - [ ] Y resets the selected button; X asks, then resets every button, trigger and stick setting.
-- [ ] The Controller / Keyboard switch shows XInput chips or key chips; after a key rebind the view switches to Keyboard.
+- [ ] The Controller / Keyboard switch shows XInput chips or key chips; the Keyboard view is read only (the key layout is fixed).
 - [ ] Mouse and touch: a click or tap anywhere near a button selects it (even at 844 x 390); a second click or tap, or Rebind in the panel, starts the rebind.
-- [ ] `%LOCALAPPDATA%\GT4Recomp\controls.toml` changes after every change (no Save). Remapped buttons take effect in the game only from the next game build (the "i" next to "Changes save at once" says so).
+- [ ] `%LOCALAPPDATA%\GT4Recomp\controls.toml` changes after every change (no Save). Remapped buttons take effect in the game at its next start (the "i" next to "Changes save at once" says so).
 
 ## Saves and Replays
 

@@ -698,7 +698,7 @@
         buttons: [{ label: GT4.t("common.cancel"), closes: false, run: function () { stop("cancel"); } }]
       });
       capture.dialog.el.classList.add("is-capture");
-      GT4.ui.setHints([{ key: "B", label: "Cancel", run: function () { stop("cancel"); } }]);
+      GT4.ui.setHints([{ key: "B", label: GT4.t("common.cancel"), run: function () { stop("cancel"); } }]);
 
       capture.timer = root.setInterval(function () {
         if (dev.capture === "hold" || dev.capture === "conflict") {
@@ -757,7 +757,7 @@
       var row = function (target, incoming) {
         return h("div", { class: "cx-swap-row" }, [
           h("span", { class: "cx-swap-glyph" }, [GT4.controllerSvg.glyph(target)]),
-          h("span", { class: "cx-swap-name", text: M.find(target).name }),
+          h("span", { class: "cx-swap-name", text: nameOf(target) }),
           h("span", { class: "cx-swap-arrow", "aria-hidden": "true", text: "←" }),
           chip(incoming)
         ]);

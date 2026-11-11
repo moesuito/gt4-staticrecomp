@@ -209,7 +209,7 @@ Settings focus: moving the highlight over the tab list (up and down) only previe
 - **Selecting and rebinding.** Pad and keys: focus is the selection, A (Enter, Space) rebinds. Mouse and touch: a click or tap selects the nearest button or chip (large targets at any size); a second click, or Rebind in the panel, starts the rebind. The overlay counts down 5 s; the pad press comes from `capture_binding` (SDL3). Keyboard rebinding is off: in the overlay a key only cancels (Esc), and in the Keyboard view Rebind and Reset are disabled. B cancels, so B itself is never captured: B moves only through a swap.
 - **Conflicts.** `GT4.controlsModel.conflict` finds the button that already has the source; the dialog offers Swap (the other button gets the previous source) or Move (when there is none), and Cancel. Rust applies the same rule (`gt4controls::Controls::assign`) and refuses a taken source without `swap`.
 - **Footer.** Content level: A Rebind, Y Reset button, X Reset all, B Back, LB RB Tabs on the drawing; A Select instead of A Rebind on the panel. Rebind: B Cancel. Dialogs: A Choose, B Cancel. The tab list keeps the shell's footer (`host.hints(list, {replace: true})`).
-- **Saving.** Every change writes `controls.toml` at once (no Save). A refused change or a failed write keeps the old file and shows the reason. The info "i" says that this game build still uses the built-in mapping; the bindings apply from the next game build.
+- **Saving.** Every change writes `controls.toml` at once (no Save). A refused change or a failed write keeps the old file and shows the reason. The info "i" says where the file is and that the game reads it at its next start.
 Mouse use hides the focus ring. A pad or key press brings it back.
 
 ## Mock data and browser preview

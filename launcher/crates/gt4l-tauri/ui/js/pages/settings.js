@@ -1039,6 +1039,7 @@
   GT4.tabPages.general = function (content, host) {
     return settingsTab(content, host, {
       title: GT4.t("settings.general_title"),
+      note: GT4.t("settings.note_general"),
       // TASK-118 (owner, 2026-10-26): the launcher GPU acceleration sits at the very bottom, under Version.
       filter: function (row) {
         return row.group === "general" && row.id !== "launcher_gpu";

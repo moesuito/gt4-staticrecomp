@@ -509,7 +509,7 @@
     await wait(200);
     check("A on a DS2 button opens the rebind overlay", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
     check("the overlay names the button", new RegExp(T("controls.button.square")).test((document.querySelector(".modal.is-capture h3") || {}).textContent || ""), "no title");
-    check("the rebind footer shows only B Cancel", footerText() === "BCancel", footerText());
+    check("the rebind footer shows only B Cancel", footerText() === "B" + T("common.cancel"), footerText());
     press("Escape");
     await wait(200);
     check("Esc cancels the rebind and closes the overlay", !document.querySelector(".modal.is-capture") && GT4.capturing === false, "capturing " + GT4.capturing);
