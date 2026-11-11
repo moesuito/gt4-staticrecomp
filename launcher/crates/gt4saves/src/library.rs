@@ -89,6 +89,8 @@ pub struct Report {
     pub skipped: Vec<String>,
     /// The active game save was replaced; the old copy went to `<saves>/.backup`.
     pub replaced_active: bool,
+    /// An imported save became the active save, so the next Play uses it (issue #224).
+    pub activated: bool,
 }
 
 /// `Save 01`, `Save 02`, ...
@@ -354,6 +356,30 @@ impl Library {
     /// Imports a PCSX2 folder memory card: each save sub-folder is a raw directory.
     pub fn import_folder_card(&self, folder_card: &Path) -> Result<Report, LibraryError> {
         self.import_items(&items_of_folder_card(folder_card)?)
+    }
+
+    /// After an import: makes the imported save the active save when the library has no active save and no other save
+    /// to choose from. This is issue #224: a player imported a PCSX2 card, pressed Play, and the game asked for a new
+    /// profile, because the imported save had stayed an inactive slot. It also covers a library made by an older
+    /// launcher, where importing the same card again only finds the save it already holds.
+    ///
+    /// A library that already has an active save is never changed, and two or more saves leave the choice to the
+    /// player (Y on the Saves page). A card that brings no game save activates nothing. Sets [`Report::activated`].
+    pub fn activate_first_import(&self, report: &mut Report) -> Result<(), LibraryError> {
+        if report.activated || self.active_save()?.is_some() {
+            return Ok(());
+        }
+        let brought_a_save = report.added.iter().any(|name| name.starts_with(SLOT_PREFIX))
+            || report.unchanged.iter().any(|name| self.names.is_game_save(name));
+        if !brought_a_save {
+            return Ok(());
+        }
+        if let [slot] = self.slots()?.as_slice() {
+            let slot = slot.clone();
+            self.activate_slot(&slot)?;
+            report.activated = true;
+        }
+        Ok(())
     }
 
     /// The folder a save's name file lives in: the active save's folder for the game save, a slot's for `Save NN`.

@@ -589,6 +589,7 @@
   "setting.launcher_gpu.label": "Aceleração por GPU do launcher",
   "setting.launcher_gpu.help": "Desligado mantém a janela do launcher sem aceleração por GPU, depois que ela falhou ao desenhar no WebView2. Ligado vale na próxima abertura do launcher.",
   "rust.saves.added": "Adicionado: {items}.",
+  "rust.saves.made_active": "Agora é o save ativo, então o Play vai usá-lo.",
   "rust.saves.went_to_game": "Foi para {game}, o jogo a que este save pertence.",
   "about.export_logs": "Exportar logs",
   "about.logs_exported_title": "Logs exportados",

@@ -195,7 +195,10 @@ pub fn import_path(libraries: &[(&'static Game, &Library)], path: &Path, languag
         if mine.is_empty() {
             continue;
         }
-        let report = library.import_items(&mine).map_err(|error| import_error_text(&error, language))?;
+        let mut report = library.import_items(&mine).map_err(|error| import_error_text(&error, language))?;
+        // Issue #224: importing a card into a library with no active save left the save as a slot, so Play asked the
+        // game for a new profile. The library decides when it is safe to make the imported save the active one.
+        library.activate_first_import(&mut report).map_err(|error| import_error_text(&error, language))?;
         outcome.per_game.push((game, report));
     }
     if outcome.per_game.is_empty() {
@@ -414,6 +417,9 @@ fn report_text(report: &Report, language: Language) -> String {
     if !report.added.is_empty() {
         parts.push(messages::render("saves.added", language, &[("items", &report.added.join(", "))]));
     }
+    if report.activated {
+        parts.push(messages::text("saves.made_active", language).to_string());
+    }
     if !report.unchanged.is_empty() {
         parts.push(messages::text("saves.already_in_library", language).to_string());
     }
@@ -559,15 +565,23 @@ mod tests {
         let second = data.join("second.ps2");
         fs::write(&second, card_with(&[game_save(2)])).unwrap();
 
-        assert_eq!(import_path(&library, &first, Language::fallback()).unwrap().added, vec!["Save 01".to_string()]);
+        let first_import = import_path(&library, &first, Language::fallback()).unwrap();
+        assert_eq!(first_import.added, vec!["Save 01".to_string()]);
+        // Issue #224: the library had no active save, so the imported one becomes the save Play uses.
+        assert!(first_import.activated);
+        assert_eq!(names(&saves(&library).unwrap()), vec![GT4.save_folder.to_string()]);
         // The same save again is recognised and nothing new is written.
         let again = import_path(&library, &first, Language::fallback()).unwrap();
         assert!(again.added.is_empty());
+        assert!(!again.activated);
         assert_eq!(again.unchanged, vec![GT4.save_folder.to_string()]);
         // A different save becomes a new slot; the active save is untouched.
-        assert_eq!(import_path(&library, &second, Language::fallback()).unwrap().added, vec!["Save 02".to_string()]);
-        assert_eq!(names(&saves(&library).unwrap()), vec!["Save 01".to_string(), "Save 02".to_string()]);
-        assert!(saves(&library).unwrap().iter().all(|item| !item.active));
+        let second_import = import_path(&library, &second, Language::fallback()).unwrap();
+        assert_eq!(second_import.added, vec!["Save 01".to_string()]);
+        assert!(!second_import.activated);
+        let listed = saves(&library).unwrap();
+        assert_eq!(names(&listed), vec![GT4.save_folder.to_string(), "Save 01".to_string()]);
+        assert!(listed[0].active && !listed[1].active);
         let _ = fs::remove_dir_all(&data);
     }
 
@@ -579,8 +593,7 @@ mod tests {
         let source = data.join("source.ps2");
         fs::write(&source, card_with(&[game_save(3)])).unwrap();
         import_path(&library, &source, Language::fallback()).unwrap();
-        // Make the imported save active: the library had no active save, so the slot becomes it.
-        activate(&library, "Save 01").unwrap();
+        // The import already made it the active save, because the library had none (issue #224).
         let before = saves(&library).unwrap();
         assert_eq!(names(&before), vec![GT4.save_folder.to_string()]);
         assert!(before[0].active && before[0].label == "Active save");
