@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 const ITEM_FILE: &str = "_item.hex";
 const CHILDREN_FILE: &str = "_children.txt";
 
+/// Folder beside an exported item where an older folder of the same name is moved.
+pub const REPLACED_FOLDER_NAME: &str = ".replaced";
+
 #[derive(Debug)]
 pub enum FolderError {
     Io(io::Error),
@@ -77,7 +80,8 @@ pub fn from_hex(text: &str) -> Result<Vec<u8>, FolderError> {
 }
 
 /// Writes `item` as a folder `parent/<item name>`. The folder is built beside the target
-/// and renamed into place; an existing folder of that name is moved aside, never removed.
+/// and renamed into place; an existing folder of that name is moved into `parent/.replaced`,
+/// never removed.
 pub fn export_item(parent: &Path, item: &Node) -> Result<PathBuf, FolderError> {
     let target = parent.join(item.name());
     let staging = parent.join(format!(".staging-{}", item.name()));
@@ -87,7 +91,7 @@ pub fn export_item(parent: &Path, item: &Node) -> Result<PathBuf, FolderError> {
     fs::create_dir_all(&staging)?;
     write_contents(&staging, item)?;
     if target.exists() {
-        let aside_dir = parent.join(".replaced");
+        let aside_dir = parent.join(REPLACED_FOLDER_NAME);
         fs::create_dir_all(&aside_dir)?;
         fs::rename(&target, aside_dir.join(format!("{}-{}", item.name(), crate::timestamp())))?;
     }
