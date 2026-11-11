@@ -94,6 +94,9 @@ or full PS2 fidelity. Details: [Architecture](docs/ARCHITECTURE.md).
 
 - **Windows 10 or 11, 64-bit**, and a **processor with SSE4.1** (Intel Core i3/i5/i7, AMD FX or newer).
 - **A graphics card with Vulkan 1.2** and current drivers for CoreGS 2.0 (GSdx can also use Direct3D 11 on older cards).
+- **The Microsoft Edge WebView2 Runtime** for the launcher's window. Windows 11 ships it and most Windows 10 PCs have
+  it, but it is not guaranteed: the installer installs it when missing, the portable copy needs it already present
+  ([details](docs/PORTABLE.md), [Microsoft's page](https://developer.microsoft.com/microsoft-edge/webview2/consumer/)).
 - **Your own disc image** of Gran Turismo 4 USA v2.00 (SCUS-97328), and of Spec II 1.10 for the mod, as a plain `.iso`.
   The launcher reads the image where you keep it; it is not copied.
 
@@ -101,7 +104,7 @@ The launcher checks the processor and the graphics card before setup and before 
 
 ## Install
 
-1. Download the installer (**`GT4Recomp-Setup-<version>.exe`**) or the portable zip from
+1. Download the installer (**`GT4Recomp-Setup-<version>.exe`**) or the [portable zip](docs/PORTABLE.md) from
    [Releases](https://github.com/moesuito/gt4-staticrecomp/releases): the latest release for Stable, or the newest
    pre-release for Beta.
 2. Start **GT4Recomp** and choose your disc image. The launcher checks it, prepares the game and its shaders.
@@ -178,8 +181,8 @@ Exact revisions and licenses: [THIRD_PARTY.md](native/THIRD_PARTY.md).
 ## Documentation
 
 [TASKS](TASKS.md) · [CONTRIBUTING](CONTRIBUTING.md) · [STATUS](docs/STATUS.md) · [BUILD](docs/BUILD.md) ·
-[ARCHITECTURE](docs/ARCHITECTURE.md) · [Renderers](docs/GS-RENDERER-OPTIONS.md) · [Decisions](docs/decisions/) ·
-[Journal](docs/journal/)
+[ARCHITECTURE](docs/ARCHITECTURE.md) · [Renderers](docs/GS-RENDERER-OPTIONS.md) · [Portable copy](docs/PORTABLE.md) ·
+[Decisions](docs/decisions/) · [Journal](docs/journal/)
 
 ## Star history
 
