@@ -34,10 +34,12 @@ pub enum LibraryError {
     Folder(FolderError),
     /// The named item does not exist in the library.
     NotFound(String),
-    /// The item is not something this library stores (for example another game's save).
-    NotGtSave(String),
-    /// A card with no Gran Turismo 4 save or replay on it; `found` lists the names it holds.
-    NoGtSave { found: Vec<String> },
+    /// The item is not something this library stores (for example another game's save). `game` is the display name of
+    /// the game the library belongs to.
+    NotGtSave { name: String, game: &'static str },
+    /// A card with no save or replay of the library's game on it; `found` lists the names it holds and `game` is the
+    /// display name of the game the library belongs to.
+    NoGtSave { found: Vec<String>, game: &'static str },
     /// A display name that cannot be used (empty after cleaning).
     Name(String),
 }
@@ -67,9 +69,9 @@ impl fmt::Display for LibraryError {
             LibraryError::Card(error) => write!(f, "{error}"),
             LibraryError::Folder(error) => write!(f, "{error}"),
             LibraryError::NotFound(name) => write!(f, "not in the library: {name}"),
-            LibraryError::NotGtSave(name) => write!(f, "not a Gran Turismo 4 save: {name}"),
-            LibraryError::NoGtSave { found } => {
-                write!(f, "no Gran Turismo 4 save on this card (found: {})", found.join(", "))
+            LibraryError::NotGtSave { name, game } => write!(f, "not a {game} save: {name}"),
+            LibraryError::NoGtSave { found, game } => {
+                write!(f, "no {game} save on this card (found: {})", found.join(", "))
             }
             LibraryError::Name(reason) => write!(f, "{reason}"),
         }
@@ -344,7 +346,10 @@ impl Library {
     /// the import fails with [`LibraryError::NoGtSave`].
     pub fn import_items(&self, items: &[Node]) -> Result<Report, LibraryError> {
         if !items.iter().any(|item| self.names.owns(&item.name())) {
-            return Err(LibraryError::NoGtSave { found: items.iter().map(Node::name).collect() });
+            return Err(LibraryError::NoGtSave {
+                found: items.iter().map(Node::name).collect(),
+                game: self.names.game_name,
+            });
         }
         let mut report = Report::default();
         for item in items {

@@ -7,7 +7,7 @@ use common::*;
 use gt4saves::card::{same_contents, CardError, Node, MAGIC};
 use gt4saves::{Card, Library, SaveNames};
 
-const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
 use std::fs;
 use std::path::PathBuf;
 

@@ -11,7 +11,7 @@ use gt4saves::SaveNames;
 
 /// The Gran Turismo 4 item names (the command-line tool works on the retail game only).
 const GAME_SAVE_NAME: &str = "BASCUS-97328GAMEDATA";
-const GT4_NAMES: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+const GT4_NAMES: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328", "Gran Turismo 4");
 use gt4saves::library::{Library, Report};
 
 use crate::recycle;
