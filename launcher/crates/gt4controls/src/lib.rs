@@ -301,7 +301,35 @@ impl Controls {
             RIGHT_STICK_DEFAULT_DEADZONE
         }
     }
+    /// Reads the response curve of the selected stick.
+    /// Without a curve option, the default is linear.
+    pub fn stick_curve(&self, stick: Stick) -> Curve {
+        let source = stick.inputs().iter().find_map(|input| {
+            self.sources(input)
+                .and_then(|sources| sources.iter().find(|source| is_axis_source(source)))
+        });
 
+        let Some(source) = source else {
+            return Curve::Linear;
+        };
+
+        let (_, options) = split_options(source);
+
+        for option in options {
+            match option {
+                "curve=quadratic" => return Curve::Quadratic,
+                "curve=cubic" => return Curve::Cubic,
+                "curve=s_curve" | "curve=scurve" | "curve=s-curve" => return Curve::SCurve,
+                "curve=smooth_power" | "curve=smooth" => return Curve::SmoothPower,
+                "curve=sublinear" | "curve=root" => return Curve::Sublinear,
+                "curve=logarithmic" | "curve=log" => return Curve::Logarithmic,
+                "curve=linear" => return Curve::Linear,
+                _ => {}
+            }
+        }
+
+        Curve::Linear
+    }
     /// Writes `deadzone` (clamped to [0, MAX_DEADZONE]) on every XInput axis source of both axes of the stick.
     /// Other options (`invert`, `curve`, `scale`) are kept.
     pub fn set_stick_deadzone(&mut self, stick: Stick, deadzone: f32) -> Result<(), ControlsError> {
@@ -319,7 +347,31 @@ impl Controls {
         *self = next;
         Ok(())
     }
+    /// Sets the response curve on both axes of the selected stick.
+    /// Preserves deadzone, inversion and other existing options.
+    pub fn set_stick_curve(&mut self, stick: Stick, curve: Curve) -> Result<(), ControlsError> {
+        let mut next = self.clone();
 
+        for input in stick.inputs() {
+            let updated: Vec<String> = self
+                .sources(input)
+                .unwrap_or(&[])
+                .iter()
+                .map(|source| {
+                    if is_axis_source(source) {
+                        with_option(source, "curve", curve.as_str())
+                    } else {
+                        source.clone()
+                    }
+                })
+                .collect();
+
+            next.set_sources(input, updated)?;
+        }
+
+        *self = next;
+        Ok(())
+    }
     /// The button input other than `except` whose sources include `source` (compared without options).
     pub fn holder_of(&self, source: &str, except: &str) -> Option<String> {
         let base = source_base(source);
@@ -769,7 +821,44 @@ mod tests {
         assert!(text.contains("l2 = [\"xinput:LT | deadzone=0.050 curve=quadratic\", \"key:F\"]"));
         assert!(Controls::parse(&text).is_ok());
     }
+    #[test]
+    fn stick_curves_round_trip_and_preserve_existing_options() {
+        let mut controls = Controls::default();
 
+        // Both sticks should use a linear curve by default.
+        assert_eq!(controls.stick_curve(Stick::Left).as_str(), "linear");
+        assert_eq!(controls.stick_curve(Stick::Right).as_str(), "linear");
+
+        // Configure the left stick.
+        controls.set_stick_deadzone(Stick::Left, 0.125).unwrap();
+        controls.set_stick_curve(Stick::Left, Curve::Quadratic).unwrap();
+
+        assert_eq!(controls.stick_curve(Stick::Left).as_str(), "quadratic");
+        assert!((controls.stick_deadzone(Stick::Left) - 0.125).abs() < 1e-6);
+
+        // Both axes must receive the curve.
+        for input in ["lstick_x", "lstick_y"] {
+            let source = &controls.sources(input).unwrap()[0];
+            assert!(source.contains("curve=quadratic"), "{source}");
+            assert!(source.contains("deadzone=0.125"), "{source}");
+        }
+
+        // The original inversion of the vertical axis must survive.
+        assert!(controls.sources("lstick_y").unwrap()[0].contains("invert=true"));
+
+        // Changing the deadzone must not erase the curve.
+        controls.set_stick_deadzone(Stick::Left, 0.200).unwrap();
+        assert_eq!(controls.stick_curve(Stick::Left).as_str(), "quadratic");
+
+        // The right stick can have an independent curve.
+        controls.set_stick_curve(Stick::Right, Curve::Cubic).unwrap();
+
+        // Saving and loading must preserve both curves.
+        let restored = Controls::parse(&controls.render()).unwrap();
+        assert_eq!(restored.stick_curve(Stick::Left).as_str(), "quadratic");
+        assert_eq!(restored.stick_curve(Stick::Right).as_str(), "cubic");
+        assert!((restored.stick_deadzone(Stick::Left) - 0.200).abs() < 1e-6);
+    }
     #[test]
     fn stick_deadzones_default_to_ten_percent_and_round_trip() {
         let mut controls = Controls::default();

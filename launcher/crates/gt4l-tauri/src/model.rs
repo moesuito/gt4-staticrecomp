@@ -232,9 +232,9 @@ pub fn settings_table_with_monitors(
         rows.push(trigger_row(trigger, controls, "deadzone"));
         rows.push(trigger_row(trigger, controls, "curve"));
     }
-    for stick in [Stick::Left, Stick::Right] {
-        rows.push(stick_row(stick, controls));
-    }
+    rows.push(stick_row(Stick::Left, controls));
+    rows.push(left_stick_curve_row(controls));
+    rows.push(stick_row(Stick::Right, controls));
     json!({ "max_upscale": MAX_UPSCALE_DEFAULT, "rows": rows })
 }
 
@@ -462,7 +462,28 @@ fn stick_row(stick: Stick, controls: &Controls) -> Value {
         "current": percent(controls.stick_deadzone(stick)),
     })
 }
-
+/// The response curve selector for the left stick.
+fn left_stick_curve_row(controls: &Controls) -> Value {
+    json!({
+        "id": "lstick_curve",
+        "label": "Left stick curve",
+        "help": "How steering responds to movement of the left stick. Linear follows the stick directly; quadratic and cubic provide finer control near the centre.",
+        "page": "basic",
+        "group": "controls",
+        "control": "dropdown",
+        "values": [
+            { "value": "linear", "label": "Linear" },
+            { "value": "quadratic", "label": "Quadratic" },
+            { "value": "cubic", "label": "Cubic" },
+            { "value": "s_curve", "label": "S-Curve" },
+            { "value": "smooth_power", "label": "Smooth Power (x^1.5)" },
+            { "value": "sublinear", "label": "Sublinear (sqrt)" },
+            { "value": "logarithmic", "label": "Logarithmic" },
+        ],
+        "default": "linear",
+        "current": controls.stick_curve(Stick::Left).as_str(),
+    })
+}
 /// The stick a `set_setting` id tunes (`lstick_deadzone`, `rstick_deadzone`), or `None`.
 pub fn stick_setting(id: &str) -> Option<Stick> {
     match id {
@@ -1119,9 +1140,30 @@ mod table_tests {
         let analog: Vec<&str> = view["triggers"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
         assert_eq!(
             analog,
-            ["trigger_full_range", "l2_deadzone", "l2_curve", "r2_deadzone", "r2_curve", "lstick_deadzone", "rstick_deadzone"]
+            [
+                "trigger_full_range",
+                "l2_deadzone",
+                "l2_curve",
+                "r2_deadzone",
+                "r2_curve",
+                "lstick_deadzone",
+                "lstick_curve",
+                "rstick_deadzone",
+            ]
         );
-        // TASK-161: the full trigger range toggle, on by default since the owner's rc14 test.
+
+        // The left stick curve selector must expose all seven curves.
+        let curve_row = view["triggers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "lstick_curve")
+            .unwrap();
+
+        assert_eq!(curve_row["control"], "dropdown");
+        assert_eq!(curve_row["default"], "linear");
+        assert_eq!(curve_row["current"], "linear");
+        assert_eq!(curve_row["values"].as_array().unwrap().len(), 7);        // TASK-161: the full trigger range toggle, on by default since the owner's rc14 test.
         let full = &view["triggers"][0];
         assert_eq!((full["control"].as_str(), full["default"].as_bool(), full["current"].as_bool()), (Some("toggle"), Some(true), Some(true)));
         let mut settings = Settings::default();
@@ -1131,7 +1173,28 @@ mod table_tests {
         assert_eq!(stick_setting("rstick_deadzone"), Some(Stick::Right));
         assert_eq!(stick_setting("l2_deadzone"), None);
     }
+    #[test]
+    fn left_stick_curve_row_shows_configured_curve() {
+        let mut controls = Controls::default();
 
+        controls
+            .set_stick_curve(Stick::Left, gt4controls::Curve::Quadratic)
+            .unwrap();
+
+        let view = controls_view(&Settings::default(), &controls, false);
+
+        let curve = view["triggers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "lstick_curve")
+            .unwrap();
+
+        assert_eq!(curve["control"], "dropdown");
+        assert_eq!(curve["default"], "linear");
+        assert_eq!(curve["current"], "quadratic");
+        assert_eq!(curve["values"].as_array().unwrap().len(), 7);
+    }
     #[test]
     fn value_text_maps_booleans_per_kind() {
         assert_eq!(value_text(&json!(true), true).as_deref(), Some("on"));

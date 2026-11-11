@@ -431,7 +431,9 @@
       control: "toggle", values: null, default: true, current: query.get("fullrange") !== "0" };
     return [fullRange, slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
       slider("r2_deadzone", "R2 deadzone", 11.8), dropdown("r2_curve", "R2 curve", curve),
-      slider("lstick_deadzone", "Left stick deadzone", 24), slider("rstick_deadzone", "Right stick deadzone", 26.5)];
+      slider("lstick_deadzone", "Left stick deadzone", 24),
+      dropdown("lstick_curve", "Left stick curve", curve),
+      slider("rstick_deadzone", "Right stick deadzone", 26.5)];
   }
   var analog = analogDefaults();
 

@@ -253,12 +253,41 @@
       disabled: !!row.disabled,
       data: { setting: row.id, adjust: "1" }
     });
-    var readout = h("span", { class: "val", text: format(row.current) });
-    var paint = function () {
+    var renderScale = row.id === "render_scale";
+
+    function readoutParts(value) {
+      var formatted = format(value);
+      var separator = formatted.indexOf(" · ");
+
+      return {
+        primary: renderScale && separator >= 0
+          ? formatted.slice(0, separator)
+          : formatted,
+        secondary: renderScale && separator >= 0
+          ? formatted.slice(separator + 3)
+          : ""
+      };
+    }
+
+    var readout = h("span", {
+      class: "val",
+      text: readoutParts(row.current).primary
+    });
+
+    var detail = renderScale
+      ? h("span", {
+          class: "render-scale-detail",
+          text: readoutParts(row.current).secondary
+        })
+      : null;        var paint = function () {
       var span = spec.max - spec.min || 1;
       var pct = ((Number(input.value) - spec.min) / span) * 100;
       input.style.setProperty("--fill", pct + "%");
-      readout.textContent = format(input.value);
+      var parts = readoutParts(input.value);
+      readout.textContent = parts.primary;
+      if (detail) {
+        detail.textContent = parts.secondary;
+      }
       input.setAttribute("aria-valuetext", format(input.value));
     };
     input.addEventListener("input", paint);
@@ -307,8 +336,10 @@
       commit(ctx, row.id, next);
     });
     paint();
-    var nodes = [input, readout];
-    return { node: nodes, limited: spec.max < spec.fullMax ? spec.max + spec.unit : null, wide: !!spec.labels };
+    var nodes = detail
+      ? [input, readout, detail]
+      : [input, readout];
+    return { node: nodes, limited: spec.max < spec.fullMax ? spec.max + spec.unit : null, wide: false };
   }
 
   function chevronIcon(direction) {

@@ -249,6 +249,8 @@
   "setting.r2_curve.label": "Curva de R2",
   "setting.lstick_deadzone.label": "Zona morta do analógico esquerdo",
   "setting.rstick_deadzone.label": "Zona morta do analógico direito",
+"setting.lstick_curve.label": "Curva do analógico esquerdo",
+"setting.lstick_curve.help": "Ajusta a resposta da direção ao movimento do analógico esquerdo. As curvas quadrática e cúbica oferecem mais precisão perto do centro.",
   "setting.trigger_deadzone.help": "Quanto o gatilho precisa percorrer antes de contar, em porcentagem do seu curso. A pressão que o jogo lê começa acima deste ponto.",
   "setting.trigger_curve.help": "Como a pressão cresce com o curso do gatilho. Linear segue o gatilho; quadrática e cúbica dão mais controle com pouca pressão.",
   "setting.stick_deadzone.help": "Quanto o analógico precisa se afastar do centro antes que o jogo o perceba, em porcentagem do seu curso. O padrão é o do XInput; reduza para um controle preciso, aumente para um que desloca.",

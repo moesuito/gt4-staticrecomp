@@ -314,7 +314,7 @@
         refresh: function (id) { return load(id); }
       };
       [["triggers", ["trigger_full_range"]], ["l2", ["l2_deadzone", "l2_curve"]], ["r2", ["r2_deadzone", "r2_curve"]],
-        ["lstick", ["lstick_deadzone"]], ["rstick", ["rstick_deadzone"]]].forEach(function (pair) {
+        ["lstick", ["lstick_deadzone", "lstick_curve"]], ["rstick", ["rstick_deadzone"]]].forEach(function (pair) {
         var box = analogRows[pair[0]];
         GT4.ui.clear(box);
         pair[1].forEach(function (rowId) {

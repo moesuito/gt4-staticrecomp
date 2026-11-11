@@ -331,9 +331,21 @@ pub fn set_setting_of(id: String, value: Value, shared: &Shared) -> Result<(), S
         return change_controls(&mut state, |controls| {
             controls.set_trigger_tuning(trigger, tuning).map_err(|error| error.to_string())
         });
+    } else if id == "lstick_curve" {
+        let name = value
+            .as_str()
+            .ok_or_else(|| format!("'{id}' needs a curve name"))?;
+
+        let curve = model::curve_from_name(name)
+            .ok_or_else(|| format!("unknown curve '{name}'"))?;
+
+        return change_controls(&mut state, |controls| {
+            controls
+                .set_stick_curve(controls_file::Stick::Left, curve)
+                .map_err(|error| error.to_string())
+        });
     } else if let Some(stick) = model::stick_setting(&id) {
-        let percent = value.as_f64().ok_or_else(|| format!("'{id}' needs a number"))?;
-        if !(0.0..=100.0).contains(&percent) {
+        let percent = value.as_f64().ok_or_else(|| format!("'{id}' needs a number"))?;        if !(0.0..=100.0).contains(&percent) {
             return Err("the deadzone must be between 0 and 100 percent".into());
         }
         return change_controls(&mut state, |controls| {
@@ -1794,6 +1806,52 @@ mod settings_table_probe_tests {
     }
 
     /// TASK-114 rc5: with the cards cached, opening the Settings table probes nothing (the old path probed twice).
+    #[test]
+    fn left_stick_curve_setting_is_saved_and_rejects_invalid_values() {
+        let root = std::env::temp_dir()
+            .join(format!("gt4l-stick-curve-test-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let shared = shared_in(&root);
+
+        // Simulate selecting Quadratic in the launcher.
+        set_setting_of("lstick_curve".into(), json!("quadratic"), &shared).unwrap();
+
+        // Check the value stored in memory.
+        let path = {
+            let state = lock(&shared);
+            assert_eq!(
+                state.controls.stick_curve(controls_file::Stick::Left),
+                controls_file::Curve::Quadratic
+            );
+            state.controls_path()
+        };
+
+        // Check the configuration actually written to disk.
+        let saved = controls_file::load(&path).unwrap().unwrap();
+        assert_eq!(
+            saved.stick_curve(controls_file::Stick::Left),
+            controls_file::Curve::Quadratic
+        );
+
+        // An invalid curve must not change the configuration.
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        assert!(
+            set_setting_of("lstick_curve".into(), json!("invalid"), &shared).is_err()
+        );
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(
+            lock(&shared).controls.stick_curve(controls_file::Stick::Left),
+            controls_file::Curve::Quadratic
+        );
+
+        drop(shared);
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn settings_table_reads_the_cached_cards_without_probing() {
         let root = std::env::temp_dir().join(format!("gt4l-table-probe-{}", std::process::id()));
