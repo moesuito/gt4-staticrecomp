@@ -31,6 +31,10 @@ The script refuses an output folder outside the assets checkout's `private/` fol
 
 ## How the executable finds its paths
 
+The launcher is the supported way to start the game: it passes the arguments and the `GT4_*` variables below. A direct
+start of `gt4.exe` behaves differently with and without an ELF argument; the portable folder, its WebView2 requirement
+and both starts are in [Portable copy](PORTABLE.md).
+
 | Need | Resolution (TASK-059) | Notes |
 |---|---|---|
 | Shaders | `<exe folder>\shaders` when that folder exists, else the build-time folder `GT4_VULKAN_SHADER_DIR` | The build-time fallback is the development behaviour (`native/install_paths.cpp`, `native/native_vulkan.cpp`). A release build (`-DGT4_RELEASE_DISTRIBUTION=ON`, TASK-081, slice213) has no fallback: only `<exe folder>\shaders`, and a missing folder stops the start with "The game's shader folder is missing (...). Reinstall GT4Recomp." The build tree of a release build gets its own `shaders\` copy. |

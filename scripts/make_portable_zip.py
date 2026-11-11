@@ -50,7 +50,15 @@ This folder is the whole program. Start GT4Recomp.exe. Carry the folder to anoth
   game\\   the game programs (replaced by updates)
 
 The folder must be somewhere you can write (not Program Files). GT4Recomp updates itself in place: it never touches user\\
-or data\\. WebView2 (Microsoft Edge runtime) must be installed on the PC; Windows 11 has it.
+or data\\.
+
+The launcher window needs the Microsoft Edge WebView2 Runtime. Windows 11 ships it and most Windows 10 PCs have it, but
+it is not guaranteed on either, and this zip cannot install it. If GT4Recomp says WebView2 is missing, install the
+Evergreen runtime from https://developer.microsoft.com/microsoft-edge/webview2/consumer/ and start GT4Recomp.exe again.
+
+Change your settings in GT4Recomp.exe, not by editing the files: the launcher reads user\\config\\settings.toml and passes
+the choices to the game. A script that starts game\\gt4.exe with the launcher's command line skips every setting; start
+GT4Recomp.exe instead, or gt4.exe with no argument, to keep them.
 """
 
 

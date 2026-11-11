@@ -708,8 +708,9 @@ Section "Install" SecInstall
   ${EndIf}
   Delete "$INSTDIR\.update-swapping"
 
-  ; The launcher needs the Microsoft Edge WebView2 Runtime (built into Windows 11, usually present on Windows 10).
-  ; When it is missing, Microsoft's Evergreen bootstrapper (embedded) downloads and installs it.
+  ; The launcher needs the Microsoft Edge WebView2 Runtime (part of Windows 11 and usually present on Windows 10, but not
+  ; guaranteed on either; the portable zip cannot install it). When it is missing, Microsoft's Evergreen bootstrapper
+  ; (embedded) downloads and installs it.
   Call WebView2Present
   ${If} $WebView2Version == ""
     DetailPrint "Installing the Microsoft Edge WebView2 Runtime (needed by the GT4Recomp window)..."
