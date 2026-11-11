@@ -24,8 +24,10 @@ the operating system. They are not shipped.
 
 ## 1b. Launcher crates (Rust, linked into `GT4Recomp.exe`)
 
-The launcher links crates from crates.io, all permissive; their versions are pinned in `launcher/Cargo.lock` and their
-licence texts are generated with `cargo about` into `licenses\launcher-crates.html` at release time.
+The launcher links crates from crates.io, all permissive (MIT, Apache-2.0 or BSD-3-Clause); their versions are pinned in
+`launcher/Cargo.lock`. The full list with every licence text is not shipped yet: generating it (`cargo about` into
+`licenses\launcher-crates.html`) is an open item (`docs/launcher/LAUNCHER-PLAN.md`). The crate whose licence asks for a
+reproduced notice is named below.
 
 | Crate | Licence | Notes |
 |---|---|---|
