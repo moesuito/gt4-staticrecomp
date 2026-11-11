@@ -740,7 +740,7 @@ Method: static reading of the pinned reconstructed ELF (read-only), using a thro
 - **Import save:** one picker accepts `.ps2 .mcd .bin` card images, PCSX2 folder cards (a folder), `.psu .max .cbs .xps .sps`, or a raw save folder.
   - A single save is imported directly.
   - A card image or folder card is opened read-only and its entries are listed. GT4 game data can be ticked; replays are greyed with "Import it from Replays"; other games' saves are greyed with "Not a Gran Turismo 4 save".
-  - Each ticked game save **becomes a new slot** (`saves\Save NN\`). Import never overwrites, and the active save does not change.
+  - Each ticked game save **becomes a new slot** (`saves\Save NN\`). Import never overwrites, and the active save does not change. One exception (issue #224): when the library has no active save yet and the import leaves a single save to play, that save becomes the active save, so Play uses it instead of asking the game for a new profile; two or more saves leave the choice to the player (Y on the Saves page).
 - **Export:** a single save (`.psu`), or a PS2 card image (`.ps2`) built with that save plus all on-card replays.
 - **Delete:** confirm, then the folder goes to the Recycle Bin. Deleting the active save leaves no active save: the next Play starts with no game data, and GT4 creates a new one.
 - **First install:** "No saves yet / Your first save appears here after you save in the game." The Import button stays in the header. After the first Play, harvest finds `BASCUS-97328GAMEDATA` on the card, and slot 01 appears as "Save 01", active, with its date.

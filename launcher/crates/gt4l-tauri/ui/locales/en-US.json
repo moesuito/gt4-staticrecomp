@@ -589,6 +589,7 @@
   "setting.launcher_gpu.label": "Launcher GPU acceleration",
   "setting.launcher_gpu.help": "Off keeps the launcher window without GPU acceleration, after it failed to draw in WebView2. On takes effect at the next start of the launcher.",
   "rust.saves.added": "Added {items}.",
+  "rust.saves.made_active": "It is now the active save, so Play uses it.",
   "rust.saves.went_to_game": "It went to {game}, the game this save belongs to.",
   "about.export_logs": "Export logs",
   "about.logs_exported_title": "Logs exported",
