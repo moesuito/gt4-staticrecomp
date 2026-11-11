@@ -375,7 +375,9 @@ pub fn start_with(
         };
         // TASK-106: a `.chd` becomes a plain image in the disc folder, so the room it needs is checked before anything is
         // written (the image is about the size of the disc, 3.7 GB for Spec II).
-        let discs = dirs.setup_disc_folder();
+        // The folder every launch and `check_installed` read the copy from (the same place an install from before decision
+        // 0075 keeps its image).
+        let discs = dirs.disc_folder();
         if gt4l_disc::chd::is_chd(&disc) {
             let free = gt4l_platform::disk::free_space(&discs);
             if let Some(problem) = disc_setup::check_chd_space(&disc, &discs, free) {
