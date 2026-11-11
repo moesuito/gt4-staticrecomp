@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! <saves>/Active/<game save>      the active game save (the one the next Play uses)
+//! <saves>/Active/.replaced/       copies the harvest moved aside when it replaced the active save (the newest 10)
 //! <saves>/Save NN/<game save>     inactive game saves, one slot per folder (ids only grow)
 //! <saves>/.backup/                copies of the active save before a harvest replaces it (the newest 10)
 //! <replays>/<replay>              every replay the library keeps
@@ -511,11 +512,12 @@ impl Library {
                     let copy_dir = backup.join(format!("{name}-{stamp}"));
                     fs::create_dir_all(&copy_dir)?;
                     folder::export_item(&copy_dir, &before)?;
-                    // The oldest copies beyond KEPT_ACTIVE_COPIES go; a copy that cannot be removed now is tried again later.
-                    let _ = self.prune_backups();
                     report.replaced_active = true;
                 }
                 folder::export_item(&self.active_dir(), &item)?;
+                // The oldest copies beyond KEPT_ACTIVE_COPIES go, in `.replaced` too, so prune after the export. A copy
+                // that cannot be removed now is tried again later.
+                let _ = self.prune_backups();
                 report.added.push(name);
             } else if self.names.is_replay(&name) {
                 self.add_item(&item, &mut report)?;
@@ -547,8 +549,8 @@ impl Library {
     /// about 8 MB to `<backups>` and nothing removed them, 74 images in two weeks on the owner's PC). The kinds, by name:
     /// card images `<timestamp>-<card file>.ps2` ([`KEPT_CARD_BACKUPS`]), images taken before a New save or before the active save is deleted
     /// `<timestamp>-before-new-save.ps2`, `<timestamp>-before-delete.ps2` ([`KEPT_NEW_SAVE_BACKUPS`]), and copies of the active save
-    /// `<saves>/.backup/<game save>-<timestamp>` ([`KEPT_ACTIVE_COPIES`]). A name of any other form is never touched.
-    /// Returns how many were deleted.
+    /// `<saves>/.backup/<game save>-<timestamp>` and `<saves>/Active/.replaced/<game save>-<timestamp>` ([`KEPT_ACTIVE_COPIES`]).
+    /// A name of any other form is never touched. Returns how many were deleted.
     pub fn prune_backups(&self) -> Result<usize, LibraryError> {
         let mut deleted = 0;
         let backups = &self.paths.backups;
@@ -560,6 +562,13 @@ impl Library {
         if copies.is_dir() {
             let game_save = self.names.game_save;
             deleted += keep_newest(&copies, KEPT_ACTIVE_COPIES, |name| is_active_copy(name, game_save), |path| fs::remove_dir_all(path))?;
+        }
+        // `folder::export_item` moved the replaced active save here (inside `Active`, unlike `.backup`), and nothing else
+        // visits it: one full copy per harvest stayed forever before this limit.
+        let replaced = self.active_dir().join(folder::REPLACED_FOLDER_NAME);
+        if replaced.is_dir() {
+            let game_save = self.names.game_save;
+            deleted += keep_newest(&replaced, KEPT_ACTIVE_COPIES, |name| is_active_copy(name, game_save), |path| fs::remove_dir_all(path))?;
         }
         Ok(deleted)
     }

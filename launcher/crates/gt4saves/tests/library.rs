@@ -162,6 +162,38 @@ fn backups_keep_only_the_newest_of_each_kind() {
     assert_eq!(lib.prune_backups().unwrap(), 0, "a second pass deletes nothing");
 }
 
+// `folder::export_item` moves an existing folder of the same name into `.replaced` beside it. A harvest replaces the
+// active save that way, so `Saves\Active\.replaced` grows by one full copy of the old save on every harvest, and
+// nothing removed them (the same defect the card backups had, owner 2026-11-03). They are copies of the active save
+// like the ones in `.backup`, so the same limit applies.
+#[test]
+fn replaced_copies_in_the_active_folder_keep_only_the_newest() {
+    use gt4saves::library::KEPT_ACTIVE_COPIES;
+    let root = scratch("prune-replaced");
+    let lib = Library::open(&root, GT4).unwrap();
+    let replaced = lib.active_dir().join(".replaced");
+    fs::create_dir_all(&replaced).unwrap();
+    let stamp = |minute: usize| format!("20261103-12{minute:02}00");
+    for minute in 0..14 {
+        fs::create_dir_all(replaced.join(format!("{GT4_GAME_SAVE}-{}", stamp(minute)))).unwrap();
+    }
+    fs::create_dir_all(replaced.join("kept by hand")).unwrap();
+
+    let deleted = lib.prune_backups().unwrap();
+    assert_eq!(deleted, 14 - KEPT_ACTIVE_COPIES);
+    let names = |dir: &PathBuf| -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    };
+    let left = names(&replaced);
+    assert_eq!(left.len(), KEPT_ACTIVE_COPIES + 1, "the newest copies and the unrelated folder stay");
+    assert!(left.contains(&"kept by hand".to_string()));
+    assert!(!left.contains(&format!("{GT4_GAME_SAVE}-{}", stamp(3))), "the oldest copies go");
+    assert!(left.contains(&format!("{GT4_GAME_SAVE}-{}", stamp(4))));
+    assert_eq!(lib.prune_backups().unwrap(), 0, "a second pass deletes nothing");
+}
+
 #[test]
 fn writing_a_card_image_prunes_old_backups() {
     use gt4saves::library::KEPT_CARD_BACKUPS;
