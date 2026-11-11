@@ -133,7 +133,7 @@ fn write_cd_chd(path: &Path, image: &[u8], kind: &str) {
         frame[offset..offset + 2048].copy_from_slice(sector);
         data.extend_from_slice(&frame);
     }
-    while data.len() / CD_FRAME_BYTES as usize % 4 != 0 {
+    while !(data.len() / CD_FRAME_BYTES as usize).is_multiple_of(4) {
         data.extend_from_slice(&[0u8; CD_FRAME_BYTES as usize]);
     }
     let mut writer = ChdWriter::new(File::create(path).unwrap(), ChdWriteOptions::cd()).unwrap();

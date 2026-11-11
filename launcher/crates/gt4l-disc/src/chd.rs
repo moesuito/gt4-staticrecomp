@@ -274,14 +274,14 @@ fn layout_of(metadata: &[Metadata], hunk_bytes: u64, unit_bytes: u64, logical_by
         .collect::<Result<_, _>>()?;
     if tracks.is_empty() {
         // A DVD: whole 2048-byte sectors, hunks of whole sectors.
-        if unit_bytes != SECTOR_BYTES || hunk_bytes % SECTOR_BYTES != 0 || logical_bytes % SECTOR_BYTES != 0 {
+        if unit_bytes != SECTOR_BYTES || !hunk_bytes.is_multiple_of(SECTOR_BYTES) || !logical_bytes.is_multiple_of(SECTOR_BYTES) {
             return Err(ChdError::Unsupported(format!(
                 "it is not a disc image (units of {unit_bytes} bytes, hunks of {hunk_bytes} bytes, {logical_bytes} bytes)"
             )));
         }
         return Ok((Layout::Dvd, logical_bytes / SECTOR_BYTES));
     }
-    if unit_bytes != u64::from(CD_FRAME_BYTES) || hunk_bytes % u64::from(CD_FRAME_BYTES) != 0 {
+    if unit_bytes != u64::from(CD_FRAME_BYTES) || !hunk_bytes.is_multiple_of(u64::from(CD_FRAME_BYTES)) {
         return Err(ChdError::Unsupported(format!("its CD frames are {unit_bytes} bytes in hunks of {hunk_bytes} bytes")));
     }
     let Some(first) = tracks.iter().find(|track| track.number == 1) else {
