@@ -6,9 +6,9 @@ Status: portable build TASK-098 and self-starting game TASK-097, release 1.3.0. 
 
 The portable release asset, **`GT4Recomp-<version>-portable.zip`**, is the same launcher and game programs as the
 installer, in a folder that carries its own data. Unzip it somewhere you can write to, start **`GT4Recomp.exe`**, and
-the whole folder can be moved to another drive or PC. A copy inside `C:\Program Files` cannot save its data and the
-launcher stops with a message that says to move the folder. The zip carries a `PORTABLE.txt` note with the short
-version of this page.
+the whole folder can be moved to another drive or PC. A copy in a folder the launcher cannot write to (for example
+`C:\Program Files`) stops with a message that says to move the folder. The zip carries a `PORTABLE.txt` note with the
+short version of this page.
 
 | Path | Holds | Updated by an update |
 |---|---|---|
