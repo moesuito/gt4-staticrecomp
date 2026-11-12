@@ -127,7 +127,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑103 | Graphics API choice for GSdx: Vulkan (recommended, default), Direct3D 12 (recommended), Direct3D 11 (older PCs), OpenGL later; hardware backends only, in Settings > Graphics (locale files, same ids kept apart from the engine Renderer) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner in-game test pending · release 1.3.0 |
 | TASK‑104 | Launcher saves: crash-proof PCSX2 card import (issue #86: superblock layout for 8 to 64 MB, bounded directory walk, import under a panic guard), New save, Export of the active save, Rename (display name, 40 characters) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
 | TASK‑105 | Integrated GPUs: 1x default and a plain GPU-lost message (issue #89) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
-| TASK‑106 | CHD disc images: accept `.chd` at setup and decompress to the launcher's own ISO image (issue #90) | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
+| TASK‑106 | CHD disc images: accept `.chd` at setup and decompress to the launcher's own ISO image (issue #90) | 🔧 Implemented on `task/106-chd-disc-images` (2026-11-11), owner test pending · release 1.3.1 |
 | TASK‑107 | Automatic graphics setup per GPU: automatic Graphics API, GPU generation table, step down after a lost GPU, game without Vulkan when GSdx draws, OpenGL in gt4-gs | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
 | TASK‑108 | Launcher: automatic Graphics API (Vulkan, else Direct3D 11) and graphics card (Adapter), no Vulkan requirement; game programs shipped as gt4.exe and gt4-spec2.exe | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
 | TASK‑109 | Launcher update channels: Stable (default) or Test builds (rc pre-releases) | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
@@ -706,14 +706,44 @@ Graphics API (Vulkan) and gt4-gs. Checks: `cargo test --workspace` (launcher) 48
 the exact device-lost line in a real `game.log` is not confirmed (the markers come from the GSdx dialog text); a multi-GPU
 laptop keeps the discrete default by design.
 
-### TASK-106 — CHD disc images (issue #90)
-Planned (owner, 2026-10-23) for release 1.3.1. Issue moesuito/gt4-staticrecomp#90 asks for CHD support. The launcher
-already writes its own ISO image of the player's disc at setup, so the game never reads the player's file: accept `.chd`
-(and keep `.iso`) in the disc picker, decompress it to that image with a permissively licensed CHD reader (MIT or
-BSD; check the licence before use; never GPL in the launcher), then run the normal identification (serial and
-executable hash, both games and their variants). Show progress and free-space needs (a full image is about 3.7 GB for
-Spec II). Acceptance: synthetic CHD fixtures in tests (no game data), a CD and a DVD CHD, a damaged CHD refused with a
-plain message, and an owner test with a real CHD of each game.
+### TASK-106 — CHD disc images (issue #90, implemented 2026-11-11)
+
+Planned (owner, 2026-10-23) for release 1.3.1; implemented 2026-11-11 on `task/106-chd-disc-images`.
+
+- **Reader.** `gt4l-disc`'s `chd` module, on the `chd` crate 0.4.0 (BSD-3-Clause, pure Rust, in `Cargo.lock`; its
+  dependencies are MIT or Apache-2.0). `ChdDisc` reads the plain 2048-byte sectors of the disc straight from the
+  compressed hunks, so the fast identity checks (ISO structure, `SYSTEM.CNF`, `CORE.GT4` or the Spec II executable and
+  IOP modules) run on the picked file without decompressing it first. A DVD CHD (`chdman createdvd`) holds the ISO;
+  a CD CHD (`chdman createcd`) holds frames of 2352 sector bytes and 96 subcode bytes, and the user data of the first
+  track is read where its type puts it (`MODE1` 0, `MODE2_FORM1` 0, `MODE2` 8, `MODE1_RAW` 16, `MODE2_RAW` 24, plus a
+  pregap stored in the file). Hard disk, LaserDisc, GD-ROM, audio-CD, old `CHCD` and parent-requiring CHDs are refused
+  with a plain message.
+- **Setup.** The game reads only plain ISO images, so a `.chd` is decompressed once into the launcher's own
+  `games\<id>\disc\<serial>.iso` during the "Copying" row (the page says "Decompressing the image"), and the receipt
+  records that copy like an install from before decision 0075; the player's `.chd` is only read. Every hunk passes its
+  CRC in the reader and the whole data is checked against the SHA-1 of the CHD header, so a damaged or unfinished file
+  (one whose hunk map was never written, as when `chdman` was interrupted) is refused as damaged and nothing is left
+  behind. The image is written to `<serial>.iso.partial` and renamed only at the commit, so a failed or cancelled run
+  leaves an earlier install untouched (the copy it replaces is parked as `<serial>.iso.previous` and put back if the
+  receipt cannot be written); a re-install replaces the copy and a leftover `.partial` or `.previous` of a killed run is
+  cleared first. The free space the plain image needs (its size
+  plus 1%) is checked before anything is written, with the drive named in the message.
+- **Launcher.** The disc picker offers `.iso` and `.chd`, and a `.chd` may live anywhere outside the install's `game\`
+  folder (the folder updates replace, so the refusal applies to a `.chd` too; its copy is in the launcher's folder). The
+  "Copying" row reads "Decompressing the image" and counts the bytes of the plain image it writes, not of the smaller
+  compressed file. Texts in en-US and pt-BR.
+- **Tests** (`gt4l-disc/tests/chd_images.rs`, no game data): synthetic DVD and CD CHDs of a synthetic game (all five
+  data track types) read back as their ISO byte for byte and are identified in place; setup from a DVD and from a CD
+  writes the plain image, records it and answers `Ready` (also after the `.chd` is deleted); a second setup replaces
+  the copy; a cancelled setup keeps the earlier install and removes the partial file; a changed hunk, a cut-short file
+  and an unfinished one are refused as damaged with nothing left; a renamed plain ISO, a hard disk CHD and an audio CD
+  are refused as unsupported; another game gets the same message as in an ISO. A Spec II CHD is identified in place and
+  is set up into `games\spec2\disc\SCUS-97436.iso` (`tests/spec2_identify.rs`). `real_chdman_images_match_their_iso`
+  (opt-in, `GT4_CHDMAN=<path to chdman>`) makes DVD, cue/bin CD and ISO CD CHDs with MAME's real `chdman` and checks the
+  reader and setup against them: chdman 0.276, all three identical to the ISO.
+- **Not run:** no in-game test here (this machine cannot run the game). Owner test with a real CHD of each game still
+  pending; a real GT4 DVD CHD is about 1.3-2 GB compressed and needs about 5.4 GB free for the plain copy (Spec II,
+  3.7 GB).
 
 ### TASK-107 — Automatic graphics setup per GPU
 Planned (owner, 2026-10-23) for release 1.3.1, after issue #89 and TASK-105. Owner design:

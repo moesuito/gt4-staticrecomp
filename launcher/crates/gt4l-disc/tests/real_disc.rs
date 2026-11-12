@@ -72,7 +72,8 @@ fn real_setup_links_the_image_and_leaves_it_untouched() {
     let (prepared, staging) = (root.join("prepared"), root.join("prepared.tmp"));
     let before = std::fs::metadata(&path).unwrap().modified().unwrap();
     let cancel = AtomicBool::new(false);
-    let request = SetupRequest { disc: &path, prepared: &prepared, staging: &staging, install_dir: &root, pins: &pins, launcher_version: "test", cancel: &cancel };
+    let disc_folder = root.join("disc");
+    let request = SetupRequest { disc: &path, disc_folder: &disc_folder, prepared: &prepared, staging: &staging, install_dir: &root, pins: &pins, launcher_version: "test", cancel: &cancel };
     let started = std::time::Instant::now();
     let receipt = setup::run(&request, &mut |_, _| {}).expect("the real image sets up");
     println!("setup took {:.1} s", started.elapsed().as_secs_f32());

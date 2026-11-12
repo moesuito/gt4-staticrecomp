@@ -182,8 +182,10 @@ fn run_spec2(dirs: &SetupDirs, disc: &Path, pins: &Spec2Pins) -> Result<setup::R
     let prepared = dirs.prepared();
     let staging = dirs.staging();
     let install_dir = dirs.root.join("launcher");
+    let disc_folder = dirs.disc();
     let request = Spec2Request {
         disc,
+        disc_folder: &disc_folder,
         prepared: &prepared,
         staging: &staging,
         install_dir: &install_dir,
@@ -231,6 +233,36 @@ fn spec2_setup_copies_the_image_and_prepares_the_derived_elf_with_no_core_step()
     // The derived ELF is what spec2_elf::derive gives.
     let derived = fs::read(dirs.prepared().join("SCUS_974.36")).unwrap();
     assert_eq!(derived, spec2_elf::derive(&executable, &pins.patches).unwrap());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_spec2_chd_is_identified_in_place_and_set_up_into_a_plain_image() {
+    use chd::write::{ChdWriteOptions, ChdWriter};
+    use std::io::Write;
+
+    let root = scratch("chd");
+    let dirs = SetupDirs { root: root.clone() };
+    let executable = synthetic_spec2_executable(0);
+    let image = spec2_image(&executable, "SCUS_974.36", "GRANTURISMO4", 1);
+    let pins = synthetic_pins(&executable, &[("Spec II 1.10", &image)]);
+    let chd = root.join("Spec II.chd");
+    let mut writer = ChdWriter::new(fs::File::create(&chd).unwrap(), ChdWriteOptions::dvd()).unwrap();
+    writer.write_all(&image).unwrap();
+    writer.finish().unwrap();
+
+    let (gt4_pins, _) = gt4_pins_and_image();
+    assert_eq!(identify(&chd, &gt4_pins, &pins).unwrap().game, DiscGame::Spec2);
+    let receipt = run_spec2(&dirs, &chd, &pins).expect("a Spec II CHD is set up");
+    assert_eq!(receipt.image_name, "Spec II 1.10", "the decompressed image is the known one");
+    assert!(receipt.qualified_dump);
+    let copy = dirs.disc().join("SCUS-97436.iso");
+    assert_eq!(fs::read(&copy).unwrap(), image);
+    assert_eq!(receipt.image.as_ref().unwrap().linked_path, None);
+    match spec2::check_installed(&dirs.prepared(), &dirs.disc(), &dirs.root.join("launcher"), &pins) {
+        Installed::Ready { image, .. } => assert_eq!(image, copy, "the game reads the plain copy"),
+        other => panic!("{other:?}"),
+    }
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -313,8 +345,10 @@ fn a_refused_disc_and_a_cancelled_setup_leave_nothing_behind() {
     let prepared = dirs.prepared();
     let staging = dirs.staging();
     let install_dir = dirs.root.join("launcher");
+    let disc_folder = dirs.disc();
     let request = Spec2Request {
         disc: &good,
+        disc_folder: &disc_folder,
         prepared: &prepared,
         staging: &staging,
         install_dir: &install_dir,

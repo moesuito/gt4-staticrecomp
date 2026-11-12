@@ -1,5 +1,12 @@
 # Current Status
 
+## 2026-11-11: TASK-106, `.chd` disc images
+
+Setup accepts MAME `.chd` images as well as `.iso` (issue #90): the launcher reads the disc inside the CHD for its
+identity checks, then decompresses it once into its own `disc\<serial>.iso`, because the game reads only plain ISO
+images. Damage is caught per hunk and against the CHD's own SHA-1, and a cut-short or unfinished CHD is refused with a
+plain message. Implemented on `task/106-chd-disc-images`; owner test with a real CHD of each game pending.
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader

@@ -1,9 +1,14 @@
 //! Minimal ISO 9660 reader for the root directory only. GT4's files (`SYSTEM.CNF`, `CORE.GT4`, the
 //! boot executable) all sit in the root, so nothing more is needed. The reader never writes.
+//!
+//! The image is a plain `.iso` file, or the disc inside a `.chd` (TASK-106), read sector by sector from its compressed
+//! hunks by [`crate::chd::ChdDisc`].
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
+
+use crate::chd::{self, ChdDisc, ChdError};
 
 pub const SECTOR_BYTES: u64 = 2048;
 const PRIMARY_DESCRIPTOR_SECTOR: u64 = 16;
@@ -24,6 +29,8 @@ pub enum IsoError {
     Truncated(String),
     FileNotFound(String),
     TooLarge { name: String, size_bytes: u64, limit: u64 },
+    /// A `.chd` file that the CHD reader refuses as damaged or unfinished (see [`crate::chd`]).
+    DamagedChd(String),
     Io(io::Error),
 }
 
@@ -36,6 +43,7 @@ impl std::fmt::Display for IsoError {
             IsoError::TooLarge { name, size_bytes, limit } => {
                 write!(formatter, "{name} is {size_bytes} bytes, above the {limit}-byte limit")
             }
+            IsoError::DamagedChd(detail) => write!(formatter, "damaged CHD: {detail}"),
             IsoError::Io(error) => write!(formatter, "{error}"),
         }
     }
@@ -49,8 +57,25 @@ impl From<io::Error> for IsoError {
     }
 }
 
+impl IsoError {
+    /// Whether the image is a CHD that is damaged (an unfinished file, a hunk that does not decompress or fails its
+    /// checksum).
+    pub fn is_damaged_chd(&self) -> bool {
+        match self {
+            IsoError::DamagedChd(_) => true,
+            IsoError::Io(error) => chd::is_damaged(error),
+            _ => false,
+        }
+    }
+}
+
+/// What the reader reads the sectors from: a plain image file, or a CHD.
+trait Source: Read + Seek {}
+
+impl<T: Read + Seek> Source for T {}
+
 pub struct Iso {
-    file: File,
+    file: Box<dyn Source>,
     length_bytes: u64,
     volume_space_bytes: u64,
     volume_identifier: String,
@@ -58,11 +83,23 @@ pub struct Iso {
 }
 
 impl Iso {
+    /// Opens a `.iso` file, or the disc inside a `.chd` file (by the extension).
     pub fn open(path: &Path) -> Result<Iso, IsoError> {
-        let mut file = File::open(path)?;
-        let length_bytes = file.metadata()?.len();
+        let (mut file, length_bytes): (Box<dyn Source>, u64) = if chd::is_chd(path) {
+            let disc = ChdDisc::open(path).map_err(|error| match error {
+                ChdError::Io(error) => IsoError::Io(error),
+                ChdError::Damaged(detail) => IsoError::DamagedChd(detail),
+                other => IsoError::NotIso(other.to_string()),
+            })?;
+            let length_bytes = disc.iso_bytes();
+            (Box::new(disc), length_bytes)
+        } else {
+            let file = File::open(path)?;
+            let length_bytes = file.metadata()?.len();
+            (Box::new(file), length_bytes)
+        };
         let descriptor = read_at(&mut file, PRIMARY_DESCRIPTOR_SECTOR * SECTOR_BYTES, SECTOR_BYTES as usize)
-            .map_err(|_| IsoError::Truncated("no primary volume descriptor".into()))?;
+            .map_err(|error| damaged_or(error, || IsoError::Truncated("no primary volume descriptor".into())))?;
         if descriptor[0] != 1 || &descriptor[1..6] != b"CD001" {
             return Err(IsoError::NotIso("sector 16 has no CD001 primary volume descriptor".into()));
         }
@@ -118,7 +155,7 @@ impl Iso {
     fn find_in(&mut self, directory: &FileEntry, name: &str) -> Result<FileEntry, IsoError> {
         let directory_bytes = directory.size_bytes.min(MAX_DIRECTORY_BYTES);
         let directory = read_at(&mut self.file, directory.extent_sector * SECTOR_BYTES, directory_bytes as usize)
-            .map_err(|_| IsoError::Truncated(format!("directory {}", directory.name)))?;
+            .map_err(|error| damaged_or(error, || IsoError::Truncated(format!("directory {}", directory.name))))?;
         let mut offset = 0usize;
         while offset < directory.len() {
             let length = directory[offset] as usize;
@@ -150,11 +187,20 @@ impl Iso {
             });
         }
         read_at(&mut self.file, entry.extent_sector * SECTOR_BYTES, entry.size_bytes as usize)
-            .map_err(|_| IsoError::Truncated(format!("{} data", entry.name)))
+            .map_err(|error| damaged_or(error, || IsoError::Truncated(format!("{} data", entry.name))))
     }
 }
 
-fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+/// A read that failed: a damaged CHD stays an I/O error (see [`IsoError::is_damaged_chd`]); anything else is `otherwise`.
+fn damaged_or(error: io::Error, otherwise: impl FnOnce() -> IsoError) -> IsoError {
+    if chd::is_damaged(&error) {
+        IsoError::Io(error)
+    } else {
+        otherwise()
+    }
+}
+
+fn read_at(file: &mut dyn Source, offset: u64, length: usize) -> io::Result<Vec<u8>> {
     file.seek(SeekFrom::Start(offset))?;
     let mut buffer = vec![0u8; length];
     file.read_exact(&mut buffer)?;

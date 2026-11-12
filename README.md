@@ -94,8 +94,9 @@ or full PS2 fidelity. Details: [Architecture](docs/ARCHITECTURE.md).
 
 - **Windows 10 or 11, 64-bit**, and a **processor with SSE4.1** (Intel Core i3/i5/i7, AMD FX or newer).
 - **A graphics card with Vulkan 1.2** and current drivers for CoreGS 2.0 (GSdx can also use Direct3D 11 on older cards).
-- **Your own disc image** of Gran Turismo 4 USA v2.00 (SCUS-97328), and of Spec II 1.10 for the mod, as a plain `.iso`.
-  The launcher reads the image where you keep it; it is not copied.
+- **Your own disc image** of Gran Turismo 4 USA v2.00 (SCUS-97328), and of Spec II 1.10 for the mod, as a `.iso` or a
+  MAME `.chd`. A `.iso` is read where you keep it and is not copied; a `.chd` is decompressed once into the launcher's
+  own folder, because the game reads plain ISO images.
 
 The launcher checks the processor and the graphics card before setup and before Play, and says what is missing.
 
