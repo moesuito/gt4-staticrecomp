@@ -748,7 +748,8 @@ fn start_setup(ui: &AppWindow, app: &Shared) {
     let weak = ui.as_weak();
     let app = app.clone();
     std::thread::spawn(move || {
-        let prepared = dirs.prepared();
+        // Setup writes the data root, like the Tauri launcher, never a read layer of an older install.
+        let prepared = dirs.setup_prepared();
         let staging = dirs.prepared_staging();
         let disc_folder = dirs.setup_disc_folder();
         let mut last_percent = -1;

@@ -391,7 +391,7 @@ fn wrong_file_types_are_refused_before_hashing() {
     let error = run_setup(&fixture, &bin, &pins, &cancel).unwrap_err();
     assert_eq!(
         error.user_message(),
-        "Please use a .iso or .chd disc image. A .bin file is not supported. Convert it to a plain .iso first."
+        "Please use a .iso or .chd disc image. A .bin file is not supported."
     );
 
     // A .chd is read (TASK-106, tests/chd_images.rs); a plain image only named .chd is not one.

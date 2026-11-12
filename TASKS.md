@@ -724,11 +724,14 @@ Planned (owner, 2026-10-23) for release 1.3.1; implemented 2026-11-11 on `task/1
   CRC in the reader and the whole data is checked against the SHA-1 of the CHD header, so a damaged or unfinished file
   (one whose hunk map was never written, as when `chdman` was interrupted) is refused as damaged and nothing is left
   behind. The image is written to `<serial>.iso.partial` and renamed only at the commit, so a failed or cancelled run
-  leaves an earlier install untouched; a re-install replaces the copy. The free space the plain image needs (its size
+  leaves an earlier install untouched (the copy it replaces is parked as `<serial>.iso.previous` and put back if the
+  receipt cannot be written); a re-install replaces the copy and a leftover `.partial` or `.previous` of a killed run is
+  cleared first. The free space the plain image needs (its size
   plus 1%) is checked before anything is written, with the drive named in the message.
-- **Launcher.** The disc picker offers `.iso` and `.chd`, a `.chd` may live anywhere (its copy is in the launcher's
-  folder, so the game-readable-path and "inside the folder updates replace" refusals do not apply to it), and the
-  "Copying" row reads "Decompressing the image" with its own detail line. Texts in en-US and pt-BR.
+- **Launcher.** The disc picker offers `.iso` and `.chd`, and a `.chd` may live anywhere outside the install's `game\`
+  folder (the folder updates replace, so the refusal applies to a `.chd` too; its copy is in the launcher's folder). The
+  "Copying" row reads "Decompressing the image" and counts the bytes of the plain image it writes, not of the smaller
+  compressed file. Texts in en-US and pt-BR.
 - **Tests** (`gt4l-disc/tests/chd_images.rs`, no game data): synthetic DVD and CD CHDs of a synthetic game (all five
   data track types) read back as their ISO byte for byte and are identified in place; setup from a DVD and from a CD
   writes the plain image, records it and answers `Ready` (also after the `.chd` is deleted); a second setup replaces
@@ -739,7 +742,8 @@ Planned (owner, 2026-10-23) for release 1.3.1; implemented 2026-11-11 on `task/1
   (opt-in, `GT4_CHDMAN=<path to chdman>`) makes DVD, cue/bin CD and ISO CD CHDs with MAME's real `chdman` and checks the
   reader and setup against them: chdman 0.276, all three identical to the ISO.
 - **Not run:** no in-game test here (this machine cannot run the game). Owner test with a real CHD of each game still
-  pending; a real GT4 DVD CHD is about 1.3-2 GB compressed and needs about 4.3 GB free for the plain copy.
+  pending; a real GT4 DVD CHD is about 1.3-2 GB compressed and needs about 5.4 GB free for the plain copy (Spec II,
+  3.7 GB).
 
 ### TASK-107 — Automatic graphics setup per GPU
 Planned (owner, 2026-10-23) for release 1.3.1, after issue #89 and TASK-105. Owner design:

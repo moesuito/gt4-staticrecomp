@@ -339,7 +339,11 @@ pub fn start_with(
         // Setup always writes the data folder's root, even when older game files are read from another folder.
         let prepared = dirs.setup_prepared();
         let staging = dirs.prepared_staging();
-        let total_bytes = std::fs::metadata(&disc).map(|meta| meta.len()).unwrap_or(0);
+        // The figure of the "Copying" row: the plain image a `.chd` becomes, not the smaller compressed file.
+        let total_bytes = match gt4l_disc::chd::is_chd(&disc) {
+            true => gt4l_disc::chd::ChdDisc::iso_bytes_of(&disc).unwrap_or_else(|_| std::fs::metadata(&disc).map(|meta| meta.len()).unwrap_or(0)),
+            false => std::fs::metadata(&disc).map(|meta| meta.len()).unwrap_or(0),
+        };
         let mut last: (Stage, i32) = (Stage::Copying, -1);
         let progress_shared = shared.clone();
         let progress_notify = notify.clone();
@@ -374,10 +378,10 @@ pub fn start_with(
             }
         };
         // TASK-106: a `.chd` becomes a plain image in the disc folder, so the room it needs is checked before anything is
-        // written (the image is about the size of the disc, 3.7 GB for Spec II).
-        // The folder every launch and `check_installed` read the copy from (the same place an install from before decision
-        // 0075 keeps its image).
-        let discs = dirs.disc_folder();
+        // written (the image is about the size of the disc, 5.4 GB for Gran Turismo 4 and 3.7 GB for Spec II).
+        // The folder setup writes, like `prepared` above: the data root, never a read layer (a read-only install and an
+        // unfinished move of a 1.2.x flat `disc` folder are read from another folder, and the copy must not land there).
+        let discs = dirs.setup_disc_folder();
         if gt4l_disc::chd::is_chd(&disc) {
             let free = gt4l_platform::disk::free_space(&discs);
             if let Some(problem) = disc_setup::check_chd_space(&disc, &discs, free) {
@@ -409,6 +413,7 @@ pub fn start_with(
             _ => disc_setup::run(
                 &SetupRequest {
                     disc: &disc,
+                    disc_folder: &discs,
                     prepared: &prepared,
                     staging: &staging,
                     install_dir: &install_dir,

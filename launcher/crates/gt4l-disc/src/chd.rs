@@ -83,6 +83,13 @@ pub fn is_damaged(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|inner| inner.is::<DamagedHunk>())
 }
 
+/// Whether a failed hunk read of the `chd` crate is a fault of the file. The crate folds the `io::Error` of a read into its
+/// own codes: a read cut short (`UnexpectedEof`) becomes `ReadError`, which is a cut-short file; a missing file, a refused
+/// access, a disconnected drive or a locked file become `FileNotFound`, `NotSupported` or `Unknown`, which are not damage.
+fn error_is_damage(error: &chd::Error) -> bool {
+    !matches!(error, chd::Error::FileNotFound | chd::Error::NotSupported | chd::Error::OutOfMemory | chd::Error::Unknown)
+}
+
 /// Where the 2048-byte sectors of the disc are in the logical data of the CHD.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
@@ -180,12 +187,13 @@ impl ChdDisc {
             return Ok(());
         }
         self.hunk_number = None;
-        // The `chd` crate does not keep the I/O error of a failed read apart from a bad checksum or a hunk that does not
-        // decompress (a truncated file is a read error too), so every failure here counts as a damaged CHD.
         self.chd
             .hunk(number)
             .and_then(|mut hunk| hunk.read_hunk_in(&mut self.compressed, &mut self.hunk))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, DamagedHunk { hunk: number, error }))?;
+            .map_err(|error| match error_is_damage(&error) {
+                true => io::Error::new(io::ErrorKind::InvalidData, DamagedHunk { hunk: number, error }),
+                false => io::Error::other(format!("hunk {number} of the CHD cannot be read: {error}")),
+            })?;
         self.hunk_number = Some(number);
         Ok(())
     }
@@ -228,11 +236,21 @@ impl Seek for ChdDisc {
 const MAGIC: &[u8; 8] = b"MComprHD";
 const V5_HEADER_BYTES: u64 = 124;
 const V5_VERSION: u32 = 5;
-/// Where the hunk map offset is in a CHD v5 header.
+/// Where the logical size, the hunk map offset and the hunk size are in a CHD v5 header.
+const V5_LOGICAL_BYTES: usize = 32;
 const V5_MAP_OFFSET: usize = 40;
+const V5_HUNK_BYTES: usize = 56;
+/// Limits of a disc CHD, checked before the `chd` crate sizes its buffers from the header: a hunk of at most 1 MiB
+/// (chdman writes 4 KiB to 19.5 KiB hunks for discs), at most 64 GiB of data (a dual-layer DVD is 8.5 GB) and at most
+/// 2^24 hunks (2 KiB hunks of a 32 GiB image). A damaged header with larger values would otherwise ask for gigabytes of
+/// memory before any check could refuse it.
+const MAX_HUNK_BYTES: u64 = 1024 * 1024;
+const MAX_LOGICAL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_HUNKS: u64 = 1 << 24;
 
 /// Reads the bytes at the start of a CHD that say whether it can be opened at all: a CHD v5 with no hunk map was never
-/// finished (chdman writes the map at the end), so it is refused as damaged before the `chd` crate trips over it.
+/// finished (chdman writes the map at the end), and one whose sizes are out of the limits above is damaged; both are
+/// refused before the `chd` crate trips over them.
 fn check_header(path: &Path) -> Result<(), ChdError> {
     let mut file = File::open(path).map_err(ChdError::Io)?;
     let mut header = [0u8; V5_HEADER_BYTES as usize];
@@ -251,6 +269,14 @@ fn check_header(path: &Path) -> Result<(), ChdError> {
     let map_offset = u64::from_be_bytes(header[V5_MAP_OFFSET..V5_MAP_OFFSET + 8].try_into().expect("8 bytes"));
     if map_offset == 0 {
         return Err(ChdError::Damaged("it has no hunk map: the file was never finished or was cut short".into()));
+    }
+    let logical_bytes = u64::from_be_bytes(header[V5_LOGICAL_BYTES..V5_LOGICAL_BYTES + 8].try_into().expect("8 bytes"));
+    let hunk_bytes = u64::from(u32::from_be_bytes(header[V5_HUNK_BYTES..V5_HUNK_BYTES + 4].try_into().expect("4 bytes")));
+    if hunk_bytes == 0 || hunk_bytes > MAX_HUNK_BYTES {
+        return Err(ChdError::Damaged(format!("its header gives a hunk size of {hunk_bytes} bytes")));
+    }
+    if logical_bytes > MAX_LOGICAL_BYTES || logical_bytes.div_ceil(hunk_bytes) > MAX_HUNKS {
+        return Err(ChdError::Damaged(format!("its header gives {logical_bytes} bytes of data in {hunk_bytes}-byte hunks")));
     }
     Ok(())
 }
@@ -374,7 +400,8 @@ impl From<io::Error> for ConvertError {
 /// Decompresses the CHD at `source` into the plain ISO `target`, and returns the size and SHA-256 of that ISO.
 ///
 /// Every hunk is decompressed once, in order: each one passes its own check in the `chd` crate, and the whole logical data
-/// must match the SHA-1 in the header (CHD v4 and v5 record the SHA-1 of the data alone, v3 of the data). `progress` gets
+/// must match the SHA-1 of the data in the header (the raw SHA-1 of a v4 or v5 header, the SHA-1 of a v3 header; both
+/// cover the data alone, without the metadata). `progress` gets
 /// the fraction done; `cancel` stops the run between hunks. On any error `target` is removed, so a half-written image is
 /// never left behind.
 pub fn convert(source: &Path, target: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Identity, ConvertError> {

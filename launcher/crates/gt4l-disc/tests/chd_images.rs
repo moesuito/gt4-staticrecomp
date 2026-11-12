@@ -489,3 +489,96 @@ fn real_chdman_images_match_their_iso() {
         assert_eq!(fs::read(fixture.disc_folder().join("SCUS-97328.iso")).unwrap(), image, "{name}");
     }
 }
+
+#[test]
+fn the_plain_image_must_fit_before_anything_is_written() {
+    let fixture = Fixture::new("space");
+    let (image, _) = good_image_and_pins();
+    let chd = fixture.path("Gran Turismo 4.chd");
+    write_dvd_chd(&chd, &image);
+    let iso_bytes = image.len() as u64;
+    let needed = iso_bytes + iso_bytes / 100;
+    assert_eq!(ChdDisc::iso_bytes_of(&chd).unwrap(), iso_bytes);
+
+    // The platform cannot tell: the write itself reports a full drive.
+    assert!(setup::check_chd_space(&chd, &fixture.disc_folder(), None).is_none());
+    // One byte short of the figure the check uses.
+    let error = setup::check_chd_space(&chd, &fixture.disc_folder(), Some(needed - 1)).expect("refused");
+    match &error {
+        SetupError::ChdNoSpace { needed: shown, .. } => assert_eq!(*shown, needed, "the message names the figure compared"),
+        other => panic!("{other:?}"),
+    }
+    // Exactly enough room.
+    assert!(setup::check_chd_space(&chd, &fixture.disc_folder(), Some(needed)).is_none());
+    // A plain `.iso` is read where it is, so no room is needed.
+    let iso = fixture.path("plain.iso");
+    fs::write(&iso, &image).unwrap();
+    assert!(setup::check_chd_space(&iso, &fixture.disc_folder(), Some(0)).is_none());
+    assert!(!fixture.disc_folder().exists(), "checking writes nothing");
+}
+
+#[test]
+fn a_stale_partial_and_replaced_copy_are_cleared_by_the_next_setup() {
+    let fixture = Fixture::new("stale");
+    let (image, pins) = good_image_and_pins();
+    let chd = fixture.path("Gran Turismo 4.chd");
+    write_dvd_chd(&chd, &image);
+    fs::create_dir_all(fixture.disc_folder()).unwrap();
+    fs::write(fixture.disc_folder().join("SCUS-97328.iso.partial"), b"half a run").unwrap();
+    fs::write(fixture.disc_folder().join("SCUS-97328.iso.previous"), b"older copy").unwrap();
+
+    let cancel = AtomicBool::new(false);
+    run_setup(&fixture, &chd, &pins, &cancel).unwrap();
+    assert_eq!(fixture.disc_files(), vec!["SCUS-97328.iso".to_string()], "the leftovers of the killed run are gone");
+    assert_eq!(fs::read(fixture.disc_folder().join("SCUS-97328.iso")).unwrap(), image);
+}
+
+#[test]
+fn a_header_that_asks_for_too_much_memory_is_refused_as_damaged() {
+    let fixture = Fixture::new("header");
+    let (image, _) = good_image_and_pins();
+    let good = fixture.path("good.chd");
+    write_dvd_chd(&good, &image);
+    let bytes = fs::read(&good).unwrap();
+
+    // A hunk size the `chd` crate would allocate in one block (v5 header, offset 56).
+    let mut huge_hunk = bytes.clone();
+    huge_hunk[56..60].copy_from_slice(&u32::MAX.to_be_bytes());
+    let path = fixture.path("huge-hunk.chd");
+    fs::write(&path, &huge_hunk).unwrap();
+    assert!(matches!(ChdDisc::open(&path), Err(gt4l_disc::chd::ChdError::Damaged(_))));
+
+    // A logical size that would make the hunk count and the map enormous (offset 32).
+    let mut huge_data = bytes.clone();
+    huge_data[32..40].copy_from_slice(&u64::MAX.to_be_bytes());
+    let path = fixture.path("huge-data.chd");
+    fs::write(&path, &huge_data).unwrap();
+    assert!(matches!(ChdDisc::open(&path), Err(gt4l_disc::chd::ChdError::Damaged(_))));
+
+    // Zero bytes per hunk is not a file chdman writes either.
+    let mut no_hunk = bytes.clone();
+    no_hunk[56..60].copy_from_slice(&0u32.to_be_bytes());
+    let path = fixture.path("no-hunk.chd");
+    fs::write(&path, &no_hunk).unwrap();
+    assert!(matches!(ChdDisc::open(&path), Err(gt4l_disc::chd::ChdError::Damaged(_))));
+}
+
+#[test]
+fn an_empty_disc_folder_is_not_a_failed_install() {
+    let fixture = Fixture::new("empty");
+    let (_, pins) = good_image_and_pins();
+    let prepared = fixture.path("prepared");
+    let install_dir = fixture.path("install");
+    fs::create_dir_all(fixture.disc_folder()).unwrap();
+    assert!(matches!(
+        setup::check_installed(&prepared, &fixture.disc_folder(), &install_dir, &pins),
+        Installed::NotSetUp
+    ));
+
+    // Something in it, without a receipt, is an install that lost its files.
+    fs::write(fixture.disc_folder().join("SCUS-97328.iso"), b"x").unwrap();
+    assert!(matches!(
+        setup::check_installed(&prepared, &fixture.disc_folder(), &install_dir, &pins),
+        Installed::Missing { .. }
+    ));
+}

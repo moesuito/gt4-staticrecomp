@@ -127,6 +127,8 @@ pub fn run(request: &Spec2Request<'_>, progress: &mut dyn FnMut(Stage, f32)) -> 
         let result = finish(request, &summary, &mut image, progress);
         if result.is_err() {
             image.discard();
+        } else {
+            image.finish_commit();
         }
         result
     });
@@ -193,6 +195,7 @@ fn finish(
     let receipt_bytes = serde_json::to_vec_pretty(&receipt).map_err(|error| SetupError::Internal(error.to_string()))?;
     setup::write_synced(&request.staging.join(RECEIPT_FILE), &receipt_bytes)?;
     setup::swap_into_place(request.staging, request.prepared)?;
+    image.finish_commit();
     progress(Stage::Preparing, 1.0);
     Ok(receipt)
 }

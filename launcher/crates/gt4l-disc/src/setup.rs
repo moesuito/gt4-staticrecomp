@@ -93,7 +93,7 @@ pub enum SetupError {
     /// A `.chd` file with a hunk that does not decompress or fails its checksum, or data that differs from its SHA-1.
     DamagedChd(String),
     /// The drive of `folder` has fewer bytes free than the plain image of a `.chd` needs.
-    ChdNoSpace { iso_bytes: u64, folder: String },
+    ChdNoSpace { needed: u64, folder: String },
     /// The chosen file is not there (moved, deleted, a disconnected drive) or cannot be opened.
     NotFound,
     NotIso(String),
@@ -122,10 +122,10 @@ impl SetupError {
             SetupError::NotPlainIso { extension: None } => messages::text("setup.not_plain_iso", language).into(),
             SetupError::UnsupportedChd(_) => messages::text("setup.chd_unsupported", language).into(),
             SetupError::DamagedChd(_) => messages::text("setup.chd_damaged", language).into(),
-            SetupError::ChdNoSpace { iso_bytes, folder } => messages::render(
+            SetupError::ChdNoSpace { needed, folder } => messages::render(
                 "setup.chd_no_space",
                 language,
-                &[("size", &gigabytes(*iso_bytes)), ("folder", folder)],
+                &[("size", &gigabytes(*needed)), ("folder", folder)],
             ),
             SetupError::NotFound => messages::text("setup.not_found", language).into(),
             SetupError::NotIso(_) => messages::text("setup.not_iso", language).into(),
@@ -178,8 +178,8 @@ pub(crate) fn gigabytes(bytes: u64) -> String {
 impl std::fmt::Display for SetupError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SetupError::ChdNoSpace { iso_bytes, folder } => {
-                write!(formatter, "{} free needed in {folder} for the plain image of the CHD", gigabytes(*iso_bytes))
+            SetupError::ChdNoSpace { needed, folder } => {
+                write!(formatter, "{} free needed in {folder} for the plain image of the CHD", gigabytes(*needed))
             }
             SetupError::NotIso(detail)
             | SetupError::UnsupportedChd(detail)
@@ -243,9 +243,11 @@ pub struct ReceiptIdentity {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscReceipt {
-    /// The file the player picked.
+    /// The file the player picked (for a `.chd`, the file that was decompressed).
     pub path: String,
+    /// The size of the disc image's content: the ISO, which for a `.chd` is not the size of the file at `path`.
     pub size_bytes: u64,
+    /// The SHA-256 of that content (the ISO), not of the file at `path` when it is a `.chd`.
     pub sha256: String,
     pub serial: String,
     pub version: String,
@@ -442,6 +444,9 @@ pub(crate) struct GameImage {
     pub identity: Identity,
     /// For a `.chd`: where the decompressed image goes at the commit (`disc\<serial>.iso`). `None` for a linked `.iso`.
     pub copy: Option<PathBuf>,
+    /// For a `.chd`: the copy the commit replaced (`disc\<serial>.iso.previous`), kept until the new receipt is in place
+    /// and put back if the rest of the setup fails.
+    previous: Option<PathBuf>,
 }
 
 impl GameImage {
@@ -456,18 +461,22 @@ impl GameImage {
     ) -> Result<GameImage, SetupError> {
         if !chd::is_chd(disc) {
             let identity = hash_image_as(disc, Stage::Copying, cancel, progress)?;
-            return Ok(GameImage { path: disc.to_path_buf(), identity, copy: None });
+            return Ok(GameImage { path: disc.to_path_buf(), identity, copy: None, previous: None });
         }
         fs::create_dir_all(disc_folder)?;
         let copy = disc_folder.join(format!("{serial}.iso"));
         let partial = disc_folder.join(format!("{serial}.iso.partial"));
+        // A run that ended with a killed launcher (power loss, Task Manager) leaves its half-written image and the copy it
+        // would have replaced; neither is of use to the next run, which converts the `.chd` again.
+        let _ = fs::remove_file(&partial);
+        let _ = fs::remove_file(copy.with_file_name(format!("{serial}.iso.previous")));
         let identity = chd::convert(disc, &partial, cancel, &mut |fraction| progress(Stage::Copying, fraction)).map_err(|error| match error {
             ConvertError::Cancelled => SetupError::Cancelled,
             ConvertError::Chd(chd::ChdError::Damaged(detail)) => SetupError::DamagedChd(detail),
             ConvertError::Chd(chd::ChdError::Unsupported(detail)) => SetupError::UnsupportedChd(detail),
             ConvertError::Chd(chd::ChdError::Io(error)) => SetupError::Io(error.to_string()),
         })?;
-        Ok(GameImage { path: partial, identity, copy: Some(copy) })
+        Ok(GameImage { path: partial, identity, copy: Some(copy), previous: None })
     }
 
     /// The image the receipt records, put in place: a decompressed image replaces any earlier copy of that name only now, so a
@@ -475,9 +484,29 @@ impl GameImage {
     pub(crate) fn commit(&mut self, disc: &Path, install_dir: &Path) -> Result<ImageReceipt, SetupError> {
         let linked_path = match &self.copy {
             Some(copy) => {
+                let metadata = fs::metadata(&self.path)?;
+                // The earlier copy is parked, not deleted: if the receipt and the prepared files cannot be put in place
+                // after this, `discard` puts it back and the earlier install is as it was.
+                let previous = copy.with_file_name(format!(
+                    "{}.previous",
+                    copy.file_name().and_then(|name| name.to_str()).unwrap_or_default()
+                ));
+                let _ = fs::remove_file(&previous);
+                let replaced = copy.exists();
+                if replaced {
+                    fs::rename(copy, &previous)?;
+                }
                 fs::rename(&self.path, copy)?;
                 self.path = copy.clone();
-                None
+                self.previous = replaced.then_some(previous);
+                let image_receipt = ImageReceipt {
+                    file: image_file_name(copy),
+                    linked_path: None,
+                    size_bytes: metadata.len(),
+                    modified_unix_nanos: modified_nanos(&metadata),
+                    sha256: self.identity.sha256.clone(),
+                };
+                return Ok(image_receipt);
             }
             None => Some(linked_path(disc, install_dir)?),
         };
@@ -491,11 +520,26 @@ impl GameImage {
         })
     }
 
-    /// Removes a decompressed image that was not committed (a failed or cancelled run).
-    pub(crate) fn discard(&self) {
-        if self.copy.as_ref().is_some_and(|copy| *copy != self.path) {
-            let _ = fs::remove_file(&self.path);
+    /// The new receipt and prepared files are in place: the copy the commit replaced is no longer needed.
+    pub(crate) fn finish_commit(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            let _ = fs::remove_file(previous);
         }
+    }
+
+    /// Removes a decompressed image that was not committed, or puts back the copy the commit replaced when the setup failed
+    /// after it (a failed or cancelled run leaves an earlier install as it was).
+    pub(crate) fn discard(&mut self) {
+        let Some(copy) = self.copy.clone() else { return };
+        if self.path != copy {
+            let _ = fs::remove_file(&self.path);
+        } else if let Some(previous) = self.previous.take() {
+            let _ = fs::rename(&previous, &copy);
+        } else {
+            // The commit replaced nothing, so leaving the new image would turn "never set up" into "files missing".
+            let _ = fs::remove_file(&copy);
+        }
+        self.path = copy;
     }
 }
 
@@ -513,7 +557,7 @@ pub fn check_chd_space(disc: &Path, disc_folder: &Path, free: Option<u64>) -> Op
         Err(_) => return None,
     };
     let needed = iso_bytes + iso_bytes / 100;
-    (free < needed).then(|| SetupError::ChdNoSpace { iso_bytes, folder: disc_folder.display().to_string() })
+    (free < needed).then(|| SetupError::ChdNoSpace { needed, folder: disc_folder.display().to_string() })
 }
 
 /// Runs the whole setup. On success the prepared folder holds the receipt, CORE and ELF, and the image is where it was (or,
@@ -525,6 +569,8 @@ pub fn run(request: &SetupRequest<'_>, progress: &mut dyn FnMut(Stage, f32)) -> 
         let result = finish(request, &summary, &mut image, progress);
         if result.is_err() {
             image.discard();
+        } else {
+            image.finish_commit();
         }
         result
     });
@@ -590,6 +636,7 @@ fn finish(
     let receipt_bytes = serde_json::to_vec_pretty(&receipt).map_err(|error| SetupError::Internal(error.to_string()))?;
     write_synced(&request.staging.join(RECEIPT_FILE), &receipt_bytes)?;
     swap_into_place(request.staging, request.prepared)?;
+    image.finish_commit();
     progress(Stage::Preparing, 1.0);
     Ok(receipt)
 }
@@ -649,7 +696,13 @@ pub(crate) fn swap_into_place(staging: &Path, prepared: &Path) -> Result<(), Set
     } else {
         None
     };
-    fs::rename(staging, prepared)?;
+    if let Err(error) = fs::rename(staging, prepared) {
+        // Put the prepared files that were there back, so a failed swap does not leave the install without them.
+        if let Some(old) = &old {
+            let _ = fs::rename(old, prepared);
+        }
+        return Err(error.into());
+    }
     if let Some(old) = old {
         let _ = fs::remove_dir_all(old);
     }
@@ -700,10 +753,16 @@ pub fn check_installed(prepared: &Path, disc_folder: &Path, install_dir: &Path, 
     check_installed_with(prepared, disc_folder, install_dir, &|folder| verify_prepared(folder, pins))
 }
 
+/// Whether `folder` exists and holds something.
+fn has_entries(folder: &Path) -> bool {
+    fs::read_dir(folder).map(|mut entries| entries.next().is_some()).unwrap_or(false)
+}
+
 /// [`check_installed`] with the game's own check of the prepared files (sizes of its ELF and, for Gran Turismo 4, CORE).
 pub fn check_installed_with(prepared: &Path, disc_folder: &Path, install_dir: &Path, verify: &dyn Fn(&Path) -> Result<(), String>) -> Installed {
     if !prepared.join(RECEIPT_FILE).exists() {
-        if prepared.exists() || disc_folder.exists() {
+        // A cancelled or refused first setup can leave the folders behind empty, which is still "never set up".
+        if has_entries(prepared) || has_entries(disc_folder) {
             return Installed::Missing { reason: "the game files are incomplete".into() };
         }
         return Installed::NotSetUp;
@@ -733,4 +792,65 @@ pub fn check_installed_with(prepared: &Path, disc_folder: &Path, install_dir: &P
         return Installed::Missing { reason: format!("{} has changed", image.file) };
     }
     Installed::Ready { image: path, serial: receipt.disc.serial, version: receipt.disc.version }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("gt4l-disc-setup-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn image(name: &str, serial: &str, partial: &[u8], previous: Option<&[u8]>) -> (GameImage, PathBuf, PathBuf) {
+        let root = scratch(name);
+        let copy = root.join(format!("{serial}.iso"));
+        if let Some(previous) = previous {
+            fs::write(&copy, previous).unwrap();
+        }
+        let stub = root.join("picked.iso");
+        let partial_path = root.join(format!("{serial}.iso.partial"));
+        fs::write(&partial_path, partial).unwrap();
+        let image = GameImage {
+            path: partial_path,
+            identity: Identity { size_bytes: partial.len() as u64, sha256: "0".repeat(64) },
+            copy: Some(copy.clone()),
+            previous: None,
+        };
+        (image, copy, stub)
+    }
+
+    #[test]
+    fn a_commit_keeps_the_replaced_copy_until_the_receipt_is_in_place() {
+        let (mut image, copy, stub) = image("commit-replaced", "SCUS-97328", b"new image", Some(b"old image"));
+        let receipt = image.commit(&stub, &stub).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"new image", "the new image is in place");
+        assert_eq!(receipt.size_bytes, 9);
+        let previous = fs::read(copy.with_file_name("SCUS-97328.iso.previous")).unwrap();
+        assert_eq!(previous, b"old image", "the copy it replaced is kept beside it");
+
+        image.discard();
+        assert_eq!(fs::read(&copy).unwrap(), b"old image", "a failed setup puts the earlier copy back");
+        assert!(!copy.with_file_name("SCUS-97328.iso.previous").exists(), "no leftover of the failed attempt");
+    }
+
+    #[test]
+    fn a_finished_commit_removes_the_replaced_copy() {
+        let (mut image, copy, stub) = image("commit-finished", "SCUS-97436", b"new image", Some(b"old image"));
+        image.commit(&stub, &stub).unwrap();
+        image.finish_commit();
+        assert_eq!(fs::read(&copy).unwrap(), b"new image");
+        assert!(!copy.with_file_name("SCUS-97436.iso.previous").exists());
+    }
+
+    #[test]
+    fn a_first_commit_that_fails_removes_the_new_image() {
+        let (mut image, copy, stub) = image("commit-first", "SCUS-97328", b"new image", None);
+        image.commit(&stub, &stub).unwrap();
+        image.discard();
+        assert!(!copy.exists(), "there was no earlier copy to put back");
+    }
 }
