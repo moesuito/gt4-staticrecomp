@@ -163,7 +163,7 @@
             // The copy ended: its bar is drawn full with the final figure, even when the poll never saw the last
             // 100% value (rc5 owner report: the Spec II copy bar stopped short).
             pct = 100;
-            bytesText = gigabytes(setup.bytes_total) + " of " + gigabytes(setup.bytes_total);
+            bytesText = GT4.t("setup.bytes_of", { done: gigabytes(setup.bytes_total), total: gigabytes(setup.bytes_total) });
           }
         } else if (running && index === order) {
           status = "active";
@@ -171,7 +171,7 @@
           if (step.id === "copying" && setup.bytes_total) {
             // The bar and the figure of the copy use the same total (the size of the disc file being copied), so the bar
             // reaches 100% when the text says "x of x" (rc3 owner report: the bar stopped at about 85%).
-            bytesText = gigabytes(setup.bytes_done || 0) + " of " + gigabytes(setup.bytes_total);
+            bytesText = GT4.t("setup.bytes_of", { done: gigabytes(setup.bytes_done || 0), total: gigabytes(setup.bytes_total) });
             pct = Math.min(100, Math.floor(((setup.bytes_done || 0) * 100) / setup.bytes_total));
           }
           if (step.id === "renderer") {
@@ -181,7 +181,7 @@
             } else if (setup.renderer_step !== "downloading") {
               pct = null;
             } else if (setup.bytes_total) {
-              bytesText = megabytes(setup.bytes_done || 0) + " of " + megabytes(setup.bytes_total);
+              bytesText = GT4.t("setup.bytes_of", { done: megabytes(setup.bytes_done || 0), total: megabytes(setup.bytes_total) });
             }
           }
         }

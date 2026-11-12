@@ -23,7 +23,7 @@
     var btn = h("button", {
       class: "info",
       type: "button",
-      "aria-label": "About " + title,
+      "aria-label": GT4.t("common.about", { label: title }),
       "aria-expanded": "false",
       "aria-describedby": tipId,
       on: {

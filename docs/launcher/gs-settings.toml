@@ -66,7 +66,7 @@ notes = "Owner decision 2026-10-16 (TASK-049, item 1). Launcher-only: pcsx2 = gt
 [[setting]]
 id = "graphics_api"
 label = "API"
-help = "Automatic uses Vulkan when the graphics card supports Vulkan 1.2, otherwise Direct3D 11. Choose Vulkan, Direct3D 12 or Direct3D 11 to force one."
+help = "The graphics API the game draws with. Vulkan is used when your graphics card supports Vulkan 1.2; Direct3D 11 is the fallback. Pick Direct3D 12 or Direct3D 11 to use that one instead."
 page = "basic"
 order = 7
 control = "dropdown"

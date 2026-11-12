@@ -179,7 +179,7 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Image",
         title: "Render scale",
-        info: "How sharp the picture is drawn. 100% draws it at least at your resolution (taken from the Resolution                setting on the Display page); 50% is faster and softer, 200% is sharper and needs a much faster GPU.                The number next to the slider is the resulting internal resolution.",
+        info: "How sharp the picture is drawn. 100% draws it at least at your resolution (taken from the Resolution                setting in the Display section above); 50% is faster and softer, 200% is sharper and needs a much faster GPU.                The number next to the slider is the resulting internal resolution.",
         kind: Kind::Steps {
             min: crate::display::RENDER_SCALE_MIN,
             max: crate::display::RENDER_SCALE_MAX,
@@ -213,7 +213,7 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Image",
         title: "Graphics card",
-        info: "The graphics card that draws the game. Automatic picks a dedicated card over integrated graphics, then the one with the most video memory.",
+        info: "The graphics card that draws the game. The best card is used until you pick another one: a dedicated card over integrated graphics, then the one with the most video memory.",
         kind: Kind::Gpu,
         default: "auto",
         connected: true,
