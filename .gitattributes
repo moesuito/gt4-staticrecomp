@@ -1,2 +1,6 @@
 # Pinned text inputs are hashed byte for byte: never convert their line endings.
 docs/inputs/*.txt -text
+
+# The golden test adds CRLF itself (gs_table::ini_file_bytes) before comparing with this fixture: a Windows checkout
+# with core.autocrlf=true must keep it LF, or the comparison sees CR CR LF (2026-11-11).
+launcher/crates/gt4l-core/tests/fixtures/gs/default-session.ini text eol=lf
