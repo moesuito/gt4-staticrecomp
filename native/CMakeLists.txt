@@ -292,6 +292,29 @@ if(GT4_USB_RUNTIME_SOURCE)
         INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop;${CMAKE_CURRENT_SOURCE_DIR}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${usb_capsule}/hw.cpp")
 endif()
+# IOP alarm leak fix (wheel force-feedback slowdown): capsule (scripts/prepare_iop_alarm.py). Replaces the donor
+# iop/libs.cpp with the derived source whose CancelAlarm erases matched alarms and whose fire_alarm erases inactive
+# entries, so the LGDEV wheel driver's 8 ms poll no longer leaks a growing alarm map that slows the IOP. The manifest
+# pins the derived file's SHA-256.
+set(GT4_IOP_ALARM_RUNTIME_SOURCE "" CACHE PATH "Verified IOP alarm capsule: derived libs.cpp and runtime.json")
+if(GT4_IOP_ALARM_RUNTIME_SOURCE)
+    get_filename_component(iop_alarm_capsule "${GT4_IOP_ALARM_RUNTIME_SOURCE}" ABSOLUTE)
+    if(NOT EXISTS "${iop_alarm_capsule}/libs.cpp" OR NOT EXISTS "${iop_alarm_capsule}/runtime.json")
+        message(FATAL_ERROR "The IOP alarm capsule needs libs.cpp and runtime.json")
+    endif()
+    file(READ "${iop_alarm_capsule}/runtime.json" iop_alarm_manifest)
+    string(JSON iop_alarm_expected GET "${iop_alarm_manifest}" libs_sha256)
+    file(SHA256 "${iop_alarm_capsule}/libs.cpp" iop_alarm_actual)
+    if(NOT iop_alarm_actual STREQUAL iop_alarm_expected)
+        message(FATAL_ERROR "IOP alarm libs.cpp differs from its runtime.json pin")
+    endif()
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/iop/libs\\.cpp$")
+    list(APPEND RUNTIME_FILES "${iop_alarm_capsule}/libs.cpp")
+    # The derived file includes the donor's iop headers by name (kernel.hpp, hw.hpp, io.hpp, sio2.hpp, spu2.hpp).
+    set_source_files_properties("${iop_alarm_capsule}/libs.cpp" PROPERTIES
+        INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${iop_alarm_capsule}/libs.cpp")
+endif()
 # TASK-017 (slice205 v1, slice206 v2): license demo guard capsule (scripts/prepare_license_guard.py). Replaces the donor
 # dispatch.cpp (guard at both license loaders' demo-input calls, native/license_guard.*), kernel.cpp (halt
 # dump, off unless GT4_HALT_DUMP=1) and iop/cdvdfsv.cpp (FSV read trace, off unless GT4_FSV_TRACE=1). Every derived
