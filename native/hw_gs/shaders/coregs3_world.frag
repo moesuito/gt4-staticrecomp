@@ -21,6 +21,11 @@
 #include "coregs3_world_push.glsl"
 #include "coregs3_post.glsl"
 
+// TASK-090 handoff: early depth prevents occluded storage-image writes, but
+// alpha-test discard can still leave depth committed. Removing this qualifier
+// alone would let imageStore run before late depth rejection. Migrate both
+// color and depth to a native-attachment path for supported materials;
+// see docs/COREGS3-NATIVE-PIPELINE-HANDOFF.md (P0).
 layout(early_fragment_tests) in;
 
 layout(set = 0, binding = 0, r32ui) uniform uimage2D display_image;

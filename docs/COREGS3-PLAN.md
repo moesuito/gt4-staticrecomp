@@ -1,5 +1,10 @@
 # CoreGS 3.0: a native renderer for GT4's graphics, in the spirit of GT3 Revisited
 
+**Implementation status (2026-11-17):** This file is the original planning study. The source-reviewed
+[COREGS3-NATIVE-PIPELINE-HANDOFF.md](COREGS3-NATIVE-PIPELINE-HANDOFF.md) explains the current branch's
+native-attachment, tap-independence and actual VU1/GS cutover blockers. `GT4_COREGS3_REPLACE_3D=1` hides the
+faithful 3D at presentation; it does not skip its execution.
+
 Date: 2026-11-05. Planning and research document for the owner's request of 2026-11-05 (TASK-090). Nothing in the
 repository was edited, built or run, and the game was not launched. This plan is meant to be copied into the repository
 (for example `docs/coregs3/PLAN.md`, plus a `docs/tasks/` brief per phase) when the owner adopts it.

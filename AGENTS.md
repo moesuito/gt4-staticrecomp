@@ -16,7 +16,9 @@ checkout). This file holds the project's rules; `OWNER.md` adds the local ones.
 The ordered task list is `TASKS.md`. Current state is at the top of
 `docs/STATUS.md`; technical background for the optimization work is in
 `docs/OPTIMIZATION-PLAN.md`; daily progress goes to
-`docs/journal/YYYY-MM-DD.md`. `README.md`, `docs/ARCHITECTURE.md` and
+`docs/journal/YYYY-MM-DD.md`. For TASK-090 CoreGS 3.0 implementation, read
+`docs/COREGS3-NATIVE-PIPELINE-HANDOFF.md` before editing the native graphics or MTVU paths.
+`README.md`, `docs/ARCHITECTURE.md` and
 `docs/BUILD.md` give the public overview, architecture and build recipes per
 slice. Older slice-by-slice history lives in STATUS (History section) and the
 journals. Work from before the ps2-web-recomp base (the project's earlier own
