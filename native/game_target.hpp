@@ -31,7 +31,7 @@
 
 namespace gt4::target {
 
-enum class Id { v200, spec2 };
+enum class Id { v200, spec2, tt };
 
 // A guest address that can never match a real PC (32-bit, word aligned, below 0x08000000) or a real return address.
 inline constexpr std::uint32_t kNeverMatch = 0xFFFFFFFFu;
@@ -311,13 +311,129 @@ inline constexpr HookAddresses kSpec2Hooks = {
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};
 inline constexpr Profile kSpec2{Id::spec2, "Spec II", 32u << 20, kSpec2Hooks};
 
-#if defined(GT4_TARGET_SPEC2) && !defined(GT4_TARGET_FIXTURE_V200)
+// Tourist Trophy (SCUS-97502), experimental third target (docs/TT-STUDY.md). TT shares most of the GT4 engine, but none
+// of its guest addresses match v2.00, so a hook stays disabled (zero) until its chain is mapped in TT.
+//
+// TASK-079 16:9 hold, mapped 2026-11-11:
+//   setter 0x003FD938 (v2.00 func_00437110, masked-identical), preset copier 0x003FFA40 (func_00439108) with the four
+//   presets at 0x585720 / 0x585750 / 0x585780 / 0x5857B0, wide test 0x003FFA08 (func_004390D0), apply 0x003FFB00
+//   (func_004391C8): flag +0x14 and record +0x24 unchanged.
+//   owner pointer 0x5857DC and published global 0x579518: voted from the code that references the v2.00 words (43 and 11
+//   matching sites); RAM check at frame 690 (main menu): owner 0x008274B0, option = owner + 0x680 (the record there equals
+//   the wide preset, flag 1, global 1).
+//   video_system_offset stays 0 as in Spec II: the setter reads the video word through another base (0x13F0), and TT's
+//   NTSC and non-NTSC preset pairs are byte-identical (425 x 240 wide, 275 x 205 4:3), so either pair is correct.
+inline constexpr HookAddresses kTTHooks = {
+    /* widescreen_owner_pointer */ 0x5857DCu,
+    /* widescreen_option_offset */ 0x680u,
+    /* widescreen_flag_offset */ 0x14u,
+    /* widescreen_record_offset */ 0x24u,
+    /* widescreen_record_bytes */ 44u,
+    /* widescreen_record_width_offset */ 0xCu,
+    /* widescreen_record_height_offset */ 0x10u,
+    /* video_system_offset */ 0u,
+    /* video_system_ntsc */ 1u,
+    /* widescreen_global */ 0x579518u,
+    /* widescreen_preset_4_3 */ 0x585720u,
+    /* widescreen_preset_wide */ 0x585750u,
+    /* widescreen_preset_4_3_ntsc */ 0x585780u,
+    /* widescreen_preset_wide_ntsc */ 0x5857B0u,
+    // TASK-080 race display 480p, mapped 2026-11-11: the index lives at option + 0x1718 (as in Spec II). The setter
+    // 0x003FDBA8 (v2.00 func_00437380, masked-identical) stores it at 0x1718 and accepts 0..3; the race-start reader
+    // 0x003FCE58 (v2.00 func_00436740) loads it from 0x1718. TT's name table (0x585670) is "normal", "480p", "1080i",
+    // "480i_frame": 0..2 mean what they mean in v2.00, and the hold leaves 3 (480i_frame) alone.
+    /* race_display_index_offset */ 0x1718u,
+    /* race_display_index_normal */ 0u,
+    /* race_display_index_480p */ 1u,
+    /* race_display_index_1080i */ 2u,
+    /* init_monitor */ 0u,
+    /* camera_call_return */ 0u,
+    /* race_display_render */ 0u,
+    /* display_request_state */ 0u,
+    /* display_request_pending_offset */ 0u,
+    /* display_request_mode_offset */ 0u,
+    /* display_request_row_offset */ 0u,
+    /* hud_parameter_block */ 0u,
+    /* hud_parameter_words */ 0u,
+    /* hud_matrix_offset */ 0u,
+    // TASK-017 license demo guard, mapped 2026-11-11 (docs/TT-STUDY.md): the cipher 0x004A4228 is v2.00 func_00579E00
+    // (masked-identical; FT 0x597DC0, T8 0x6190A0); its wrapper 0x0042F7B0 has three callers: the two "license/%s" loaders
+    // 0x0010B6D0 (call 0x0010B75C) and 0x0010B860 (call 0x0010B8EC), and the card path 0x0042F710. Each loader then calls
+    // vtbl +0x510 / +0x1C8 (as Spec II) with a1 = buffer + header offset (0x0050F578 is `addu v0,a0,a1`), returning to
+    // 0x0010B810 / 0x0010B9A0. The demo-input virtuals 0x00386D90 / 0x00386DD0 (v2.00 0x003EAD18 / 0x003EAD58,
+    // masked-identical) add 0x1A24 and call Manager::load 0x002E8BD8 (v2.00 0x00346BB8, masked-identical). Standard
+    // CRC-32 table at 0x6191A0. No body shift: TT's files keep the stream at body + 0x1A24 (license_guard.hpp).
+    /* license_load_demo_inputs */ 0x386D90u,
+    /* license_loader_entry */ 0x10B6D0u,
+    /* license_loader_return */ 0x10B810u,
+    /* license_replay_loader_entry */ 0x10B860u,
+    /* license_replay_loader_return */ 0x10B9A0u,
+    /* license_crc_table */ 0x6191A0u,
+    /* license_manager_add */ 0x1A24u,
+    /* license_body_shift */ 0u,
+    /* shape_call_pc */ 0u,
+    /* shape_target_pc */ 0u,
+    /* shape_return_pc */ 0u,
+    // TASK-082 frame skipping, mapped 2026-11-11 (docs/TT-STUDY.md):
+    //   functors: TT's main loop 0x00100FE8 (v2.00 func_001016E8, masked-identical) and its three functors, paired by the
+    //   vtable slot each calls (+0x60 update, +0x68 render, +0x88 idle; the same addresses as Spec II);
+    //   display pages: the flip's words, 4 bytes before the bases v2.00 builds at 0x618588 / 0x618604 (TT 0x5795B0 /
+    //   0x57962C, 5 and 2 matching sites), 0x7C apart as in v2.00 and Spec II;
+    //   race: a headless Arcade race (Laguna Seca) RAM at frames 3500 / 3560: the clock word grew by exactly 3000 (60 steps
+    //   of 50) at 0x019AFED0 = DynamicsConductor 0x0198C570 + 0x23960 (Spec II's offset; 13 code sites build 0x3960); the
+    //   race object 0x01978970 holds it at +0x70 and its vtable 0x005CB218 at +0x64. Its update/render/idle virtuals
+    //   (0x00100C00 / 0x00100CC8 / 0x002CF7C8) are those of the four license race classes (0x005D1AB0..0x005D4748, the
+    //   classes whose +0x510 slot is the demo-input virtual). That family has an early group 0x005A4860..0x005AD978 and the
+    //   race cluster 0x005C7D60..0x005D58C0, the same shape as v2.00 (early 0x659A28.., race 0x676C48..0x685168 inside
+    //   0x676000..0x686000); the range is the race cluster, page-rounded, and leaves out the other object holding the
+    //   DynamicsConductor (vtable 0x005D9E00). Flare offsets (0xE60, 0x1848, 0xA34) as Spec II (11, 9 and 10 sites).
+    //   render_world is a diagnostic only and stays unmapped.
+    /* frame_update_functor */ 0x001007D8u,
+    /* frame_render_functor */ 0x00100848u,
+    /* frame_idle_functor */ 0x001008B8u,
+    /* frame_display_page */ 0x005795ACu,
+    /* frame_display_page_second */ 0x00579628u,
+    /* frame_race_vtable_first */ 0x005C7000u,
+    /* frame_race_vtable_last */ 0x005D6000u,
+    /* frame_race_dynamics_offset */ 0x70u,
+    /* frame_dynamics_clock_offset */ 0x23960u,
+    /* frame_dynamics_bytes */ 0x24000u,
+    /* frame_race_flare_offset */ 0xE60u,
+    /* frame_flare_track_count_offset */ 0x1848u,
+    /* frame_flare_car_count_offset */ 0xA34u,
+    /* frame_render_world */ 0u,
+    // TASK-159 / 159b / 160, mapped 2026-11-11 (scripts/tt_units.py adds the host calls; docs/TT-STUDY.md):
+    //   the chase camera spring is 0x002E7068 (the only caller of the angle difference 0x003152A0, v2.00 0x0036CC40, that
+    //   builds the 1/60 spring step); it makes four angle-difference calls and the first loads the camera's angle into f13
+    //   from 0(s0) as v2.00's yaw call does. All four get the host call, so another candidate is a relink;
+    //   the race input's channel handler 0x003FEF48 is called at 0x00403AC4 (a2 = function, a3 = value in the delay slot),
+    //   with the loop's channel ids at 0x005FB078 (s7; the same 12 ids as v2.00) and s0 already incremented (bias 1);
+    //   the race camera projection 0x00322D80 (v2.00 func_0037A170) calls its scale store at 0x00322DCC;
+    //   RAM check (headless race, R3 held): pad buffer 0x00776F00 holds the buttons at +0x1C (0xFFFB) and the right stick X
+    //   at +0x1E (0x80 at rest); the port 0 pad object 0x00598688 holds the buttons at +0x6C, then RX RY LX LY.
+    /* camera_yaw_call_return */ 0x002E7120u,
+    /* camera_pad_stick_x */ 0x00776F1Eu,
+    /* camera_analog_loop_return */ 0x00403ACCu,
+    /* camera_analog_channel_table */ 0x005FB078u,
+    /* camera_analog_slot_bias */ 1u,
+    /* fov_projection_call_return */ 0x00322DD4u,
+    /* fov_pad_buttons */ 0x005986F4u,
+};
+inline constexpr Profile kTT{Id::tt, "Tourist Trophy", 32u << 20, kTTHooks};
+
+#if defined(GT4_TARGET_FIXTURE_V200)
+inline constexpr Id kActiveId = Id::v200;
+#elif defined(GT4_TARGET_SPEC2)
 inline constexpr Id kActiveId = Id::spec2;
+#elif defined(GT4_TARGET_TT)
+inline constexpr Id kActiveId = Id::tt;
 #else
 inline constexpr Id kActiveId = Id::v200;
 #endif
 
-constexpr const Profile &active() { return kActiveId == Id::spec2 ? kSpec2 : kV200; }
+constexpr const Profile &active() {
+  return kActiveId == Id::spec2 ? kSpec2 : kActiveId == Id::tt ? kTT : kV200;
+}
 
 // Guest address for a hook, or kNeverMatch when the active target does not have it. constexpr so the overlays keep
 // their compile-time comparisons.
