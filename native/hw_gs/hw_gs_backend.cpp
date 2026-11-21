@@ -33,6 +33,18 @@
 #include <cstring>
 #include <stdexcept>
 
+#ifdef _WIN32
+// The half-millisecond present-wait poll sleeps on a high-resolution waitable timer.
+using PollTimer = HANDLE;
+// The game window the swapchain presents to.
+using WindowHandle = HWND;
+#else
+// TASK-074 (Linux): the poll sleeps with nanosleep, which needs no timer object, and the window is recorded only as a
+// marker (an X11 window id or a Wayland surface pointer) for has_window().
+using PollTimer = void *;
+using WindowHandle = const void *;
+#endif
+
 namespace gt4::hw {
 namespace {
 
@@ -190,7 +202,7 @@ struct Backend::Impl {
 
   // On the frametime thread: when the presentation `id` reached the display, in the log's milliseconds; 0 when it did not
   // within half a second.
-  double wait_until_shown(VkSwapchainKHR on, std::uint64_t id, HANDLE timer) {
+  double wait_until_shown(VkSwapchainKHR on, std::uint64_t id, PollTimer timer) {
     VkPresentWait2InfoKHR info{VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR};
     info.presentId = id;
     info.timeout = 0;
@@ -203,6 +215,7 @@ struct Backend::Impl {
       }
       if (result == VK_SUCCESS) return frametime_now_ms();
       if (result != VK_TIMEOUT || std::chrono::steady_clock::now() >= deadline) return 0.0;
+#ifdef _WIN32
       if (timer != nullptr) {
         LARGE_INTEGER due{};
         due.QuadPart = -kShownPollUs * 10;  // relative, in 100 ns units
@@ -210,12 +223,20 @@ struct Backend::Impl {
       } else {
         std::this_thread::yield();
       }
+#else
+      (void)timer;
+      std::this_thread::sleep_for(std::chrono::microseconds(kShownPollUs));
+#endif
     }
   }
 
   void frametime_worker() {
     // A high-resolution timer for the half-millisecond polls (a plain Sleep rounds to the system tick).
-    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+#ifdef _WIN32
+    PollTimer timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+#else
+    PollTimer timer = nullptr;
+#endif
     for (;;) {
       FrametimeEntry entry{};
       {
@@ -224,7 +245,9 @@ struct Backend::Impl {
         frametime_changed.notify_all();
         frametime_changed.wait(lock, [&] { return frametime_stop || !frametime_queue.empty(); });
         if (frametime_queue.empty()) {
+#ifdef _WIN32
           if (timer != nullptr) CloseHandle(timer);
+#endif
           return;
         }
         entry = frametime_queue.front();
@@ -308,7 +331,11 @@ struct Backend::Impl {
   VkExtent2D extent{};
   std::uint32_t image_count = 0;
   VkSemaphore render_finished[max_swapchain_images] = {};
-  HWND window = nullptr;
+  WindowHandle window = nullptr;
+#ifndef _WIN32
+  // The window's pixel size from attach and every resize: the swapchain size when the surface reports none (Wayland).
+  std::uint32_t window_width = 0, window_height = 0;
+#endif
   std::atomic<bool> resize_pending{false};  // also set by the presentation thread of TASK-082
   // TASK-145: why the swapchain is rebuilt (logged with each rebuild), and a VK_SUBOPTIMAL_KHR seen since the last frame
   // end. A suboptimal swapchain still presents; it is rebuilt only when the surface size changed, since every rebuild
@@ -528,8 +555,10 @@ struct Backend::Impl {
   // Feature report and device choice (chapter 12.6). Returns false with `error` set when no device qualifies.
   bool create_instance(std::string &error) {
     if (!vulkan_loader::load_loader(error)) return false;
+#ifdef _WIN32
     const char *extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
                                 VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME};
+#endif
     // The frametime log's shown times need the third one (the log goes on without them).
     const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
         vulkan_loader::instance_proc(nullptr, "vkEnumerateInstanceExtensionProperties"));
@@ -542,13 +571,37 @@ struct Backend::Impl {
       surface_capabilities2 = has_extension(available, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
     }
     frametime_shown_possible = surface_capabilities2;
+#ifndef _WIN32
+    // TASK-074: VK_KHR_surface with the X11 and Wayland surface extensions the driver has (the window system in use
+    // needs only its own), then the optional third one as on Windows.
+    std::vector<const char *> linux_extensions;
+    if (enumerate != nullptr) {
+      std::uint32_t count = 0;
+      enumerate(nullptr, &count, nullptr);
+      std::vector<VkExtensionProperties> available(count);
+      enumerate(nullptr, &count, available.data());
+      if (has_extension(available, VK_KHR_SURFACE_EXTENSION_NAME)) {
+        linux_extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+        if (has_extension(available, VK_KHR_XLIB_SURFACE_EXTENSION_NAME))
+          linux_extensions.push_back(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
+        if (has_extension(available, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME))
+          linux_extensions.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+      }
+    }
+    if (surface_capabilities2) linux_extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+#endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "GT4Recomp HWR";
     app.apiVersion = VK_API_VERSION_1_2;
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     info.pApplicationInfo = &app;
+#ifdef _WIN32
     info.enabledExtensionCount = surface_capabilities2 ? 3u : 2u;
     info.ppEnabledExtensionNames = extensions;
+#else
+    info.enabledExtensionCount = static_cast<std::uint32_t>(linux_extensions.size());
+    info.ppEnabledExtensionNames = linux_extensions.data();
+#endif
     const VkResult result = vkCreateInstance(&info, nullptr, &instance);
     if (result != VK_SUCCESS) {
       error = std::string("vkCreateInstance failed: ") + vk_result_text(result);
@@ -837,10 +890,14 @@ struct Backend::Impl {
   bool create_swapchain(std::string &error) {
     VkSurfaceCapabilitiesKHR caps{};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps);
+#ifdef _WIN32
     RECT client{};
     GetClientRect(window, &client);
     const auto width = static_cast<std::uint32_t>(client.right - client.left);
     const auto height = static_cast<std::uint32_t>(client.bottom - client.top);
+#else
+    const std::uint32_t width = window_width, height = window_height;
+#endif
     if (caps.currentExtent.width != 0xFFFFFFFFu) {
       extent = caps.currentExtent;
     } else {
@@ -945,7 +1002,13 @@ struct Backend::Impl {
     }
     if (hud_wanted && !hud_layer) {
       const char *scale = std::getenv("GT4_HW_SCALE");
+#ifdef _WIN32
       hud_layer = std::make_unique<gt4::hw::hud::Layer>(physical, device, frame_slots, window, report.device_name, scale != nullptr ? scale : "");
+#else
+      // TASK-074 (Linux): the window marker is the layer's opaque handle (hud/hw_hud_system_linux.cpp does not use it).
+      hud_layer = std::make_unique<gt4::hw::hud::Layer>(physical, device, frame_slots, const_cast<void *>(window),
+                                                        report.device_name, scale != nullptr ? scale : "");
+#endif
     }
     resize_pending = false;
     return true;
@@ -1689,6 +1752,76 @@ bool Backend::scanout(ScanoutRequest &request) {
   return true;
 }
 
+#ifndef _WIN32
+// TASK-074 (Linux): the same steps as attach_window after the surface exists (support check, swapchain, asynchronous
+// presentation switch), for a surface made from X11 or Wayland handles.
+bool Backend::finish_linux_attach(std::uint32_t width, std::uint32_t height, std::string &error) {
+  Impl &s = *impl_;
+  s.window_width = width;
+  s.window_height = height;
+  VkBool32 supported = VK_FALSE;
+  vkGetPhysicalDeviceSurfaceSupportKHR(s.physical, s.queue_family, s.surface, &supported);
+  if (!supported) {
+    error = "graphics queue cannot present to this surface";
+    return false;
+  }
+  if (!s.create_swapchain(error)) return false;
+  const char *async = std::getenv("GT4_HW_ASYNC_PRESENT");
+  if (s.renderer) s.renderer->SetAsyncPresentation(!(async && std::string(async) == "0"));
+  return true;
+}
+
+bool Backend::attach_window(void *, std::string &error) {
+  error = "Win32 windows do not exist on Linux; attach an X11 or Wayland window";
+  return false;
+}
+
+bool Backend::attach_x11(void *display, std::uint64_t window, std::uint32_t width, std::uint32_t height,
+                         std::string &error) {
+  Impl &s = *impl_;
+  if (!s.initialised) {
+    error = "attach_x11 before init";
+    return false;
+  }
+  if (!vkCreateXlibSurfaceKHR) {
+    error = "the Vulkan driver lacks VK_KHR_xlib_surface";
+    return false;
+  }
+  VkXlibSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
+  info.dpy = static_cast<Display *>(display);
+  info.window = static_cast<Window>(window);
+  const VkResult result = vkCreateXlibSurfaceKHR(s.instance, &info, nullptr, &s.surface);
+  if (result != VK_SUCCESS) {
+    error = std::string("vkCreateXlibSurfaceKHR failed: ") + vk_result_text(result);
+    return false;
+  }
+  s.window = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(window));
+  return finish_linux_attach(width, height, error);
+}
+
+bool Backend::attach_wayland(void *display, void *surface, std::uint32_t width, std::uint32_t height,
+                             std::string &error) {
+  Impl &s = *impl_;
+  if (!s.initialised) {
+    error = "attach_wayland before init";
+    return false;
+  }
+  if (!vkCreateWaylandSurfaceKHR) {
+    error = "the Vulkan driver lacks VK_KHR_wayland_surface";
+    return false;
+  }
+  VkWaylandSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
+  info.display = static_cast<wl_display *>(display);
+  info.surface = static_cast<wl_surface *>(surface);
+  const VkResult result = vkCreateWaylandSurfaceKHR(s.instance, &info, nullptr, &s.surface);
+  if (result != VK_SUCCESS) {
+    error = std::string("vkCreateWaylandSurfaceKHR failed: ") + vk_result_text(result);
+    return false;
+  }
+  s.window = surface;
+  return finish_linux_attach(width, height, error);
+}
+#else
 bool Backend::attach_window(void *hwnd, std::string &error) {
   Impl &s = *impl_;
   if (!s.initialised) {
@@ -1718,6 +1851,7 @@ bool Backend::attach_window(void *hwnd, std::string &error) {
   if (s.renderer) s.renderer->SetAsyncPresentation(!(async && std::string(async) == "0"));
   return true;
 }
+#endif
 
 void Backend::detach_window() {
   Impl &s = *impl_;
@@ -1734,6 +1868,11 @@ void Backend::detach_window() {
 void Backend::resize_window(std::uint32_t width, std::uint32_t height) {
   // The window procedure passes a size message on only when the client size changed (TASK-145); the new swapchain
   // takes the size from the surface.
+#ifndef _WIN32
+  // Linux: the size is kept for a surface that reports none (Wayland).
+  impl_->window_width = width;
+  impl_->window_height = height;
+#endif
   (void)width;
   (void)height;
   impl_->request_rebuild(Impl::Rebuild::window_size);

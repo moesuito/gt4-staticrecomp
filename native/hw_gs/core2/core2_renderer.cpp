@@ -9,7 +9,12 @@
 #include <map>
 #include <bit>
 #include <chrono>
+#ifdef _WIN32
 #include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -3513,8 +3518,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool replacementTrace_ = false;
 
     void StartTextureReplacement() {
+#ifdef _WIN32
         // Read as Windows holds them: in the narrow form an accented folder is in the ANSI code page, not UTF-8.
         const wchar_t *root = _wgetenv(L"GT4_HW_TEXTURES");
+#else
+        // TASK-074: Linux paths are bytes (UTF-8 in practice); the narrow form is the path as is.
+        const char *root = std::getenv("GT4_HW_TEXTURES");
+#endif
         const char *dump = std::getenv("GT4_HW_DUMP_TEXTURES");
         textureDumps_ = dump != nullptr && std::strcmp(dump, "0") != 0;
         replacementSync_ = std::getenv("GT4_HW_TEXTURES_SYNC") != nullptr;
@@ -3534,7 +3544,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.replacementFiles = report.filesRegistered;
         }
         if (textureDumps_) {
+#ifdef _WIN32
             const wchar_t *dumpDir = _wgetenv(L"GT4_HW_TEXTURE_DUMP_DIR");
+#else
+            const char *dumpDir = std::getenv("GT4_HW_TEXTURE_DUMP_DIR");
+#endif
             textureDumpDir_ = dumpDir != nullptr ? std::filesystem::path(dumpDir)
                                                  : (folder.empty() ? std::filesystem::path("TextureDumps")
                                                                    : folder.parent_path() / "TextureDumps");

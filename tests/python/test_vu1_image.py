@@ -46,6 +46,25 @@ class ImageBuildTests(unittest.TestCase):
         self.assertEqual(facts['snapshots_matching'], 2)
         self.assertEqual(facts['tail_hex'], tail.hex())
 
+    def test_pinned_tail_builds_only_the_pinned_image(self):
+        # TASK-074: without snapshots the tail comes from the manifest, and blob and image must both equal their pins.
+        import hashlib
+        plain = bytes((index * 7 + 3) & 0xFF for index in range(image_tool.BLOB_BYTES))
+        tail = bytes(16)
+        pins = {'blob_sha256': hashlib.sha256(plain).hexdigest(), 'tail_hex': tail.hex(),
+                'image': {'sha256': hashlib.sha256(plain + tail).hexdigest()}}
+        image, facts = image_tool.build_image_with_pinned_tail(self.synthetic_elf(plain), pins)
+        self.assertEqual(image, plain + tail)
+        self.assertEqual(facts['snapshots_matching'], 0)
+        changed = bytearray(plain)
+        changed[7] ^= 1
+        with self.assertRaisesRegex(ValueError, 'blob differs from the pin'):
+            image_tool.build_image_with_pinned_tail(self.synthetic_elf(bytes(changed)), pins)
+        with self.assertRaisesRegex(ValueError, 'differs from the image pin'):
+            image_tool.build_image_with_pinned_tail(self.synthetic_elf(plain), {**pins, 'tail_hex': ('01' + '00' * 15)})
+        with self.assertRaisesRegex(ValueError, 'wrong length'):
+            image_tool.build_image_with_pinned_tail(self.synthetic_elf(plain), {**pins, 'tail_hex': '00'})
+
     def test_snapshot_that_differs_from_the_blob_is_refused(self):
         plain = bytes(image_tool.BLOB_BYTES)
         wrong = bytearray(plain + bytes(16))

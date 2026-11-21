@@ -57,7 +57,20 @@ void main() {
     // 07.4: entry i of a 256-entry CSM1 palette sits at x = (i & 7) + 8 * bit4(i), y = 2 * (i >> 5) + bit3(i).
     const uint entryX = (index & 7u) + 8u * ((index >> 4) & 1u);
     const uint entryY = 2u * (index >> 5) + ((index >> 3) & 1u);
-    const uint quadrant = pc.quadrants[strip];
+    // The strip's quadrant through constant indices. RADV (Mesa 26.2.5, ACO and LLVM alike) reads pc.quadrants[strip]
+    // wrong when `strip` varies per invocation: every strip but the first took another quadrant, while lavapipe and the
+    // SPIR-V layout (ArrayStride 4) are right (TASK-074, hw_tone_hle_exact on an RX 6600). The switch is the same value.
+    uint quadrant;
+    switch (strip) {
+    case 0u: quadrant = pc.quadrants[0]; break;
+    case 1u: quadrant = pc.quadrants[1]; break;
+    case 2u: quadrant = pc.quadrants[2]; break;
+    case 3u: quadrant = pc.quadrants[3]; break;
+    case 4u: quadrant = pc.quadrants[4]; break;
+    case 5u: quadrant = pc.quadrants[5]; break;
+    case 6u: quadrant = pc.quadrants[6]; break;
+    default: quadrant = pc.quadrants[7]; break;  // strip < stripCount <= 8 (checked above)
+    }
     const uint sourceX = 16u * (quadrant & 3u) + entryX;
     const uint sourceY = 16u * (quadrant >> 2) + entryY;
     const uint colour = glm_read(pc.sourceBp, pc.sourceBw, kPsmCt32, sourceX, sourceY);

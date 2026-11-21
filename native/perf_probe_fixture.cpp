@@ -1,4 +1,5 @@
 #include "perf_probe.hpp"
+#include "host_compat.hpp"  // TASK-074: MSVC CRT stand-ins off Windows
 #include "perf_clock.hpp"
 #include <cstdio>
 #include <stdexcept>

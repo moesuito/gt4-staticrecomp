@@ -36,6 +36,12 @@ bool parse_force_baseline(const char *value);
 // Throws std::runtime_error naming a missing required instance extension (VK_KHR_surface, VK_KHR_win32_surface).
 InstanceChoice select_instance_extensions(const std::vector<std::string> &available, bool force_baseline);
 
+// TASK-074 L2: the Linux selection. VK_KHR_surface with every available window-system surface extension
+// (VK_KHR_xlib_surface, VK_KHR_wayland_surface), plus the same swapchain-maintenance prerequisites as on Windows. When
+// the driver offers VK_KHR_surface and no window-system extension, the choice is empty: a headless instance. Never
+// throws; a missing surface shows up later as a refused window.
+InstanceChoice select_linux_instance_extensions(const std::vector<std::string> &available, bool force_baseline);
+
 // `swapchain_maintenance_feature` is VkPhysicalDeviceSwapchainMaintenance1Features::swapchainMaintenance1 as queried
 // for the device (false when it could not be queried). Throws std::runtime_error when VK_KHR_swapchain is missing.
 DeviceChoice select_device_extensions(const std::vector<std::string> &available, MaintenanceFamily instance_family,

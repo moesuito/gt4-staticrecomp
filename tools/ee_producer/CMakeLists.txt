@@ -1,11 +1,28 @@
 cmake_minimum_required(VERSION 3.24)
 project(GT4EEProducer LANGUAGES CXX)
 
-if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "The qualified EE producer requires Windows x86-64")
-endif()
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR NOT MSVC)
-    message(FATAL_ERROR "Use clang-cl with the Visual Studio x64 environment")
+if(WIN32)
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "The qualified EE producer requires Windows x86-64")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR NOT MSVC)
+        message(FATAL_ERROR "Use clang-cl with the Visual Studio x64 environment")
+    endif()
+    set(GT4_PRODUCER_WARNINGS /W4)
+else()
+    # TASK-074 L1: the Linux candidate recipe (clang++ or g++ on Linux x86-64). It is not the qualified Windows recipe;
+    # scripts/ee_producer.py records it as a separate Linux candidate and never treats it as production.
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8
+       OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        message(FATAL_ERROR "The EE producer outside Windows targets Linux x86-64")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|GNU)$")
+        message(FATAL_ERROR "The Linux EE producer needs Clang or GCC (found ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+    set(GT4_PRODUCER_WARNINGS -Wall -Wextra)
+    # Position-independent-executable code (-fPIE), so the library links into the default PIE executables of clang
+    # and GCC alike. clang already defaults to -fPIE (its objects are unchanged); GCC here does not.
+    add_compile_options(-fPIE)
 endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +44,7 @@ if(GT4_ANALYSIS_CONTROLS)
         "${GT4_DONOR}/recomp/analysis.cpp" "${GT4_DONOR}/recomp/elf.cpp"
         "${GT4_DONOR}/recomp/r5900.cpp")
     target_include_directories(ee_analysis_controls PRIVATE "${GT4_DONOR}/recomp")
-    target_compile_options(ee_analysis_controls PRIVATE /W4)
+    target_compile_options(ee_analysis_controls PRIVATE ${GT4_PRODUCER_WARNINGS})
     enable_testing()
     add_test(NAME ee_recovery_controls COMMAND ee_analysis_controls)
     set_tests_properties(ee_recovery_controls PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
@@ -41,7 +58,7 @@ if(GT4_BUILD_TRANSLATOR)
         "${GT4_DONOR}/recomp/analysis.cpp"
         "${GT4_DONOR}/recomp/codegen.cpp"
         "${GT4_DONOR}/recomp/snr2.cpp")
-    target_compile_options(eerecomp PRIVATE /W4)
+    target_compile_options(eerecomp PRIVATE ${GT4_PRODUCER_WARNINGS})
 endif()
 
 if(GT4_GENERATED)

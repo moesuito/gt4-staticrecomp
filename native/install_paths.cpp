@@ -1,6 +1,8 @@
 #include "install_paths.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -20,10 +22,18 @@ std::string narrow(const std::filesystem::path &path) { return path.string(); }
 } // namespace
 
 std::filesystem::path executable_directory() {
+#ifndef _WIN32
+  // TASK-074 L1: Linux reports the running executable through /proc/self/exe.
+  std::error_code error;
+  const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", error);
+  if (error || executable.empty()) return {};
+  return executable.parent_path();
+#else
   wchar_t path[32768];
   const DWORD length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
   if (length == 0 || length >= std::size(path)) return {};
   return std::filesystem::path(path).parent_path();
+#endif
 }
 
 std::filesystem::path choose_shader_directory(const std::filesystem::path &build_time_directory) {

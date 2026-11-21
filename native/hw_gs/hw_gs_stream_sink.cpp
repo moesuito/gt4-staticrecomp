@@ -19,10 +19,15 @@
 #include "hw_gs_options.hpp"
 #include "mtvu_ring.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <intrin.h>
+#else
+#include <time.h>
+#include <x86intrin.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -232,16 +237,62 @@ void print_flare_table() {
   }
 }
 
+// The wall clock and CPU times of the profile lines below: QueryPerformanceCounter and GetThreadTimes/GetProcessTimes
+// on Windows, clock_gettime on Linux (TASK-074).
+struct WallClock {
+  std::int64_t ticks = 0;
+  std::int64_t frequency = 1;
+};
+
+WallClock wall_clock_now() {
+  WallClock clock;
+#ifdef _WIN32
+  LARGE_INTEGER qpc{}, frequency{};
+  QueryPerformanceCounter(&qpc);
+  QueryPerformanceFrequency(&frequency);
+  clock.ticks = qpc.QuadPart;
+  clock.frequency = frequency.QuadPart;
+#else
+  timespec now{};
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  clock.ticks = static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  clock.frequency = 1000000000;
+#endif
+  return clock;
+}
+
+// CPU time of the calling thread and of the whole process, in milliseconds (kernel plus user).
+void cpu_times_ms(double &thread_ms, double &process_ms) {
+#ifdef _WIN32
+  auto filetime_ms = [](const FILETIME &kernel, const FILETIME &user) {
+    const auto ticks = [](const FILETIME &t) {
+      return (static_cast<unsigned long long>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+    };
+    return static_cast<double>(ticks(kernel) + ticks(user)) / 10000.0;  // 100 ns units
+  };
+  FILETIME created{}, exited{}, kernel{}, user{};
+  thread_ms = process_ms = 0.0;
+  if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) thread_ms = filetime_ms(kernel, user);
+  if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) process_ms = filetime_ms(kernel, user);
+#else
+  const auto read_ms = [](clockid_t which) {
+    timespec used{};
+    if (clock_gettime(which, &used) != 0) return 0.0;
+    return static_cast<double>(used.tv_sec) * 1000.0 + static_cast<double>(used.tv_nsec) / 1000000.0;
+  };
+  thread_ms = read_ms(CLOCK_THREAD_CPUTIME_ID);
+  process_ms = read_ms(CLOCK_PROCESS_CPUTIME_ID);
+#endif
+}
+
 // TASK-027 CPU survey: one [hw] transport line per profile interval (per-VBlank averages).
 void print_transport(double n) {
   constexpr int kValues = 25;
   static std::uint64_t lastTsc = 0;
-  static LARGE_INTEGER lastQpc{};
+  static WallClock lastQpc{};
   static std::uint64_t last[kValues] = {};
   const std::uint64_t tsc = __rdtsc();
-  LARGE_INTEGER qpc{}, frequency{};
-  QueryPerformanceCounter(&qpc);
-  QueryPerformanceFrequency(&frequency);
+  const WallClock qpc = wall_clock_now();
   const TransportCounters &t = g_transport;
   const std::uint64_t values[kValues] = {
       t.gif_commands.load(), t.gif_bytes.load(), t.privileged_commands.load(), t.vsync_commands.load(),
@@ -252,7 +303,7 @@ void print_transport(double n) {
       t.wakeups.load(), t.max_depth.load(), t.mtvu_jobs.load(), t.mtvu_records.load(), t.mtvu_wait_ticks.load(),
       t.mtvu_sleeps.load()};
   if (lastTsc != 0 && tsc > lastTsc) {
-    const double seconds = static_cast<double>(qpc.QuadPart - lastQpc.QuadPart) / static_cast<double>(frequency.QuadPart);
+    const double seconds = static_cast<double>(qpc.ticks - lastQpc.ticks) / static_cast<double>(qpc.frequency);
     const double msPerTick = seconds * 1000.0 / static_cast<double>(tsc - lastTsc);
     const auto d = [&](int i) { return static_cast<double>(values[i] - last[i]) / n; };
     const auto ms = [&](int i) { return d(i) * msPerTick; };
@@ -326,16 +377,8 @@ void maybe_profile(Backend &hw) {
     static double lastThreadMs = 0.0;
     static double lastProcessMs = 0.0;
     static bool primed = false;
-    auto filetime_ms = [](const FILETIME &kernel, const FILETIME &user) {
-      const auto ticks = [](const FILETIME &t) {
-        return (static_cast<unsigned long long>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
-      };
-      return static_cast<double>(ticks(kernel) + ticks(user)) / 10000.0;  // 100 ns units
-    };
-    FILETIME created{}, exited{}, kernel{}, user{};
     double threadMs = 0.0, processMs = 0.0;
-    if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) threadMs = filetime_ms(kernel, user);
-    if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) processMs = filetime_ms(kernel, user);
+    cpu_times_ms(threadMs, processMs);
     if (primed) {
       std::fprintf(stderr,
                    "[hw] cost vsync=%llu gs_thread_cpu_ms=%.2f process_cpu_core_ms=%.2f render_passes=%.1f "
@@ -948,6 +991,27 @@ bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t heig
   return true;
 }
 
+#ifndef _WIN32
+// TASK-074 (Linux): attach_window for an X11 window (kind 0) or a Wayland surface (kind 1).
+bool attach_linux_window(int kind, void *display, std::uint64_t window, void *surface, std::uint32_t width,
+                         std::uint32_t height) {
+  std::unique_lock<std::mutex> lock;
+  if (g_worker) lock = g_worker->drain();
+  std::string error;
+  const bool attached = kind == 0   ? backend().attach_x11(display, window, width, height, error)
+                        : kind == 1 ? backend().attach_wayland(display, surface, width, height, error)
+                                    : (error = "only X11 and Wayland windows exist on Linux", false);
+  if (!attached) {
+    std::fprintf(stderr, "[hw] window presentation refused: %s\n", error.c_str());
+    return false;
+  }
+  backend().resize_window(width, height);
+  g_window_attached.store(true, std::memory_order_relaxed);
+  std::fprintf(stderr, "[hw] window output through the HWR swapchain (%s)\n", kind == 0 ? "X11" : "Wayland");
+  return true;
+}
+#endif
+
 // TASK-080: the race view's display-aspect fill (protocol 1.3 CONTROL display_aspect in pcsx2 mode). Called on the EE
 // thread only when the request changes; the backend reads it atomically at its next present, so no drain is needed.
 std::uint64_t g_display_aspect_changes = 0;
@@ -1076,6 +1140,9 @@ const InProcessSink &hw_in_process_sink() {
     s.gs_reset = &gt4::hw::gs_reset;
     s.gif_reset = &gt4::hw::gif_reset;
     s.attach_window = &gt4::hw::attach_window;
+#ifndef _WIN32
+    s.attach_linux_window = &gt4::hw::attach_linux_window;
+#endif
     s.resize_window = &gt4::hw::resize_window;
     s.display_aspect = &gt4::hw::display_aspect;
     s.finish = &gt4::hw::finish;

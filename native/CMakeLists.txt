@@ -904,7 +904,7 @@ target_include_directories(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/devel/SDL3-3.4.1
 target_link_libraries(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/${GT4_SDL3_IMPORT_LIB}")
 add_library(gt4_pad_mapping STATIC pad_mapping.cpp pad_choice.cpp input_recording.cpp)
 target_compile_options(gt4_pad_mapping PRIVATE /W4)
-add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp wheel.cpp)
+add_library(native_host_io STATIC host_io.cpp sdl_gamepad.cpp frame_clock.cpp controls.cpp wheel.cpp)
 target_link_libraries(native_host_io PUBLIC gt4_pad_mapping gt4_usb)
 if(GT4_PERF_RUNTIME_SOURCE)
     target_compile_definitions(native_host_io PRIVATE GT4_PERF_PROBE)

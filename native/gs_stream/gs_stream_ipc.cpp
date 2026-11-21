@@ -2,9 +2,15 @@
 // Shared-memory transport for the GS stream protocol; see gs_stream_ipc.hpp.
 #include "gs_stream_ipc.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+// TASK-074 (Linux): the rings below are shared; the session and the child process are Windows-only for now (the
+// GS process, gt4-gs, does not exist on Linux yet: step L3). See the Linux block at the end of this file.
+#include <unistd.h>
+#endif
 
 #include <immintrin.h>
 
@@ -17,9 +23,11 @@
 namespace gs_stream::ipc {
 namespace {
 
+#ifdef _WIN32
 constexpr std::uint64_t kPageBytes = 4096;
 constexpr DWORD kSleepSliceMs = 100;  // a sleeping side re-checks the fatal flag at least this often
 const wchar_t *const kEventSuffix[4] = {L"-data", L"-space", L"-response", L"-event"};
+#endif
 
 std::uint64_t load(const std::uint64_t &value, std::memory_order order = std::memory_order_seq_cst) {
   return std::atomic_ref<const std::uint64_t>(value).load(order);
@@ -27,6 +35,7 @@ std::uint64_t load(const std::uint64_t &value, std::memory_order order = std::me
 void store(std::uint64_t &value, std::uint64_t next, std::memory_order order = std::memory_order_seq_cst) {
   std::atomic_ref<std::uint64_t>(value).store(next, order);
 }
+#ifdef _WIN32
 std::uint32_t load32(const std::uint32_t &value) { return std::atomic_ref<const std::uint32_t>(value).load(std::memory_order_seq_cst); }
 void store32(std::uint32_t &value, std::uint32_t next) { std::atomic_ref<std::uint32_t>(value).store(next, std::memory_order_seq_cst); }
 
@@ -46,6 +55,9 @@ void check_capacity(std::uint64_t capacity, const char *what) {
     throw IpcError(std::string(what) + " capacity must be a multiple of 4096 between 4 KiB and 4 GiB");
 }
 
+#endif  // _WIN32
+
+#ifdef _WIN32
 std::string random_hex128() {
   std::random_device device;  // RtlGenRandom-backed in the Microsoft STL
   std::string text;
@@ -56,9 +68,18 @@ std::string random_hex128() {
   }
   return text;
 }
+#endif  // _WIN32
 
 }  // namespace
 
+#ifndef _WIN32
+// TASK-074 (Linux): the process-wide helpers without Windows handles. widen keeps one wide character per byte; on Linux
+// it only names a GS process that cannot be started yet.
+std::wstring widen(const std::string &text) { return std::wstring(text.begin(), text.end()); }
+std::uint32_t current_process_id() { return static_cast<std::uint32_t>(getpid()); }
+void close_handle(NativeHandle) {}
+NativeHandle open_process_for_wait(std::uint32_t) { return nullptr; }
+#else
 std::wstring widen(const std::string &text) {
   if (text.empty()) return {};
   // A path from the environment is in the ANSI code page (C:\\Users\\Jo\u00e3o), which is usually not valid UTF-8: that decides which it is.
@@ -82,6 +103,7 @@ void close_handle(NativeHandle handle) {
 NativeHandle open_process_for_wait(std::uint32_t pid) {
   return OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
 }
+#endif
 
 // ---------------------------------------------------------------------------------------------------------------
 // Rings
@@ -162,6 +184,7 @@ void RingReader::release(const RecordView &view) {
   store(*read_, load(*read_, std::memory_order_relaxed) + view.total_bytes);
 }
 
+#ifdef _WIN32
 // ---------------------------------------------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------------------------------------------
@@ -572,5 +595,58 @@ void ChildProcess::kill() {
   if (job_) TerminateJobObject(job_, 1);
   if (process_) WaitForSingleObject(process_, 5000);
 }
+
+#else
+// TASK-074 (Linux): no shared-memory session and no child process yet; the GS process (gt4-gs) is step L3. Linux runs
+// GT4_RENDERER=donor or hw, which never create a session; anything that tries is refused with this message.
+namespace {
+[[noreturn]] void not_on_linux() {
+  throw IpcError("the GS process transport (GT4_RENDERER=pcsx2, GT4_GS_CAPTURE) is not available on Linux yet");
+}
+}  // namespace
+
+std::unique_ptr<Session> Session::create_producer(const SessionOptions &) { not_on_linux(); }
+std::unique_ptr<Session> Session::open_consumer(const std::string &) { not_on_linux(); }
+Session::~Session() = default;
+RingWriter &Session::commands_out() { not_on_linux(); }
+RingReader &Session::events_in() { not_on_linux(); }
+RingReader &Session::commands_in() { not_on_linux(); }
+RingWriter &Session::events_out() { not_on_linux(); }
+void Session::signal(Wake) { not_on_linux(); }
+void Session::post(RecordType, std::uint16_t, const void *, std::size_t, const void *, std::size_t) { not_on_linux(); }
+void Session::post_vsync(const VsyncPayload &) { not_on_linux(); }
+std::uint64_t Session::post_read_fifo_nowait(std::uint32_t) { not_on_linux(); }
+bool Session::readback_reply(std::uint64_t, void *, std::uint32_t) { not_on_linux(); }
+std::uint32_t Session::readback_status() const { not_on_linux(); }
+std::uint32_t Session::read_fifo(std::uint32_t, void *) { not_on_linux(); }
+bool Session::wait_event(RecordView &, std::uint32_t) { not_on_linux(); }
+void Session::next_command(RecordView &) { not_on_linux(); }
+void Session::release_command(const RecordView &) { not_on_linux(); }
+void Session::complete_vsync() { not_on_linux(); }
+void Session::complete_readback(std::uint64_t, std::uint64_t, std::uint32_t) { not_on_linux(); }
+void Session::post_event(RecordType, const void *, std::size_t) { not_on_linux(); }
+
+ChildProcess::~ChildProcess() = default;
+ChildProcess::ChildProcess(ChildProcess &&other) noexcept
+    : process_(other.process_), job_(other.job_), pid_(other.pid_) {
+  other.process_ = other.job_ = nullptr;
+  other.pid_ = 0;
+}
+ChildProcess &ChildProcess::operator=(ChildProcess &&other) noexcept {
+  process_ = other.process_;
+  job_ = other.job_;
+  pid_ = other.pid_;
+  other.process_ = other.job_ = nullptr;
+  other.pid_ = 0;
+  return *this;
+}
+ChildProcess ChildProcess::spawn(const std::wstring &, const std::wstring &) { not_on_linux(); }
+bool ChildProcess::running() const { return false; }
+bool ChildProcess::wait_exit(std::uint32_t, std::uint32_t *exit_code) const {
+  if (exit_code) *exit_code = 0;
+  return true;
+}
+void ChildProcess::kill() {}
+#endif  // _WIN32
 
 }  // namespace gs_stream::ipc

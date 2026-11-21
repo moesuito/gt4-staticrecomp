@@ -14,7 +14,11 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#ifdef _WIN32
 #include <process.h>
+#else
+#include "../../../host_compat.hpp"  // TASK-074: _putenv_s
+#endif
 #include "png_encode.hpp"
 #include <cstdlib>
 #include <cstring>

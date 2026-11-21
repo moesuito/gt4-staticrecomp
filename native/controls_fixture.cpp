@@ -2,6 +2,7 @@
 // audio is touched: the readers are pure functions over raw XInput values.
 
 #include "controls.hpp"
+#include "host_compat.hpp"  // TASK-074: MSVC CRT stand-ins off Windows
 
 #include <algorithm>
 #include <cmath>

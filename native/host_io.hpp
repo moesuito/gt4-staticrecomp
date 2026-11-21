@@ -20,11 +20,9 @@
 // TASK-075: the PS2 pad state lives in pad_mapping.hpp (shared with the SDL3 path).
 using PadState = gt4::pad::PadState;
 
-// SDL3 gamepad handle (SDL_gamepad.h); the header is kept out of this file.
-struct SDL_Gamepad;
-
-// One standardized SDL3 gamepad reading, shared by live polling and the virtual-device fixture.
-gt4::pad::GamepadReading read_sdl_gamepad(SDL_Gamepad *gamepad);
+// One standardized SDL3 gamepad reading (sdl_gamepad.hpp), shared by live polling, the virtual-device fixture and the
+// Linux host.
+#include "sdl_gamepad.hpp"
 
 // Maps one XInput state through the binding table. The default-argument overload
 // uses controls::default_controls(), which equals the slice 157 mapping.

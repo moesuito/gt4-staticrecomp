@@ -211,9 +211,28 @@ void check_linked_image() {
   const auto copied = sa::parse_receipt(read_sample("prepare.json"));
   check(copied && copied->image_linked_path.empty(), "a receipt from before the link has none, and uses its copy");
 
+  // TASK-074: the launcher writes the host's own paths. Windows checks a drive path and backslashes; Linux checks the
+  // same rules with POSIX paths (there a backslash is an ordinary file-name character, not a separator).
+#ifdef _WIN32
+  const fs::path kLinkedImage("D:\\ISOs\\gt4.iso");
+  const fs::path kOpenableImage("D:\\ISOS~1\\GT4~1.ISO");
+  const std::string kLinkedJson = json;
+  const std::string kRelativeJson = "ISOs\\\\gt4.iso";
+  const fs::path kRelativeImageFile = kInstall / "ISOs" / "gt4.iso";
+  const fs::path kRelativeImage = kInstall / "ISOs\\gt4.iso";
+#else
+  const fs::path kLinkedImage("/mnt/isos/gt4.iso");
+  const fs::path kOpenableImage("/mnt/isos/openable/gt4.iso");
+  const std::string kLinkedJson =
+      "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"/mnt/isos/gt4.iso\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}";
+  const std::string kRelativeJson = "ISOs/gt4.iso";
+  const fs::path kRelativeImageFile = kInstall / "ISOs" / "gt4.iso";
+  const fs::path kRelativeImage = kRelativeImageFile;
+#endif
+
   World world = ready_world();
   const auto game_root = kInstall / "data" / "games" / "gt4";
-  world.file(game_root / "prepared" / "prepare.json", json);
+  world.file(game_root / "prepared" / "prepare.json", kLinkedJson);
   world.file(game_root / "prepared" / "SCUS_973.28", "elf");
   sa::Check why;
   const auto layout = sa::find_layout(kInstall / "game" / "gt4vulkan.exe", "C:/Users/p/AppData/Local", "C:/Users/p/AppData/Roaming", world.access(), why);
@@ -221,25 +240,26 @@ void check_linked_image() {
   if (!layout) return;
   fs::path disc, elf;
   check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "an image that is not there is reported");
-  check(disc == fs::path("D:\\ISOs\\gt4.iso"), "the game looks for it where the player keeps it");
-  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 9);
+  check(disc == kLinkedImage, "the game looks for it where the player keeps it");
+  world.file(kLinkedImage, "iso", 7, 9);
   check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None, "the linked image passes");
   sa::Access with_short_names = world.access();
-  with_short_names.openable_path = [](const fs::path &) { return fs::path("D:\\ISOS~1\\GT4~1.ISO"); };
-  check(sa::check_game_files(*layout, with_short_names, disc, elf).problem == sa::Problem::None && disc == fs::path("D:\\ISOS~1\\GT4~1.ISO"),
+  with_short_names.openable_path = [&](const fs::path &) { return kOpenableImage; };
+  check(sa::check_game_files(*layout, with_short_names, disc, elf).problem == sa::Problem::None && disc == kOpenableImage,
         "the game is given the name it can open");
-  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 8, 9);
+  world.file(kLinkedImage, "iso", 8, 9);
   check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a changed image does not");
-  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 1500000009ull);
+  world.file(kLinkedImage, "iso", 7, 1500000009ull);
   check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None, "a time a file system rounded is not a change");
-  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 9000000009ull);
+  world.file(kLinkedImage, "iso", 7, 9000000009ull);
   check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a later time is");
 
   // An image inside the launcher's folder is saved relative to it, so a portable folder can move with it.
   world.file(game_root / "prepared" / "prepare.json",
-             "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"ISOs\\\\gt4.iso\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}");
-  world.file(kInstall / "ISOs" / "gt4.iso", "iso", 7, 9);
-  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None && disc == kInstall / "ISOs\\gt4.iso",
+             "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"" + kRelativeJson +
+                 "\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}");
+  world.file(kRelativeImageFile, "iso", 7, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None && disc == kRelativeImage,
         "a relative link is found inside the install folder");
 }
 

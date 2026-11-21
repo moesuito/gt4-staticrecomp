@@ -245,6 +245,7 @@ int main() {
     if (!oversize_refused)
       throw std::runtime_error(
           "Oversized display escaped scratch capacity check");
+#ifdef _WIN32
     HWND window = CreateWindowExW(0, L"STATIC", L"Vulkan presentation fixture",
                                   WS_OVERLAPPEDWINDOW, 0, 0, 160, 120, nullptr,
                                   nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -272,6 +273,11 @@ int main() {
     DestroyWindow(window);
     std::fprintf(stderr,
                  "[fixture] Win32 repeat/zero-size/resize restore passed\n");
+#else
+    // TASK-074 L1: headless Linux has no window surface yet (L2). The raster, display and readback checks above ran in
+    // full; only presentation is skipped, and the log says so.
+    std::fprintf(stderr, "[fixture] presentation: skipped (headless Linux, no window surface until TASK-074 L2)\n");
+#endif
     gpu::stats();
     std::fprintf(stderr,
                  "[fixture] PASS: real Vulkan raster/display/readback\n");

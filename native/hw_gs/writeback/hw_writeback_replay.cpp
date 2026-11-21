@@ -22,6 +22,11 @@
 // Exit 77 means "no Vulkan device with graphics and compute" (the caller reports it as skipped).
 
 #include <cstdio>
+#ifndef _WIN32
+// TASK-074: the 64-bit seek pair of Linux (off_t is 64 bits on x86-64).
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <string>

@@ -13,7 +13,11 @@
 #include <cstdlib>
 #include <string>
 
+#ifdef _WIN32
 #include <process.h>
+#else
+#include "../host_compat.hpp"  // TASK-074: _putenv_s
+#endif
 
 namespace gt4::hw {
 

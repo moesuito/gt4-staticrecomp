@@ -4,6 +4,7 @@
 //   - ReadbackProbe: per-destination aggregation (calls, distinct replies, repeated, zero) and its two output forms.
 // The probe is a test switch: with GT4_GS_READBACK_LOG unset it must do nothing at all.
 #include "gs_readback_probe.hpp"
+#include "../host_compat.hpp"  // TASK-074: MSVC CRT stand-ins off Windows
 
 #include <cstdio>
 #include <cstdlib>

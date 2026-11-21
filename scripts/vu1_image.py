@@ -84,6 +84,26 @@ def build_image(elf_bytes, snapshots):
                    'snapshots_matching': count}
 
 
+def build_image_with_pinned_tail(elf_bytes, pins=None):
+    """TASK-074: builds the image without recorded snapshots. The 16 tail bytes come from the pinned manifest
+    (docs/inputs/slice155-vu1-image.json tail_hex, itself controlled by 86 snapshots), and both the decrypted blob and the
+    whole image must equal their pins, so the result is the qualified image or nothing."""
+    pins = pins if pins is not None else json.loads(PINS.read_text(encoding='utf-8'))
+    encrypted = elf_bytes[ELF_OFFSET:ELF_OFFSET + BLOB_BYTES]
+    if len(encrypted) != BLOB_BYTES:
+        raise ValueError('ELF is too short for the VU1 blob')
+    blob = decrypt_blob(encrypted)
+    if hashlib.sha256(blob).hexdigest() != pins['blob_sha256']:
+        raise ValueError('decrypted VU1 blob differs from the pin')
+    tail = bytes.fromhex(pins['tail_hex'])
+    if len(tail) != IMAGE_BYTES - BLOB_BYTES:
+        raise ValueError('pinned tail has the wrong length')
+    image = blob + tail
+    if hashlib.sha256(image).hexdigest() != pins['image']['sha256']:
+        raise ValueError('VU1 image with the pinned tail differs from the image pin')
+    return image, {'blob_sha256': pins['blob_sha256'], 'tail_hex': tail.hex(), 'snapshots_matching': 0}
+
+
 def read_snapshots(directory):
     files = sorted(Path(directory).glob('*.bin'))
     return [(path.name, path.read_bytes()) for path in files]
@@ -276,14 +296,18 @@ def cmd_build(arguments):
     pinned = json.loads(ELF_PIN.read_text(encoding='utf-8'))['native_elf_sha256']
     if elf_sha != pinned:
         raise ValueError(f'ELF differs from the pin in {ELF_PIN.name}: {elf_sha}')
-    snapshots = read_snapshots(arguments.corpus)
-    image, facts = build_image(elf_bytes, snapshots)
+    if arguments.pinned_tail:
+        image, facts = build_image_with_pinned_tail(elf_bytes)
+    else:
+        snapshots = read_snapshots(arguments.corpus)
+        image, facts = build_image(elf_bytes, snapshots)
     out = fresh_directory(arguments.out)
     (out / 'vu1_image.bin').write_bytes(image)
     receipt = {'elf_sha256': elf_sha, 'elf_offset': ELF_OFFSET, 'blob_bytes': BLOB_BYTES,
                'image_bytes': IMAGE_BYTES, 'key_state': KEY_STATE, 'key_multiplier': KEY_MULTIPLIER,
                'image_sha256': hashlib.sha256(image).hexdigest(), 'corpus_snapshots': facts['snapshots_matching'],
-               'corpus_control': 'every snapshot equals the blob over 0x0000-0x3FEF and all snapshots agree on the tail',
+               'corpus_control': ('tail from the pinned manifest; blob and image equal their pins' if arguments.pinned_tail
+                                  else 'every snapshot equals the blob over 0x0000-0x3FEF and all snapshots agree on the tail'),
                'tail_hex': facts['tail_hex'], 'blob_sha256': facts['blob_sha256']}
     (out / 'vu1_image.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
     print(f"vu1-image: {IMAGE_BYTES} bytes sha256={receipt['image_sha256']} snapshots={facts['snapshots_matching']}")
@@ -357,7 +381,10 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     build = commands.add_parser('build')
     build.add_argument('--elf', required=True)
-    build.add_argument('--corpus', required=True, help='directory of recorded 16 KiB snapshots (read only)')
+    tail_source = build.add_mutually_exclusive_group(required=True)
+    tail_source.add_argument('--corpus', help='directory of recorded 16 KiB snapshots (read only)')
+    tail_source.add_argument('--pinned-tail', action='store_true',
+                             help='take the tail bytes from the pinned manifest; blob and image must equal their pins')
     build.add_argument('--out', required=True, help='fresh output directory')
     build.set_defaults(run=cmd_build)
     check = commands.add_parser('check')

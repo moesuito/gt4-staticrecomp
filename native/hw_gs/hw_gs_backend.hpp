@@ -195,6 +195,12 @@ public:
 
   // Swapchain on an existing HWND (passed as void* to keep this header Win32-free).
   bool attach_window(void *hwnd, std::string &error);
+#ifndef _WIN32
+  // TASK-074 (Linux): swapchain on an X11 window (display pointer and window id) or a Wayland surface (display and
+  // surface pointers), with the window's pixel size (a Wayland surface reports none).
+  bool attach_x11(void *display, std::uint64_t window, std::uint32_t width, std::uint32_t height, std::string &error);
+  bool attach_wayland(void *display, void *surface, std::uint32_t width, std::uint32_t height, std::string &error);
+#endif
   void detach_window();
   // Resize and fullscreen only set a flag; recreation happens before the next present.
   void resize_window(std::uint32_t width, std::uint32_t height);
@@ -221,6 +227,10 @@ public:
 
 private:
   struct Impl;
+#ifndef _WIN32
+  // TASK-074: the steps attach_window takes once the surface exists, shared by attach_x11 and attach_wayland.
+  bool finish_linux_attach(std::uint32_t width, std::uint32_t height, std::string &error);
+#endif
   std::unique_ptr<Impl> impl_;
 };
 

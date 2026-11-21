@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <stdexcept>
 
+#ifdef _WIN32
 #include <timeapi.h>
 
 #pragma comment(lib, "winmm.lib")
@@ -10,12 +11,35 @@
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
+#else
+#include <cerrno>
+#include <time.h>
+#endif
 
 namespace {
 // The final stretch is spun rather than slept: a timer wake-up can be late.
 constexpr double spin_seconds = 0.0005;
 }
 
+#ifndef _WIN32
+FrameClock::FrameClock() : frequency_(1000000000u) {}
+
+FrameClock::~FrameClock() = default;
+
+std::int64_t FrameClock::now() const {
+  timespec time{};
+  clock_gettime(CLOCK_MONOTONIC, &time);
+  return static_cast<std::int64_t>(time.tv_sec) * 1000000000 + time.tv_nsec;
+}
+
+void FrameClock::sleep_ticks(std::int64_t ticks) {
+  // An absolute deadline, so a signal that interrupts the sleep resumes toward the same instant.
+  const std::int64_t target = now() + ticks;
+  const timespec due{static_cast<time_t>(target / 1000000000), static_cast<long>(target % 1000000000)};
+  while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &due, nullptr) == EINTR) {
+  }
+}
+#else
 FrameClock::FrameClock() {
   LARGE_INTEGER frequency{};
   if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0)
@@ -64,6 +88,7 @@ void FrameClock::sleep_ticks(std::int64_t ticks) {
   if (whole)
     Sleep(whole);
 }
+#endif
 
 void FrameClock::wait_until(std::int64_t target) {
   const auto spin = static_cast<std::int64_t>(spin_seconds * static_cast<double>(frequency_));

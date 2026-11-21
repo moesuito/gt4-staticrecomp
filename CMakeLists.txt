@@ -1,7 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 project(GT4Recomp VERSION 0.2.0 LANGUAGES CXX)
 
-if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+# TASK-074: outside Windows, only the host-only Linux build (pure libraries and their CTest fixtures) exists for now.
+if(NOT WIN32)
+    include("${CMAKE_SOURCE_DIR}/cmake/LinuxHost.cmake")
+    return()
+endif()
+
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "The qualified target is Windows x86-64")
 endif()
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR NOT MSVC)

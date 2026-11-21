@@ -3,6 +3,7 @@
 //   - the write into guest RAM at 0x7F10: exactly six words, idempotent, and it never touches the TASK-080 HUD block;
 //   - the VBlank wrapper with the switch on.
 #include "flare_limits.hpp"
+#include "host_compat.hpp"  // TASK-074: MSVC CRT stand-ins off Windows
 
 #include <cstdio>
 #include <cstdlib>

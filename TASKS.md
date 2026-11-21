@@ -148,6 +148,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑136 | Simple onboarding: a new install uses CoreGS 2.0 when the PC runs it, GSdx becomes optional and is downloaded only when the card needs it | 🧪 Built, waits for the owner's test (branch `task/136-simple-onboarding`, 2026-11-02) |
 | TASK‑137 | The launcher links the disc image and no longer copies it; an image that moved asks to be chosen again; installs with a copy keep working | 🧪 Built, waits for the owner's test (branch `task/137-link-disc-image`, candidate 381, 2026-11-02) |
 | TASK‑138 | A portable folder carries its disc image (relative link); accented paths on CoreGS 2.0; the GSdx fallback goes to CoreGS 2.0; a release can be started directly | 🧪 Built, waits for the owner's test (branch `task/138-relative-image-link`, candidate 382, 2026-11-02); GSdx in an accented folder not confirmed |
+| TASK‑074 | Native Linux x86-64 build (SDL3 platform layer, Linux gt4-gs owning the window, Linux packaging) | 🔧 L1 in progress (2026-11-20, branch `task/074-linux-host-build`): host-only CMake build 36/36 CTest (clang, GCC); EE sources regenerated on Linux byte-identical to the frozen inventory, Linux candidate `libps2game.a`, headless boot to the name entry; native Vulkan GS backend headless on RADV and lavapipe. 🔧 L2 started: the game runs in an SDL3 window on Wayland and X11 with sound and controls (preview, base game only; owner gameplay test pending); frame pacing from the Windows host (60 Hz grid, resampled audio): every VBlank interval in 16-17 ms; release VU path (VU1/VU0 AOT, MTVU, fast headers) built on Linux identical to the rc14 pins, CTest 48/48 ([plan](docs/linux/PLAN.md), [host build](docs/linux/HOST-BUILD.md), [game library](docs/linux/L1-GAME-LIBRARY.md)) |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -1548,6 +1549,85 @@ Owner decisions (2026-10-21). Release 1.2.0 of both the game/launcher and gt4-gs
   Game build slice240 (`private/slice240-game-build`): see `docs/BUILD.md` slice 240.
 - **Status.** Waiting for the owner's test. Nothing is tagged, released, drafted or merged; gt4-gs 1.2.0 is a local package
   until the owner approves it.
+
+### TASK-074 — Linux build
+Owner request 2026-10-19: a native Linux x86-64 build, planned on the branch `linux/main`, not started yet.
+The game code and donor runtime are already portable C++; only the native adapter (window, input, audio, clock,
+GS stream IPC, paths) and the gt4-gs frontend are Windows-specific. Steps L0-L5 (platform seam, Linux build,
+SDL3 backend, gt4-gs for Linux with gt4-gs owning the window, packaging, owner test; try Proton/Wine first):
+[docs/linux/PLAN.md](docs/linux/PLAN.md). Acceptance: the Windows build is unchanged (headless 42/42, CTest,
+Python); the owner plays the reference scene on real Linux at 60 FPS with the PCSX2 GS and CoreGS 1.1.
+
+Progress (2026-11-20, branch `task/074-linux-host-build`, L1 first part): the root `CMakeLists.txt` includes
+`cmake/LinuxHost.cmake` when `WIN32` is false (the Windows recipe is unchanged). It builds the platform-neutral host
+libraries and 36 CTest fixtures, with the Windows test names, and needs no private assets. Results: clang 23.1.4 and
+GCC 16.2.1 36/36 (v2.00), clang 36/36 (Spec II). Source changes sit behind `#ifndef _WIN32` (`native/host_compat.hpp`,
+`perf_clock.cpp`, `perf_probe.cpp`); the linked-image fixture checks POSIX paths on Linux. Still to do: a Windows
+CTest/Python run of these changes before a merge; the game library and runtime on Linux (rest of L1). Details:
+[docs/linux/HOST-BUILD.md](docs/linux/HOST-BUILD.md).
+
+Progress (2026-11-20, same branch, L1 second part): `ee_producer.py` and `tools/ee_producer` run on Linux with a separate
+Linux candidate recipe (the Windows recipe and pins are unchanged). From the verified CORE.GT4 the rebuilt ELF matches its
+pin, and the Linux translator's 328 generated files are byte-identical to the frozen Windows inventory (`7a1a0909...`).
+`libps2game.a` (327 objects, inventory `d5d86cc2...`, the same on two independent builds) is recorded in
+`linux-library.json`, never as production. The optional `gt4_headless_smoke` runner (donor runtime, CPU rasterizer,
+headless host) boots the game: 12,000 frames with scripted input through the memory card dialogs to the name entry, with
+no halt. Not exercised yet: the movie, 3D and races, audio, card writes, VU1 AOT, the Vulkan path. Python: new
+controls in `test_ee_archive.py` and `test_ee_producer.py`. Details: [docs/linux/L1-GAME-LIBRARY.md](docs/linux/L1-GAME-LIBRARY.md).
+
+Progress (2026-11-20, same branch, L1 third part): the 9 SPIR-V shaders built on Linux by `tools/wgsl_spirv` (naga
+30.0.0) are byte-identical to the slice114 pins. `native_vulkan.cpp` runs headless on Linux (`dlopen` loader, no surface
+extensions, presentation entry points required on Windows only); `vulkan_fixture` passes on the RX 6600 (RADV) and on
+lavapipe (full 4 MiB VRAM identical to the CPU rasterizer; presentation skipped), so Linux CTest is 39/39. The game
+through the Vulkan GS backend: lavapipe frames byte-identical to the CPU rasterizer; RADV differs by at most 3 per
+channel in alpha-blended pixels only (deterministic, not a race; Windows AMD behaviour Unknown). A GCC-built game
+library boots with identical cycles and frames. Not checked yet: the Windows build of these changes. Details:
+[docs/linux/L1-VULKAN.md](docs/linux/L1-VULKAN.md).
+
+Progress (2026-11-20, same branch, L2 first part): `native/linux/sdl_window.cpp` implements `window.hpp` with SDL3 in the
+Windows host's one-thread VBlank shape: X11 or Wayland handles go to new `Context::attach_x11` / `attach_wayland`
+(the port is derived with `prepare_external_vulkan.py --linux-surfaces`; the default derivation is byte-identical),
+keyboard through the controls table and a fixture-checked virtual-key to HID scancode table, gamepads through
+`read_sdl_gamepad` (moved unchanged to `native/sdl_gamepad.cpp`), 48 kHz audio pacing the game, F11/Alt+Enter
+fullscreen. Wayland and X11 both present 595 frames in 600 at 60 Hz and exit with code 0. Not yet: the frame clock and
+audio rate control, game patches, wheels, achievements, the probe. Not checked: the Windows build; gameplay by a person.
+Details: [docs/linux/L2-WINDOW.md](docs/linux/L2-WINDOW.md).
+
+Progress (2026-11-20, same branch, L2 frame pacing): the Windows host's pacing on Linux. `FrameClock` has a Linux branch
+(`CLOCK_MONOTONIC`, absolute `clock_nanosleep`, final spin); `sdl_window.cpp` releases each VBlank on the `FramePacer` grid
+like `window.cpp` `release_frame`; `native/linux/sdl_audio.cpp` resamples into a ring under the `RateController`
+(`GT4_PACING=audio` keeps the earlier rule for A/B); F8 and exit print `pacing::Diagnostics`. Measured over 1,200 frames
+with sound: all 1,199 intervals in 16-17 ms, 0 late frames, 0 underruns, queue median 2,858 frames for a 2,880 target
+(the earlier rule: 269 intervals under 12 ms and 837 at 20-25 ms). New fixture `native_linux_pacing`.
+
+Progress (2026-11-20, same branch, L2 performance): owner report before it (demanding scene): mean 17.75 ms, 2,201 of 2,267
+frames late, 853 underruns. On Linux the `--mtvu` capsule's 7 sources are byte-identical to the slice172/178 pins; the VU1
+image (new `vu1_image.py build --pinned-tail`), the 2,048-program VU1 table and the 14-program VU0 table equal the slice408
+(rc14) pins. The Linux CMake builds `gt4_vu_recomp`, the optional AOT runtime with the VU1 worker and fast headers, and the
+VU differential tests (VU0: 28,000 seeded states, 0 failures). AOT output is byte-identical to the interpreter build (12/12
+frames, same cycles). Intro movie in a window: 21 late frames and 18 underruns before, 0 and 0 after (all 2,499 intervals in
+16-17 ms). The capsule's `vu_micro.cpp` needs two `std::uint64_t` casts on Linux (two types there, one with MSVC), applied
+to a build copy after the pin check; the lasting fix needs new overlay pins (owner decision). Not measured yet: the owner's
+demanding scene. Details: [docs/linux/L2-PERFORMANCE.md](docs/linux/L2-PERFORMANCE.md).
+
+Progress (2026-11-21, same branch, CoreGS 2.0 part 1): CoreGS (`native/hw_gs`) builds on Linux (`cmake/LinuxCoreGS.cmake`,
+`-DGT4_LINUX_HW_GS=ON`; Windows API spots behind `#ifdef`, HUD and CPU sampler off on Linux) and passes 257 of 258 tests on
+RADV (1 skipped). A Mesa RADV bug (push-constant array indexed per invocation) broke `hw_tone_hle_exact`; `hw_tone_strips.comp`
+now reads the array through constant indices. Not yet connected to the game. Clean room kept (no PCSX2 material read).
+Details: [docs/linux/L2-COREGS.md](docs/linux/L2-COREGS.md).
+
+Progress (2026-11-21, same branch, CoreGS 2.0 part 2): the game runs on CoreGS 2.0 in a Linux window (`GT4_RENDERER=hw`,
+`GT4_HW_CORE=2`): `--gs-stream` capsule equal to the slice191 pins, the GS stream client compiled on Linux (GS process half
+refused there), an X11/Wayland attach through the derived port's stream hook. Core 2 at 3x with FXAA and sound: 1,200 of
+1,200 presents, 1,199 deinterlaced, all intervals 16-17 ms, 0 late, 0 underruns, identical guest cycles. Combined CTest
+268/268. Not yet seen by the tester.
+
+Progress (2026-11-21, same branch, game patches): the release's game code (aspect ELF patch, pinned seeds,
+`camera360_units.py`) reproduced on Linux equal to the slice408 pins, with the slice262 frame-cost and license guard
+capsules (also equal to their pins). New `native/linux/linux_main.cpp`, the 480p hold, display aspect, `GT4_FULLSCREEN`
+and `GT4_OUTPUT_SIZE` in the window host, `scripts/linux/play.sh` with the launcher's defaults. Camera, FoV, trigger range,
+aspect, 480p and 16:9 report active and set the game's values. Not yet: frame skip, the other release capsules.
+Details: [docs/linux/L2-PATCHES.md](docs/linux/L2-PATCHES.md).
 
 ### TASK-018 — Racing wheels
 

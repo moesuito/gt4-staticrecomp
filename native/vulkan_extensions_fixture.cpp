@@ -13,6 +13,7 @@ using gt4::vulkan::MaintenanceFamily;
 using gt4::vulkan::parse_force_baseline;
 using gt4::vulkan::select_device_extensions;
 using gt4::vulkan::select_instance_extensions;
+using gt4::vulkan::select_linux_instance_extensions;
 using List = std::vector<std::string>;
 
 namespace {
@@ -111,6 +112,30 @@ int main() {
   }
   expect(throws([] { select_device_extensions({}, MaintenanceFamily::none, false, false); }),
          "no VK_KHR_swapchain refuses");
+
+  // TASK-074 L2: the Linux selection (pure, so it is checked on every host).
+  {
+    const List x11_wayland = {"VK_KHR_surface", "VK_KHR_xlib_surface", "VK_KHR_wayland_surface", "VK_KHR_xcb_surface"};
+    const InstanceChoice both = select_linux_instance_extensions(x11_wayland, false);
+    expect(both.extensions == List({"VK_KHR_surface", "VK_KHR_xlib_surface", "VK_KHR_wayland_surface"}) &&
+               both.family == MaintenanceFamily::none,
+           "Linux: surface plus every window-system extension, xcb not used");
+    const InstanceChoice wayland_only = select_linux_instance_extensions({"VK_KHR_surface", "VK_KHR_wayland_surface"}, false);
+    expect(wayland_only.extensions == List({"VK_KHR_surface", "VK_KHR_wayland_surface"}), "Linux: Wayland only");
+    const List maintained = with(x11_wayland, {"VK_KHR_get_surface_capabilities2", "VK_KHR_surface_maintenance1",
+                                               "VK_EXT_surface_maintenance1"});
+    const InstanceChoice khr = select_linux_instance_extensions(maintained, false);
+    expect(khr.family == MaintenanceFamily::khr && khr.extensions.size() == 5 &&
+               khr.extensions[3] == "VK_KHR_get_surface_capabilities2" && khr.extensions[4] == "VK_KHR_surface_maintenance1",
+           "Linux: the KHR maintenance family, as on Windows");
+    expect(select_linux_instance_extensions(maintained, true).family == MaintenanceFamily::none,
+           "Linux: forced baseline");
+    expect(select_linux_instance_extensions({"VK_KHR_surface"}, false).extensions.empty(),
+           "Linux: no window-system extension gives a headless instance");
+    expect(select_linux_instance_extensions({}, false).extensions.empty(), "Linux: no surface gives a headless instance");
+    expect(throws([] { select_instance_extensions({"VK_KHR_surface", "VK_KHR_xlib_surface"}, false); }),
+           "the Win32 selection still refuses a driver without VK_KHR_win32_surface");
+  }
 
   if (failures) {
     std::fprintf(stderr, "[vulkan-extensions] %d failure(s)\n", failures);

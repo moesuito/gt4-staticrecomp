@@ -11,7 +11,7 @@ import sys
 import zlib
 
 from gt4disc import fingerprint, inspect_disc, validate_manifest, differences
-from ee_archive import object_inventory, inventory_digest
+from ee_archive import elf_object_inventory, object_inventory, inventory_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +20,11 @@ MAX_INFLATED_CORE = 8 * 1024 * 1024
 R5900_FLAGS = 0x20924001
 QUALIFIED_COMPILER = Path('C:/Antigravity/gt4-staticrecomp/private/tooling/llvm-23.1.2/bin/clang-cl.exe')
 QUALIFIED_OBJECT_INVENTORY = '8800e261b025f160c56604f06b063573447cd949a3491db58d99942d6b4254aa'
+# TASK-074 L1: the Linux candidate recipe. It is checked separately from the qualified Windows recipe above and never
+# produces a production library: no Linux compiler or object inventory is pinned yet, so a Linux library is recorded
+# as a candidate only (linux-library.json).
+LINUX_COMPILER_IDS = ('Clang', 'GNU')
+LINUX_RECIPE = {'cxx_standard': '20', 'build_type': 'Release', 'release_flags': '-O3 -DNDEBUG', 'flags': ''}
 MANIFEST_PINS = {
     'usa-v2.00.json': '33f10ef008ca800067189fc40624d42b5c6027e3e273418e48d7b2b9c0587a92',
     'usa-v2.00-native.json': 'cca879092cbb6af89823706bc0a36e5ee498581a1bd9c79292e64e35f5d8f339',
@@ -268,6 +273,47 @@ def verify_toolchain(path, metadata, generated=None):
     return identity(path)
 
 
+def on_linux():
+    return sys.platform.startswith('linux')
+
+
+def translator_file_name():
+    return 'eerecomp' if on_linux() else 'eerecomp.exe'
+
+
+def toolchain_fields(path):
+    reject_link(path.parent)
+    reject_link(path)
+    fields = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        key, separator, value = line.partition('=')
+        if not separator or key in fields:
+            raise ValueError('Malformed compiler configuration receipt')
+        fields[key] = value
+    return fields
+
+
+def verify_linux_toolchain(path, metadata, generated=None):
+    """TASK-074 L1: the Linux candidate recipe (clang++ or g++, C++20, CMake Release flags, no extra flags).
+    The compiler version is recorded, not pinned: there is no qualified Linux compiler yet."""
+    fields = toolchain_fields(path)
+    compiler = Path(fields.get('compiler', ''))
+    if (fields.get('compiler_id') not in LINUX_COMPILER_IDS or not fields.get('compiler_version')
+            or any(fields.get(key) != value for key, value in LINUX_RECIPE.items())
+            or not compiler.is_absolute() or not compiler.is_file()
+            or Path(fields.get('donor', '')).resolve() != Path(metadata['donor']).resolve()):
+        raise ValueError('Compiler/source configuration differs from the Linux candidate recipe')
+    if generated is not None and Path(fields.get('generated', '')).resolve() != generated:
+        raise ValueError('Compiler generated-source directory differs from producer')
+    return identity(path)
+
+
+def verify_host_toolchain(path, metadata, generated=None):
+    if on_linux():
+        return verify_linux_toolchain(path, metadata, generated)
+    return verify_toolchain(path, metadata, generated)
+
+
 def prepare(assets_root, output, iso=None, core=None):
     assets_root = assets_root.resolve()
     output = validate_output(output, assets_root)
@@ -332,9 +378,9 @@ def generate(output, translator=None):
         reject_link(translator.parent)
         reject_link(translator)
         translator = translator.resolve()
-        if translator != output / 'tool-build/eerecomp.exe':
+        if translator != output / 'tool-build' / translator_file_name():
             raise ValueError('New translator must be built in this producer tool-build/')
-        toolchain = verify_toolchain(output / 'tool-build/toolchain.txt', metadata)
+        toolchain = verify_host_toolchain(output / 'tool-build/toolchain.txt', metadata)
         tool_origin = 'Fresh producer translator; compiler receipt in tool-build/toolchain.txt'
     arguments = [str(translator), str(output / 'SCUS_973.28.elf'),
                  '--out', str(output / 'generated')]
@@ -347,6 +393,8 @@ def generate(output, translator=None):
               'toolchain': toolchain, 'arguments': arguments, 'generated': records, 'comparison': observed,
               'identical_to_frozen_generated': observed == expected,
               'qualification': 'Source identity only; not runtime or PS2 fidelity proof'}
+    if on_linux():
+        result['host'] = 'linux-candidate'
     write_json(output / 'generation.json', result)
     if observed != expected:
         raise ValueError('Generated source differs from frozen producer; see private generation.json')
@@ -361,6 +409,8 @@ def record_library(output):
         raise ValueError('Generated source changed after verification')
     if inventory_summary(records) != study['generated']:
         raise ValueError('Library sources differ from pinned generated inventory')
+    if on_linux():
+        return record_linux_library(output, metadata, records)
     library = output / 'game-build/ps2game.lib'
     compiler_receipt = output / 'game-build/toolchain.txt'
     reject_link(library.parent)
@@ -378,6 +428,26 @@ def record_library(output):
               'object_count': len(objects), 'object_inventory_without_timestamps': object_digest,
               'qualification': 'Library produced; integration and owner gameplay pending'}
     write_json(output / 'library.json', result)
+    return result
+
+
+def record_linux_library(output, metadata, records):
+    """TASK-074 L1: record a Linux candidate library built from the verified generated sources. Nothing here is a
+    qualified pin; the Windows production library and launcher pins are untouched."""
+    library = output / 'game-build/libps2game.a'
+    reject_link(library.parent)
+    reject_link(library)
+    receipt_identity = verify_linux_toolchain(output / 'game-build/toolchain.txt', metadata, output / 'generated')
+    objects = elf_object_inventory(library.read_bytes())
+    expected_members = {row['path'] + '.o' for row in records if row['path'].endswith('.cpp')}
+    if {row['name'] for row in objects} != expected_members:
+        raise ValueError('Library member inventory differs from generated compilation units')
+    result = {'schema_version': 1, 'host': 'linux-candidate', 'library': identity(library),
+              'compiler_receipt': receipt_identity,
+              'object_count': len(objects), 'object_inventory': inventory_digest(objects),
+              'qualification': 'Linux candidate library from verified sources; unpinned, not production, '
+                               'integration and owner gameplay pending'}
+    write_json(output / 'linux-library.json', result)
     return result
 
 

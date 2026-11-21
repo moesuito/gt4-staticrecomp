@@ -10,10 +10,33 @@
 #include "../install_paths.hpp"
 #include "../display_aspect.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <bcrypt.h>
+#else
+#include <time.h>
+
+// TASK-074 (Linux): the GS-process half of this file (class Client and its helpers) runs only with a GS process,
+// which Linux does not have yet (step L3); Linux runs GT4_RENDERER=donor or hw, where client() stays null. That half
+// compiles against these stand-ins: a QueryPerformanceCounter of the same shape (CLOCK_MONOTONIC nanoseconds, real
+// values) and an opaque window type. The dialogs and the GS executable's hash have Linux branches below.
+union LARGE_INTEGER {
+  long long QuadPart;
+};
+inline bool QueryPerformanceCounter(LARGE_INTEGER *value) {
+  timespec now{};
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  value->QuadPart = static_cast<long long>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  return true;
+}
+inline bool QueryPerformanceFrequency(LARGE_INTEGER *value) {
+  value->QuadPart = 1000000000;
+  return true;
+}
+using HWND = void *;
+#endif
 
 #include <algorithm>
 #include <array>
@@ -103,10 +126,16 @@ ReadbackJournal g_readback_journal{};
 
 // CPU time of the calling thread in microseconds (UINT64_MAX when unavailable).
 std::uint64_t thread_cpu_us() {
+#ifndef _WIN32
+  timespec used{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &used) != 0) return UINT64_MAX;
+  return static_cast<std::uint64_t>(used.tv_sec) * 1000000u + static_cast<std::uint64_t>(used.tv_nsec) / 1000u;
+#else
   FILETIME created{}, exited{}, kernel{}, user{};
   if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) return UINT64_MAX;
   const auto ticks = [](FILETIME value) { return (std::uint64_t(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
   return ticks(kernel) / 10 + ticks(user) / 10;
+#endif
 }
 
 // Nanoseconds between two QueryPerformanceCounter values.
@@ -126,6 +155,9 @@ constexpr const char *kPrivilegedNames[kPrivilegedRegisterSlots] = {
 
 // A visible top-level window of this process (the game window exists before the GS process starts), or null.
 HWND visible_game_window() {
+#ifndef _WIN32
+  return nullptr;  // Linux: the refusal is printed to the game's log instead of a dialog over the window
+#else
   struct Search {
     DWORD pid;
     HWND found;
@@ -143,6 +175,7 @@ HWND visible_game_window() {
       },
       reinterpret_cast<LPARAM>(&search));
   return search.found;
+#endif
 }
 
 std::wstring wide_text(const std::string &text) { return ipc::widen(text); }
@@ -150,6 +183,11 @@ std::wstring wide_text(const std::string &text) { return ipc::widen(text); }
 // Offers CoreGS 2.0 when GSdx failed. Under the launcher, yes prints the marker and the launcher stores the choice. A game started
 // directly has no launcher to do that, so it only says where the choice is.
 void offer_restart(HWND window, const std::wstring &what) {
+#ifndef _WIN32
+  // Linux: no dialog (and no GS process yet); the reason goes to the log.
+  (void)window;
+  std::fprintf(stderr, "[gs-ipc] %s\n", std::string(what.begin(), what.end()).c_str());
+#else
   if (std::getenv("GT4_DIRECT_START") != nullptr) {
     const std::wstring direct = what + L"\n\nDetails are in the game log.\n\nOpen GT4Recomp and choose CoreGS 2.0 in Settings > Graphics: it is part of the game "
                                        L"and needs no download.";
@@ -163,6 +201,7 @@ void offer_restart(HWND window, const std::wstring &what) {
     std::fprintf(stderr, "%s\n", kRestartMarker);
     std::fflush(stderr);
   }
+#endif
 }
 
 [[noreturn]] void refuse(const std::string &message) {
@@ -526,8 +565,10 @@ class Client {
 
   void attach(std::uint64_t window, std::uint32_t width, std::uint32_t height) {
     // The GS process draws into a child of our window: the parent must not paint over it.
+#ifdef _WIN32
     const HWND parent = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(window));
     SetWindowLongPtrW(parent, GWL_STYLE, GetWindowLongPtrW(parent, GWL_STYLE) | WS_CLIPCHILDREN);
+#endif
     window_ = window;
     control(proto::ControlKind::attach_window, window, width, height);
     // TASK-060 (protocol 1.2): the GS child window applies the same cursor rule as this window. An older consumer
@@ -697,8 +738,14 @@ class Client {
     }
     std::wstring config_argument;
     if (const char *config = std::getenv("GT4_GS_CONFIG"); config && *config) {
+#ifdef _WIN32
       if (GetFileAttributesW(ipc::widen(config).c_str()) == INVALID_FILE_ATTRIBUTES)
         refuse(std::string("GT4_GS_CONFIG=") + config + " does not exist");
+#else
+      std::error_code missing;
+      if (!std::filesystem::exists(config, missing))
+        refuse(std::string("GT4_GS_CONFIG=") + config + " does not exist");
+#endif
       config_argument = L" --config \"" + ipc::widen(config) + L"\"";
     }
     // TASK-116 step 1: Performance mode was the launcher's HWDownloadMode 2 in the very ini the GS process gets
@@ -1156,6 +1203,12 @@ constexpr std::uint64_t kLcAnalog = 32, kLcHdtv = 22, kLcVga = 15;
 
 }  // namespace
 
+#ifndef _WIN32
+bool file_sha256(const std::wstring &, std::string &, std::string &error) {
+  error = "the GS process (gt4-gs) is not available on Linux yet";
+  return false;
+}
+#else
 bool file_sha256(const std::wstring &path, std::string &hex, std::string &error) {
   HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
@@ -1193,6 +1246,7 @@ bool file_sha256(const std::wstring &path, std::string &hex, std::string &error)
   }
   return true;
 }
+#endif
 
 bool map_set_gs_crt(std::uint32_t interlace, std::uint32_t mode, std::uint32_t field, std::uint64_t &smode1,
                     std::uint64_t &smode2) {
@@ -1451,6 +1505,14 @@ bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t heig
   c->attach(window, width, height);
   return true;
 }
+
+#ifndef _WIN32
+bool attach_linux_window(int kind, void *display, std::uint64_t window, void *surface, std::uint32_t width,
+                         std::uint32_t height) {
+  const InProcessSink *sink = hw_sink();
+  return sink && sink->attach_linux_window && sink->attach_linux_window(kind, display, window, surface, width, height);
+}
+#endif
 
 void resize_window(std::uint32_t width, std::uint32_t height) {
   if (const InProcessSink *sink = hw_sink()) return sink->resize_window(width, height);

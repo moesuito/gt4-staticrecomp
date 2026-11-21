@@ -6,6 +6,10 @@
 
 #include <cstring>
 
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+
 namespace gt4::hw::vulkan_loader {
 namespace {
 
@@ -24,6 +28,7 @@ PFN_vkVoidFunction instance_proc(VkInstance instance, const char *name) { return
 
 bool load_loader(std::string &error) {
   if (get_instance_proc) return true;
+#ifdef _WIN32
   HMODULE library = LoadLibraryExW(L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (!library) {
     error = "vulkan-1.dll could not be loaded";
@@ -31,6 +36,15 @@ bool load_loader(std::string &error) {
   }
   get_instance_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
       GetProcAddress(library, "vkGetInstanceProcAddr"));
+#else
+  // TASK-074: the system loader, kept loaded for the life of the process (as vulkan-1.dll is on Windows).
+  void *library = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (!library) {
+    error = "libvulkan.so.1 could not be loaded";
+    return false;
+  }
+  get_instance_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(library, "vkGetInstanceProcAddr"));
+#endif
   if (!get_instance_proc) {
     error = "vulkan-1.dll lacks vkGetInstanceProcAddr";
     return false;
@@ -80,7 +94,15 @@ void resolve_headless(VkInstance instance, std::vector<std::string> &missing) {
 void resolve_surface(VkInstance instance, std::vector<std::string> &missing) {
   resolve(gt4_hw_vkAcquireNextImageKHR, instance, "vkAcquireNextImageKHR", missing);
   resolve(gt4_hw_vkCreateSwapchainKHR, instance, "vkCreateSwapchainKHR", missing);
+#ifdef _WIN32
   resolve(gt4_hw_vkCreateWin32SurfaceKHR, instance, "vkCreateWin32SurfaceKHR", missing);
+#else
+  // Optional one by one: the window system in use needs only its own (checked when the surface is made).
+  gt4_hw_vkCreateXlibSurfaceKHR =
+      reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(get_instance_proc(instance, "vkCreateXlibSurfaceKHR"));
+  gt4_hw_vkCreateWaylandSurfaceKHR =
+      reinterpret_cast<PFN_vkCreateWaylandSurfaceKHR>(get_instance_proc(instance, "vkCreateWaylandSurfaceKHR"));
+#endif
   resolve(gt4_hw_vkDestroySurfaceKHR, instance, "vkDestroySurfaceKHR", missing);
   resolve(gt4_hw_vkDestroySwapchainKHR, instance, "vkDestroySwapchainKHR", missing);
   resolve(gt4_hw_vkGetPhysicalDeviceSurfaceCapabilitiesKHR, instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", missing);

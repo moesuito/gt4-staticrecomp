@@ -11,6 +11,22 @@ bool has(const std::vector<std::string> &available, const char *name) {
   return std::find(available.begin(), available.end(), name) != available.end();
 }
 
+// The swapchain-maintenance instance prerequisites, shared by the Win32 and the Linux selection.
+void add_surface_maintenance(InstanceChoice &choice, const std::vector<std::string> &available, bool force_baseline) {
+  if (force_baseline || !has(available, "VK_KHR_get_surface_capabilities2"))
+    return;
+  // Prefer the KHR family (promoted 2025); the EXT family has the same structures and values.
+  if (has(available, "VK_KHR_surface_maintenance1")) {
+    choice.extensions.emplace_back("VK_KHR_get_surface_capabilities2");
+    choice.extensions.emplace_back("VK_KHR_surface_maintenance1");
+    choice.family = MaintenanceFamily::khr;
+  } else if (has(available, "VK_EXT_surface_maintenance1")) {
+    choice.extensions.emplace_back("VK_KHR_get_surface_capabilities2");
+    choice.extensions.emplace_back("VK_EXT_surface_maintenance1");
+    choice.family = MaintenanceFamily::ext;
+  }
+}
+
 } // namespace
 
 const char *maintenance_family_name(MaintenanceFamily family) {
@@ -38,18 +54,23 @@ InstanceChoice select_instance_extensions(const std::vector<std::string> &availa
                                "; update the graphics driver");
     choice.extensions.emplace_back(required);
   }
-  if (force_baseline || !has(available, "VK_KHR_get_surface_capabilities2"))
+  add_surface_maintenance(choice, available, force_baseline);
+  return choice;
+}
+
+InstanceChoice select_linux_instance_extensions(const std::vector<std::string> &available, bool force_baseline) {
+  InstanceChoice choice;
+  if (!has(available, "VK_KHR_surface"))
     return choice;
-  // Prefer the KHR family (promoted 2025); the EXT family has the same structures and values.
-  if (has(available, "VK_KHR_surface_maintenance1")) {
-    choice.extensions.emplace_back("VK_KHR_get_surface_capabilities2");
-    choice.extensions.emplace_back("VK_KHR_surface_maintenance1");
-    choice.family = MaintenanceFamily::khr;
-  } else if (has(available, "VK_EXT_surface_maintenance1")) {
-    choice.extensions.emplace_back("VK_KHR_get_surface_capabilities2");
-    choice.extensions.emplace_back("VK_EXT_surface_maintenance1");
-    choice.family = MaintenanceFamily::ext;
-  }
+  std::vector<std::string> platforms;
+  for (const char *platform : {"VK_KHR_xlib_surface", "VK_KHR_wayland_surface"})
+    if (has(available, platform))
+      platforms.emplace_back(platform);
+  if (platforms.empty())
+    return choice;
+  choice.extensions.emplace_back("VK_KHR_surface");
+  choice.extensions.insert(choice.extensions.end(), platforms.begin(), platforms.end());
+  add_surface_maintenance(choice, available, force_baseline);
   return choice;
 }
 

@@ -201,6 +201,46 @@ class ProducerControls(unittest.TestCase):
         with self.assertRaises(ValueError):
             ee_producer.verify_toolchain(path, metadata)
 
+    def test_linux_toolchain_candidate_recipe(self):
+        # TASK-074 L1: the Linux recipe is its own check; the qualified Windows recipe never accepts it.
+        compiler = self.root / 'clang++'
+        compiler.write_bytes(b'')
+        path = self.root / 'toolchain.txt'
+        fields = {'compiler': str(compiler), 'compiler_id': 'Clang', 'compiler_version': '23.1.4',
+                  'cxx_standard': '20', 'build_type': 'Release', 'flags': '', 'release_flags': '-O3 -DNDEBUG',
+                  'donor': str(self.root / 'donor'), 'generated': str(self.root / 'generated')}
+        metadata = {'donor': fields['donor']}
+        def write(values):
+            path.write_text(''.join(f'{key}={value}\n' for key, value in values.items()), encoding='utf-8')
+        write(fields)
+        ee_producer.verify_linux_toolchain(path, metadata, self.root / 'generated')
+        write({**fields, 'compiler_id': 'GNU'})
+        ee_producer.verify_linux_toolchain(path, metadata, self.root / 'generated')
+        write(fields)
+        with self.assertRaises(ValueError):
+            ee_producer.verify_toolchain(path, metadata, self.root / 'generated')
+        for key, value in (('compiler_id', 'MSVC'), ('compiler_version', ''), ('compiler', 'clang++'),
+                           ('compiler', str(self.root / 'missing')), ('flags', '-ffast-math'),
+                           ('release_flags', '-O0'), ('cxx_standard', '17'), ('build_type', 'Debug'),
+                           ('donor', str(self.root / 'other')), ('generated', str(self.root / 'other'))):
+            write({**fields, key: value})
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                ee_producer.verify_linux_toolchain(path, metadata, self.root / 'generated')
+
+    def test_host_selects_recipe_and_translator_name(self):
+        with patch.object(ee_producer, 'on_linux', return_value=True), \
+                patch.object(ee_producer, 'verify_linux_toolchain', return_value='linux') as linux, \
+                patch.object(ee_producer, 'verify_toolchain', return_value='windows') as windows:
+            self.assertEqual(ee_producer.translator_file_name(), 'eerecomp')
+            self.assertEqual(ee_producer.verify_host_toolchain(self.root / 't', {}), 'linux')
+            windows.assert_not_called()
+        with patch.object(ee_producer, 'on_linux', return_value=False), \
+                patch.object(ee_producer, 'verify_linux_toolchain', return_value='linux') as linux, \
+                patch.object(ee_producer, 'verify_toolchain', return_value='windows'):
+            self.assertEqual(ee_producer.translator_file_name(), 'eerecomp.exe')
+            self.assertEqual(ee_producer.verify_host_toolchain(self.root / 't', {}), 'windows')
+            linux.assert_not_called()
+
     def test_lexical_private_link_is_rejected_before_resolution(self):
         original = ee_producer.reject_link
         def reject(path):

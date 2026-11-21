@@ -16,8 +16,13 @@ __attribute__((weak)) void vu0_aot_report(std::FILE *) {}  // strong definition:
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#else
+#include "host_compat.hpp"  // GetEnvironmentVariableA, DWORD
+#include <time.h>
+#endif
 
 namespace gt4::perf {
 namespace {
@@ -28,6 +33,12 @@ Probe::MtvuReport g_gs_ipc_report = nullptr;
 Probe::MtvuReset g_gs_ipc_reset = nullptr;
 std::uint64_t wall_us() { return scope_wall_us(); }
 std::uint64_t cpu_us() {
+#ifndef _WIN32
+  timespec used{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &used) != 0)
+    return UINT64_MAX;
+  return static_cast<std::uint64_t>(used.tv_sec) * 1000000u + static_cast<std::uint64_t>(used.tv_nsec) / 1000u;
+#else
   FILETIME created{}, exited{}, kernel{}, user{};
   if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
     return UINT64_MAX;
@@ -36,6 +47,7 @@ std::uint64_t cpu_us() {
   };
   // Divide before adding: FILETIME units are 100ns, not guest cycles.
   return ticks(kernel) / 10 + ticks(user) / 10;
+#endif
 }
 constexpr const char *names[] = {
     "ee_dispatch", "vu_interpret", "iop_run", "vif_gif", "gs_host_copy",

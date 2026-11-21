@@ -126,6 +126,12 @@ void on_gif_reset();
 void on_set_gs_crt(std::uint32_t interlace, std::uint32_t mode, std::uint32_t field);
 // Window: the GS process renders into a child of this window (CONTROL attach_window / resize).
 bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t height);
+#ifndef _WIN32
+// TASK-074 (Linux): the X11/Wayland form of attach_window (kind 0 X11, 1 Wayland). Only the hw renderer takes it; with no
+// GS process on Linux, any other renderer refuses the window (false).
+bool attach_linux_window(int kind, void *display, std::uint64_t window, void *surface, std::uint32_t width,
+                         std::uint32_t height);
+#endif
 // TASK-060 (protocol 1.2): the mouse cursor policy the game window uses (GT4_CURSOR_AUTOHIDE, native/cursor_autohide.hpp).
 // Call before attach_window; attach_window then sends CONTROL cursor to a 1.2 consumer, so the GS child window hides the
 // cursor over the picture with the same rule. Default: auto-hide on, 3000 ms.

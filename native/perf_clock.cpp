@@ -3,9 +3,15 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#ifdef _WIN32
 #include <intrin.h>
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <cpuid.h>
+#include <time.h>
+#include <x86intrin.h>
+#endif
 
 namespace gt4::perf {
 
@@ -27,15 +33,33 @@ std::uint64_t tsc_scale_from(std::uint64_t ticks, std::uint64_t counter_ticks, s
 namespace {
 
 bool invariant_tsc() noexcept {
+#ifdef _WIN32
   int registers[4]{};
   __cpuid(registers, static_cast<int>(0x80000000u));
   if (static_cast<unsigned>(registers[0]) < 0x80000007u) return false;
   __cpuid(registers, static_cast<int>(0x80000007u));
   return (registers[3] & (1 << 8)) != 0;
+#else
+  unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+  __cpuid(0x80000000u, eax, ebx, ecx, edx);
+  if (eax < 0x80000007u) return false;
+  __cpuid(0x80000007u, eax, ebx, ecx, edx);
+  return (edx & (1u << 8)) != 0;
+#endif
 }
+
+#ifndef _WIN32
+// CLOCK_MONOTONIC in nanoseconds: the Linux counterpart of QueryPerformanceCounter, with a 1 GHz frequency.
+std::uint64_t monotonic_ns() noexcept {
+  timespec now{};
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return static_cast<std::uint64_t>(now.tv_sec) * 1000000000u + static_cast<std::uint64_t>(now.tv_nsec);
+}
+#endif
 
 // About 2 ms at process start, against the performance counter.
 std::uint64_t calibrate() noexcept {
+#ifdef _WIN32
   char value[16]{};
   if (GetEnvironmentVariableA("GT4_PERF_CLOCK", value, sizeof value) > 0 && std::strcmp(value, "steady") == 0) return 0;
   if (!invariant_tsc()) return 0;
@@ -49,6 +73,20 @@ std::uint64_t calibrate() noexcept {
   const std::uint64_t last = __builtin_ia32_rdtsc();
   return tsc_scale_from(last - first, static_cast<std::uint64_t>(now.QuadPart - start.QuadPart),
                         static_cast<std::uint64_t>(hz.QuadPart));
+#else
+  const char *value = std::getenv("GT4_PERF_CLOCK");
+  if (value != nullptr && std::strcmp(value, "steady") == 0) return 0;
+  if (!invariant_tsc()) return 0;
+  constexpr std::uint64_t hz = 1000000000u;
+  const std::uint64_t start = monotonic_ns();
+  const std::uint64_t first = __rdtsc();
+  std::uint64_t now = start;
+  do {
+    now = monotonic_ns();
+  } while (now - start < hz / 500);
+  const std::uint64_t last = __rdtsc();
+  return tsc_scale_from(last - first, now - start, hz);
+#endif
 }
 
 } // namespace

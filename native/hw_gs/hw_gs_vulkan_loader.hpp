@@ -13,13 +13,29 @@
 // Include this header only from translation units that implement the backend (native/hw_gs/*.cpp).
 #pragma once
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #define VK_USE_PLATFORM_WIN32_KHR
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#else
+// TASK-074 (Linux): libvulkan.so.1 and the X11/Wayland surfaces. The two Xlib and two Wayland types the Vulkan platform
+// headers name are declared here instead of including Xlib.h (whose macros None, Bool, Status would leak into the
+// backend) and wayland-client.h; the same declarations as native/native_vulkan.cpp.
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+typedef struct _XDisplay Display;
+typedef unsigned long Window;
+typedef unsigned long VisualID;
+struct wl_display;
+struct wl_surface;
+#include <vulkan/vulkan_wayland.h>
+#include <vulkan/vulkan_xlib.h>
+#endif
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -35,7 +51,12 @@
 #define vkCreateInstance gt4_hw_vkCreateInstance
 #define vkCreateSemaphore gt4_hw_vkCreateSemaphore
 #define vkCreateSwapchainKHR gt4_hw_vkCreateSwapchainKHR
+#ifdef _WIN32
 #define vkCreateWin32SurfaceKHR gt4_hw_vkCreateWin32SurfaceKHR
+#else
+#define vkCreateXlibSurfaceKHR gt4_hw_vkCreateXlibSurfaceKHR
+#define vkCreateWaylandSurfaceKHR gt4_hw_vkCreateWaylandSurfaceKHR
+#endif
 #define vkDestroyCommandPool gt4_hw_vkDestroyCommandPool
 #define vkDestroyDevice gt4_hw_vkDestroyDevice
 #define vkDestroyFence gt4_hw_vkDestroyFence
@@ -74,7 +95,13 @@ inline PFN_vkCreateFence gt4_hw_vkCreateFence = nullptr;
 inline PFN_vkCreateInstance gt4_hw_vkCreateInstance = nullptr;
 inline PFN_vkCreateSemaphore gt4_hw_vkCreateSemaphore = nullptr;
 inline PFN_vkCreateSwapchainKHR gt4_hw_vkCreateSwapchainKHR = nullptr;
+#ifdef _WIN32
 inline PFN_vkCreateWin32SurfaceKHR gt4_hw_vkCreateWin32SurfaceKHR = nullptr;
+#else
+// Each resolves only when its extension is enabled; the windowed path checks the one it needs.
+inline PFN_vkCreateXlibSurfaceKHR gt4_hw_vkCreateXlibSurfaceKHR = nullptr;
+inline PFN_vkCreateWaylandSurfaceKHR gt4_hw_vkCreateWaylandSurfaceKHR = nullptr;
+#endif
 inline PFN_vkDestroyCommandPool gt4_hw_vkDestroyCommandPool = nullptr;
 inline PFN_vkDestroyDevice gt4_hw_vkDestroyDevice = nullptr;
 inline PFN_vkDestroyFence gt4_hw_vkDestroyFence = nullptr;
@@ -104,7 +131,7 @@ inline PFN_vkWaitForFences gt4_hw_vkWaitForFences = nullptr;
 
 namespace gt4::hw::vulkan_loader {
 
-// Loads vulkan-1.dll and vkGetInstanceProcAddr, then vkCreateInstance. False with `error` on failure.
+// Loads vulkan-1.dll (Linux: libvulkan.so.1) and vkGetInstanceProcAddr, then vkCreateInstance. False with `error` on failure.
 bool load_loader(std::string &error);
 
 // Fills every instance-level pointer for `instance`. Names the entry points that did not resolve.

@@ -48,6 +48,12 @@ struct InProcessSink {
   void (*gif_reset)() = nullptr;
   // Win32 HWND of the game window (as an integer) and its client size. False: no window output.
   bool (*attach_window)(std::uint64_t window, std::uint32_t width, std::uint32_t height) = nullptr;
+#ifndef _WIN32
+  // TASK-074 (Linux): an X11 window (kind 0: display pointer, window id) or a Wayland surface (kind 1: display and
+  // surface pointers), the kinds of the derived port's SurfaceTarget.
+  bool (*attach_linux_window)(int kind, void *display, std::uint64_t window, void *surface, std::uint32_t width,
+                              std::uint32_t height) = nullptr;
+#endif
   void (*resize_window)(std::uint32_t width, std::uint32_t height) = nullptr;
   // TASK-080 display-aspect fill of the race view (the in-process form of protocol 1.3 CONTROL display_aspect,
   // GS-STREAM-PROTOCOL 6.7): fill = the largest centred rectangle of ratio_millionths / 1e6 (0 = the whole window);
